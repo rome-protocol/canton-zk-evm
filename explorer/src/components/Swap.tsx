@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { getSwap, type BlockLeg, type SwapItem } from "../api.ts";
 import { count, dateTime, short, units } from "../format.ts";
-import { LegAmount, LegToken, legKindWord, useLegToken } from "../pages/LegParts.tsx";
+import { CANTON_DECIMALS, LegAmount, LegToken, TwinNote, legKindWord, useLegToken } from "../pages/LegParts.tsx";
 import { BlockLegs } from "./BlockParts.tsx";
 import { HashLink } from "./HashLink.tsx";
 import { Icon } from "./Icon.tsx";
@@ -11,7 +11,6 @@ import { Info } from "./Info.tsx";
 import "./swap.css";
 
 /** Canton holds an amount with ten decimals, as the gateway's custody does. */
-export const CANTON_DECIMALS = 10;
 /** A block's or a transaction's answer carries this many legs; the block's own legs route has the rest. */
 export const LEGS_SHOWN = 50;
 /** A block with more swap legs than this shows each from its leg alone, with no read per card. */
@@ -99,7 +98,7 @@ function LegCard({ v, lookup }: { v: SwapView; lookup: boolean }) {
 /** One leg that is no swap, in a line: what it was, its amount, the account, and its page. */
 export function LegLine({ l }: { l: BlockLeg }) {
   const claim = l.canton?.role === "funded-claim";
-  const word = legKindWord(l.kind, claim);
+  const word = legKindWord(l.kind, l.canton?.role ?? null);
   const to = l.kind === "withdrawal" ? "from" : "to";
   return (
     <li className="sw-line">
@@ -107,6 +106,7 @@ export function LegLine({ l }: { l: BlockLeg }) {
       {claim && l.canton?.amount ? <span><span className="num">{units(l.canton.amount, CANTON_DECIMALS)}</span> {l.canton.instrument?.id}</span> : <><LegAmount l={l} /><LegToken token={l.token} /></>}
       <span className="muted">{to}</span>
       <HashLink value={l.account} to={`/address/${l.account}`} />
+      <TwinNote l={l} />
       <Link className="small" to={`/leg/${l.legId}`}>Leg {l.legIndex}</Link>
     </li>
   );

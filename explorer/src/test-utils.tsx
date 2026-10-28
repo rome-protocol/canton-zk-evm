@@ -274,7 +274,7 @@ export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}
 
 /** A gateway leg as /api/legs gives it: leg n of block 21, made by transaction n. */
 export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegListItem => ({
-  block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", party: null, ...over,
+  block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", party: null, gateway: null, twin: null, ...over,
 });
 
 /** A fake /api/labels answering each address asked from `known`, as an address the index holds nothing of when it is not there. */

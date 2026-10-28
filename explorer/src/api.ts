@@ -51,11 +51,13 @@ export interface CantonSide {
 }
 /** The Canton side as the REST block route gives it: every fact, and none of the record's hex (that is /record, fetched when Verify is pressed). */
 export type CantonSummary = Omit<CantonSide, "headerHex" | "txsHex" | "proofHex">;
-/** What Canton shows of the swap a leg is one side of: a payment that settled a venue's trade, or the deposit that redeemed its funded claim. No Canton party is part of it. */
-export interface LegCanton { role: "venue-trade" | "funded-claim"; amount: string | null; instrument: { admin: string; id: string } | null; settledUpdateId: string | null; recipient: string }
+/** What Canton shows of the swap a leg is one side of (a payment that settled a venue's trade, or the deposit that redeemed its funded claim), or of the twin it moves: a payment into a registered vault of a pinned token is a lock, one the vault released is a release. No Canton party is part of it. */
+export interface LegCanton { role: "venue-trade" | "funded-claim" | "lock" | "release"; amount: string | null; instrument: { admin: string; id: string } | null; settledUpdateId: string | null; recipient: string }
 /** A gateway leg inside a block's or a transaction's answer, with the Canton side of its swap (null on a leg that is not one). */
 export interface BlockLeg {
   block: number; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string;
+  /** The registered gateway that wrote the leg (null for the first gateway). */
+  gateway?: string | null;
   txHash: string | null; updateId: string | null; canton: LegCanton | null;
 }
 export interface ApiBlock {
@@ -306,7 +308,7 @@ export const getTxDetail = async (hash: string) => (await call(`/api/txs/${encod
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;
 
 /** A gateway leg a block recorded, as the legs route gives it. */
-export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+export interface LegItem { gateway?: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
 /** A Canton update that carries a block. `offset` is on the reader party's participant, never the builder's completion offset. */
 export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null;
   /** How many EVM transactions the update settled (its block's); null for an update that carries no block. */
@@ -345,7 +347,7 @@ export const getBlockRecord = async (id: string | number) => (await call(`/api/b
 export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem & { canton: LegCanton | null }>;
 /** A gateway leg as the legs routes give it: what the EVM recorded, with the block and the transaction that made it. `txHash` is null when the explorer has not stored that transaction; `party` is the Canton party a withdrawal paid, null on the other kinds. */
-export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null }
+export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null; twin: "lock" | "release" | null }
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;
 export const getLeg = async (id: string) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200])).body as LegListItem;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
@@ -414,8 +416,8 @@ export type TokenSort = "holders" | "transfers" | "newest";
  * totalSupply (null when it did not answer); both are read at block `supplyBlock` (the custody at the ledger offset `ledgerOffset` of that block's record), at `readAt`.
  */
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
-/** The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (locks less releases; null when the token has more legs than one read totals), `vaultBalance` what the vaults hold, both in the token's base units. */
-export interface TwinSupply { supply: string | null; vaultBalance: string; locks: number; releases: number; partial: boolean }
+/** The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (locks less releases), `vaultBalance` what the vaults hold, both in the token's base units; `through` is the block the sums are counted to (null before the first count). */
+export interface TwinSupply { supply: string; vaultBalance: string; locks: number; releases: number; through: number | null }
 export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;

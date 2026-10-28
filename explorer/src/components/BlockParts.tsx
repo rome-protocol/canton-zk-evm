@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getBlockLegs, getBlockTxs, getFaucetAddress, type TxListItem } from "../api.ts";
 import { count, units } from "../format.ts";
 import { methodOf } from "../method.ts";
-import { LegAmount, LegToken, legKindWord } from "../pages/LegParts.tsx";
+import { LegAmount, LegToken, TwinNote, legKindWord } from "../pages/LegParts.tsx";
 import { LoadingCard } from "./Cards.tsx";
 import { HashLink } from "./HashLink.tsx";
 import { Icon } from "./Icon.tsx";
@@ -84,10 +84,10 @@ export function BlockLegs({ id }: { id: string }) {
             {rows.map((l) => (
               <tr key={l.legIndex}>
                 <td className="r"><Link to={`/leg/${l.legId}`}>{l.legIndex}</Link></td>
-                <td><span className="tag">{legKindWord(l.kind, l.canton?.role === "funded-claim")}</span></td>
+                <td><span className="tag">{legKindWord(l.kind, l.canton?.role ?? null)}</span></td>
                 <td><LegToken token={l.token} /></td>
                 <td><HashLink value={l.account} to={`/address/${l.account}`} /></td>
-                <td className="r"><LegAmount l={l} /></td>
+                <td className="r"><LegAmount l={l} />{l.canton?.role === "lock" || l.canton?.role === "release" ? <div className="small"><TwinNote l={l} /></div> : null}</td>
                 <td className="r">{l.txIndex}</td>
               </tr>
             ))}

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { LEGS_NOT_PUBLIC_THESE, LEGS_NOT_PUBLIC_THIS, LEGS_WHO_SEES } from "../copy.ts";
@@ -67,6 +67,12 @@ describe("the gateway legs page", () => {
     expect(screen.getByRole("note")).not.toHaveTextContent("this block");
   });
 
+  it("tells a lock and a release by their own tag next to the gateway's kind", async () => {
+    await openList(() => reply(page([legListItem(1, { kind: "payment", twin: "lock", gateway: addr(0xb1) }), legListItem(0, { kind: "payment", twin: "release", gateway: addr(0xb1) })])));
+    expect(rows()[0]).toHaveTextContent("paymentLock");
+    expect(rows()[1]).toHaveTextContent("paymentRelease");
+  });
+
   it("pages by the cursor the server gave", async () => {
     const calls = await openList((path) => reply(page([legListItem(1)], path.includes("before=") ? null : "21|1")));
     await userEvent.click(screen.getByRole("button", { name: "Older page" }));
@@ -119,6 +125,16 @@ describe("the gateway leg page", () => {
   it("has no Canton receiver on a deposit or a payment", async () => {
     await openLeg({ kind: "deposit", party: null });
     expect(screen.queryByText("Canton receiver", { selector: "dt" })).toBeNull();
+  });
+
+  it("shows the gateway of a leg a registered gateway wrote, and a lock or a release as such", async () => {
+    await openLeg({ kind: "payment", twin: "lock", gateway: addr(0xb1) });
+    expect(kv("Gateway")).toHaveTextContent(addr(0xb1).slice(0, 6));
+    expect(kv("Twin")).toHaveTextContent("Lock");
+    cleanup();
+    await openLeg({ kind: "payment", twin: null, gateway: null });
+    expect(screen.queryByText("Gateway", { selector: "dt" })).toBeNull();
+    expect(screen.queryByText("Twin", { selector: "dt" })).toBeNull();
   });
 
   it("says a withdrawal's receiver is not recorded when the server has none", async () => {
