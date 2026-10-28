@@ -1185,7 +1185,8 @@ depositIdOf : Party -> Text -> Text
 depositIdOf depositor label = T.sha256 (T.intercalate "," ["deposit", partyToText depositor, label])
 
 -- Whether `depositId` is the derived id of the depositor and a label: what a request's `ensure` asks of a request made from package
--- 0.5.0. A request made under 0.4.0 or earlier has no label; it is not made again when it upgrades, and it settles as before (README.md).
+-- 0.5.0. A request made under 0.4.0 or earlier has no label, and the engine runs `ensure` again when it uses such a contract under this
+-- package, so that request is refused when its leg settles (README.md).
 isDerived : Party -> Text -> Optional Text -> Bool
 isDerived depositor depositId (Some label) = depositId == depositIdOf depositor label
 isDerived _ _ None = False
