@@ -49,16 +49,33 @@ keccak256(abi.encode(previous, kind, id, token, account, amount, keccak256(bytes
 
 that is, the Keccak-256 of seven 32-byte words: the previous value, the kind, the id, the token, the account, the amount, and the hash of the party's bytes. The hash of an empty party is `0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`. The result is stored in `legs[block.number]`, at the storage key `keccak256(abi.encode(blockNumber, 0))`. A block with no legs has nothing there, and reads as zero.
 
+## The vault
+
+A Canton twin of an ERC-20 is backed one for one by that ERC-20 held in the vault (`Vault.sol`). The vault adds no kind of leg: both ways in and out are payment legs of the gateway.
+
+- **Lock.** The holder pays the token into the vault with the gateway's `pay(id, token, vault, amount)`, after an `approve` for the gateway as for any payment. The vault has no code for this: it is only the payee. The leg asks Canton to mint the twin against that payment.
+- **Release.** `release(id, token, to, amount)` pays `amount` of `token` to `to` out of the vault, through `pay`. The vault approves the gateway for exactly `amount`, and `pay` takes it in the same call, so no allowance is left. The leg is a payment with the vault as the payer, and it asks Canton to burn the twin.
+
+Anyone may call `release`, as anyone may call `claim`. A payment commits only in a block whose Canton side settles, here the burn of the twin, so a call that Canton does not match settles nothing. `release` is refused when the gateway refuses (an amount of zero, an id already used, a transfer that fails), when the token refuses the approval, and when the vault holds less than `amount`. A refused call changes nothing and leaves no leg.
+
+`Released(bytes32 indexed id, address indexed token, address indexed to, uint256 amount)` is logged by the vault on every release. The gateway's leg has the payee but not the payer, so this event is what says that a payment came out of the vault.
+
+The vault has no owner, no key, no upgrade, no storage, no `delegatecall` and no `selfdestruct`. The gateway is the constant `GATEWAY` in `Vault.sol`, and `build.sh --check` fails unless it is `GATEWAY_ADDRESS` in `PINS`. A vault is a contract like any other: it is put in the genesis or created, and the chain's registry names it, so that Daml mints twins only for payments into a registered vault.
+
+Not covered: a token that moves less than it is asked to (a fee on transfer, a rebase) still passes `pay`, so the vault then holds less than the twin's supply. That breaks the twin of that token only. Tokens sent straight to the vault by a plain `transfer`, not through `pay`, belong to nobody: the vault has no way to give them back and Canton sees no leg for them.
+
 ## Files
 
 | File | What it is |
 |---|---|
 | `Gateway.sol` | The gateway and the wrapped token |
-| `build.sh` | Compiles `Gateway.sol` with the solc image in `PINS` and writes the runtime code to `Gateway.bin-runtime`. `build.sh --check` fails unless the checked-in file is what the source compiles to; CI runs it |
+| `Vault.sol` | The vault that holds the ERC-20s behind Canton twins |
+| `build.sh` | Compiles `Gateway.sol` and `Vault.sol` with the solc image in `PINS` and writes the runtime code to `Gateway.bin-runtime` and `Vault.bin-runtime`. `build.sh --check` fails unless both checked-in files are what the sources compile to, and unless the gateway's address in `Vault.sol` is `GATEWAY_ADDRESS`; CI runs it |
 | `Gateway.bin-runtime` | The gateway's runtime code in hex, without `0x`. This is what goes into the genesis |
+| `Vault.bin-runtime` | The vault's runtime code in hex, without `0x`. It has no storage and no constructor argument, so the same bytes can sit at any address |
 | `tests/run.sh` | Starts reth through `network/reth/launch.sh` (peer discovery off), checks it with `network/reth/check.sh`, runs `tests/check.py`, and stops reth |
 | `tests/check.py` | Builds blocks on that reth and checks every function and every refusal. For each block it works out the leg hash in Python and compares it with `legs[n]` as `eth_getProof` reports it |
-| `tests/Mocks.sol` | Three badly behaved tokens for the tests: one whose `transferFrom` returns false, one that returns nothing, and one that calls back into the gateway |
+| `tests/Mocks.sol` | Badly behaved tokens for the tests: one whose `transferFrom` returns false, one that returns nothing, one that calls back into the gateway, one that lets anyone mint and burn, and one whose `approve` returns false |
 
 ## What is tested
 
@@ -68,6 +85,7 @@ On a real reth, with a funded genesis whose keys are made for the run:
 - `register`, `claim`, `withdraw` and `pay`, alone and together in one block, and the events, balances, supplies and counters they leave;
 - for every block, `legs[n]` from the storage proof equals the hash worked out in Python from the legs the test meant to make: no legs, one leg, three legs of three kinds, a block with a reverted transaction between two good ones, and a second block that starts again from zero;
 - every refusal: an amount of zero, a token that is not wrapped, an id that is used, a burn of more than the balance, a payment without an allowance, a token whose `transferFrom` returns false or returns nothing, an address with no code, and a mint or burn by anyone but the gateway. Each one reverts, leaves no leg and uses up no id;
+- the vault in the genesis (code, nonce 1, no balance, no storage); a lock; a release by someone who is not the payer; a lock and two releases in one block, with a refused release between them, and the leg hash of that block; every refusal of `release` (zero, more than the vault holds, a used id, a token that refuses the approval, a token without `approve`, an address with no code, a call with no function); the `Released` event; and that no allowance is left;
 - a token that calls back into the gateway while `pay` runs: with the same id the callback fails; with another id it goes through, and the outer leg comes first in the events and in the hash.
 
 Run it with `gateway/tests/run.sh`. It needs Docker, `curl`, `jq` and Python 3 with the packages in `demo/requirements.txt`.

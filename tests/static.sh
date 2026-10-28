@@ -72,6 +72,10 @@ first=$(awk '/^contract Gateway /{on=1; next} on && /^    [a-z]/{print; exit}' "
 [ "$(( $(wc -c < "$ROOT/gateway/Gateway.bin-runtime") / 2 ))" -le 24576 ] || fail "the gateway's runtime code is over the 24576-byte limit"
 # The gateway has no owner, no upgrade and no way to be removed.
 ! grep -qE 'Ownable|onlyOwner|selfdestruct|delegatecall' "$GW" || fail "gateway/Gateway.sol has an owner modifier, selfdestruct or delegatecall"
+# The vault has no owner, no upgrade, no storage and no way to be removed, and its runtime code is checked in.
+VAULT_SRC=$ROOT/gateway/Vault.sol
+! grep -qE 'Ownable|onlyOwner|selfdestruct|delegatecall' "$VAULT_SRC" || fail "gateway/Vault.sol has an owner modifier, selfdestruct or delegatecall"
+[[ $(cat "$ROOT/gateway/Vault.bin-runtime") =~ ^[0-9a-f]{200,}$ ]] || fail "gateway/Vault.bin-runtime is not runtime code in hex without 0x"
 
 # The gateway's test starts reth only through launch.sh and checks the flags with check.sh; nothing else in gateway/ names reth's image.
 others=$(grep -rIlE 'RETH_IMAGE|paradigmxyz|reth node' "$ROOT/gateway" 2>/dev/null || true)
