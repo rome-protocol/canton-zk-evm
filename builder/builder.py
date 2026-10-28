@@ -100,6 +100,8 @@ class Config:
     pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
     stop: object = None               # the producer's stop event (threading.Event), set by produce(): a stop ends the wait that follows a prover's refusal
     twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
+    registries: dict = field(default_factory=dict)   # --registry ADMIN=URL (CZE_TOKEN_REGISTRIES): the token registry of each instrument admin whose legs get a choice context
+    registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the bearer token that registry wants, read once at start
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -276,6 +278,127 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             spent[0] += time.monotonic() - started
         return seen[lock_id]
     return read
+
+
+CONTEXT_MAX_BODY = 256 * 1024   # the most the builder reads of a token registry's choice context (its disclosed contracts carry blobs)
+CONTEXT_MAX_VALUES = 64         # the most entries in a choice context's values
+CONTEXT_MAX_DISCLOSED = 16      # the most disclosed contracts one registry answer names
+CONTEXT_KEY = re.compile(r"[ -~]{1,128}")
+
+
+def parse_registries(items) -> dict:
+    """`ADMIN=URL` (a token registry for the instruments of the party ADMIN) for each item, as {admin: URL}. The URL is the root of the registry's
+    CIP-0056 off-ledger API, so that `<URL>/registry/allocations/v1/...` and `<URL>/registry/transfer-instruction/v1/...` are its endpoints; for Canton
+    Coin that is the validator's scan proxy (`https://<validator>/api/validator/v0/scan-proxy`)."""
+    found = {}
+    for item in items:
+        admin, _, url = item.partition("=")
+        parts = urllib.parse.urlsplit(url)
+        if not canton_party_text(admin) or parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment:
+            raise BuilderError(f"a token registry must be ADMIN=URL (an http or https URL with no query), not {item!r}")
+        if admin in found:
+            raise BuilderError(f"two token registries for {admin}")
+        found[admin] = url
+    return found
+
+
+def context_values(data) -> dict:
+    """The `values` of a choice context in the registry's answer (Daml's `ChoiceContext`, as JSON): at most CONTEXT_MAX_VALUES entries, each an
+    `AnyValue` ({"tag": "AV_...", "value": ...}). Anything else is a ValueError."""
+    values = data.get("values") if isinstance(data, dict) and set(data) == {"values"} else None
+    if not isinstance(values, dict) or len(values) > CONTEXT_MAX_VALUES:
+        raise ValueError("not a choice context")
+    for key, v in values.items():
+        if not CONTEXT_KEY.fullmatch(key) or not isinstance(v, dict) or set(v) != {"tag", "value"} or not isinstance(v["tag"], str) or not v["tag"].startswith("AV_"):
+            raise ValueError("not an entry of a choice context")
+    return {"values": values}
+
+
+def context_disclosed(items) -> list:
+    """The disclosed contracts in the registry's answer, in the Ledger API's form: templateId, contractId and createdEventBlob (text), and a
+    synchronizerId (text) when the registry names one. At most CONTEXT_MAX_DISCLOSED; anything else is a ValueError."""
+    if not isinstance(items, list) or len(items) > CONTEXT_MAX_DISCLOSED:
+        raise ValueError("not a list of disclosed contracts")
+    found = []
+    for d in items:
+        if not isinstance(d, dict) or not all(isinstance(d.get(k), str) and d[k] for k in ("templateId", "contractId", "createdEventBlob")):
+            raise ValueError("not a disclosed contract")
+        if d.get("synchronizerId") is not None and not isinstance(d["synchronizerId"], str):
+            raise ValueError("not a disclosed contract")
+        found.append({k: d[k] for k in ("templateId", "contractId", "createdEventBlob", "synchronizerId") if d.get(k)})
+    return found
+
+
+class ChoiceContexts:
+    """What the token registries (`--registry ADMIN=URL`) say a leg's choice needs: the choice context, and the contracts it names, which go with
+    the Advance as disclosed contracts. The registry is trusted for nothing (as for `twin_registry_reader`): a request is bounded by `deadline` seconds, by
+    a timer; the answer is read to at most CONTEXT_MAX_BODY bytes; a redirect is not followed; the answer must be a choice context and disclosed
+    contracts and nothing else. All the requests of one reader (the builder makes one for each block) share `budget` seconds (the deadline by
+    default). A registry that cannot be reached or is too slow is not asked again for `backoff` seconds. Any bad answer leaves the leg out with a
+    reason (NoCantonSide) and never fails the build. An answer is asked once."""
+
+    def __init__(self, registries: dict, tokens: dict | None = None, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF,
+                 budget: float | None = None):
+        self.registries, self.tokens, self.timeout, self.deadline, self.backoff = registries, tokens or {}, timeout, deadline, backoff
+        self.budget, self.spent, self.seen = deadline if budget is None else budget, 0.0, {}
+
+    def wants(self, admin: str) -> bool:
+        """Whether the registry of this instrument admin is one the builder asks."""
+        return admin in self.registries
+
+    def allocation(self, admin: str, allocation: str):
+        """(context, disclosed contracts) for `Allocation_ExecuteTransfer` of this allocation."""
+        reply = self.ask(admin, f"/registry/allocations/v1/{urllib.parse.quote(allocation, safe='')}/choice-contexts/execute-transfer", {"meta": {}, "excludeDebugFields": True})
+        return self.read(reply)
+
+    def transfer(self, admin: str, factory: str, transfer: dict):
+        """(context, disclosed contracts) for `TransferFactory_Transfer` of this transfer through this factory; the factory the registry names must be the token's."""
+        args = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
+        reply = self.ask(admin, "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": args, "excludeDebugFields": True})
+        if not isinstance(reply, dict) or reply.get("factoryId") != factory:
+            raise NoCantonSide("the token registry names another transfer factory than the token's")
+        return self.read(reply.get("choiceContext"))
+
+    def read(self, reply):
+        try:
+            if not isinstance(reply, dict):
+                raise ValueError("not a choice context")
+            context = context_values(reply.get("choiceContextData"))
+            disclosed = context_disclosed(reply.get("disclosedContracts", []))
+        except (ValueError, TypeError, RecursionError) as e:
+            raise NoCantonSide("the token registry gave an answer that is not a choice context") from e
+        return (context if context["values"] else None), disclosed
+
+    def ask(self, admin: str, path: str, payload: dict):
+        base = self.registries[admin]
+        key = (base, path, json.dumps(payload, sort_keys=True))
+        if key in self.seen:
+            return self.seen[key]
+        down = REGISTRY_DOWN.get(("choice", base))
+        if down and time.monotonic() < down[0]:
+            raise NoCantonSide(down[1])
+        limit = min(self.deadline, self.budget - self.spent)
+        if limit <= 0:
+            why = f"the token registry cannot be read: the block's {self.budget:g} s for it are used"
+            REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
+            raise NoCantonSide(why)
+        headers = {"content-type": "application/json"}
+        if self.tokens.get(admin):
+            headers["authorization"] = f"Bearer {self.tokens[admin]}"
+        started = time.monotonic()
+        try:
+            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers))
+        except _RegistryStatus as e:
+            raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e
+        except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
+            raise NoCantonSide("the token registry gave an answer that is not JSON") from e
+        except (OSError, http.client.HTTPException) as e:
+            why = f"the token registry cannot be read: {e}"
+            REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
+            raise NoCantonSide(why) from e
+        finally:
+            self.spent += time.monotonic() - started
+        return self.seen[key]
 
 
 class Reth:
@@ -1068,9 +1191,11 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
+        self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
+        self.leg_disclosed: dict = {}   # leg key -> the contracts its choice context names, which the block's final legs pick from for the Advance
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
@@ -1235,9 +1360,11 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         return allocation_in_use(r["allocation"], taken)
 
     request = first_fit(requests, problem, "")
+    leg_out = {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+    with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, request["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(request["allocation"])
-    return {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+    return leg_out
 
 
 def claim_leg(leg: LegEvent, canton: Canton, claimed: dict | None, claims: list) -> dict:
@@ -1281,10 +1408,14 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
         total += base_units(h["amount"])
     if total < needed:
         raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    leg_out = {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
+                                                 "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
+    transfer = {"sender": chain["gateway"], "receiver": leg.party, "amount": canton_amount(leg.amount), "instrumentId": token["instrumentId"],
+                "requestedAt": stamp(canton.now), "executeBefore": stamp(canton.now + timedelta(days=1)), "inputHoldingCids": inputs, "meta": {"values": {}}}
+    with_context(canton, leg_out, instrument[0], lambda c, admin: c.transfer(admin, token["factory"], transfer))
     if claimed is not None:
         claimed["instruments"].add(instrument)
-    return {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
-                                              "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
+    return leg_out
 
 
 def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
@@ -1323,9 +1454,12 @@ def terms_leg(leg: LegEvent, canton: Canton, claimed: dict | None, named: list) 
         return found or allocation_in_use(t["allocation"], taken)
 
     terms = first_fit(named, problem, "")
+    leg_out = {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+    admin = canton.allocations[terms["allocation"]]["transferLeg"]["instrumentId"]["admin"]
+    with_context(canton, leg_out, admin, lambda c, a: c.allocation(a, terms["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(terms["allocation"])
-    return {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+    return leg_out
 
 
 def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list) -> dict:
@@ -1371,12 +1505,15 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
         return allocation_in_use(t["allocation"], taken)
 
     trade = first_fit(trades, problem, "")
+    leg_out = {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+    token = next(g for g in canton.tokens if g["contractId"] == trade["gatewayToken"])
+    with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, trade["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(trade["allocation"])
     shown = disclosed_allocation(trade)
     if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
         canton.disclosed[trade["contractId"]] = shown
-    return {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+    return leg_out
 
 
 def venue_disclosed(legs: list, canton: Canton) -> list:
@@ -1386,7 +1523,31 @@ def venue_disclosed(legs: list, canton: Canton) -> list:
         shown = canton.disclosed.get(leg["value"]["tradeCid"]) if leg["tag"] == "TradeLeg" else None
         if shown:
             found[shown.get("contractId")] = shown
+        for named in canton.leg_disclosed.get(leg_key(leg), ()):   # what the registry's choice context for the leg names
+            found.setdefault(named["contractId"], named)
     return list(found.values())
+
+
+def leg_key(leg: dict) -> tuple:
+    """What tells a leg of a block from the others: its kind, and the contract (a withdrawal: the id) that it settles."""
+    value = leg["value"]
+    return leg["tag"], value.get({"DepositLeg": "request", "PaymentLeg": "terms", "TradeLeg": "tradeCid"}.get(leg["tag"], "id"))
+
+
+def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
+    """The leg gets the choice context that the registry of its instrument says its choice needs, when the builder is given that registry
+    (`--registry`); `ask(contexts, admin)` is what to ask it. The contracts the context names are kept for the Advance: one that another leg
+    of the block names too must be the same contract. A registry that has no entry to give leaves the field out (the empty context)."""
+    if canton.contexts is None or not canton.contexts.wants(admin):
+        return
+    context, shown = ask(canton.contexts, admin)
+    for named in shown:
+        for other in (o for held in canton.leg_disclosed.values() for o in held if o["contractId"] == named["contractId"]):
+            if other != named:
+                raise NoCantonSide("the token registry names a contract differently than for another leg of the block")
+    if context is not None:
+        leg["value"]["choiceContext"] = context
+    canton.leg_disclosed[leg_key(leg)] = shown
 
 
 def disclosed_allocation(trade: dict) -> "dict | None | bool":
@@ -1895,6 +2056,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     checked, staged = False, None   # with the pre-check on: whether this block was checked, and the prefix it cut the block back to (reth's tip already)
     reuse: dict = {}   # the files of the pre-check of the whole block, when it passed (the prover's input is made once)
     work = Path(cfg.work_dir) / f"block-{n}"
+    contexts = ChoiceContexts(cfg.registries, cfg.registry_tokens) if cfg.registries else None   # one for the block, like the twin registry's reader
     lock_parts = twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None   # one for the block: its answers and its time budget hold across rebuilds
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
@@ -1913,7 +2075,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits)
+                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -2504,6 +2666,23 @@ def check_package_id(value: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise BuilderError("bad arguments: --package-id must be a package id: 64 lowercase hex digits")
     return value
+
+
+def read_registry_tokens(items, registries: dict) -> dict:
+    """{admin: bearer token} from `ADMIN=FILE` items, each for an admin that has a registry; the token is never printed."""
+    found = {}
+    for item in items:
+        admin, _, path = item.strip().partition("=")
+        if admin not in registries:
+            raise BuilderError(f"a registry token for {admin}, which has no token registry (--registry)")
+        try:
+            token = Path(path).read_text().strip()
+        except OSError as e:
+            raise BuilderError(f"cannot read the registry token file {path}: {e}") from e
+        if not token or any(c in token for c in "\r\n\0"):
+            raise BuilderError(f"the registry token file {path} must hold one token")
+        found[admin] = token
+    return found
 
 
 def read_disclosed(path: str) -> list:
@@ -3778,6 +3957,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
     ap.add_argument("--twin-registry-url", metavar="URL", default=os.environ.get("CZE_TWIN_REGISTRY_URL", ""), help="the twin registry service (apps/twin/registry) that gives the parts of a lock's id, so that a payment into a registered vault gets its lock leg (also CZE_TWIN_REGISTRY_URL; empty: no lock leg is attached)")
+    ap.add_argument("--registry", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRIES", "").split(",") if x.strip()], metavar="ADMIN=URL",
+                    help="the token registry (the root of its CIP-0056 off-ledger API; for Canton Coin the validator's scan proxy) of the instruments of the party ADMIN (repeatable, also CZE_TOKEN_REGISTRIES, comma separated): a deposit, withdrawal, payment or trade leg of such an instrument gets the registry's choice context, and the contracts it names are disclosed with the Advance. An instrument with no registry here gets none")
+    ap.add_argument("--registry-token-file", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
+                    help="a file with the bearer token that the registry of ADMIN wants (repeatable, also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated); sent to that registry only")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -3868,6 +4051,8 @@ def main() -> int:
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         cfg.venues = tuple(dict.fromkeys(args.venue))
         cfg.twin_registry_url = args.twin_registry_url
+        cfg.registries = parse_registries(x.strip() for x in args.registry)
+        cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
