@@ -262,7 +262,7 @@ export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenLi
   address: addr(n), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", holderCount: 5, transferCount: 6, firstTransferBlock: 19,
   gatewayWrapped: false, metadataStatus: "read", creator: addr(0xa1), creationBlock: 19, createdAt: "2026-01-01T00:00:00.000Z", verified: false, ...over,
 });
-export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, canton: null, ...over });
+export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, canton: null, twin: null, ...over });
 /** What the gateway holds on Canton of a registered token's instrument: 1,000 whole units of 10 decimals. */
 export const cantonCustody = (over: Partial<CantonCustody> = {}): CantonCustody => ({
   instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "10000000000000", custodyDecimals: 10, holdings: 2, supply: "1000000000", supplyBlock: 21, ledgerOffset: 4242, readAt: "2026-10-25T10:00:00.000Z", ...over,

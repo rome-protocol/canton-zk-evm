@@ -414,7 +414,9 @@ export type TokenSort = "holders" | "transfers" | "newest";
  * totalSupply (null when it did not answer); both are read at block `supplyBlock` (the custody at the ledger offset `ledgerOffset` of that block's record), at `readAt`.
  */
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
-export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean; canton: CantonCustody | null }
+/** The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (locks less releases; null when the token has more legs than one read totals), `vaultBalance` what the vaults hold, both in the token's base units. */
+export interface TwinSupply { supply: string | null; vaultBalance: string; locks: number; releases: number; partial: boolean }
+export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;
 /**

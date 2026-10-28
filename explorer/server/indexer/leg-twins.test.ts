@@ -108,4 +108,25 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect((await chain.blockLegs(1, null, 10)).map((l) => [l.kind, l.canton?.role ?? null])).toEqual([["deposit", null], ["lock", "lock"]]);
     });
   });
+  it("gives a twin token its supply (locks less releases) next to what the vaults hold, bounded to the newest legs, and nothing for any other token", async () => {
+    await inDb(async (pool) => {
+      await setUp(pool, [
+        { txs: 1, extra: [pay(ID1, TOKEN, VAULT, 5n * 10n ** 18n), pay(ID4, SIX, VAULT, 2_500_000n)] },
+        { txs: 1, extra: [pay(ID2, TOKEN, ALICE, 3n * 10n ** 18n)], extraLogs: [released(VAULT, ID2, TOKEN, ALICE)] },
+        { txs: 1 },
+      ]);
+      const held = (t: string, h: string, v: bigint) => pool.query("insert into token_balances (token, holder, value, updated_block) values ($1, $2, $3, 2)", [Buffer.from(t.slice(2), "hex"), Buffer.from(h.slice(2), "hex"), v.toString()]);
+      await held(TOKEN, VAULT, 2n * 10n ** 18n);
+      await held(TOKEN, ALICE, 3n * 10n ** 18n);
+      const accounts = createAccountRest(pool);
+      // 5 locked, 3 released: the twin has 2 in issue, and the vault holds 2 (Alice's balance is not the vault's)
+      expect((await accounts.token(TOKEN))?.twin).toEqual({ supply: (2n * 10n ** 18n).toString(), vaultBalance: (2n * 10n ** 18n).toString(), locks: 1, releases: 1, partial: false });
+      expect((await accounts.token(SIX))?.twin).toEqual({ supply: "2500000", vaultBalance: "0", locks: 1, releases: 0, partial: false });
+      // a balance held by an address that is not a registered vault is not the vault's
+      await held(SIX, OTHER_VAULT, 1n);
+      expect((await accounts.token(SIX))?.twin?.vaultBalance).toBe("0");
+      await pool.query("delete from canton_registry where kind = 'vault'");
+      expect((await accounts.token(TOKEN))?.twin).toBeNull();
+    });
+  });
 });

@@ -111,7 +111,14 @@ export interface TokenItem {
  * null when the token did not answer at that block. `readAt` is when the read was made.
  */
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
-export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null }
+/**
+ * The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (the locks into a registered vault less the releases out of one, in the token's base units), `vaultBalance` what the
+ * registered vaults hold of the token now (the index's balances), `locks` and `releases` the legs counted. Read from at most `TWIN_WINDOW` of the token's newest payment legs: with more, `partial` is true and
+ * `supply` is not given (null), because a total of part of the legs is not the supply.
+ */
+export interface TwinSupply { supply: string | null; vaultBalance: string; locks: number; releases: number; partial: boolean }
+export const TWIN_WINDOW = 5000;
+export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; party: string | null }
 /** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
@@ -495,7 +502,25 @@ export function createAccountRest(pool: Pool) {
     if (!r) return undefined;
     const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, supply::text as supply, supply_block, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
     const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), supply: g.supply ?? null, supplyBlock: Number(g.supply_block), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
-    return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton };
+    return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton, twin: await twinSupply(a) };
+  }
+
+  /** The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): bounded to the token's newest `TWIN_WINDOW` payment legs, and one read of the vaults' balances. */
+  async function twinSupply(a: string): Promise<TwinSupply | null> {
+    const [held] = await query("select coalesce(sum(b.value), 0)::text as v from token_balances b join canton_registry r on r.kind = 'vault' and r.address = b.holder where b.token = $1", [bytes(a)]);
+    const legs = await query(
+      `select g.amount::numeric as amount, (rv.address is not null) as is_lock, (rl.one is not null) as is_release
+         from (select * from gateway_legs where token = $1 and kind = 3 order by block_number desc, leg_index desc limit $2) g ${TWIN_FROM}`,
+      [bytes(a), TWIN_WINDOW + 1],
+    );
+    const vaultBalance: string = held?.v ?? "0";
+    const partial = legs.length > TWIN_WINDOW, shown = partial ? legs.slice(0, TWIN_WINDOW) : legs;
+    let locked = 0n, out = 0n, locks = 0, releases = 0;
+    for (const l of shown) {
+      if (l.is_release) { out += BigInt(l.amount); releases++; } else if (l.is_lock) { locked += BigInt(l.amount); locks++; }
+    }
+    if (locks === 0 && releases === 0 && vaultBalance === "0") return null;
+    return { supply: partial ? null : (locked - out).toString(), vaultBalance, locks, releases, partial };
   }
 
   /** Who holds a token, most first, after the key (value, holder, id). A holder of several ids of an ERC-1155 is listed once for each. */
