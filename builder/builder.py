@@ -39,6 +39,7 @@ CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
 TERMS = "#canton-zk-evm:Zk.Chain:DvpTerms"
 TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
 CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
+REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
 NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
@@ -96,6 +97,7 @@ class Config:
     prover_input_dir: Path | None = None   # --prover-input-dir: a folder the provers' machines also see; the input is copied there and its path is given to the prover (default: the input's own path)
     pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
     stop: object = None               # the producer's stop event (threading.Event), set by produce(): a stop ends the wait that follows a prover's refusal
+    twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -122,7 +124,7 @@ class Config:
             engine_url=f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}",
             jwt_secret=jwt_secret,
             ledger_url=e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"),
-            traffic_url=e.get("CZE_TRAFFIC_URL", ""),
+            traffic_url=e.get("CZE_TRAFFIC_URL", ""), twin_registry_url=e.get("CZE_TWIN_REGISTRY_URL", ""),
             ledger_user=need("CZE_LEDGER_USER"), ledger_token=e.get("CZE_LEDGER_TOKEN", ""), ledger_token_file=e.get("CZE_LEDGER_TOKEN_FILE", ""),
             party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"),
             genesis=e.get("CZE_GENESIS", str(ROOT / "network" / "genesis.json")),
@@ -145,6 +147,31 @@ def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> obje
     request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **headers})
     with urllib.request.urlopen(request, timeout=timeout) as r:
         return json.load(r)
+
+
+def twin_registry_reader(base_url: str, timeout: float = 10):
+    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
+    or None when the service has none (HTTP 404). A service that cannot be reached, or answers anything else, leaves the lock's leg out with that
+    reason: the answers are asked once per id."""
+    seen: dict = {}
+
+    def read(lock_id: str):
+        if lock_id not in seen:
+            try:
+                with urllib.request.urlopen(f"{base_url.rstrip('/')}/twin/v1/lock-parts/{lock_id}", timeout=timeout) as r:
+                    body = json.load(r)
+                if not isinstance(body, dict) or not isinstance(body.get("receiver"), str) or not isinstance(body.get("ref"), str):
+                    raise ValueError("not {receiver, ref}")
+                seen[lock_id] = {"receiver": body["receiver"], "ref": body["ref"]}
+            except urllib.error.HTTPError as e:
+                e.close()
+                if e.code != 404:
+                    raise NoCantonSide(f"the twin registry service answered HTTP {e.code}") from e
+                seen[lock_id] = None
+            except (OSError, ValueError, http.client.HTTPException) as e:
+                raise NoCantonSide(f"the twin registry service cannot be read: {e}") from e
+        return seen[lock_id]
+    return read
 
 
 class Reth:
@@ -693,9 +720,9 @@ def decode_leg(log: dict) -> LegEvent:
         raise BuilderError(f"cannot read a Leg event of the gateway: {e}") from e
 
 
-def registered_gateways(chain: dict) -> list:
-    """The addresses (40 lowercase hex digits) of the Gateway entries of the chain's registry (`ZkChain.contracts`), in the registry's order. A
-    chain with no registry, or only vaults, has none."""
+def registered_of_kind(chain: dict, wanted: str) -> list:
+    """The addresses (40 lowercase hex digits) of the entries of one kind ("Gateway" or "Vault") in the chain's registry (`ZkChain.contracts`), in the
+    registry's order. A chain with no registry has none."""
     found = []
     for entry in chain.get("contracts") or []:
         try:
@@ -705,8 +732,28 @@ def registered_gateways(chain: dict) -> list:
                 raise ValueError(kind)
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             raise BuilderError(f"the chain record's registry holds an entry the builder cannot read: {entry!r}") from e
-        if kind == "Gateway":
+        if kind == wanted:
             found.append(address)
+    return found
+
+
+def registered_gateways(chain: dict) -> list:
+    """The addresses of the Gateway entries of the chain's registry. A chain with no registry, or only vaults, has none."""
+    return registered_of_kind(chain, "Gateway")
+
+
+def pinned_twins(chain: dict) -> dict:
+    """The twins the chain record pins (`ZkChain.twins`, from package 0.5.0): ERC-20 address -> (the pinned TwinRules contract id, the ERC-20's
+    decimals). A chain with no twins has none; an entry the builder cannot read is an error."""
+    found = {}
+    for entry in chain.get("twins") or []:
+        try:
+            token, rules, decimals = entry["twinToken"], entry["twinRules"], int(entry["twinDecimals"])
+            if not re.fullmatch(r"[0-9a-f]{40}", token) or not isinstance(rules, str) or not rules or not 0 <= decimals <= 36:
+                raise ValueError(token)
+        except (KeyError, TypeError, ValueError) as e:
+            raise BuilderError(f"the chain record pins a twin the builder cannot read: {entry!r}") from e
+        found[token] = (rules, decimals)
     return found
 
 
@@ -902,8 +949,9 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
+        self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
@@ -938,6 +986,15 @@ class Canton:
 
     @functools.cached_property
     def claims(self): return self.active_if_uploaded(CLAIM)
+
+    @functools.cached_property
+    def redeems(self): return self.active_if_uploaded(REDEEM)
+
+    @functools.cached_property
+    def vaults(self): return registered_of_kind(self.chain, "Vault")
+
+    @functools.cached_property
+    def twins(self): return pinned_twins(self.chain)
 
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
@@ -1078,6 +1135,9 @@ def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     trades = [t for t in canton.trades if t["payId"] == leg.id and names_chain(t, chain, "gateway")]
     if trades:
         return trade_leg(leg, canton, claimed, trades)
+    twin = twin_leg(leg, canton, claimed)
+    if twin is not None:
+        return twin
     raise problem or NoCantonSide("no terms of this chain for this payment id")
 
 
@@ -1175,6 +1235,86 @@ def disclosed_allocation(trade: dict) -> "dict | None | bool":
     return found if isinstance(found, dict) else False
 
 
+def twin_units(base: int, decimals: int) -> int | None:
+    """An ERC-20 amount in base units as the twin's amount, in units of 10^-10 (the twin has 10 decimals); None if that is not exact or is more
+    than a Daml Decimal holds (`Twin.Amount.fromBaseUnits`)."""
+    if decimals > 10:
+        step = 10 ** (decimals - 10)
+        units = base // step if base % step == 0 else None
+    else:
+        units = base * 10 ** (10 - decimals)
+    return units if units is not None and 0 < units < 10**27 else None
+
+
+def twin_base_units(units: int, decimals: int) -> int | None:
+    """The reverse (`Twin.Amount.toBaseUnits`): a twin amount in units of 10^-10 as ERC-20 base units; None if it is not a whole number of them."""
+    if decimals > 10:
+        return units * 10 ** (decimals - 10)
+    step = 10 ** (10 - decimals)
+    return units // step if units % step == 0 else None
+
+
+def lock_id_of(receiver: str, ref: str) -> str:
+    return hashlib.sha256(f"lock,{receiver},{ref}".encode()).hexdigest()
+
+
+def release_id_of(vault: str, ref: str) -> str:
+    return hashlib.sha256(f"vault-release,{vault},{ref}".encode()).hexdigest()
+
+
+def twin_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> "dict | None":
+    """The twin legs. A payment into a registered vault is a lock; a payment whose id is the release id of a redeem request of this chain (for a
+    registered vault) is a release. A payment that is neither returns None, so that the caller says what it always says."""
+    if leg.account in canton.vaults:
+        return lock_leg(leg, canton)
+    requests = [(q, v) for q in canton.redeems if names_chain(q, canton.chain, "gateway") for v in canton.vaults if release_id_of(v, q["ref"]) == leg.id]
+    return release_leg(leg, canton, claimed, requests) if requests else None
+
+
+def pinned_for(leg: LegEvent, canton: Canton) -> tuple:
+    if leg.token not in canton.twins:
+        raise NoCantonSide("the token's Canton twin is not pinned in the chain record")
+    return canton.twins[leg.token]
+
+
+def lock_leg(leg: LegEvent, canton: Canton) -> dict:
+    """A lock: the twin of the token is pinned, the amount converts exactly, and the registry service has announced the parts of the id."""
+    rules, decimals = pinned_for(leg, canton)
+    if twin_units(leg.amount, decimals) is None:
+        raise NoCantonSide("the lock's amount is not exact in the twin's 10 decimals")
+    if canton.lock_parts is None:
+        raise NoCantonSide("the builder has no twin registry service to read the lock's id parts from")
+    parts = canton.lock_parts(leg.id)
+    if parts is None:
+        raise NoCantonSide("the twin registry service has no parts for the lock's id")
+    receiver, ref = parts["receiver"], parts["ref"]
+    if not receiver or not ref or lock_id_of(receiver, ref) != leg.id:
+        raise NoCantonSide("the parts the twin registry service gave do not make the lock's id")
+    return {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
+
+
+def release_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: list) -> dict:
+    """A release: a redeem request of this chain with the payment's ref (its release id), token, recipient and amount; the token's twin is pinned."""
+    taken = None if claimed is None else claimed["redeems"]
+
+    def problem(found):
+        q, _ = found
+        if q["token"] != leg.token:
+            return "the redeem request is for another token"
+        if q["recipient"] != leg.account:
+            return "the redeem request names another recipient"
+        units = base_units(q["amount"])
+        if units is None or twin_base_units(units, pinned_for(leg, canton)[1]) != leg.amount:
+            return "the redeem request's amount is not the amount paid"
+        return "an earlier leg of this block releases the same request" if taken is not None and q["contractId"] in taken else None
+
+    pinned_for(leg, canton)
+    request, vault = first_fit(requests, problem, "")
+    if claimed is not None:
+        claimed["redeems"].add(request["contractId"])
+    return {"tag": "ReleaseLeg", "value": {"releaseRequest": request["contractId"], "releaseRules": canton.twins[leg.token][0], "releaseVault": vault}}
+
+
 def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     """(legs, missing). Each event's Canton side is found, in the order of the events; `missing` is the events with none, each with its reason.
     A leg's own faults are looked for first, and for a withdrawal that includes the withdrawal quota (`limits`, with the chain contract's tallies
@@ -1183,7 +1323,7 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     holdings, so a leg that is going to be left out never takes the place of another."""
     finders = {DEPOSIT: deposit_leg, WITHDRAWAL: withdrawal_leg, PAYMENT: payment_leg}
     state = quota_state(canton.chain, canton.now) if limits and any(e.kind == WITHDRAWAL for e in events) else None
-    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set()}):
+    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "redeems": set()}):
         legs, missing = [], []
         for event in events:
             try:
@@ -1534,7 +1674,8 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         # chain contract as Canton has it now, and the legs are left out for it with nothing waiting, so that the blocks go on being cut in a row.
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
-        canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id))
+        canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
+                        lock_parts=twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -3398,6 +3539,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
+    ap.add_argument("--twin-registry-url", metavar="URL", default=os.environ.get("CZE_TWIN_REGISTRY_URL", ""), help="the twin registry service (apps/twin/registry) that gives the parts of a lock's id, so that a payment into a registered vault gets its lock leg (also CZE_TWIN_REGISTRY_URL; empty: no lock leg is attached)")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -3486,6 +3628,7 @@ def main() -> int:
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         cfg.venues = tuple(dict.fromkeys(args.venue))
+        cfg.twin_registry_url = args.twin_registry_url
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:

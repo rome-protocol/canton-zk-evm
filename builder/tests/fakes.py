@@ -405,6 +405,7 @@ class FakeLedger:
         self.acceptances: list = []   # ... of the WithdrawalAcceptance contracts
         self.trades: list = []        # ... of the VenueTrade contracts (their allocation is executed by the trade's venue)
         self.claims: list = []        # ... of the FundedClaim contracts
+        self.redeems: list = []       # ... of the RedeemRequest contracts (a twin's release)
         self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
@@ -529,7 +530,7 @@ class FakeLedger:
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
-        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims)):
+        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems)):
             if template.endswith(":" + name):
                 return [entry(c, name, a) for c, a in found]
         return []
@@ -580,7 +581,7 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
-                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim")):
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":
