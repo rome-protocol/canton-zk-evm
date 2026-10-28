@@ -77,7 +77,7 @@ tests/fixtures.sh                # the recorded proof is consistent (needs no GP
 tests/network_static.sh          # reth only through launch.sh, the Canton config, the recorded smoke result
 tests/network_checks.sh          # the compiler pin check, the DAR's id, the stop on another programVK (no GPU)
 tests/canton_network.sh          # the pinned Canton, the real Daml package and one Advance (Linux x86-64, Java 21, Python 3; no GPU)
-gateway/build.sh --check         # the checked-in gateway code is what Gateway.sol compiles to (Docker)
+gateway/build.sh --check         # the checked-in gateway and vault code is what Gateway.sol and Vault.sol compile to (Docker)
 gateway/tests/run.sh             # the gateway on a real reth, started with peer discovery off (Docker, curl, jq, Python 3 with the packages in demo/requirements.txt)
 tests/guest-repro.sh             # the guest build runs in one fixed folder, so the source folder does not change the ELF (stand-ins for the ZisK tools; the same check on real ZisK passed on 2026-10-04, see guest/README.md)
 tests/demo_static.sh             # the demo's pins, tamper switch and genesis override, and its recorded results (no GPU)

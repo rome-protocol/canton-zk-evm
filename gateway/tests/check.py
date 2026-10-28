@@ -375,9 +375,13 @@ def run(state: Path) -> None:
            f"a caller cannot make the vault pay {label}: the leg has the vault's id, and that id stays unused")
         check_block(blk, [(PAYMENT, own, tka, cc, 1, "")], f"release with a ref shaped as {label}")
         ok(erc20(tka, VAULT) == before_bal - 1, f"the release with a ref shaped as {label} moved one wei out of the vault")
-    # the gateway cannot pull the vault's tokens for anyone else: pay takes from the caller
-    blk = c.block([c.tx("carol", GW, pay_to(fresh_v[5], tka, cc, 1))])
-    ok(statuses(blk) == [0] and erc20(tka, VAULT) == 2 * 10**18 - len(foreign), "a plain pay by someone else cannot take tokens that the vault holds")
+    # the gateway pays from the caller's own tokens and never from the vault's: carol approves the gateway and pays one wei
+    # of TKA, and it comes out of her balance; the vault's balance and its allowance to the gateway stay as they were
+    v_bal, v_allow, c_bal = erc20(tka, VAULT), allowance(tka, VAULT, GW), erc20(tka, cc)
+    blk = c.block([c.tx("carol", tka, calldata("approve(address,uint256)", [GW, 1])),
+                   c.tx("carol", GW, pay_to(fresh_v[5], tka, a, 1))])
+    ok(statuses(blk) == [1, 1] and erc20(tka, cc) == c_bal - 1 and erc20(tka, VAULT) == v_bal and allowance(tka, VAULT, GW) == v_allow,
+       "a plain pay by someone else is paid from their own tokens: the vault's balance and its allowance did not change")
 
     # --- the wrapped token is a plain ERC-20 between holders, and a block of plain transfers has no legs
     blk = c.block([c.tx("bob", wtkb, calldata("transfer(address,uint256)", [a, 10**10])),

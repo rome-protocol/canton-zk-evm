@@ -10,10 +10,10 @@ pragma solidity 0.8.28;
 //
 // Anyone may call `release`, but the vault, not the caller, makes the id of the payment: it is the SHA-256 of the text
 // `vault-release,<this vault's address, 40 lowercase hex digits>,<ref>`, as `venueTradeId` is the SHA-256 of `venue-trade,<venue>,<label>`.
-// Canton matches a payment by its id, token, payee and amount, and does not see who paid, so an id that only the vault can make
-// is what lets Canton tell a release from any other payment. The tag `vault-release` is not a party id, a `venue-trade` tag or a
-// lock tag, so no caller can make the vault pay an id that a `DvpTerms`, a venue trade or a lock waits for. The vault never pays
-// itself, so a release cannot read as a lock. The vault has no owner, no key, no upgrade, no storage and no way to be removed.
+// The vault pays only ids of this form, and no id of another domain (a `DvpTerms` payment id, a venue trade, a lock) has it: the tag
+// `vault-release` is not a party id, a `venue-trade` tag or a lock tag, so no caller can make the vault pay another domain's payment.
+// Anyone else who pays an id of this form pays from their own tokens, so the `Released` event is what shows that a payment came out
+// of the vault. The vault never pays itself, so a release cannot read as a lock. The vault has no owner, no key, no upgrade, no storage and no way to be removed.
 // The gateway is the one at GATEWAY_ADDRESS in PINS; gateway/build.sh --check fails if the address below is another.
 
 interface IGateway {

@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  # gateway/Gateway.bin-runtime is what the pinned solc makes of gateway/Gateway.sol.
+  # gateway/Gateway.bin-runtime and gateway/Vault.bin-runtime are what the pinned solc makes of gateway/Gateway.sol and gateway/Vault.sol.
   build:
     runs-on: ubuntu-latest
     steps:

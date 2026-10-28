@@ -14,7 +14,7 @@ Start with the quick checks, which need no GPU:
 tests/static.sh                  # pins, genesis and licence lines agree
 tests/refuses_missing_flag.sh    # the reth launch refuses a missing or wrong flag
 tests/fixtures.sh                # the recorded proof is consistent
-gateway/build.sh --check         # the checked-in gateway code is what Gateway.sol compiles to (Docker)
+gateway/build.sh --check         # the checked-in gateway and vault code is what Gateway.sol and Vault.sol compile to (Docker)
 ```
 
 Then run the tests of the part you changed. Each folder's README has the details.
@@ -29,7 +29,7 @@ Then run the tests of the part you changed. Each folder's README has the details
 | `explorer/` | `cd explorer && npm ci && npm run typecheck && npm test` |
 | `network/`, `demo/` | the scripts named in the README; the demo rehearsal runs without a GPU |
 
-If you change `gateway/Gateway.sol` or `demo/TKA.sol`, rebuild the checked-in bytecode with `gateway/build.sh` or `demo/build-token.sh` and commit the result. CI runs both with `--check`.
+If you change `gateway/Gateway.sol`, `gateway/Vault.sol` or `demo/TKA.sol`, rebuild the checked-in bytecode with `gateway/build.sh` or `demo/build-token.sh` and commit the result. CI runs both with `--check`.
 
 The workflows in `.github/workflows/` run these same checks. A pull request should leave them green.
 
