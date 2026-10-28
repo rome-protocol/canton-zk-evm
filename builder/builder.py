@@ -170,6 +170,59 @@ class _RegistryStatus(Exception):
     """The registry answered with this HTTP status instead of 200."""
 
 
+def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: float = 10, max_body: int = REGISTRY_MAX_BODY, body: bytes | None = None,
+                  headers: dict | None = None) -> bytes:
+    """One request to a service that is trusted for nothing: bounded as a whole by `limit` seconds, by a timer (see twin_registry_reader), its answer
+    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body."""
+    url = urllib.parse.urlsplit(base_url)
+    connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
+    out: dict = {}
+    over = threading.Event()
+
+    def run():
+        r = None
+        try:
+            connection.connect()
+            if over.is_set():
+                return
+            connection.request(method, f"{url.path.rstrip('/')}{path}", body=body, headers={"accept": "application/json", **(headers or {})})
+            r = connection.getresponse()
+            if r.status != 200:
+                raise _RegistryStatus(r.status)
+            chunks, size = [], 0
+            while True:
+                chunk = r.read1(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_body:
+                    raise ValueError("the answer is too long")
+                chunks.append(chunk)
+            out["body"] = b"".join(chunks)
+        except BaseException as e:   # handed to the caller's thread
+            out["error"] = e
+        finally:   # the response too: a stored error holds this frame, and the frame the response's file, which would keep the socket open
+            if r is not None:
+                r.close()
+            connection.close()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(limit)
+    if worker.is_alive():   # still connecting, or waiting for a byte: close the socket under it, which ends its read
+        over.set()
+        sock = connection.sock
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
+        raise TimeoutError(f"no answer within {limit:g} s")
+    if "error" in out:
+        raise out["error"]
+    return out["body"]
+
+
 def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
     """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
     or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
@@ -183,55 +236,9 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
     seen: dict = {}
     spent = [0.0]
     budget = deadline if budget is None else budget
-    url = urllib.parse.urlsplit(base_url)
 
     def fetch(lock_id: str, limit: float) -> bytes:
-        connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
-        out: dict = {}
-        over = threading.Event()
-
-        def run():
-            r = None
-            try:
-                connection.connect()
-                if over.is_set():
-                    return
-                connection.request("GET", f"{url.path.rstrip('/')}/twin/v1/lock-parts/{lock_id}", headers={"accept": "application/json"})
-                r = connection.getresponse()
-                if r.status != 200:
-                    raise _RegistryStatus(r.status)
-                chunks, size = [], 0
-                while True:
-                    chunk = r.read1(8192)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > REGISTRY_MAX_BODY:
-                        raise ValueError("the answer is too long")
-                    chunks.append(chunk)
-                out["body"] = b"".join(chunks)
-            except BaseException as e:   # handed to the caller's thread
-                out["error"] = e
-            finally:   # the response too: a stored error holds this frame, and the frame the response's file, which would keep the socket open
-                if r is not None:
-                    r.close()
-                connection.close()
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        worker.join(limit)
-        if worker.is_alive():   # still connecting, or waiting for a byte: close the socket under it, which ends its read
-            over.set()
-            sock = connection.sock
-            if sock is not None:
-                with contextlib.suppress(OSError):
-                    sock.shutdown(socket.SHUT_RDWR)
-                with contextlib.suppress(OSError):
-                    sock.close()
-            raise TimeoutError(f"no answer within {limit:g} s")
-        if "error" in out:
-            raise out["error"]
-        return out["body"]
+        return bounded_fetch(base_url, "GET", f"/twin/v1/lock-parts/{lock_id}", limit, timeout)
 
     def parse(raw: bytes):
         body = json.loads(raw)
