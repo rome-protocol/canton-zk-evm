@@ -162,7 +162,9 @@ block_under() {
 deposit() {
   local made id before new=""
   before=$(probe DepositRequest | jq -c '.contracts | keys')
-  made=$(canton deposit "$1" "$U_ADDR" 10); id=$(jq -r .depositId <<<"$made")
+  # A request of 0.2.0 has no label (a later one carries the label its id is derived from), so the old package's request is made without it.
+  if [ "$2" = "$OLD" ]; then made=$(CZE_DEPOSIT_WITHOUT_LABEL=1 canton deposit "$1" "$U_ADDR" 10); else made=$(canton deposit "$1" "$U_ADDR" 10); fi
+  id=$(jq -r .depositId <<<"$made")
   evm claim u "$id" "$WTKB" 10 | jq -r .tx > /dev/null
   for _ in $(seq 1 30); do   # the request reaches the operator's participant a moment after the depositor's commit
     new=$(probe DepositRequest | jq -c --argjson b "$before" '.contracts | with_entries(select(.key as $k | $b | index($k) | not)) | [.[]]')

@@ -42,6 +42,7 @@ data F = F with
   terms : ContractId DvpTerms
   dvp1, dvp2 : Text
   deposit : ContractId DepositRequest
+  deposit1 : Text
   acceptance : ContractId WithdrawalAcceptance
 
 -- The EVM side: the gateway's address, the EVM token that wraps TKB, the payment token, and some accounts.
@@ -57,8 +58,9 @@ burnerAddr = mconcat (replicate 20 "55")
 idOf : Text -> Text
 idOf b = mconcat (replicate 32 b)
 
-deposit1, withdrawalId : Text
-deposit1 = idOf "d1"
+-- The label of the fixture's deposit; its id is `depositIdOf d depositLabel1`.
+depositLabel1, withdrawalId : Text
+depositLabel1 = "d1"
 withdrawalId = idOf "c1"
 
 -- The labels of the two payments. Their ids are `paymentId u v label`, so they belong to the pair that signed them.
@@ -96,7 +98,8 @@ fixtureWith naming = do
   terms <- makeTerms operator confirmer builder reg u v termsOperator termsConfirmer label1
   let dvp1 = paymentId u v label1
   let dvp2 = paymentId u v label2
-  deposit <- makeDeposit operator confirmer gateway builder 770101 reg d gateway operator "TKB" deposit1 recipientAddr
+  let deposit1 = depositIdOf d depositLabel1
+  deposit <- makeDeposit operator confirmer gateway builder 770101 reg d gateway operator "TKB" depositLabel1 recipientAddr
   acceptance <- submit u $ createCmd WithdrawalAcceptance with
     party = u; chainId = 770101; operator; confirmer; gateway; builder
   pure F with ..
@@ -142,11 +145,13 @@ makeTerms operator confirmer builder reg u v exec conf label = do
     operator = exec; confirmer = conf
     chainId = 770101; dvpId = id; token = tokenAddr; payee = uAddr; amount = tenTokens; ..
 
--- `depositor` allocates 10 of `inst` to `receiver` (executor `exec`) and signs a request to deposit them for `recipient`.
+-- `depositor` allocates 10 of `inst` to `receiver` (executor `exec`) and signs a request to deposit them for `recipient`, with the id
+-- derived from the depositor and `label`.
 makeDeposit : Party -> Party -> Party -> Party -> Int -> Reg -> Party -> Party -> Party -> Text -> Text -> Text -> Script (ContractId DepositRequest)
-makeDeposit operator confirmer gateway builder chainId reg depositor receiver exec inst id recipient = do
+makeDeposit operator confirmer gateway builder chainId reg depositor receiver exec inst label recipient = do
+  let id = depositIdOf depositor label
   allocation <- allocate reg depositor receiver exec inst 10.0 id
-  submit depositor $ createCmd DepositRequest with depositId = id; ..
+  submit depositor $ createCmd DepositRequest with depositId = id; label = Some label; ..
 
 -- The builder's submission: it sees the contracts of the legs as the parties' participants hand them over.
 asBuilder : F -> SubmitOptions
@@ -344,7 +349,7 @@ testBlocksChainOn = do
 testADepositSettles : Script ()
 testADepositSettles = do
   f <- fixture
-  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [depositLine deposit1] [depositLeg f]
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [depositLine f.deposit1] [depositLeg f]
   holds f.gateway "TKB" >>= \xs -> xs === [10.0]
   None <- queryContractId f.d f.deposit
   [(_, c)] <- query @ZkChain f.operator
@@ -387,7 +392,7 @@ testThreeLegsInOrderSettle : Script ()
 testThreeLegsInOrderSettle = do
   f <- fixture
   holding <- custody f
-  let recorded = [depositLine deposit1, paymentLine f.dvp1, withdrawalLine withdrawalId burnerAddr "4.0" f.u]
+  let recorded = [depositLine f.deposit1, paymentLine f.dvp1, withdrawalLine withdrawalId burnerAddr "4.0" f.u]
   (_, _) <- submit (asBuilder f) $ advance f.chain "01" recorded [depositLeg f, paymentLeg f, withdrawalLeg f holding]
   holds f.v "TKB" >>= \xs -> xs === [10.0]
   holds f.u "TKB" >>= \xs -> xs === [4.0]
@@ -397,21 +402,21 @@ testThreeLegsInOrderSettle = do
 testTwoLegsSwappedAreRefused : Script ()
 testTwoLegsSwappedAreRefused = do
   f <- fixture
-  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1, depositLine deposit1] [depositLeg f, paymentLeg f]
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1, depositLine f.deposit1] [depositLeg f, paymentLeg f]
 
 -- A leg the block recorded is missing from the attached ones.
 testAMissingLegIsRefused : Script ()
 testAMissingLegIsRefused = do
   f <- fixture
   refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1] []
-  refused notRecorded f $ advance f.chain "01" [depositLine deposit1, paymentLine f.dvp1] [paymentLeg f]
+  refused notRecorded f $ advance f.chain "01" [depositLine f.deposit1, paymentLine f.dvp1] [paymentLeg f]
 
 -- Terms attached to a block that recorded no payment for them.
 testAnExtraLegIsRefused : Script ()
 testAnExtraLegIsRefused = do
   f <- fixture
   refused notRecorded f $ advance f.chain "01" [] [paymentLeg f]
-  refused notRecorded f $ advance f.chain "01" [depositLine deposit1] [depositLeg f, paymentLeg f]
+  refused notRecorded f $ advance f.chain "01" [depositLine f.deposit1] [depositLeg f, paymentLeg f]
 
 -- Any field of a recorded leg that differs from the attached contract's: id, token, account, amount.
 testALegWithAnotherFieldIsRefused : Script ()
@@ -421,8 +426,8 @@ testALegWithAnotherFieldIsRefused = do
   refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 wTkb uAddr tenTokens ""] [paymentLeg f]   -- another token
   refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr burnerAddr tenTokens ""] [paymentLeg f]   -- another payee
   refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr uAddr fiveTokens ""] [paymentLeg f]       -- another amount
-  refused notRecorded f $ advance f.chain "01" [line "deposit" deposit1 wTkb burnerAddr "10.0" ""] [depositLeg f]      -- another recipient
-  refused notRecorded f $ advance f.chain "01" [line "deposit" deposit1 wTkb recipientAddr "9.0" ""] [depositLeg f]    -- another amount
+  refused notRecorded f $ advance f.chain "01" [line "deposit" f.deposit1 wTkb burnerAddr "10.0" ""] [depositLeg f]      -- another recipient
+  refused notRecorded f $ advance f.chain "01" [line "deposit" f.deposit1 wTkb recipientAddr "9.0" ""] [depositLeg f]    -- another amount
   refused notRecorded f $ advance f.chain "01" [line "deposit" (idOf "d2") wTkb recipientAddr "10.0" ""] [depositLeg f] -- another deposit id
   refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr uAddr tenTokens ""] [depositLeg f]        -- another kind
 
@@ -602,33 +607,33 @@ testRefusesContractsOfAnotherChain = do
     chainId = 2; label = label1; dvpId = f.dvp1; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation = old.allocation
   refused "is for another chain" f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = other]
   -- a deposit request for another chain, and one that names another gateway party (the builder) than the chain's
-  d2 <- makeDeposit f.operator f.confirmer f.gateway f.builder 2 f.reg f.d f.gateway f.operator "TKB" deposit1 recipientAddr
-  refused "is for another chain" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = d2; token = f.token]
-  d3 <- makeDeposit f.operator f.confirmer f.builder f.builder 770101 f.reg f.d f.builder f.operator "TKB" deposit1 recipientAddr
-  refused "names another gateway" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = d3; token = f.token]
+  d2 <- makeDeposit f.operator f.confirmer f.gateway f.builder 2 f.reg f.d f.gateway f.operator "TKB" depositLabel1 recipientAddr
+  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d2; token = f.token]
+  d3 <- makeDeposit f.operator f.confirmer f.builder f.builder 770101 f.reg f.d f.builder f.operator "TKB" depositLabel1 recipientAddr
+  refused "names another gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d3; token = f.token]
   -- an acceptance for another chain, and a token registered for another chain
   a2 <- submit f.u $ createCmd WithdrawalAcceptance with
     party = f.u; chainId = 2; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder
   holding <- custody f
   refused "is for another chain" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [(withdrawalLeg f holding) with acceptance = a2]
   t2 <- makeToken f.operator f.confirmer f.gateway f.builder 2 f.reg wTkb
-  refused "is for another chain" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = f.deposit; token = t2]
+  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = f.deposit; token = t2]
 
 -- A deposit of another instrument than the one the token wraps.
 testRefusesADepositOfAnotherInstrument : Script ()
 testRefusesADepositOfAnotherInstrument = do
   f <- fixture
-  other <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.operator "TKC" deposit1 recipientAddr
-  refused "of another instrument" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = other; token = f.token]
+  other <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.operator "TKC" depositLabel1 recipientAddr
+  refused "of another instrument" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = other; token = f.token]
 
 -- A deposit that is not an allocation to the gateway, with the operator as executor: another receiver, another executor.
 testRefusesADepositNotToTheGateway : Script ()
 testRefusesADepositNotToTheGateway = do
   f <- fixture
-  toV <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.v f.operator "TKB" deposit1 recipientAddr
-  refused "not from the depositor to the gateway" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = toV; token = f.token]
-  byBuilder <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.builder "TKB" deposit1 recipientAddr
-  refused "executor is not the operator" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = byBuilder; token = f.token]
+  toV <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.v f.operator "TKB" depositLabel1 recipientAddr
+  refused "not from the depositor to the gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = toV; token = f.token]
+  byBuilder <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.builder "TKB" depositLabel1 recipientAddr
+  refused "executor is not the operator" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = byBuilder; token = f.token]
 
 -- A token whose factory belongs to another registry than the one its instrument names: the factory refuses, because the
 -- withdrawal names the instrument's admin as the one it expects. With the token's own factory the same block settles.
@@ -711,11 +716,37 @@ testADepositRequestInTheWrongFormIsRefused = do
   Some old <- queryContractId f.d f.deposit
   let request = DepositRequest with
         operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
-        depositor = f.d; depositId = deposit1; recipient = recipientAddr; allocation = old.allocation
+        depositor = f.d; depositId = f.deposit1; recipient = recipientAddr; allocation = old.allocation; label = Some depositLabel1
   forA_ [ request with depositId = "d1"
         , request with recipient = "44"
         , request with recipient = T.asciiToUpper gatewayAddr ] $ \bad ->
     submitMustFail f.d $ createCmd bad
+
+-- A deposit's id is derived from its depositor and a label that the depositor chooses (`depositIdOf`), and the request carries the label.
+-- The derived id settles (`testADepositSettles`). A request whose id is another, or has no label, or has another label, is refused when it is made, and no other party can make a request
+-- with an id that is derived from someone else's party id: a claim id cannot be taken by another depositor.
+testADepositIdIsDerivedFromTheDepositorAndTheLabel : Script ()
+testADepositIdIsDerivedFromTheDepositorAndTheLabel = do
+  f <- fixture
+  Some old <- queryContractId f.d f.deposit
+  old.depositId === depositIdOf f.d depositLabel1
+  old.label === Some depositLabel1
+  let request = DepositRequest with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+        depositor = f.d; depositId = f.deposit1; recipient = recipientAddr; allocation = old.allocation; label = Some depositLabel1
+  -- another id, no label, another label
+  forA_ [ request with depositId = idOf "d1"
+        , request with label = None
+        , request with label = Some "another" ] $ \bad ->
+    submitMustFail f.d $ createCmd bad
+  -- the id derived for another depositor: the squatter v makes a request with d's id, under its own party or under d's
+  submitMustFail f.v $ createCmd request with depositor = f.v
+  submitMustFail f.v $ createCmd request with depositor = f.v; label = Some "another"
+  submitMustFail f.v $ createCmd request
+  -- the ids of two labels, and of two depositors with one label, differ
+  assertMsg "two labels of one depositor make one id" (depositIdOf f.d "a" /= depositIdOf f.d "b")
+  assertMsg "two depositors with one label make one id" (depositIdOf f.d "a" /= depositIdOf f.v "a")
+  assertMsg "the id is not in the form of a hex digest" (T.length (depositIdOf f.d "a") == 64)
 
 -- The gas cap: the operator proposes, the confirmer accepts, and the chain's other fields stay as they were.
 
@@ -1299,14 +1330,14 @@ testAPausedChainRefusesEveryLegButCarriesOn = do
   chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
   Some c <- queryContractId f.operator chain
   c.pausedUntil === Some (addRelTime now (days 3))
-  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance chain "01" [depositLine f.deposit1] [depositLeg f]
   refused paused f $ advance chain "01" [paymentLine f.dvp1] [paymentLeg f]
   refused paused f $ advance chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [withdrawalLeg f holding]
   -- a block of no legs is still committed
   (c1, _) <- submit (asBuilder f) $ advance chain "01" [] []
   Some c1' <- queryContractId f.operator c1
   (c1'.headNumber, c1'.pausedUntil) === (1, c.pausedUntil)
-  mustRefuse paused f $ advance c1 "11" [depositLine deposit1] [depositLeg f]
+  mustRefuse paused f $ advance c1 "11" [depositLine f.deposit1] [depositLeg f]
 
 testAPauseEndsOnItsOwn : Script ()
 testAPauseEndsOnItsOwn = do
@@ -1315,9 +1346,9 @@ testAPauseEndsOnItsOwn = do
   short <- setLimits f f.chain None None (Some (secs 1000))
   chain <- submit f.confirmer $ exerciseCmd short PauseLegs
   passTime (secs 999)
-  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance chain "01" [depositLine f.deposit1] [depositLeg f]
   passTime (secs 1)
-  (_, _) <- submit (asBuilder f) $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  (_, _) <- submit (asBuilder f) $ advance chain "01" [depositLine f.deposit1] [depositLeg f]
   holds f.gateway "TKB" >>= \xs -> xs === [10.0]
 
 testAPauseCanBeLiftedEarlyByTheConfirmer : Script ()
@@ -1331,7 +1362,7 @@ testAPauseCanBeLiftedEarlyByTheConfirmer = do
   c.pausedUntil === None
   -- nothing to lift when nothing is paused
   submitMustFail f.confirmer $ exerciseCmd open UnpauseLegs
-  (_, _) <- submit (asBuilder f) $ advance open "01" [depositLine deposit1] [depositLeg f]
+  (_, _) <- submit (asBuilder f) $ advance open "01" [depositLine f.deposit1] [depositLeg f]
   holds f.gateway "TKB" >>= \xs -> xs === [10.0]
 
 testOnlyTheConfirmerPausesAlone : Script ()
@@ -1415,9 +1446,9 @@ testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum = do
   renewed <- renew f chain (secs 1000)
   passTime (secs 600)
   -- the first pause would have ended 100 s ago
-  refused paused f $ advance renewed "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance renewed "01" [depositLine f.deposit1] [depositLeg f]
   passTime (secs 400)
-  (_, _) <- submit (asBuilder f) $ advance renewed "01" [depositLine deposit1] [depositLeg f]
+  (_, _) <- submit (asBuilder f) $ advance renewed "01" [depositLine f.deposit1] [depositLeg f]
   pure ()
 
 testARenewalOverTheMaximumIsRefused : Script ()
@@ -1446,7 +1477,7 @@ testTheTwoMayPauseAChainThatIsNotPaused = do
   chain <- renew f f.chain (days 1)
   Some c <- queryContractId f.operator chain
   c.pausedUntil === Some (addRelTime now (days 1))
-  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance chain "01" [depositLine f.deposit1] [depositLeg f]
 
 testAPauseRenewalNeedsTheCurrentContract : Script ()
 testAPauseRenewalNeedsTheCurrentContract = do
@@ -1463,9 +1494,9 @@ testThePauseMaximumIsAChainSetting = do
   c.pauseMax === Some (secs 100)
   paused1 <- submit f.confirmer $ exerciseCmd chain PauseLegs
   passTime (secs 99)
-  refused paused f $ advance paused1 "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance paused1 "01" [depositLine f.deposit1] [depositLeg f]
   passTime (secs 1)
-  (next, _) <- submit (asBuilder f) $ advance paused1 "01" [depositLine deposit1] [depositLeg f]
+  (next, _) <- submit (asBuilder f) $ advance paused1 "01" [depositLine f.deposit1] [depositLeg f]
   -- and a renewal over the setting is refused
   p <- submit f.operator $ exerciseCmd next ProposeRenewPause with forHowLong = secs 101
   submitMustFail f.confirmer $ exerciseCmd p AcceptRenewPause with chain = next

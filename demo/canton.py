@@ -11,7 +11,7 @@
   canton.py accept <u|v>               that party signs a standing acceptance of withdrawals from the gateway
   canton.py deposit <label> <address> <amount>
                                        U allocates <amount> TKB to the gateway (executor: the operator) and signs a deposit request for the EVM
-                                       address <address>, with a new deposit id. Prints the id: the claim on the EVM must carry it
+                                       address <address>, with the deposit id derived from U and <label>. Prints the id: the claim on the EVM must carry it
   canton.py dvp <label> <token> <payee> <amount>
                                        U allocates 10 TKB to V (executor: the operator, as the DvP's one leg U to V); then U and V sign
                                        DvpTerms: "if the gateway records a payment of <amount> TKA (a whole number) of <token> to <payee> with
@@ -343,6 +343,12 @@ def payment_id(u: str, v: str, label: str) -> str:
     return hashlib.sha256(f"{u},{v},{label}".encode("utf-8")).hexdigest()
 
 
+def deposit_id_of(depositor: str, label: str) -> str:
+    """The EVM claim id of a deposit: the SHA-256, in lowercase hex, of the UTF-8 text "deposit,<depositor party id>,<label>". It is what
+    Daml's `depositIdOf` makes, and what the `DepositRequest`'s `ensure` demands of `depositId` and `label`."""
+    return hashlib.sha256(f"deposit,{depositor},{label}".encode("utf-8")).hexdigest()
+
+
 def evm_address(value: str) -> str:
     """An EVM address as the Daml templates write it: 40 lowercase hex digits, no 0x."""
     if not ADDRESS.fullmatch(value):
@@ -466,17 +472,22 @@ def accept(net: Network, who: str) -> dict:
 
 
 def deposit(net: Network, label: str, recipient: str, amount: str) -> dict:
-    """U allocates `amount` TKB to the gateway and signs a request to deposit it for the EVM address `recipient`, with a new deposit id."""
+    """U allocates `amount` TKB to the gateway and signs a request to deposit it for the EVM address `recipient`. The request carries `label`, and its
+    deposit id is the one derived from U and the label (`deposit_id_of`). A chain on package 0.4.0 or earlier has no label in its request:
+    CZE_DEPOSIT_WITHOUT_LABEL=1 makes the request of that package, with a random id (tests/demo_package_upgrade.sh)."""
     read_label(label)
     if not CANTON_AMOUNT.fullmatch(amount) or float(amount) == 0:
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
     address = evm_address(recipient)
     chain = chain_record(net)
     allocation = allocate(net, label, chain["gateway"], amount if "." in amount else amount + ".0")
-    deposit_id = secrets.token_hex(32)
-    net.submit("users", ["u"], {"CreateCommand": {"templateId": DEPOSIT_REQUEST, "createArguments": {
-        "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"], "chainId": chain["chainId"],
-        "depositor": net.party("u"), "depositId": deposit_id, "recipient": address, "allocation": allocation["contractId"]}}})
+    unlabelled = os.environ.get("CZE_DEPOSIT_WITHOUT_LABEL") == "1"
+    deposit_id = secrets.token_hex(32) if unlabelled else deposit_id_of(net.party("u"), label)
+    arguments = {"operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"], "chainId": chain["chainId"],
+                 "depositor": net.party("u"), "depositId": deposit_id, "recipient": address, "allocation": allocation["contractId"]}
+    if not unlabelled:
+        arguments["label"] = label
+    net.submit("users", ["u"], {"CreateCommand": {"templateId": DEPOSIT_REQUEST, "createArguments": arguments}})
     [request] = net.wait_for("the deposit request", lambda: [e for e in net.template("operator", "operator", DEPOSIT_REQUEST) if e["createArgument"]["depositId"] == deposit_id])
     return {"label": label, "depositId": deposit_id, "recipient": "0x" + address, "allocation": allocation["contractId"], "request": request["contractId"]}
 
