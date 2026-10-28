@@ -14,7 +14,7 @@ not known whether it committed ("committed": null; reth is left where it is: an 
 README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -149,27 +149,69 @@ def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> obje
         return json.load(r)
 
 
-def twin_registry_reader(base_url: str, timeout: float = 10):
+PARTY_TEXT = re.compile(r"[A-Za-z0-9_\-]+::1220[0-9a-f]{64}")
+
+
+def canton_party_text(text) -> bool:
+    """Whether `text` fits Daml's party grammar as the twin lock's receiver: at most 255 characters, `name::1220` and 64 lowercase hex digits,
+    the name in [A-Za-z0-9_-] (a name that Daml would refuse makes Canton refuse the whole Advance)."""
+    return isinstance(text, str) and len(text) <= 255 and PARTY_TEXT.fullmatch(text) is not None
+
+
+REGISTRY_MAX_BODY = 64 * 1024   # the most the builder reads of the registry's answer
+REGISTRY_MAX_FIELD = 256        # the most bytes of a receiver or a ref (the registry's own limit)
+REGISTRY_BACKOFF = 30.0         # seconds a registry that could not be reached is not asked again, so that a hanging one costs one wait, not one per lock
+REGISTRY_DOWN: dict = {}        # registry URL -> (time.monotonic() until which it is not asked, why)
+
+
+def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF):
     """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
-    or None when the service has none (HTTP 404). A service that cannot be reached, or answers anything else, leaves the lock's leg out with that
-    reason: the answers are asked once per id."""
+    or None when the service has none (HTTP 404). The service is trusted for nothing: the answer is read to at most REGISTRY_MAX_BODY bytes and
+    within `deadline` seconds in all, and its receiver must be a party id and its ref text of at most REGISTRY_MAX_FIELD bytes. A service that cannot
+    be reached, is too slow or answers anything else leaves the lock's leg out with that reason; one that cannot be reached or is too slow is not asked
+    again for `backoff` seconds (REGISTRY_DOWN). The answers are asked once per id."""
     seen: dict = {}
 
+    def fetch(lock_id: str):
+        end = time.monotonic() + deadline
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/twin/v1/lock-parts/{lock_id}", timeout=min(timeout, deadline)) as r:
+            chunks, size = [], 0
+            while True:
+                if time.monotonic() > end:
+                    raise TimeoutError(f"no answer within {deadline:g} s")
+                chunk = r.read1(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > REGISTRY_MAX_BODY:
+                    raise ValueError("the answer is too long")
+                chunks.append(chunk)
+        body = json.loads(b"".join(chunks))
+        if not isinstance(body, dict) or not canton_party_text(body.get("receiver")) or not isinstance(body.get("ref"), str):
+            raise ValueError("not {receiver, ref}")
+        if not 0 < len(body["ref"].encode("utf-8")) <= REGISTRY_MAX_FIELD:   # a lone surrogate cannot be encoded: a ValueError
+            raise ValueError("the ref is empty or too long")
+        return {"receiver": body["receiver"], "ref": body["ref"]}
+
     def read(lock_id: str):
-        if lock_id not in seen:
-            try:
-                with urllib.request.urlopen(f"{base_url.rstrip('/')}/twin/v1/lock-parts/{lock_id}", timeout=timeout) as r:
-                    body = json.load(r)
-                if not isinstance(body, dict) or not isinstance(body.get("receiver"), str) or not isinstance(body.get("ref"), str):
-                    raise ValueError("not {receiver, ref}")
-                seen[lock_id] = {"receiver": body["receiver"], "ref": body["ref"]}
-            except urllib.error.HTTPError as e:
-                e.close()
-                if e.code != 404:
-                    raise NoCantonSide(f"the twin registry service answered HTTP {e.code}") from e
-                seen[lock_id] = None
-            except (OSError, ValueError, http.client.HTTPException) as e:
-                raise NoCantonSide(f"the twin registry service cannot be read: {e}") from e
+        if lock_id in seen:
+            return seen[lock_id]
+        down = REGISTRY_DOWN.get(base_url)
+        if down and time.monotonic() < down[0]:
+            raise NoCantonSide(down[1])
+        try:
+            seen[lock_id] = fetch(lock_id)
+        except urllib.error.HTTPError as e:
+            e.close()
+            if e.code != 404:
+                raise NoCantonSide(f"the twin registry service answered HTTP {e.code}") from e
+            seen[lock_id] = None
+        except ValueError as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
+            raise NoCantonSide("the twin registry service gave an answer that is not the parts of a lock's id") from e
+        except (OSError, http.client.HTTPException) as e:
+            why = f"the twin registry service cannot be read: {e}"
+            REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
+            raise NoCantonSide(why) from e
         return seen[lock_id]
     return read
 
@@ -613,6 +655,21 @@ class Ledger:
         """The token standard's holdings that the builder can see: each one's contract id and view (owner, instrument, amount, lock)."""
         return [{"contractId": cid, **view} for cid, view in self.interface_views(HOLDING) if view]
 
+    def party_known(self, party: str) -> bool:
+        """Whether the participant knows the party (`GET /v2/parties/<party>`): a party it does not know cannot be a stakeholder of a contract in the
+        Advance. An error other than "no such party" is raised."""
+        request = urllib.request.Request(f"{self.cfg.ledger_url}/v2/parties/{urllib.parse.quote(party, safe='')}", headers=self.auth)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as r:
+                body = json.load(r)
+        except urllib.error.HTTPError as e:
+            e.close()
+            if e.code == 404:
+                return False
+            raise
+        details = body.get("partyDetails") if isinstance(body, dict) else None
+        return isinstance(details, list) and any(isinstance(d, dict) and d.get("party") == party for d in details)
+
     def head(self) -> dict:
         # Parties given with --read-as may let the builder see other builders' chains; only the ones it builds count.
         found = [c for c in self.active(CHAIN) if c.get("builder") == self.cfg.party]
@@ -953,6 +1010,7 @@ class Canton:
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
+        self.parties: dict = {}   # party -> whether the participant knows it (a lock's receiver)
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -998,6 +1056,12 @@ class Canton:
 
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
+
+    def party_known(self, party: str) -> bool:
+        """Whether the participant knows the party; asked once a block."""
+        if party not in self.parties:
+            self.parties[party] = self.ledger.party_known(party)
+        return self.parties[party]
 
     @functools.cached_property
     def holdings(self): return self.ledger.active_holdings()
@@ -1237,8 +1301,10 @@ def disclosed_allocation(trade: dict) -> "dict | None | bool":
 
 def twin_units(base: int, decimals: int) -> int | None:
     """An ERC-20 amount in base units as the twin's amount, in units of 10^-10 (the twin has 10 decimals); None if that is not exact or is more
-    than a Daml Decimal holds (`Twin.Amount.fromBaseUnits`)."""
+    than a Daml Decimal holds (`Twin.Amount.fromBaseUnits`, which also refuses 10^36 base units or more of a token with more than 10 decimals)."""
     if decimals > 10:
+        if base >= 10**36:
+            return None
         step = 10 ** (decimals - 10)
         units = base // step if base % step == 0 else None
     else:
@@ -1247,9 +1313,12 @@ def twin_units(base: int, decimals: int) -> int | None:
 
 
 def twin_base_units(units: int, decimals: int) -> int | None:
-    """The reverse (`Twin.Amount.toBaseUnits`): a twin amount in units of 10^-10 as ERC-20 base units; None if it is not a whole number of them."""
+    """The reverse (`Twin.Amount.toBaseUnits`): a twin amount in units of 10^-10 as ERC-20 base units; None if it is not a whole number of them, is
+    10^17 whole twin units or more, or (more than 10 decimals) would be 10^36 base units or more."""
+    if units < 0 or units >= 10**27:
+        return None
     if decimals > 10:
-        return units * 10 ** (decimals - 10)
+        return units * 10 ** (decimals - 10) if units < 10 ** (46 - decimals) else None
     step = 10 ** (10 - decimals)
     return units // step if units % step == 0 else None
 
@@ -1290,8 +1359,18 @@ def lock_leg(leg: LegEvent, canton: Canton) -> dict:
     if parts is None:
         raise NoCantonSide("the twin registry service has no parts for the lock's id")
     receiver, ref = parts["receiver"], parts["ref"]
-    if not receiver or not ref or lock_id_of(receiver, ref) != leg.id:
+    try:
+        made = lock_id_of(receiver, ref) if ref and canton_party_text(receiver) else None
+    except ValueError:   # a ref that cannot be written as UTF-8
+        made = None
+    if made != leg.id:
         raise NoCantonSide("the parts the twin registry service gave do not make the lock's id")
+    try:
+        known = canton.party_known(receiver)
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        raise NoCantonSide(f"the participant cannot say whether the lock's receiver is a Canton party: {e}") from e
+    if not known:
+        raise NoCantonSide("the lock's receiver is not a known Canton party")
     return {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
 
 

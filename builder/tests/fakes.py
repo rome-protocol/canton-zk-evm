@@ -1,6 +1,6 @@
 """Fakes for the builder's tests: reth's builder-only WebSocket port and Engine port, the Canton JSON Ledger
 API, and (as shell scripts next to this file) the prover input tool and the prover. Nothing here is real."""
-import base64, hashlib, hmac, json, os, socket, sys, threading, time
+import base64, hashlib, hmac, json, os, socket, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from websockets.exceptions import ConnectionClosed
@@ -408,6 +408,9 @@ class FakeLedger:
         self.redeems: list = []       # ... of the RedeemRequest contracts (a twin's release)
         self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
+        self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
+        self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
+        self.known_parties = None     # the parties GET /v2/parties/<party> knows; None: every one
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
         self.commit = True   # a test can set it False: then a dropped Advance leaves the head alone
@@ -568,6 +571,14 @@ class FakeLedger:
                 if self.path == "/traffic":
                     state = ledger.traffic.pop(0) if ledger.traffic else None   # one answer for each read
                     return self._reply(404, {}) if state is None else self._reply(200, state)
+                for prefix, code in ledger.get_failures.items():
+                    if self.path.startswith(prefix):
+                        return self._reply(code, {})
+                if self.path.startswith("/v2/parties/"):
+                    party = urllib.parse.unquote(self.path[len("/v2/parties/"):])
+                    if ledger.known_parties is not None and party not in ledger.known_parties:
+                        return self._reply(404, {"code": "PARTY_NOT_FOUND"})
+                    return self._reply(200, {"partyDetails": [{"party": party, "isLocal": False}]})
                 self._reply(200, {"offset": 42} if self.path == "/v2/state/ledger-end" else {})
 
             def do_POST(self):

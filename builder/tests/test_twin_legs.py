@@ -1,7 +1,7 @@
 """The twin legs (Daml 0.5.0): a payment into a registered vault is a LockLeg, with the parts of the lock's id from the twin registry service; a payment
 whose id is the release id of a redeem request is a ReleaseLeg. Both name the twin pinned for the token in `ZkChain.twins`. Against the same fakes as
 test_builder.py, and a fake registry service."""
-import hashlib, json, sys, threading, unittest
+import hashlib, json, sys, threading, time, unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -14,7 +14,7 @@ from fakes import PAYMENT, Leg, tx
 
 ALICE, TKA, PAYEE, named = tb.ALICE, tb.TKA, tb.PAYEE, tb.named
 VAULT, OTHER_VAULT = "ca" * 20, "cb" * 20
-RECEIVER, REF = "alice::1220abcd", "order-7"
+RECEIVER, REF = "alice::1220" + "ab" * 32, "order-7"
 RULES = "rules-1"
 USDC_DECIMALS = 6
 
@@ -29,14 +29,15 @@ VAULT_ENTRY = {"contractAddress": VAULT, "contractCodeHash": "c1" * 32, "contrac
 PIN = {"twinToken": TKA, "twinDecimals": str(USDC_DECIMALS), "twinRules": RULES}
 LOCK = Leg(PAYMENT, LOCK_ID, TKA, VAULT, 2_500_000)   # 2.5 of a 6-decimal token
 RELEASE = Leg(PAYMENT, RELEASE_ID, TKA, PAYEE, 2_500_000)
-REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": "alice::1220abcd", "token": TKA, "holdings": ["h-1"], "amount": "2.5", "recipient": PAYEE, "ref": REF})
+REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": RECEIVER, "token": TKA, "holdings": ["h-1"], "amount": "2.5", "recipient": PAYEE, "ref": REF})
 
 
 class Registry:
     """A fake twin registry service: GET /twin/v1/lock-parts/<id>."""
 
-    def __init__(self, parts=None, status=None):
+    def __init__(self, parts=None, status=None, raw=None, delay=0, trickle=False):
         self.parts, self.status, self.asked = dict(parts or {}), status, []
+        self.raw, self.delay, self.trickle = raw, delay, trickle   # raw: bytes to answer with; delay: seconds before the answer; trickle: a body that never ends
         registry = self
 
         class H(BaseHTTPRequestHandler):
@@ -45,7 +46,20 @@ class Registry:
             def do_GET(self):
                 registry.asked.append(self.path)
                 lock_id = self.path.rsplit("/", 1)[1]
-                if registry.status:
+                time.sleep(registry.delay)
+                if registry.trickle:
+                    self.send_response(200)
+                    self.send_header("content-length", "100000")
+                    self.end_headers()
+                    try:
+                        for _ in range(100):
+                            self.wfile.write(b" "); self.wfile.flush(); time.sleep(0.1)
+                    except OSError:
+                        pass
+                    return
+                if registry.raw is not None:
+                    code, body = 200, registry.raw
+                elif registry.status:
                     code, body = registry.status, b"{}"
                 elif lock_id in registry.parts:
                     code, body = 200, json.dumps({"lockId": lock_id, **registry.parts[lock_id]}).encode()
@@ -64,6 +78,10 @@ class Registry:
 
 
 class Twins(tb.LegCase):
+    def setUp(self):
+        super().setUp()
+        b.REGISTRY_DOWN.clear()
+
     def setup_twin(self, leg, parts=True, pins=(PIN,), vaults=(VAULT_ENTRY,), redeems=(), registry=True, **k):
         s = self.setup({ALICE: []}, **k)
         s.ledger.chain_extra = {"contracts": list(vaults), "twins": list(pins) if pins is not None else None}
@@ -89,7 +107,7 @@ class Twins(tb.LegCase):
         self.assert_left_out(s, t, "no parts")
 
     def test_parts_that_do_not_make_the_id_leave_the_lock_out(self):
-        s, t = self.setup_twin(LOCK, parts={LOCK_ID: {"receiver": "bob::1", "ref": REF}})
+        s, t = self.setup_twin(LOCK, parts={LOCK_ID: {"receiver": "bob::1220" + "cd" * 32, "ref": REF}})
         self.assert_left_out(s, t, "do not make the lock's id")
 
     def test_a_failing_registry_leaves_the_lock_out(self):
@@ -123,6 +141,81 @@ class Twins(tb.LegCase):
     def test_a_payment_to_another_address_is_not_a_lock(self):
         s, t = self.setup_twin(Leg(PAYMENT, LOCK_ID, TKA, OTHER_VAULT, 10))
         self.assert_left_out(s, t, "no terms of this chain")
+
+    def test_a_receiver_that_is_not_a_party_id_is_left_out(self):
+        for bad in ("\u00e9::1220" + "ab" * 32, "alice::1220" + "AB" * 32, "alice::1220abcd", "a b::1220" + "ab" * 32, "x" * 250 + "::1220" + "ab" * 32):
+            s, t = self.setup_twin(LOCK, parts={LOCK_ID: {"receiver": bad, "ref": REF}})
+            self.assert_left_out(s, t, "not the parts")
+
+    def test_a_receiver_the_participant_does_not_know_is_left_out(self):
+        s, t = self.setup_twin(LOCK)
+        s.ledger.known_parties = set()
+        self.assert_left_out(s, t, "not a known Canton party")
+
+    def test_a_known_receiver_is_attached_and_asked_once_a_block(self):
+        s, t = self.setup_twin(LOCK)
+        s.ledger.known_parties = {RECEIVER}
+        self.build(s)
+        self.assertEqual(self.attached(s, "LockLeg")["lockReceiver"], RECEIVER)
+        self.assertEqual([g for g in s.ledger.gets if g.startswith("/v2/parties/")], ["/v2/parties/" + RECEIVER.replace(":", "%3A")])
+
+    def test_a_participant_that_cannot_answer_for_the_receiver_leaves_the_lock_out(self):
+        s, t = self.setup_twin(LOCK)
+        s.ledger.get_failures = {"/v2/parties/": 500}
+        self.assert_left_out(s, t, "cannot say whether")
+
+    def test_a_hostile_registry_answer_leaves_the_lock_out_and_never_stops_the_block(self):
+        good = {"receiver": RECEIVER, "ref": REF}
+        for raw in (json.dumps({**good, "ref": "\ud800"}).encode(), json.dumps({**good, "ref": "r" * 257}).encode(), json.dumps({**good, "ref": ""}).encode(),
+                    b'{"receiver":"' + RECEIVER.encode() + b'","ref":"' + b"a" * 70000 + b'"}', b"[1]", b"\xff\xfe", json.dumps({**good, "receiver": 5}).encode()):
+            s, t = self.setup_twin(LOCK)
+            s.registry.raw = raw
+            self.assert_left_out(s, t, "not the parts of a lock's id")
+
+    def test_a_hanging_registry_is_asked_once_for_every_lock_waiting(self):
+        registry = Registry(delay=1.5)
+        self.addCleanup(registry.close)
+        read = b.twin_registry_reader(registry.url, timeout=0.2, deadline=0.2)
+        for lock_id in ("aa" * 32, "bb" * 32):
+            with self.assertRaises(b.NoCantonSide) as e:
+                read(lock_id)
+            self.assertIn("cannot be read", str(e.exception))
+        self.assertEqual(len(registry.asked), 1)
+        # a reader made for the next block keeps off the registry too, until the backoff has passed
+        with self.assertRaises(b.NoCantonSide):
+            b.twin_registry_reader(registry.url, timeout=0.2, deadline=0.2)("cc" * 32)
+        self.assertEqual(len(registry.asked), 1)
+        b.REGISTRY_DOWN[registry.url] = (time.monotonic() - 1, "")
+        with self.assertRaises(b.NoCantonSide):
+            b.twin_registry_reader(registry.url, timeout=0.2, deadline=0.2)("dd" * 32)
+        for _ in range(40):   # the registry handles one request at a time: the first is still being answered
+            if len(registry.asked) == 2:
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(registry.asked), 2)
+
+    def test_a_registry_that_trickles_its_answer_is_given_up_on_at_the_deadline(self):
+        registry = Registry(trickle=True)
+        self.addCleanup(registry.close)
+        started = time.monotonic()
+        with self.assertRaises(b.NoCantonSide) as e:
+            b.twin_registry_reader(registry.url, timeout=5, deadline=0.5)("aa" * 32)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("cannot be read", str(e.exception))
+
+    def test_a_lock_is_exact_in_what_daml_accepts(self):
+        self.assertIsNone(b.twin_units(10**36, 24))
+        self.assertEqual(b.twin_units(10**35, 24), 10**21)
+        self.assertEqual(b.twin_units(10**36 - 10**26, 36), 10**10 - 1)
+        self.assertIsNone(b.twin_units(10**27, 10))
+        self.assertEqual(b.twin_units(10**27 - 1, 10), 10**27 - 1)
+
+    def test_a_release_is_exact_in_what_daml_accepts(self):
+        self.assertIsNone(b.twin_base_units(10**27, 6))   # 10^17 whole twin units or more
+        self.assertEqual(b.twin_base_units(10**27 - 10**4, 6), 10**23 - 1)
+        self.assertIsNone(b.twin_base_units(10**22, 24))   # 10^36 base units or more
+        self.assertEqual(b.twin_base_units(10**22 - 1, 24), (10**22 - 1) * 10**14)
+        self.assertIsNone(b.twin_base_units(-1, 6))
 
     # ---- the release
     def test_a_vault_payment_with_a_redeem_request_is_a_release(self):
