@@ -242,11 +242,11 @@ testAllocationWithdrawAndCancel = do
   length r.senderHoldingCids === 1
   balanceOf f f.alice >>= (=== 10.0)
   lockedOf f f.alice >>= (=== 0.0)
-  h2 <- mintTo f f.alice 1.0
+  h2 <- mintTo f f.alice 4.0
   alloc2 <- allocated f [h2]
   r2 <- submit (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc2 A.Allocation_Cancel with extraArgs = noExtraArgs
   length r2.senderHoldingCids === 1
-  balanceOf f f.alice >>= (=== 11.0)
+  balanceOf f f.alice >>= (=== 14.0)
 
 -- Refused allocations and executions: too little, a locked holding as input, a wrong admin, a window that is shut, an execution after settleBefore.
 testAllocationRefused : Script ()
