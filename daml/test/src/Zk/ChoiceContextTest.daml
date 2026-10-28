@@ -1,0 +1,211 @@
+-- Daml Script tests of the choice context a leg can carry (package 0.5.0). The registry here is a test one whose factory and whose
+-- allocations refuse to move anything unless the choice's context holds an entry, as Canton Coin's does (its open mining round,
+-- amulet rules and featured app right are such entries). Each kind of leg that exercises a token-standard choice is refused without
+-- the entry and settles with it.
+module Zk.ChoiceContextTest where
+
+import DA.Assert ((===))
+import DA.List (sort)
+import DA.Optional (isSome)
+import DA.Time (addRelTime, days)
+import qualified DA.Text as T
+import qualified DA.TextMap as TM
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import qualified Splice.Api.Token.HoldingV1 as H
+import Splice.Api.Token.AllocationV1
+import qualified Splice.Api.Token.TransferInstructionV1 as TI
+import Zk.Chain
+import Zk.ChainTest
+
+-- The entry that the registry's choices require, and the context that has it.
+needKey : Text
+needKey = "amulet-rules"
+
+needsEntry : ExtraArgs -> Update ()
+needsEntry x = assertMsg "the registry needs its context entry" (isSome (TM.lookup needKey x.context.values))
+
+withEntry : ChoiceContext
+withEntry = ChoiceContext with values = TM.fromList [(needKey, AV_Text "rules-1")]
+
+template GatedHolding with
+    admin : Party
+    owner : Party
+    instrument : Text
+    amount : Decimal
+  where
+    signatory admin
+    observer owner
+    interface instance H.Holding for GatedHolding where
+      view = H.HoldingView with
+        owner = owner
+        instrumentId = H.InstrumentId with admin = admin; id = instrument
+        amount = amount; lock = None; meta = emptyMetadata
+
+-- An allocation that executes only with its entry in the context.
+template GatedAllocation with
+    admin : Party
+    allocation : AllocationSpecification
+  where
+    signatory admin
+    observer allocation.transferLeg.sender, allocation.transferLeg.receiver, allocation.settlement.executor
+    interface instance Allocation for GatedAllocation where
+      view = AllocationView with allocation = allocation; holdingCids = []; meta = emptyMetadata
+      allocation_executeTransferImpl _self arg = do
+        needsEntry arg.extraArgs
+        out <- create GatedHolding with
+          admin = admin; owner = allocation.transferLeg.receiver
+          instrument = allocation.transferLeg.instrumentId.id; amount = allocation.transferLeg.amount
+        pure Allocation_ExecuteTransferResult with
+          senderHoldingCids = []; receiverHoldingCids = [toInterfaceContractId out]; meta = emptyMetadata
+      allocation_cancelImpl _self _arg = abort "not used by the tests"
+      allocation_withdrawImpl _self _arg = abort "not used by the tests"
+
+-- A transfer factory that transfers only with its entry in the context.
+template GatedRules with
+    admin : Party
+  where
+    signatory admin
+    interface instance TI.TransferFactory for GatedRules where
+      view = TI.TransferFactoryView with admin = admin; meta = emptyMetadata
+      transferFactory_publicFetchImpl _self _arg = pure (TI.TransferFactoryView with admin = admin; meta = emptyMetadata)
+      transferFactory_transferImpl _self arg = do
+        assertMsg "expectedAdmin is not this registry" (arg.expectedAdmin == admin)
+        needsEntry arg.extraArgs
+        out <- create GatedHolding with
+          admin = admin; owner = arg.transfer.receiver
+          instrument = arg.transfer.instrumentId.id; amount = arg.transfer.amount
+        pure TI.TransferInstructionResult with
+          output = TI.TransferInstructionResult_Completed with receiverHoldingCids = [toInterfaceContractId out]
+          senderChangeCids = []
+          meta = emptyMetadata
+
+data G = G with
+  admin : Party
+  rules : Disclosure
+  token : ContractId GatewayToken
+
+-- The gated registry and the gateway's token of its instrument "CC", on the fixture's chain.
+gatedSetup : F -> Script G
+gatedSetup f = do
+  admin <- allocateParty "GatedRegistry"
+  rulesCid <- submit admin $ createCmd GatedRules with admin = admin
+  Some rules <- queryDisclosure admin rulesCid
+  p <- submit (actAs [f.operator, f.gateway]) $ createCmd GatewayTokenProposal with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    evmToken = wTkb; instrumentId = H.InstrumentId with admin = admin; id = "CC"
+    factory = toInterfaceContractId @TI.TransferFactory rulesCid
+  token <- submit f.confirmer $ exerciseCmd p AcceptToken
+  pure G with admin = admin; rules = rules; token = token
+
+-- The builder's submission with the gated registry's factory disclosed to it.
+gatedBuilder : F -> G -> Party -> SubmitOptions
+gatedBuilder f g venue = asBuilderV f venue <> readAs [g.admin] <> disclose g.rules
+
+-- `sender` allocates 10 of the gated instrument to `receiver` (executor `exec`).
+gAllocate : G -> Party -> Party -> Party -> Text -> Script (ContractId Allocation)
+gAllocate g sender receiver exec ref = do
+  now <- getTime
+  let spec = AllocationSpecification with
+        settlement = SettlementInfo with
+          executor = exec; settlementRef = Reference with id = ref; cid = None
+          requestedAt = now; allocateBefore = addRelTime now (days 1); settleBefore = addRelTime now (days 2); meta = emptyMetadata
+        transferLegId = "leg"
+        transferLeg = TransferLeg with
+          sender; receiver; amount = 10.0; instrumentId = H.InstrumentId with admin = g.admin; id = "CC"; meta = emptyMetadata
+  c <- submit g.admin $ createCmd GatedAllocation with admin = g.admin; allocation = spec
+  pure (toInterfaceContractId @Allocation c)
+
+-- U's withdrawal of 4 of the gated instrument; the gated factory takes no input holdings.
+gWithdrawal : F -> G -> Optional ChoiceContext -> Leg
+gWithdrawal f g c = WithdrawalLeg with
+  id = withdrawalId; token = g.token; from = burnerAddr; amount = 4.0; acceptance = f.acceptance; inputs = []; choiceContext = c
+
+gHolds : Party -> Script [Decimal]
+gHolds p = sort . map (\(_, h) -> h.amount) <$> query @GatedHolding p
+
+-- A block the chain must refuse because the registry wants its entry.
+refusedForEntry : SubmitOptions -> Commands a -> Script ()
+refusedForEntry opts cmds = do
+  r <- trySubmit opts cmds
+  case r of
+    Left e -> assertMsg ("refused, but not for the missing entry: " <> show e) ("the registry needs its context entry" `T.isInfixOf` show e)
+    Right _ -> abort "the chain committed a block that the registry should have refused"
+
+testADepositLegCarriesTheContext : Script ()
+testADepositLegCarriesTheContext = do
+  f <- fixture
+  g <- gatedSetup f
+  venue <- makeVenue
+  let did = depositIdOf f.d "cc1"
+  alloc <- gAllocate g f.d f.gateway f.operator did
+  dep <- submit f.d $ createCmd DepositRequest with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    depositor = f.d; depositId = did; recipient = recipientAddr; allocation = alloc; label = Some "cc1"
+  let block c = advance f.chain "01" [depositLine did] [DepositLeg with request = dep; token = g.token; choiceContext = c]
+  refusedForEntry (gatedBuilder f g venue) (block None)
+  gHolds f.gateway >>= \xs -> xs === []
+  (_, _) <- submit (gatedBuilder f g venue) (block (Some withEntry))
+  gHolds f.gateway >>= \xs -> xs === [10.0]
+  None <- queryContractId f.d dep
+  pure ()
+
+testAPaymentLegCarriesTheContext : Script ()
+testAPaymentLegCarriesTheContext = do
+  f <- fixture
+  g <- gatedSetup f
+  venue <- makeVenue
+  let pid = paymentId f.u f.v "cc-pay"
+  alloc <- gAllocate g f.u f.v f.operator pid
+  terms <- submit (actAs [f.u, f.v]) $ createCmd DvpTerms with
+    u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder; chainId = 770101
+    label = "cc-pay"; dvpId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation = alloc
+  let block c = advance f.chain "01" [paymentLine pid] [PaymentLeg with terms = terms; choiceContext = c]
+  refusedForEntry (gatedBuilder f g venue) (block None)
+  gHolds f.v >>= \xs -> xs === []
+  (_, _) <- submit (gatedBuilder f g venue) (block (Some withEntry))
+  gHolds f.v >>= \xs -> xs === [10.0]
+  None <- queryContractId f.u terms
+  pure ()
+
+testATradeLegCarriesTheContext : Script ()
+testATradeLegCarriesTheContext = do
+  f <- fixture
+  g <- gatedSetup f
+  venue <- makeVenue
+  let pid = venueTradeId venue tradeLabel
+  alloc <- gAllocate g f.u f.gateway venue pid
+  trade <- submit (actAs [venue, f.u, f.v]) $ createCmd VenueTrade with
+    venue; sender = f.u; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    label = tradeLabel; payId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens
+    allocation = alloc; allocationDisclosed = None; gatewayToken = g.token; claimId = venueClaimId pid; recipient = recipientAddr
+  let block c = advance f.chain "01" [tradeLine pid] [TradeLeg with tradeCid = trade; choiceContext = c]
+  refusedForEntry (gatedBuilder f g venue) (block None)
+  gHolds f.gateway >>= \xs -> xs === []
+  (_, _) <- submit (gatedBuilder f g venue) (block (Some withEntry))
+  gHolds f.gateway >>= \xs -> xs === [10.0]
+  [(_, c)] <- query @FundedClaim f.gateway
+  c.claimId === venueClaimId pid
+
+testAWithdrawalLegCarriesTheContext : Script ()
+testAWithdrawalLegCarriesTheContext = do
+  f <- fixture
+  g <- gatedSetup f
+  venue <- makeVenue
+  let block c = advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [gWithdrawal f g c]
+  refusedForEntry (gatedBuilder f g venue) (block None)
+  gHolds f.u >>= \xs -> xs === []
+  (_, _) <- submit (gatedBuilder f g venue) (block (Some withEntry))
+  gHolds f.u >>= \xs -> xs === [4.0]
+  Some _ <- queryContractId f.u f.acceptance      -- the acceptance is standing
+  pure ()
+
+-- A context that lacks the entry is the same as none.
+testAContextWithoutTheEntryIsRefused : Script ()
+testAContextWithoutTheEntryIsRefused = do
+  f <- fixture
+  g <- gatedSetup f
+  venue <- makeVenue
+  let other = ChoiceContext with values = TM.fromList [("open-round", AV_Text "round-1")]
+  refusedForEntry (gatedBuilder f g venue) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [gWithdrawal f g (Some other)]
