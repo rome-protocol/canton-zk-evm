@@ -18,6 +18,7 @@ import Splice.Api.Token.AllocationV1
 import qualified Splice.Api.Token.TransferInstructionV1 as TI
 import Zk.Chain
 import Zk.ChainTest
+import Zk.Sidecar
 
 -- The entry that the registry's choices require, and the context that has it.
 needKey : Text
