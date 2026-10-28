@@ -110,6 +110,20 @@
     Accept no Gateway entry before the builder sends its proofs (pinned to 0.5.0) and the explorer reads the legs of registered gateways.
     With --dry-run nothing is submitted.
 
+  setup.py --ledger-url <URL> --twin-step propose|accept|withdraw|reject|add --twin-token <hex> [--twin-decimals <0-36> --twin-rules <contract id>] [--twin-rules-disclosed <FILE>] [--reth-url <URL>] [--dry-run]
+
+    The chain's pinned twins (Daml 0.5.0, ZkChain.twins): an ERC-20's address, its decimals and the TwinRules contract of its Canton twin, in the steps of
+    the registry, each printing one JSON line. The twin legs of the builder name exactly the pinned rules; an unpinned token has no twin leg.
+      propose   the operator's token (which acts for the operator and the gateway party): exercises ProposeTwin on the chain's one contract. Nothing is done if the same proposal is there already.
+      accept    the confirmer's token: exercises AcceptTwin on the proposal for exactly this entry, once the chain's change delay has passed. The confirmer cannot see the rules
+                (the gateway is their admin), so --twin-rules-disclosed names a file with the rules as a disclosed contract: a JSON object with templateId, contractId (the
+                --twin-rules), createdEventBlob and synchronizerId, as the gateway's participant gives it from the active contracts with the blob. The accept is refused without it.
+      withdraw  the operator's token (WithdrawTwin) on every pending proposal for the token. reject is the confirmer's RejectTwin on them.
+      add       AddTwin at once, signed by the operator, the confirmer and the gateway together, as --contract-step add does. It skips the change delay.
+    This version has no removal of a pin, so propose, accept and add first read the ERC-20 from reth (--reth-url, https or http on this machine; the finalized block): there must be code
+    at the token's address and its decimals() must be --twin-decimals, or the step is refused. The JSON line has the decimals read (tokenDecimals).
+    With --dry-run nothing is submitted.
+
   setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
 
     The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
@@ -421,10 +435,11 @@ def check_gas_cap(current: int, new: int) -> None:
         raise SystemExit(f"the new gas cap {new} is over the highest a chain may have ({MAX_GAS_CAP})")
 
 
-def submit_step(ledger, command: dict, step: str) -> None:
-    """Submits one command; a refusal stops with the participant's message (an accept is refused when a block replaced the chain contract since it was read)."""
+def submit_step(ledger, command: dict, step: str, disclosed: list = ()) -> None:
+    """Submits one command (with disclosed contracts, when it needs them); a refusal stops with the participant's message (an accept is refused when a block
+    replaced the chain contract since it was read)."""
     try:
-        ledger.submit(command)
+        ledger.submit(command, *([disclosed] if disclosed else []))
     except urllib.error.HTTPError as err:
         hint = f": the chain may have advanced since it was read, run the {step} again" if step in ("propose", "accept") else ""
         reason = err.read().decode(errors="replace")[:1500]
@@ -646,6 +661,29 @@ def check_contract(reth_url: str, address: str, kind: str) -> str:
     return code_hash
 
 
+def twin_token_decimals(reth_url: str, token: str, decimals: int) -> int:
+    """The ERC-20's own decimals, read from reth at the finalized block (`decimals()` at the address), after checking that there is code at the address
+    and that they are the decimals asked for. A pin cannot be removed and every lock and release is scaled by its decimals, so a pin with the wrong ones
+    would inflate or deflate the twin against the vault for good: anything else is refused."""
+    def ask(method: str, params: list):
+        try:
+            answer = propose.post(reth_url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        except (OSError, ValueError) as e:
+            raise SystemExit(f"cannot ask reth about the token {token}: {e}") from None
+        return answer.get("result") if isinstance(answer, dict) else None
+    code = ask("eth_getCode", ["0x" + token, "finalized"])
+    if not isinstance(code, str) or not re.fullmatch(r"0x([0-9a-f]{2})*", code):
+        raise SystemExit(f"reth gave no code for {token}")
+    if code == "0x":
+        raise SystemExit(f"there is no code at {token} (at reth's finalized block): it is not an ERC-20")
+    word = ask("eth_call", [{"to": "0x" + token, "data": "0x313ce567"}, "finalized"])   # decimals()
+    if not isinstance(word, str) or not re.fullmatch(r"0x[0-9a-f]{64}", word) or int(word, 16) > 255:
+        raise SystemExit(f"the token {token} gave no decimals (decimals() answered {word!r})")
+    if int(word, 16) != decimals:
+        raise SystemExit(f"the token {token} has {int(word, 16)} decimals, not {decimals}: a pin with other decimals scales every lock and release wrongly, for good")
+    return int(word, 16)
+
+
 def entry_of(address: str, code_hash: str, kind: str) -> dict:
     return {"contractAddress": address, "contractCodeHash": code_hash, "contractKind": CONTRACT_KINDS[kind]}
 
@@ -708,6 +746,103 @@ def contract_step(url: str, step: str, address: str, kind, reth_url: str, dry_ru
         check_waited(result, "the registry")
         submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ContractProposal", "contractId": mine[0]["contractId"], "choice": "AcceptContract",
                                                    "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+    return {**result, "submitted": not dry_run}
+
+
+MAX_TWINS = 16   # the Daml's maxTwins
+
+
+def twin_key(entry: dict) -> tuple:
+    """A pinned twin as the ledger shows it (an Int comes as text), in a form that two entries can be compared in."""
+    return entry.get("twinToken"), int(entry.get("twinDecimals", -1)), entry.get("twinRules")
+
+
+def read_rules_disclosed(path: str, rules: str) -> dict:
+    """The TwinRules contract as a disclosed contract, from a JSON file: an object (or a list of one) with templateId, contractId, createdEventBlob
+    and synchronizerId, for exactly the rules named."""
+    try:
+        found = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot read --twin-rules-disclosed {path}: {e}") from None
+    if isinstance(found, list) and len(found) == 1:
+        found = found[0]
+    keys = ("templateId", "contractId", "createdEventBlob", "synchronizerId")
+    if not isinstance(found, dict) or not all(isinstance(found.get(k), str) and found[k] for k in keys):
+        raise SystemExit(f"--twin-rules-disclosed must hold one disclosed contract: an object with {', '.join(keys)}")
+    if found["contractId"] != rules:
+        raise SystemExit(f"--twin-rules-disclosed is the contract {found['contractId']}, not the rules {rules}")
+    if "TwinRules" not in found["templateId"]:
+        raise SystemExit(f"--twin-rules-disclosed is a {found['templateId']}, not the twin's TwinRules")
+    return {k: found[k] for k in keys}
+
+
+def twin_step(url: str, step: str, token: str, decimals, rules, disclosed_path, reth_url: str, dry_run: bool) -> dict:
+    """The pinned twins' steps, each by the party that controls it: `propose` (ProposeTwin, the operator and the gateway), `accept` (AcceptTwin, the
+    confirmer, after the change delay, with the rules disclosed to it), `withdraw` (WithdrawTwin, the operator) and `reject` (RejectTwin, the confirmer)
+    take the pin for the token (withdraw and reject: every pending proposal for the token), and `add` (AddTwin) pins it at once for a submission that
+    acts for all three parties. propose, accept and add first check that the ERC-20 at the token's address has the decimals asked for (reth's
+    finalized block), as the registry's steps check the code."""
+    if not ADDRESS40.fullmatch(token or ""):
+        raise SystemExit("--twin-token must be 40 lowercase hex digits without 0x")
+    if step in ("withdraw", "reject"):
+        entry = None
+    else:
+        if decimals is None or not 0 <= decimals <= 36:
+            raise SystemExit("--twin-decimals (0 to 36) is needed")
+        if not rules:
+            raise SystemExit("--twin-rules (the TwinRules contract id) is needed")
+        entry = {"twinToken": token, "twinDecimals": str(decimals), "twinRules": rules}
+    ledger, chain = step_chain(url, "propose" if step == "withdraw" else step, with_gateway=step == "propose")
+    known = [t for t in chain.get("twins") or [] if t.get("twinToken") == token]
+    pending = [p for p in ledger.active("TwinProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+               and p.get("confirmer") == chain["confirmer"] and p.get("gateway") == chain["gateway"] and (p.get("entry") or {}).get("twinToken") == token]
+    result = {"step": step, "chainId": chain["chainId"], "token": token, "dryRun": dry_run}
+    if entry is None:
+        if not dry_run:
+            for p in pending:
+                submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "TwinProposal", "contractId": p["contractId"],
+                                                          "choice": "WithdrawTwin" if step == "withdraw" else "RejectTwin", "choiceArgument": {}}}, step)
+        return {**result, "pending": len(pending), "done": 0 if dry_run else len(pending)}
+    result["entry"] = entry
+    result["tokenDecimals"] = twin_token_decimals(reth_url, token, decimals)
+    registered = [t for t in known if twin_key(t) == twin_key(entry)]
+    if known and not registered:
+        raise SystemExit(f"{token} is pinned already, with other decimals or other rules: {known[0]}")
+    mine = [p for p in pending if twin_key(p["entry"]) == twin_key(entry)]
+    if step == "propose":
+        if registered:
+            raise SystemExit("the twin is pinned already")
+        if len(chain.get("twins") or []) >= MAX_TWINS:
+            raise SystemExit(f"the chain pins {MAX_TWINS} twins, the most it may")
+        if pending and not mine:
+            raise SystemExit("a proposal for this token with other decimals or other rules is on this participant already: the operator takes it back "
+                             "(--twin-step withdraw) before another is proposed")
+        if not mine and not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeTwin",
+                                                       "choiceArgument": {"entry": entry}}}, "propose")
+            mine = [p for p in ledger.active("TwinProposal") if twin_key(p["entry"]) == twin_key(entry) and p.get("chainId") == chain["chainId"]]
+        return {**result, "submitted": not pending and not dry_run, "alreadyProposed": bool(pending), **timing((mine or [None])[0], chain)}
+    if step == "add":
+        if registered:
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        if len(chain.get("twins") or []) >= MAX_TWINS:
+            raise SystemExit(f"the chain pins {MAX_TWINS} twins, the most it may")
+        if not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "AddTwin",
+                                                       "choiceArgument": {"entry": entry}}}, "add")
+        return {**result, "submitted": not dry_run}
+    if not mine:   # accept
+        if registered:   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        raise SystemExit("no proposal for this twin, with these decimals and these rules, is on this participant")
+    disclosed = read_rules_disclosed(disclosed_path, rules) if disclosed_path else None
+    if disclosed is None and not dry_run:
+        raise SystemExit("--twin-rules-disclosed is needed: the confirmer cannot see the twin's rules, and the accept fetches them")
+    result.update(timing(mine[0], chain))
+    if not dry_run:
+        check_waited(result, "the pinned twins")
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "TwinProposal", "contractId": mine[0]["contractId"], "choice": "AcceptTwin",
+                                                   "choiceArgument": {"chain": chain["contractId"]}}}, "accept", [disclosed])
     return {**result, "submitted": not dry_run}
 
 
@@ -966,7 +1101,7 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step or --contract-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step --contract-step or --twin-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
@@ -985,10 +1120,39 @@ def main(argv: list) -> int:
     ap.add_argument("--contract-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the registry of EVM contracts: the operator proposes an entry, the confirmer accepts or rejects it, the operator withdraws it, or `add` puts it in at once for a submission that acts for all three parties (see the top of this file)")
     ap.add_argument("--contract-address", help="with --contract-step: the contract's address (40 lowercase hex digits without 0x)")
     ap.add_argument("--contract-kind", choices=("gateway", "vault"), help="with --contract-step propose, accept or add: what the contract is; its code must be the reviewed build of that kind")
-    ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step propose, accept or add: reth's HTTP RPC, which the code at the address is read from")
+    ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step or --twin-step propose, accept or add: reth's HTTP RPC, which the code at the address, or the token's decimals, is read from")
+    ap.add_argument("--twin-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the pinned twins: the operator proposes a twin of an ERC-20, the confirmer accepts or rejects it, the operator withdraws it, or all three add it at once (see the top of this file)")
+    ap.add_argument("--twin-token", help="with --twin-step: the ERC-20's address (40 lowercase hex digits without 0x)")
+    ap.add_argument("--twin-decimals", type=int, help="with --twin-step propose, accept or add: the ERC-20's decimals (0 to 36), which must be the rules' own")
+    ap.add_argument("--twin-rules", help="with --twin-step propose, accept or add: the contract id of the twin's TwinRules")
+    ap.add_argument("--twin-rules-disclosed", metavar="FILE", help="with --twin-step accept: the TwinRules contract as a disclosed contract (JSON: templateId, contractId, createdEventBlob, synchronizerId), for the confirmer, who cannot see it")
     ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    if own.twin_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if not own.twin_token:
+            ap.error("--twin-step needs --twin-token")
+        if own.twin_step in ("withdraw", "reject") and (own.twin_decimals is not None or own.twin_rules or own.twin_rules_disclosed):
+            ap.error("--twin-decimals, --twin-rules and --twin-rules-disclosed go with --twin-step propose, accept or add")
+        if own.twin_rules_disclosed and own.twin_step != "accept":
+            ap.error("--twin-rules-disclosed goes with --twin-step accept")
+        if own.twin_step in ("propose", "accept", "add") and (own.twin_decimals is None or not own.twin_rules):
+            ap.error(f"--twin-step {own.twin_step} needs --twin-decimals and --twin-rules")
+        if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step or own.contract_step or own.contract_address
+                or own.contract_kind or own.withdraw_proposal or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash
+                or own.pause_step or own.leg_limits_step or own.delay_seconds is not None
+                or own.pause_seconds is not None or own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None):
+            ap.error("--twin-step does only the twin's step: no other step, no --demo, no values and no chain arguments")
+        if own.twin_step in ("propose", "accept", "add") and not LOOPBACK_OR_HTTPS.match(own.reth_url):
+            raise SystemExit("the reth URL must be https, or http on this machine (127.0.0.1): its answer about the token's decimals is the only check before a pin that cannot be removed")
+        check_settings(own.ledger_url, ("confirmer",) if own.twin_step in ("accept", "reject") else ("operator",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(twin_step(own.ledger_url, own.twin_step, own.twin_token, own.twin_decimals, own.twin_rules, own.twin_rules_disclosed, own.reth_url, own.dry_run)))
+        return 0
+    if own.twin_token or own.twin_decimals is not None or own.twin_rules or own.twin_rules_disclosed:
+        ap.error("--twin-token, --twin-decimals, --twin-rules and --twin-rules-disclosed go with --twin-step")
     if own.contract_step:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
@@ -1089,7 +1253,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step or --withdraw-proposal")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step, --twin-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)

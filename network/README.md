@@ -296,6 +296,26 @@ U needs at least 20 TKB when `live.sh cycle` starts (each earlier `legs` run too
 
 `CZE_USER_PREFIX` goes before the user ids as for the rest (`canton.py` and `propose.py` use no prefix on an existing participant unless it is set, so without it they send the user `demo`, not `ostia-demo`, and Canton refuses). A token is read again from its file at every call, so a short-lived one can be rewritten in place. U's and V's EVM addresses (`python3 demo/evm.py keys`) need the chain's coin. The commands and settings are in `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
 
+### The pinned twins
+
+Daml 0.5.0 also pins the Canton twins of ERC-20s in the chain record (`ZkChain.twins`: the ERC-20's address, its decimals and the contract id of the twin's `TwinRules`; daml/README.md, "The pinned twins"). A twin leg uses exactly the pinned rules, so a token with no pin has no lock and no release, and the builder leaves such a leg out with that reason. A pin is made like a registry entry: the operator proposes, the confirmer accepts once the change delay has passed, and `setup.py --twin-step` does each step, printing one JSON line.
+
+```sh
+T="--twin-token $TOKEN --twin-decimals 6 --twin-rules $RULES_CID"   # the ERC-20 (40 hex digits), its decimals, the TwinRules contract id
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step propose $T --dry-run   # operator's token; the checks, nothing sent
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step propose $T             # operator's token (acts for the operator and the gateway)
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step accept  $T --twin-rules-disclosed rules.json   # confirmer's token, once the change delay has passed
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step withdraw --twin-token "$TOKEN"   # operator's token: takes back its pending proposals for the token
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step reject   --twin-token "$TOKEN"   # confirmer's token: turns them down
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step add      $T             # at once, for a participant where one user acts for all three parties
+```
+
+A pin cannot be removed, and its decimals scale every lock and release, so propose, accept and add (also with `--dry-run`) first read the ERC-20 from reth (`--reth-url`, https or http on this machine; the finalized block): there must be code at `--twin-token` and its `decimals()` must be `--twin-decimals`, or the step is refused; the JSON line shows the decimals read (`tokenDecimals`). Add `--reth-url` to the commands above where reth is not on 127.0.0.1:8545.
+
+The confirmer cannot see the rules (the gateway is their admin), and the accept fetches them, so `--twin-rules-disclosed` is a JSON file with the rules as a disclosed contract (`templateId`, `contractId`, `createdEventBlob`, `synchronizerId`), read from the gateway's participant with the created-event blob; the step refuses it when its contract id is not `--twin-rules` and refuses an accept without it. The proposal is read again by exact entry (token, decimals, rules): a proposal for the same token with other decimals or rules must be withdrawn first, a token pinned with other rules is refused, and the chain holds at most 16 twins. Daml checks the rules against the token and the decimals when the pin is added, and this version has no removal, so check the decimals against the ERC-20 itself and run `--dry-run` first. `--dry-run` sends nothing; a dry run of an accept prints `proposedAt` and `acceptableAt`.
+
+The builder reads the pins from the chain record at each block, and the pinned `TwinRules` (it must read as the gateway, or have them in `--disclosed`) to see that they are active: archiving them stops the token. It needs `--twin-registry-url` (builder/README.md) for the locks, whose id parts the registry service holds, and sees the holdings a release burns only when it reads as the gateway.
+
 ## Switching a running chain to a later fork or ZisK release
 
 A chain that runs can move to another program (and so to another key, `programVK` and `rootC`) with a later fork in its chain settings, such as Osaka at a time T a few blocks or days ahead, and to another ZisK release. The blocks before T run the same under both settings, so the new program takes over at a block before T and the fork follows at T. This needs the 0.3.0 Daml package on the chain (`SetProgram`, see "Upgrading a running chain's package" above if the chain runs an older version), and the producer stopped for the whole switch, so that no `Advance` runs between the two keys.

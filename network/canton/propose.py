@@ -91,9 +91,11 @@ class Ledger:
     def __init__(self, url: str, user: str, party: str, also_acts_as: tuple = (), token=None):
         self.url, self.user, self.party, self.also_acts_as, self.token = url, user, party, list(also_acts_as), token
 
-    def submit(self, command: dict) -> None:
+    def submit(self, command: dict, disclosed: list = ()) -> None:
+        """Submits one command as the user; `disclosed` are contracts the acting parties cannot see, passed as disclosed contracts."""
         post(self.url + "/v2/commands/submit-and-wait",
-             {"commands": [command], "commandId": str(uuid.uuid4()), "userId": self.user, "actAs": [self.party] + self.also_acts_as}, self.token)
+             {"commands": [command], "commandId": str(uuid.uuid4()), "userId": self.user, "actAs": [self.party] + self.also_acts_as,
+              **({"disclosedContracts": list(disclosed)} if disclosed else {})}, self.token)
 
     def wait_for(self, template: str, seconds: int = 60, where=lambda contract: True) -> list:
         """The active contracts of a template that pass `where`, once there is one: another participant's commit reaches this one a moment later."""
