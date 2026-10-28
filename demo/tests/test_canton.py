@@ -491,6 +491,15 @@ class DepositTests(LedgerTestCase):
         second = canton.main(["deposit", "deposit-2", EVM_TOKEN, "10"])["depositId"]
         self.assertNotEqual(first, second)
 
+    def test_a_label_serves_one_deposit(self):
+        canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])
+        allocated = len(self.exercised("AllocationFactory_Allocate"))
+        with self.assertRaises(SystemExit) as refused:
+            canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])
+        self.assertIn("each label makes one deposit id", str(refused.exception))
+        self.assertEqual(len(self.exercised("AllocationFactory_Allocate")), allocated)   # nothing was allocated for the second
+        canton.main(["deposit", "deposit-2", EVM_TOKEN, "10"])   # another label goes on
+
     def test_the_deposit_id_is_derived_from_the_depositor_and_the_label(self):
         self.assertEqual(canton.deposit_id_of("u::1", "deposit-1"), hashlib.sha256(b"deposit,u::1,deposit-1").hexdigest())
         self.assertNotEqual(canton.deposit_id_of("u::1", "a"), canton.deposit_id_of("v::1", "a"))
