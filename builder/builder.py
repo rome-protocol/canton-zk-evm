@@ -319,6 +319,14 @@ CONTEXT_MAX_DISCLOSED = 16      # the most disclosed contracts one registry answ
 CONTEXT_KEY = re.compile(r"[ -~]{1,128}")
 
 
+def check_port(parts, what: str) -> None:
+    """A URL's port must be a number from 0 to 65535: a bad one fails the run at start, not every request to the service later."""
+    try:
+        parts.port
+    except ValueError:
+        raise BuilderError(f"the port of {what!r} is not a port (a number from 0 to 65535)") from None
+
+
 def parse_registries(items) -> dict:
     """`ADMIN=URL` (a token registry for the instruments of the party ADMIN) for each item, as {admin: URL}. The URL is the root of the registry's
     CIP-0056 off-ledger API, so that `<URL>/registry/allocations/v1/...` and `<URL>/registry/transfer-instruction/v1/...` are its endpoints; for Canton
@@ -327,6 +335,7 @@ def parse_registries(items) -> dict:
     for item in items:
         admin, _, url = item.partition("=")
         parts = urllib.parse.urlsplit(url)
+        check_port(parts, item)
         if not canton_party_text(admin) or parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
             raise BuilderError(f"a token registry must be ADMIN=URL (an http or https URL with no query and no user or password), not {item!r}")
         if admin in found:
@@ -993,8 +1002,15 @@ class Ledger:
         command = {"ExerciseCommand": {"templateId": CHAIN, "contractId": chain["contractId"], "choice": "Advance", "choiceArgument": argument}}
         body = {"commands": [command], "commandId": command_id or str(uuid.uuid4()), "userId": self.cfg.ledger_user,
                 "actAs": [self.cfg.party], "readAs": self.readers()}
-        have = {d.get("contractId") for d in self.cfg.disclosed if isinstance(d, dict)}
-        shown = [*self.cfg.disclosed, *(d for d in disclosed or [] if d.get("contractId") not in have)]   # --disclosed, then the venue trades' allocations and what the registries name: a contract once, by its id
+        shown = list(self.cfg.disclosed)   # --disclosed, then the venue trades' allocations and what the registries name: a contract once, by its id, as the copy that has a synchronizerId
+        where = {d.get("contractId"): i for i, d in enumerate(shown) if isinstance(d, dict)}
+        for d in disclosed or []:
+            i = where.get(d.get("contractId"))
+            if i is None:
+                where[d.get("contractId")] = len(shown)
+                shown.append(d)
+            else:
+                shown[i] = better_copy(shown[i], d)
         if shown:
             body["disclosedContracts"] = shown
         if self.cfg.package_id:   # without it Canton picks the highest version every hosting participant has vetted, so vetting a new one would switch it
@@ -1655,8 +1671,19 @@ def venue_disclosed(legs: list, canton: Canton) -> list:
         if shown:
             found[shown.get("contractId")] = shown
         for named in canton.leg_disclosed.get(leg_key(leg), ()):   # what the registry's choice context for the leg names
-            found.setdefault(named["contractId"], named)
+            found[named["contractId"]] = better_copy(found.get(named["contractId"]), named)
     return list(found.values())
+
+
+def better_copy(have: dict | None, other: dict) -> dict:
+    """Of two copies of one contract (the same id and blob), the one to send: the first, unless only the other has a synchronizerId."""
+    return other if have is not None and not have.get("synchronizerId") and other.get("synchronizerId") else (have or other)
+
+
+def same_contract(a: dict, b: dict) -> bool:
+    """Two copies with the same contract id are one contract when their blobs are the same: the blob is the contract, and the spelling of
+    the template id or a missing synchronizerId do not make it another."""
+    return a.get("contractId") == b.get("contractId") and a.get("createdEventBlob") == b.get("createdEventBlob")
 
 
 def leg_key(leg: dict) -> tuple:
@@ -1679,7 +1706,7 @@ def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
         return
     context, shown = ask(canton.contexts, admin)
     for named in shown:
-        if any(o != named for o in disclosed_forms(canton, named["contractId"])):
+        if any(not same_contract(o, named) for o in disclosed_forms(canton, named["contractId"])):
             raise NoCantonSide("the token registry names a contract differently than it is given for another leg of the block, with --disclosed or by a venue")
     held = {o["contractId"]: o for legs in canton.leg_disclosed.values() for o in legs}
     given = {d.get("contractId") for d in [*canton.ledger.cfg.disclosed, *canton.disclosed.values()] if isinstance(d, dict)}
@@ -4222,6 +4249,7 @@ def main() -> int:
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         cfg.venues = tuple(dict.fromkeys(args.venue))
+        check_port(urllib.parse.urlsplit(args.twin_registry_url), args.twin_registry_url)
         cfg.twin_registry_url = args.twin_registry_url
         cfg.registries = parse_registries(x.strip() for x in args.registry)
         if cfg.registries and args.unlabelled_deposits:

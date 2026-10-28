@@ -202,17 +202,33 @@ class Contexts(tb.LegCase):
         self.assertIn("differently", result["leftOut"][0]["reason"])
         self.assertEqual(self.disclosed(s), [ROUND, RULES])
 
-    def test_a_contract_that_is_given_with_disclosed_is_sent_once_whatever_its_form_and_a_different_form_leaves_the_leg_out(self):
-        s, t = self.pay()
-        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+    def test_a_contract_that_is_given_with_disclosed_is_sent_once_whatever_its_form_and_a_different_blob_leaves_the_leg_out(self):
         bare = {k: v for k, v in ROUND.items() if k != "synchronizerId"}
-        s.cfg.disclosed = [bare]
-        self.assert_left_out(s, t, "token registry", "differently")
         s, t = self.pay()
         self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        s.cfg.disclosed = [bare]   # the same contract (same id and blob) without its synchronizer: one copy goes, the one that has the synchronizer
+        self.build(s)
+        self.assertEqual(self.disclosed(s), [ROUND, RULES])
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer={**ANSWER, "disclosedContracts": [bare, RULES]})
         s.cfg.disclosed = [ROUND]
         self.build(s)
         self.assertEqual(self.disclosed(s), [ROUND, RULES])
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        s.cfg.disclosed = [{**ROUND, "createdEventBlob": "/+/+"}]   # another blob: another contract under the same id
+        self.assert_left_out(s, t, "token registry", "differently")
+
+    def test_a_registry_that_names_the_contract_of_another_registry_without_its_synchronizer_does_not_keep_the_other_legs_out(self):
+        s = self.two()
+        s.ledger.views["alloc-2"] = {"instrument": {"admin": ADMIN, "id": "T"}}
+        bare = {k: v for k, v in ROUND.items() if k != "synchronizerId"}
+        self.registry(s, TERMS_ADMIN, answer={"choiceContextData": VALUES, "disclosedContracts": [bare]})
+        self.registry(s, ADMIN, answer=ANSWER)
+        result = self.build(s)
+        self.assertEqual(result["leftOut"], [])
+        self.assertEqual(len(s.advance_argument()["legs"]), 2)
+        self.assertEqual(self.disclosed(s), [ROUND, RULES])   # one copy of the round: the one with its synchronizer
 
     def test_a_contract_that_a_venues_allocation_names_in_another_form_leaves_the_trade_out(self):
         s = self.setup({ALICE: []})
@@ -582,7 +598,8 @@ class Contexts(tb.LegCase):
     # ---- configuration
     def test_registries_are_admin_equals_url(self):
         self.assertEqual(b.parse_registries([f"{ADMIN}=https://v.example/api/validator/v0/scan-proxy"]), {ADMIN: "https://v.example/api/validator/v0/scan-proxy"})
-        for bad in ("http://x", f"{ADMIN}=ftp://x", f"{ADMIN}=", f"{ADMIN}=http://x?a=b", "nonsense=http://x"):
+        for bad in ("http://x", f"{ADMIN}=ftp://x", f"{ADMIN}=", f"{ADMIN}=http://x?a=b", "nonsense=http://x",
+                    f"{ADMIN}=http://127.0.0.1:99999", f"{ADMIN}=http://127.0.0.1:abc", f"{ADMIN}=http://127.0.0.1:-1"):
             with self.subTest(bad=bad), self.assertRaises(b.BuilderError):
                 b.parse_registries([bad])
         with self.assertRaises(b.BuilderError):
@@ -635,6 +652,16 @@ class CommandLine(tb.Case):
         self.assertEqual(s.advance_argument()["legs"][0]["value"]["choiceContext"], VALUES)
         self.assertEqual([a[2] for a in r.asked], ["Bearer s3cret"])
         self.assertEqual(s.ledger.submitted[0]["disclosedContracts"], [ROUND, RULES])
+
+    def test_a_port_that_is_not_a_port_fails_the_run_at_start(self):
+        for flag, value in (("--registry", f"{ADMIN}=http://127.0.0.1:99999"), ("--twin-registry-url", "http://127.0.0.1:99999"),
+                            ("--twin-registry-url", "http://127.0.0.1:abc")):
+            with self.subTest(flag=flag, value=value):
+                s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+                code, out = self.run_main(s, flag, value)
+                self.assertEqual(code, 1)
+                self.assertIn("port", out["error"])
+                self.assertEqual(s.ledger.submitted, [])
 
     def test_a_token_for_an_admin_with_no_registry_is_refused(self):
         s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
