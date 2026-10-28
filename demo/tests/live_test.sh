@@ -172,7 +172,8 @@ echo '{"tx":"0x1","token":"0x3333333333333333333333333333333333333333"}' > "$WOR
 echo 'U_PARTY=u::abc' > "$WORK/state/canton/parties.env"
 printf '#!/usr/bin/env bash\nFAKE_ROLE=evm exec python3 %s/fake_live.py "$@"\n' "$ROOT/demo/tests" > "$WORK/evm2"
 printf '#!/usr/bin/env bash\nFAKE_ROLE=canton exec python3 %s/fake_live.py "$@"\n' "$ROOT/demo/tests" > "$WORK/canton2"
-chmod +x "$WORK/evm2" "$WORK/canton2"
+printf '#!/usr/bin/env bash\nFAKE_ROLE=otc exec python3 %s/fake_live.py "$@"\n' "$ROOT/demo/tests" > "$WORK/otc2"
+chmod +x "$WORK/evm2" "$WORK/canton2" "$WORK/otc2"
 legs_run() {   # <the stand-in's balances file>
   env -i PATH="$PATH" HOME="$WORK" FAKE_STATE="$1" CZE_STATE_DIR="$WORK/state" CZE_LIVE_EVM="$WORK/evm2" CZE_LIVE_CANTON="$WORK/canton2" \
     CZE_LEDGER_URL=http://127.0.0.1:1 CZE_RPC_URL=http://127.0.0.1:2 CZE_WTROME=0x4444444444444444444444444444444444444444 \
@@ -211,14 +212,14 @@ grep -q "custody and wTKB's supply before the runs" "$WORK/out" || fail "the cus
 BGPID=   # with BG=1 the lane runs in the background, and this is its pid
 cycle_run() {   # <the stand-in's balances file> [NAME=value ...]: live.sh cycle with no wait between cycles; its output is in $WORK/out
   local state=$1; shift
-  local cmd=(env -i PATH="$PATH" HOME="$WORK" FAKE_STATE="$state" CZE_STATE_DIR="$WORK/state" CZE_LIVE_EVM="$WORK/evm2" CZE_LIVE_CANTON="$WORK/canton2"
+  local cmd=(env -i PATH="$PATH" HOME="$WORK" FAKE_STATE="$state" CZE_STATE_DIR="$WORK/state" CZE_LIVE_EVM="$WORK/evm2" CZE_LIVE_CANTON="$WORK/canton2" CZE_LIVE_OTC="$WORK/otc2"
     CZE_LEDGER_URL=http://127.0.0.1:1 CZE_RPC_URL=http://127.0.0.1:2 CZE_WTROME=0x4444444444444444444444444444444444444444
     CZE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567 CZE_LIVE_RESULTS="$WORK/results" CZE_LIVE_STOP_FILE="$WORK/stop"
     CZE_LIVE_CYCLE_MINUTES=0 CZE_LIVE_CYCLES=3 FAKE_FAIL="${FAKE_FAIL:-}" "$@" "$LIVE" cycle)
   if [ -n "${BG:-}" ]; then "${cmd[@]}" > "$WORK/out" 2>&1 & BGPID=$!; return 0; fi
   "${cmd[@]}" > "$WORK/out" 2>&1
 }
-fresh() { rm -rf "$WORK/results" "$WORK/stop"; mkdir -p "$WORK/results"; echo '{"u":100,"v":0,"cust":0,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$1"; }
+fresh() { rm -rf "$WORK/results" "$WORK/stop" "$1.calls"; mkdir -p "$WORK/results"; echo '{"u":100,"v":0,"cust":0,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$1"; }
 lines() { ls "$WORK"/results/cycle-*.txt; }   # the one results file of a run
 
 # Three cycles: each passes, each in its own blocks, and U, V, the custody and the supply are where they began (V wrapped its one WtROME once).
@@ -316,11 +317,102 @@ kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
 [ "$rc" = 143 ] || fail "a TERM between cycles ended the lane with $rc, not 143"
 tail -1 "$(lines)" | grep -qx 'end=signal cycles=1' || fail "a TERM between cycles has no end line: $(tail -2 "$(lines)")"
 
+# ---- the swap in the cycle: CZE_LIVE_SWAP_EVERY (the stand-in's otc commands are logged in <balances file>.calls)
+# Without the setting no swap runs: no otc command was called in the three cycles of the first run.
+! grep -q '^otc ' "$WORK/c1.json.calls" || fail "a swap ran with CZE_LIVE_SWAP_EVERY unset: $(grep '^otc ' "$WORK/c1.json.calls" | head -3)"
+
+# Every 2nd cycle of three: only cycle 2 runs the swap, inside the cycle (after its return), in the order of otc.py's steps, with the claim id
+# checked before the payment, a block of its own for the payment and a later one for the claim; every balance is back at the end of the cycle.
+fresh "$WORK/s1.json"
+cycle_run "$WORK/s1.json" CZE_LIVE_SWAP_EVERY=2 || fail "three cycles with a swap in the 2nd failed: $(tail -5 "$WORK/out")"
+out=$(lines)
+[ "$(grep -c '^cycle=.* result=pass ' "$out")" = 3 ] || fail "three cycles with a swap did not make three passing lines: $(cat "$out")"
+grep -qx 'swap_every=2' "$out" || fail "the results header does not say swap_every=2: $(head -14 "$out")"
+[ "$(grep -c ' swap=' "$out")" = 1 ] || fail "not exactly one cycle line carries a swap: $(grep 'cycle=' "$out")"
+grep -q '^cycle=2 .* wtrome_v=1 swap=cyc-[0-9]*-2-swap swap_payment_block=[0-9]* swap_payment_update=upd swap_payment_tx=0x[0-9a-f]* swap_claim_block=[0-9]* swap_claim_tx=0x[0-9a-f]* swap_withdrawal_block=[0-9]* swap_withdrawal_update=upd swap_return_tx=0x[0-9a-f]*$' "$out" \
+  || fail "cycle 2 does not carry the swap's label, blocks and updates: $(grep '^cycle=2 ' "$out")"
+pay_block=$(grep '^cycle=2 ' "$out" | sed 's/.* swap_payment_block=\([0-9]*\) .*/\1/'); claim_block=$(grep '^cycle=2 ' "$out" | sed 's/.* swap_claim_block=\([0-9]*\) .*/\1/')
+[ "$claim_block" -gt "$pay_block" ] || fail "the swap's claim block $claim_block is not after its payment block $pay_block"
+grep -q '^cycle=3 .* tkb_u=100 tkb_v=0 custody=0 wtkb_supply=0.0 wtkb_u=0.0 wtrome_u=0 wtrome_v=1$' "$out" || fail "cycle 3 is not back at the start: $(grep '^cycle=3 ' "$out")"
+for k in u v cust wu wv sup rome_u; do [ "$(jq ".$k // 0" "$WORK/s1.json")" = "$([ $k = u ] && echo 100 || echo 0)" ] || fail "$k is not back at its start after the swap: $(cat "$WORK/s1.json")"; done
+[ "$(jq .allocations "$WORK/s1.json")" = null ] && [ "$(jq '.sa // 0' "$WORK/s1.json")" = 0 ] || fail "the seller's allocation is not gone: $(cat "$WORK/s1.json")"
+[ "$(jq .swap "$WORK/s1.json")" = null ] || fail "the swap's trade is not closed: $(cat "$WORK/s1.json")"
+order=$(grep -E '^(otc|evm used|evm withdraw v|evm give)' "$WORK/s1.json.calls" | sed -n '/^otc ids/,$p' | cut -d' ' -f1-2 | tr '\n' ',')
+case $order in
+  "otc ids,evm used,otc offer,otc accept,otc allocate,otc publish,otc pay,otc check,otc claim,otc close,otc check,evm withdraw,evm give,"*) ;;
+  *) fail "the swap's steps are not in order (the claim id checked before the payment, close after the claim): $order" ;;
+esac
+[ "$(grep -c '^otc offer' "$WORK/s1.json.calls")" = 1 ] || fail "not exactly one swap was offered"
+grep -q '^otc publish cyc-[0-9]*-2-swap 0x3333333333333333333333333333333333333333$' "$WORK/s1.json.calls" || fail "the swap is not published with the wrapped TKB: $(grep '^otc publish' "$WORK/s1.json.calls")"
+grep -q '^otc offer cyc-[0-9]*-2-swap 1 0x4444444444444444444444444444444444444444 1$' "$WORK/s1.json.calls" || fail "the offer is not 1 TKB for 1 WtROME: $(grep '^otc offer' "$WORK/s1.json.calls")"
+grep -q '== the swap' "$WORK/out" || fail "the swap is not in the log"
+
+# Every cycle: a fresh label for each swap.
+fresh "$WORK/s2.json"
+cycle_run "$WORK/s2.json" CZE_LIVE_SWAP_EVERY=1 CZE_LIVE_CYCLES=2 || fail "two cycles with a swap each failed: $(tail -5 "$WORK/out")"
+out=$(lines)
+[ "$(grep -o ' swap=[^ ]*' "$out" | sort -u | wc -l | tr -d ' ')" = 2 ] || fail "the two swaps do not have two labels: $(grep 'cycle=' "$out")"
+[ "$(grep -c '^cycle=.* result=pass .* swap=' "$out")" = 2 ] || fail "not both cycles carry a swap: $(cat "$out")"
+
+# The gateway has taken the claim id, or the check does not answer: the lane stops before anything is offered or paid.
+for k in yes none; do
+  fresh "$WORK/s3.json"
+  cycle_run "$WORK/s3.json" CZE_LIVE_SWAP_EVERY=1 FAKE_USED=$k && fail "the lane went on although the claim id check said $k"
+  out=$(lines)
+  tail -1 "$out" | grep -q '^cycle=1 .*result=fail reason="the gateway has taken the claim id of swap ' || fail "FAKE_USED=$k: no failed line that names the claim id: $(tail -2 "$out")"
+  ! grep -q '^otc \(offer\|pay\|close\)' "$WORK/s3.json.calls" || fail "FAKE_USED=$k: the swap went on: $(grep '^otc' "$WORK/s3.json.calls")"
+done
+fresh "$WORK/s3b.json"
+cycle_run "$WORK/s3b.json" CZE_LIVE_SWAP_EVERY=1 FAKE_FAIL=used && fail "the lane went on although the claim id check failed"
+tail -1 "$(lines)" | grep -q '^cycle=1 .*result=fail reason="the check of the claim id of swap .* failed: nothing is paid' || fail "a failed claim id check is not in the results: $(tail -2 "$(lines)")"
+! grep -q '^otc \(offer\|pay\|close\)' "$WORK/s3b.json.calls" || fail "the swap went on after the claim id check failed"
+
+# A pay or a claim that fails (a timeout waiting for finality is one): the lane stops loud with the trade left open, and close is never called.
+for k in pay claim; do
+  fresh "$WORK/s4.json"
+  cycle_run "$WORK/s4.json" CZE_LIVE_SWAP_EVERY=1 FAKE_FAIL_OTC=$k && fail "the lane went on although the swap's $k failed"
+  out=$(lines)
+  tail -1 "$out" | grep -q "^cycle=1 .*result=fail reason=\"otc.py $k of swap cyc-[0-9]*-1-swap failed; the swap cyc-[0-9]*-1-swap is left open and not closed" || fail "the failed $k has no loud line: $(tail -2 "$out")"
+  [ "$(grep -c '^cycle=.* result=fail' "$out")" = 1 ] || fail "not exactly one failed line after the swap's $k failed: $(cat "$out")"
+  ! grep -q '^cycle=2 ' "$out" || fail "the lane went on after the swap's $k failed: $(cat "$out")"
+  ! grep -q '^otc close' "$WORK/s4.json.calls" || fail "the trade was closed after the swap's $k failed"
+  [ "$k" != pay ] || ! grep -q '^otc claim' "$WORK/s4.json.calls" || fail "the buyer claimed after the payment failed"
+done
+
+# A trade that is still there after close stops the lane, and says that it is left open.
+fresh "$WORK/s5.json"
+cycle_run "$WORK/s5.json" CZE_LIVE_SWAP_EVERY=1 FAKE_NO_CLOSE=yes && fail "the lane went on although the trade was still there after close"
+tail -1 "$(lines)" | grep -q '^cycle=1 .*result=fail reason="the trade of swap .* is still there after close; the swap ' || fail "the trade left after close is not in the results: $(tail -2 "$(lines)")"
+
+# A balance that does not come back after the swap stops the lane with that balance named: the TKB of U (the withdrawal gives one less), the WtROME of U.
+fresh "$WORK/s6.json"
+cycle_run "$WORK/s6.json" CZE_LIVE_SWAP_EVERY=1 FAKE_DRIFT=swap-withdraw && fail "the lane went on although U's TKB did not come back from the swap"
+tail -1 "$(lines)" | grep -q "^cycle=1 .*result=fail reason=\"U's TKB after the swap's return: got 99" || fail "the short TKB return of the swap is not in the results: $(tail -2 "$(lines)")"
+! grep -q '^cycle=2 ' "$(lines)" || fail "a second cycle started after the swap's TKB did not come back"
+fresh "$WORK/s7.json"
+cycle_run "$WORK/s7.json" CZE_LIVE_SWAP_EVERY=1 FAKE_DRIFT=swap-give && fail "the lane went on although U's WtROME did not come back from the swap"
+tail -1 "$(lines)" | grep -q "^cycle=1 .*result=fail reason=\"U's WtROME after the swap's return" || fail "the short WtROME return of the swap is not in the results: $(tail -2 "$(lines)")"
+
+# A TERM while the swap's payment is in flight (the stand-in's pay takes 3 s): a failed line that says the swap is left open, and no close.
+fresh "$WORK/s8.json"
+BG=1 cycle_run "$WORK/s8.json" CZE_LIVE_SWAP_EVERY=1 CZE_LIVE_CYCLE_MINUTES=1 CZE_LIVE_CYCLES=0 FAKE_SLOW_OTC=pay; pid=$BGPID
+for _ in $(seq 1 120); do grep -q '^otc pay' "$WORK/s8.json.calls" 2>/dev/null && break; sleep 0.25; done
+grep -q '^otc pay' "$WORK/s8.json.calls" || { kill "$pid"; fail "the swap did not reach its payment"; }
+kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+[ "$rc" = 143 ] || fail "a TERM during the swap's payment ended the lane with $rc, not 143"
+out=$(lines)
+[ "$(grep -c '^cycle=.* result=fail' "$out")" = 1 ] || fail "a TERM in the swap did not leave exactly one failed line: $(cat "$out")"
+tail -1 "$out" | grep -q '^cycle=1 .*result=fail reason="stopped by a signal during cycle 1.*the swap cyc-[0-9]*-1-swap is left open and not closed' || fail "the TERM in the swap does not say that the swap is left open: $(tail -2 "$out")"
+! grep -q '^otc close' "$WORK/s8.json.calls" || fail "the trade was closed after a TERM during its payment"
+
 # Settings of the cycle are refused before anything is called.
 fresh "$WORK/c7.json"
 cycle_run "$WORK/c7.json" CZE_LIVE_CYCLE_MINUTES=x && fail "minutes of x were accepted"
 cycle_run "$WORK/c7.json" CZE_LIVE_CYCLES=-1 && fail "-1 cycles were accepted"
 cycle_run "$WORK/c7.json" CZE_LIVE_CYCLE_MINUTES=08 && fail "minutes of 08 were accepted"
 cycle_run "$WORK/c7.json" CZE_LIVE_CYCLES=00 && fail "00 cycles were accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_SWAP_EVERY=x && fail "a swap every x cycles was accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_SWAP_EVERY=-1 && fail "a swap every -1 cycles was accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_SWAP_EVERY=06 && fail "a swap every 06 cycles was accepted"
 
 echo "ok: demo/live.sh arguments, settings, the setup guards, the legs and the cycle"

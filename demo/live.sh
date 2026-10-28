@@ -20,6 +20,12 @@
 #          $CZE_STATE_DIR/demo/cycle.stop) or CZE_LIVE_CYCLES cycles have run (default 0 = no limit). A cycle makes the checks of `legs`, and that every
 #          balance is back at its start; it appends one line to $CZE_LIVE_RESULTS/cycle-<start time>.txt (result=pass with the three blocks, or
 #          result=fail with the reason). A failed check stops the lane: nothing is retried and nothing is minted to cover a difference.
+#          Every CZE_LIVE_SWAP_EVERY cycles (default 0 = never; DevNet sets 6, one an hour at the 10-minute cycle) the cycle also runs one OTC swap
+#          (demo/otc.py) after its return: U offers 1 TKB for 1 WtROME, the venue accepts, U allocates, the venue publishes, V pays (the claim id is
+#          checked unused first), V claims the wrapped TKB, the finished trade is closed; then V withdraws that 1 wTKB to U and U sends V the WtROME, so
+#          every balance is back at the start of the cycle (checked like the legs return). The cycle's line then also has swap=<label> and the swap's
+#          payment, claim and withdrawal blocks. A swap that fails stops the lane and its trade is left as it is, never closed: its payment or claim
+#          may still be in flight (close it by hand with otc.py close once it is settled or called off).
 #          A stop file left from an earlier lane is refused at the start (remove it first). Stop the lane with the stop file, which ends it between cycles;
 #          a TERM, INT or HUP during a cycle writes a result=fail line for it (the balances may be part-way through), and between cycles an end=signal line.
 #   all    setup, then legs (the default).
@@ -31,7 +37,7 @@
 # --disclosed $CZE_STATE_DIR/demo/disclosed.json (the file canton.py setup writes). Settings: CZE_STATE_DIR, CZE_LEDGER_URL, CZE_RPC_URL, the
 # token files and CZE_USER_PREFIX of demo/canton.py, CZE_WTROME (the WtROME address; legs), CZE_SOURCE_COMMIT (the full commit hash of the
 # source that runs; legs), CZE_WTKB (a wrapped TKB that setup does not make: one that is not yet registered on Canton must be called Wrapped TKB / wTKB), CZE_LIVE_WAIT_SECONDS (default 600),
-# CZE_LIVE_RESULTS, and for cycle CZE_LIVE_CYCLE_MINUTES, CZE_LIVE_CYCLES, CZE_LIVE_STOP_FILE. CZE_LIVE_EVM and CZE_LIVE_CANTON name other commands in place of evm.py and canton.py (for tests only).
+# CZE_LIVE_RESULTS, and for cycle CZE_LIVE_CYCLE_MINUTES, CZE_LIVE_CYCLES, CZE_LIVE_STOP_FILE, CZE_LIVE_SWAP_EVERY. CZE_LIVE_EVM, CZE_LIVE_CANTON and CZE_LIVE_OTC name other commands in place of evm.py, canton.py and otc.py (for tests only).
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || { echo "FAIL: demo/live.sh needs bash 4.4 or later" >&2; exit 1; }   # set -e then holds inside "$(...)" too
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -60,12 +66,15 @@ PAY=${CZE_LIVE_PAY:-1}
 CYCLE_MINUTES=${CZE_LIVE_CYCLE_MINUTES:-10}
 CYCLES=${CZE_LIVE_CYCLES:-0}
 STOP_FILE=${CZE_LIVE_STOP_FILE:-$DEMO/cycle.stop}
+SWAP_EVERY=${CZE_LIVE_SWAP_EVERY:-0}
+SWAP_TKB=1; SWAP_TKA=1   # the swap's offer: 1 TKB for 1 WtROME
 [ "$CZE_CANTON" = external ] || fail "live.sh runs on an existing participant: CZE_CANTON must be external, not $CZE_CANTON"
 [ -n "${CZE_LEDGER_URL:-}" ] || fail "set CZE_LEDGER_URL to the participant's JSON Ledger API"
 [ -n "${CZE_RPC_URL:-}" ] || fail "set CZE_RPC_URL to the chain's JSON-RPC"
 [[ $PAY =~ ^[1-9][0-9]*$ ]] || fail "CZE_LIVE_PAY must be a whole number of WtROME, 1 or more: $PAY"
 [[ $CYCLE_MINUTES =~ ^(0|[1-9][0-9]*)$ ]] || fail "CZE_LIVE_CYCLE_MINUTES must be a whole number: $CYCLE_MINUTES"
 [[ $CYCLES =~ ^(0|[1-9][0-9]*)$ ]] || fail "CZE_LIVE_CYCLES must be a whole number (0 for no limit): $CYCLES"
+[[ $SWAP_EVERY =~ ^(0|[1-9][0-9]*)$ ]] || fail "CZE_LIVE_SWAP_EVERY must be a whole number (0 for no swap): $SWAP_EVERY"
 [[ $WAIT_SECONDS =~ ^[0-9]+$ ]] || fail "CZE_LIVE_WAIT_SECONDS must be a whole number: $WAIT_SECONDS"
 if [ "$mode" != setup ]; then
   [[ ${CZE_SOURCE_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || fail "set CZE_SOURCE_COMMIT to the full commit hash of the source that is running"
@@ -78,8 +87,10 @@ PY=${CZE_PY:-$CZE_STATE_DIR/venv/bin/python3}
 [ -x "$PY" ] || PY=python3
 if [ -n "${CZE_LIVE_EVM:-}" ]; then EVM=("$CZE_LIVE_EVM"); else EVM=("$PY" "$ROOT/demo/evm.py"); fi
 if [ -n "${CZE_LIVE_CANTON:-}" ]; then CANTON=("$CZE_LIVE_CANTON"); else CANTON=("$PY" "$ROOT/demo/canton.py"); fi
+if [ -n "${CZE_LIVE_OTC:-}" ]; then OTC=("$CZE_LIVE_OTC"); else OTC=("$PY" "$ROOT/demo/otc.py"); fi
 evm() { "${EVM[@]}" "$@"; }
 canton() { "${CANTON[@]}" "$@"; }
+otc() { "${OTC[@]}" "$@"; }
 is() { [ "$1" = "$2" ] || fail "$3: got $1, expected $2"; }
 num() { awk -v a="$1" 'BEGIN { printf "%.10g", a + 0 }'; }
 sum() { num "$(awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }')"; }
@@ -369,11 +380,13 @@ legs() {
 # (canton.py return-tkb), and U sends V the $PAY WtROME (evm.py give). After the cycle every balance is what it was before it: if one is not, the lane stops.
 # Each cycle appends one line to $CYCLE_OUT; a failed check appends a line that says why, and stops the lane (nothing is retried).
 CYCLE_N=0; IN_CYCLE=0; CYCLE_OUT=
+SWAP_OPEN=   # the label of the swap's trade, from its offer until it is closed: while it is set, a stop leaves that trade as it is
 cycle_line() { printf '%s\n' "$*" >> "$CYCLE_OUT"; }
 cycle_failed() {   # the reason: one line for the failed cycle, if there is not one yet
   [ "$IN_CYCLE" = 1 ] && [ -n "$CYCLE_OUT" ] || return 0
   ! tail -1 "$CYCLE_OUT" | grep -q "^cycle=$CYCLE_N .*result=fail" || return 0
   local reason; reason=$(printf '%s' "$1" | tr '\n\t"' "  '" | cut -c1-300)   # one line, and no double quote inside the quoted reason
+  [ -z "$SWAP_OPEN" ] || reason="$reason; the swap $SWAP_OPEN is left open and not closed: its payment or claim may be in flight, so close it (otc.py close) only once it is settled or called off"
   cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=fail reason=\"$reason\""
 }
 cycle_exit() {   # an unexpected stop (a command failed with no message of ours): the line says so
@@ -388,6 +401,98 @@ cycle_signal() {   # <exit code>: the lane was killed (TERM, INT, HUP): the resu
 interval_wait() {   # <started (epoch seconds)>: until the interval since then has passed; leaves early when the stop file appears
   local deadline=$(($1 + CYCLE_MINUTES * 60))
   while [ "$(date +%s)" -lt "$deadline" ] && [ ! -e "$STOP_FILE" ]; do sleep 1; done
+}
+# The OTC swap of a cycle (every CZE_LIVE_SWAP_EVERY cycles), run after the return with every balance at its start: U offers $SWAP_TKB TKB for $SWAP_TKA WtROME,
+# V pays and claims the wrapped TKB, the finished trade is closed, and then the swap is returned: V's address withdraws that wTKB to U (the TKB go from the
+# gateway to U), and U sends V the WtROME. It runs inside the cycle because it shares U, V, V's key, U's TKB, the custody and U's allocations with the legs.
+# A failure anywhere stops the lane with the trade left as it is: close is the one step after the claim and never runs on a payment that may be in flight.
+otc_run() {   # <otc.py arguments>: the answer is in SWAP_OUT
+  SWAP_OUT=$(otc "$@") || fail "otc.py $1 of swap $SWAP_OPEN failed"
+  jq -c . <<<"$SWAP_OUT"
+}
+swap_funded() {   # <label>: until the funded claim of the settled trade is there (Canton has committed the trade's block)
+  local deadline=$(($(date +%s) + WAIT_SECONDS)) c
+  while :; do
+    c=$(otc check "$1") || fail "otc.py check of swap $1 failed"
+    [ "$(jq -r .fundedClaim <<<"$c")" != true ] || return 0
+    [ "$(date +%s)" -lt "$deadline" ] || fail "the funded claim of swap $1 is not there $WAIT_SECONDS seconds after its payment's block"
+    sleep 2
+  done
+}
+SWAP_FIELDS=
+run_swap() {   # <tag> <canton balances at the start>
+  local label=$1-swap before=$2 w_u0 w_v0 rome_u0 rome_v0 ids claim_of used paid
+  step "the swap: U offers $SWAP_TKB TKB for $SWAP_TKA WtROME ($label), V pays and claims, then the swap is returned"
+  awk -v a="$(total "$before" u)" -v n="$SWAP_TKB" 'BEGIN { exit !(a >= n) }' || fail "U holds less than $SWAP_TKB TKB for the swap: $(totals "$before")"
+  w_u0=$(wrapped "$U_ADDR"); w_v0=$(wrapped "$V_ADDR")
+  rome_u0=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v0=$(coin "$CZE_WTROME" "$V_ADDR")
+  [ "$rome_v0" -ge "$SWAP_TKA" ] || fail "V holds $rome_v0 WtROME, less than the swap's $SWAP_TKA"
+  ids=$(otc ids "$label") || fail "otc.py ids of swap $label failed"
+  claim_of=$(jq -r .claimId <<<"$ids")
+  [[ $claim_of =~ ^[0-9a-f]{64}$ ]] || fail "no claim id for swap $label: $ids"
+  # The gateway takes a claim id once. A check that gives no plain "no" is a failed check, and nothing is paid.
+  used=$(evm used "$claim_of") || fail "the check of the claim id of swap $label failed: nothing is paid"
+  [ "$(jq -r .used <<<"$used")" = false ] || fail "the gateway has taken the claim id of swap $label, or the check gave no answer ($used): nothing is paid"
+
+  SWAP_OPEN=$label
+  otc_run offer "$label" "$SWAP_TKB" "$CZE_WTROME" "$SWAP_TKA"
+  otc_run accept "$label"
+  otc_run allocate "$label"
+  otc_run publish "$label" "$WTKB"
+  otc_run pay "$label" "" "$WAIT_SECONDS"   # approves the gateway, pays, and waits for the block to be finalized
+  paid=$SWAP_OUT
+  is "$(jq -r .receipt.status <<<"$paid")" 1 "the status of the swap's payment"
+  SW_PAY_N=$(jq -r .receipt.block <<<"$paid"); SW_PAY_H=$(jq -r .receipt.blockHash <<<"$paid"); SW_PAY_TX=$(jq -r .pay <<<"$paid")
+  SW_PAY_UPDATE=$(check_leg "$SW_PAY_N" pay gateway "$SW_PAY_H")
+  local after_pay; after_pay=$(canton balances)
+  is "$(num "$(total "$after_pay" u)")" "$(sum "$(total "$before" u)" "-$SWAP_TKB")" "U's TKB after the swap's payment"
+  is "$(num "$(total "$after_pay" gateway)")" "$(sum "$(total "$before" gateway)" "$SWAP_TKB")" "the custody after the swap's payment"
+  is "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$after_pay")" "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$before")" "the allocations, terms, deposit requests and acceptances after the swap's payment"
+  is "$(coin "$CZE_WTROME" "$U_ADDR")" $((rome_u0 + SWAP_TKA)) "U's WtROME after the swap's payment"
+  is "$(coin "$CZE_WTROME" "$V_ADDR")" $((rome_v0 - SWAP_TKA)) "V's WtROME after the swap's payment"
+
+  swap_funded "$label"
+  otc_run claim "$label" "$WAIT_SECONDS"   # in a later block
+  local claimed=$SWAP_OUT legs
+  is "$(jq -r .receipt.status <<<"$claimed")" 1 "the status of the swap's claim"
+  SW_CLAIM_N=$(jq -r .receipt.block <<<"$claimed"); SW_CLAIM_TX=$(jq -r .claim <<<"$claimed")
+  [ "$SW_CLAIM_N" != "$SW_PAY_N" ] || fail "the swap's claim is in the block of its payment, $SW_PAY_N"
+  legs=$(evm legs "$SW_CLAIM_N")
+  is "$(jq -r .legs <<<"$legs")" 1 "the legs in the swap's claim block $SW_CLAIM_N"
+  is "$(jq -c .kinds <<<"$legs")" '["claim"]' "the kind of the swap's claim block $SW_CLAIM_N"
+  local after_claim w_v1; after_claim=$(canton balances); w_v1=$(wrapped "$V_ADDR")
+  is "$(num "$(jq -r .balance <<<"$w_v1")")" "$(sum "$(jq -r .balance <<<"$w_v0")" "$SWAP_TKB")" "V's wTKB after the swap's claim"
+  is "$(num "$(jq -r .supply <<<"$w_v1")")" "$(sum "$(jq -r .supply <<<"$w_v0")" "$SWAP_TKB")" "wTKB's supply after the swap's claim"
+  custody_is_supply "$after_claim" "after the swap's claim"
+
+  # The claim is final and the funded claim is spent, so the trade is finished: only now is it closed.
+  step "the swap's trade is closed"
+  otc_run close "$label"
+  if otc check "$label" >/dev/null 2>&1; then fail "the trade of swap $label is still there after close"; fi
+  SWAP_OPEN=
+
+  step "the swap's return: V's address withdraws $SWAP_TKB wTKB to U, and U sends V $SWAP_TKA WtROME"
+  local wd_tx r give_tx
+  wd_tx=$(evm withdraw v "$WTKB" "$SWAP_TKB" "$U_PARTY" | jq -r .tx)
+  r=$(final "$wd_tx" "the swap's withdrawal"); SW_WD_N=$(jq -r .block <<<"$r")
+  SW_WD_UPDATE=$(check_leg "$SW_WD_N" withdraw u "$(jq -r .blockHash <<<"$r")")
+  give_tx=$(evm give u "$CZE_WTROME" "$V_ADDR" "$SWAP_TKA" | jq -r .tx)
+  final "$give_tx" "U's return of the swap's $SWAP_TKA WtROME" >/dev/null
+  SW_RETURN_TX=$give_tx
+
+  # Every balance is what it was when the swap began.
+  local end w_u1; end=$(canton balances); w_u1=$(wrapped "$U_ADDR"); w_v1=$(wrapped "$V_ADDR")
+  is "$(num "$(total "$end" u)")" "$(num "$(total "$before" u)")" "U's TKB after the swap's return"
+  is "$(num "$(total "$end" v)")" "$(num "$(total "$before" v)")" "V's TKB after the swap's return"
+  is "$(num "$(total "$end" gateway)")" "$(num "$(total "$before" gateway)")" "the custody after the swap's return"
+  is "$(num "$(jq -r .balance <<<"$w_u1")")" "$(num "$(jq -r .balance <<<"$w_u0")")" "U's wTKB after the swap's return"
+  is "$(num "$(jq -r .balance <<<"$w_v1")")" "$(num "$(jq -r .balance <<<"$w_v0")")" "V's wTKB after the swap's return"
+  is "$(num "$(jq -r .supply <<<"$w_v1")")" "$(num "$(jq -r .supply <<<"$w_v0")")" "wTKB's supply after the swap's return"
+  is "$(coin "$CZE_WTROME" "$U_ADDR")" "$rome_u0" "U's WtROME after the swap's return"
+  is "$(coin "$CZE_WTROME" "$V_ADDR")" "$rome_v0" "V's WtROME after the swap's return"
+  is "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$end")" "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$before")" "the allocations, terms, deposit requests and acceptances after the swap's return"
+  custody_is_supply "$end" "after the swap's return"
+  SWAP_FIELDS=" swap=$label swap_payment_block=$SW_PAY_N swap_payment_update=$SW_PAY_UPDATE swap_payment_tx=$SW_PAY_TX swap_claim_block=$SW_CLAIM_N swap_claim_tx=$SW_CLAIM_TX swap_withdrawal_block=$SW_WD_N swap_withdrawal_update=$SW_WD_UPDATE swap_return_tx=$SW_RETURN_TX"
 }
 one_cycle() {   # <tag>
   local tag=$1 start after1 after2 after3 after4 w_start
@@ -426,7 +531,10 @@ one_cycle() {   # <tag>
   is "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$end")" "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$start")" "the allocations, terms, deposit requests and acceptances at the end of cycle $CYCLE_N"
   custody_is_supply "$end" "at the end of cycle $CYCLE_N"
 
-  cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=pass deposit_block=$DEP_N payment_block=$PAY_N withdrawal_block=$WD_N deposit_update=$DEP_UPDATE payment_update=$PAY_UPDATE withdrawal_update=$WD_UPDATE return_tx=$give_tx tkb_u=$(total "$end" u) tkb_v=$(total "$end" v) custody=$(total "$end" gateway) wtkb_supply=$(jq -r .supply <<<"$w_end") wtkb_u=$(jq -r .balance <<<"$w_end") wtrome_u=$rome_u_end wtrome_v=$rome_v_end"
+  SWAP_FIELDS=
+  if [ "$SWAP_EVERY" != 0 ] && [ $((CYCLE_N % SWAP_EVERY)) = 0 ]; then run_swap "$tag" "$end"; fi
+
+  cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=pass deposit_block=$DEP_N payment_block=$PAY_N withdrawal_block=$WD_N deposit_update=$DEP_UPDATE payment_update=$PAY_UPDATE withdrawal_update=$WD_UPDATE return_tx=$give_tx tkb_u=$(total "$end" u) tkb_v=$(total "$end" v) custody=$(total "$end" gateway) wtkb_supply=$(jq -r .supply <<<"$w_end") wtkb_u=$(jq -r .balance <<<"$w_end") wtrome_u=$rome_u_end wtrome_v=$rome_v_end$SWAP_FIELDS"
   IN_CYCLE=0
 }
 
@@ -437,7 +545,7 @@ cycle() {
   CYCLE_OUT=$RESULTS/cycle-$(date -u +%Y%m%dT%H%M%SZ).txt
   mkdir -p "$RESULTS"
   {
-    echo "# A balanced cycle on a running chain, repeated: a deposit, a payment in WtROME, a withdrawal, then the TKB and the WtROME of the payment back."
+    echo "# A balanced cycle on a running chain, repeated: a deposit, a payment in WtROME, a withdrawal, then the TKB and the WtROME of the payment back. Every CZE_LIVE_SWAP_EVERY cycles the line also names an OTC swap (swap=, its payment, claim and withdrawal blocks), after which every balance is back too."
     echo "# One line a cycle: result=pass with the blocks and Canton updates of the three legs and the balances after the cycle, or result=fail with the reason, after which the lane stops."
     echo "format=1"
     echo "date=$(date -u +%FT%TZ)"
@@ -449,6 +557,7 @@ cycle() {
     echo "pay_wtrome=$PAY"
     echo "minutes=$CYCLE_MINUTES"
     echo "cycles=$CYCLES"
+    echo "swap_every=$SWAP_EVERY"
   } > "$CYCLE_OUT"
   echo "results: $CYCLE_OUT   (stop it with: touch $STOP_FILE)"
   FAIL_HOOK=cycle_failed
