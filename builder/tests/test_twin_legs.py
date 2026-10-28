@@ -46,8 +46,8 @@ QUOTA_NAME = f"gw/erc20:{TKA}"
 class Registry:
     """A fake twin registry service: GET /twin/v1/lock-parts/<id>."""
 
-    def __init__(self, parts=None, status=None, raw=None, delay=0, trickle=False):
-        self.parts, self.status, self.asked = dict(parts or {}), status, []
+    def __init__(self, parts=None, status=None, raw=None, delay=0, trickle=False, location=None):
+        self.parts, self.status, self.asked, self.location = dict(parts or {}), status, [], location
         self.raw, self.delay, self.trickle = raw, delay, trickle   # raw: bytes to answer with; delay: seconds before the answer; trickle: a body that never ends
         registry = self
 
@@ -86,6 +86,8 @@ class Registry:
                     code, body = 404, b"{}"
                 try:
                     self.send_response(code)
+                    if registry.location:
+                        self.send_header("location", registry.location)
                     self.send_header("content-length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -265,11 +267,15 @@ class Twins(tb.LegCase):
         self.assertIn("not the parts of a lock's id", str(e.exception))
 
     def test_a_registry_that_answers_with_a_redirect_is_not_followed(self):
-        registry = Registry(status=302)
+        elsewhere = Registry({LOCK_ID: {"receiver": RECEIVER, "ref": REF}})   # would answer the lock's id validly
+        self.addCleanup(elsewhere.close)
+        registry = Registry(status=302, location=f"{elsewhere.url}/twin/v1/lock-parts/{LOCK_ID}")
         self.addCleanup(registry.close)
         with self.assertRaises(b.NoCantonSide) as e:
-            b.twin_registry_reader(registry.url)("aa" * 32)
+            b.twin_registry_reader(registry.url)(LOCK_ID)
         self.assertIn("HTTP 302", str(e.exception))
+        self.assertEqual(registry.asked, [f"/twin/v1/lock-parts/{LOCK_ID}"])
+        self.assertEqual(elsewhere.asked, [])
 
     def test_a_lock_is_exact_in_what_daml_accepts(self):
         self.assertIsNone(b.twin_units(10**36, 24))
