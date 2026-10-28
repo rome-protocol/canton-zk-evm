@@ -37,7 +37,7 @@ export const gatewayOf = (r: any): string | null => (r.gateway ? hex(r.gateway) 
  * funded claim (`funded-claim`, matched by its claim id). `amount` is the Canton side's, in base units of 10 decimals, and is null until the funded claim has been read; the instrument is
  * the registered token's, from the trade until then. The settling Canton update is the block's own for a payment and the claim's, which an earlier block made, for a deposit.
  * A twin leg (role lock or release) shows the Canton twin of an ERC-20: `instrument` is `erc20:<token address>`, administered by the gateway party, and `amount` is the twin's, in base units of 10 decimals
- * (null while the token's decimals are not read). `recipient` is the address the leg paid: the vault for a lock, the EVM payee for a release. The settling update is the block's own.
+ * (scaled with the decimals the chain record pins). `recipient` is the address the leg paid: the vault for a lock, the EVM payee for a release. The settling update is the block's own.
  * There is no party in it: the venue, the seller and the buyer's Canton side are never kept, and the viewer is shown "a Canton party".
  */
 export interface LegCanton {

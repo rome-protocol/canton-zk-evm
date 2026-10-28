@@ -84,7 +84,7 @@ describe.skipIf(!TEST_URL)("the legs of registered gateways", () => {
       expect(await registeredLegsOnce(pool, chain.reads)).toEqual({ legs: 4, blocks: 4 });
       expect((await legRows(pool)).map((r) => [r.block, r.i, r.gateway?.slice(0, 2) ?? null, r.amount])).toEqual([[1, 0, null, "42"], [1, 1, "b1", "7"], [1, 2, "b6", "9"], [2, 0, "b1", "5"], [2, 1, "b6", "3"]]);
       expect((await c10(pool)).status).toBe("degraded");
-      // the first bad hash is the one named: the second gateway's in block 1, not the first gateway's good one
+      // the last bad hash written is the one named: the second gateway's in block 1, not the first gateway's good one
       expect((await c10(pool)).detail).toContain(`block 1: `);
       expect((await c10(pool)).detail).toContain(`the registered gateway ${GW4}'s legs[1]`);
     });

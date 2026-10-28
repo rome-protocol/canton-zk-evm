@@ -10,7 +10,7 @@ export const TWIN_BATCH_BLOCKS = 5000;
  * Counts the twin legs into `twin_totals`, once per leg: for each pinned twin token, the sum and the number of the legs that locked it into a registered vault and of those a registered vault released.
  * A pass counts the blocks after `meta.twin_totals_block` up to the newest block whose legs are all indexed (the newest indexed block, or the progress of the slowest registered gateway, whichever is
  * less), at most `batch` blocks, in one transaction with the cursor, so a pass that stops anywhere is run again from the cursor. A token page then reads one row, however many legs the token has.
- * With no vault or no pinned twin registered nothing is counted. The sums are forgotten (`resetTwinTotals`) when a vault or a pin is added and when a block is indexed again, and counted again from the first block.
+ * With no vault or no pinned twin registered nothing is counted. The sums are forgotten (`resetTwinTotals`) when a vault, a pin or a gateway is added or removed and when a block is indexed again, and counted again from the first block.
  * What the registered vaults hold of each pinned token is read from reth at the block the pass counts to (`to`), and written with the sums in the same transaction, so that the twin's supply and the vaults'
  * balance are two numbers of one block, never one of the index's live balances against sums that trail it. It is read only by the pass that reaches the end (a pass that stops at its batch writes none: it
  * is not the block that is shown, and reth is not asked about an old block for nothing). A token that does not answer leaves it null. Returns the blocks passed over.

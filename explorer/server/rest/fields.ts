@@ -135,7 +135,7 @@ export const REST_FIELDS = {
   ],
   /** What the gateway holds on Canton of a registered token's instrument and the token's supply, both read at one block (the custody at the ledger offset of its record): the instrument is public, no holding, owner or contract is. */
   cantonCustody: ["instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "ledgerOffset", "readAt"],
-  /** The Canton twin of an ERC-20 a registered vault holds: what the twin has in issue (locks less releases, null when the token has too many legs to total) next to what the vaults hold, both in the token's base units. */
+  /** The Canton twin of an ERC-20 a registered vault holds: what the twin has in issue (locks less releases) next to what the vaults hold, both in the token's base units. */
   twinSupply: ["supply", "vaultBalance", "locks", "releases", "through"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */

@@ -9,7 +9,7 @@ create table canton_twins (
 comment on table canton_twins is 'the twins pinned in the chain record, replaced by each custody read that sees the chain record';
 
 -- What each twin token's vaults have taken in (locks) and paid out (releases) over the payment legs, counted once per leg as the legs are indexed: a token page reads one row. twin_totals_block in `meta` is the block
--- the sums are counted up to; the sums are counted again from the start when a vault or a pin is added, or a block is indexed again.
+-- the sums are counted up to; the sums are counted again from the start when a vault, a pin or a gateway is added or removed, or a block is indexed again.
 create table twin_totals (
   token         bytea primary key,
   locked        numeric not null default 0,
