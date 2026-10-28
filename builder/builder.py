@@ -672,6 +672,7 @@ class LegEvent:
     amount: int    # in base units
     party: str     # a withdrawal's receiver, as the text the holder sent; empty otherwise
     tx: str        # the hash of the transaction that made the event
+    gateway: str = ""   # the registered gateway (40 lowercase hex digits) that recorded it; empty for the chain's first gateway
 
 
 def decode_leg(log: dict) -> LegEvent:
@@ -692,11 +693,32 @@ def decode_leg(log: dict) -> LegEvent:
         raise BuilderError(f"cannot read a Leg event of the gateway: {e}") from e
 
 
+def registered_gateways(chain: dict) -> list:
+    """The addresses (40 lowercase hex digits) of the Gateway entries of the chain's registry (`ZkChain.contracts`), in the registry's order. A
+    chain with no registry, or only vaults, has none."""
+    found = []
+    for entry in chain.get("contracts") or []:
+        try:
+            kind, address = entry["contractKind"], entry["contractAddress"]
+            kind = kind.get("tag") if isinstance(kind, dict) else kind
+            if kind not in ("Gateway", "Vault") or not re.fullmatch(r"[0-9a-f]{40}", address):
+                raise ValueError(kind)
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise BuilderError(f"the chain record's registry holds an entry the builder cannot read: {entry!r}") from e
+        if kind == "Gateway":
+            found.append(address)
+    return found
+
+
 def read_legs(reth: Reth, chain: dict, block_hash: str) -> list:
     """The block's Leg events, in log order, which is the order of the gateway's running hash. This is reth's own view and nothing
-    depends on it being honest: the hash in the proven state decides, and Daml compares the legs sent with it."""
-    logs = reth.call("eth_getLogs", [{"blockHash": block_hash, "address": "0x" + chain["gatewayAddress"], "topics": [LEG_TOPIC]}])
-    return [decode_leg(log) for log in logs]
+    depends on it being honest: the hash in the proven state decides, and Daml compares the legs sent with it. The first gateway's events come
+    first, then each registered gateway's in the registry's order (each marked with its `gateway`), the order Advance settles them in."""
+    events = []
+    for address in ["", *registered_gateways(chain)]:
+        logs = reth.call("eth_getLogs", [{"blockHash": block_hash, "address": "0x" + (address or chain["gatewayAddress"]), "topics": [LEG_TOPIC]}])
+        events += [dataclasses.replace(decode_leg(log), gateway=address) for log in logs]
+    return events
 
 
 def claim_used(reth: Reth, chain: dict, block_hash: str, claim_id: str) -> bool:
@@ -705,11 +727,26 @@ def claim_used(reth: Reth, chain: dict, block_hash: str, claim_id: str) -> bool:
     return int(reth.call("eth_getStorageAt", ["0x" + chain["gatewayAddress"], slot, block_hash]), 16) != 0
 
 
-def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
-    """(account nodes, storage nodes) of the gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
+def proofs_of(reth: Reth, address: str, number: str) -> tuple:
+    """(account nodes, storage nodes) of a gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
     slot = "0x" + keccak256(int(number, 16).to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for a mapping at slot 0
-    proof = reth.call("eth_getProof", ["0x" + chain["gatewayAddress"], [slot], number])
+    proof = reth.call("eth_getProof", ["0x" + address, [slot], number])
     return [x[2:] for x in proof["accountProof"]], [x[2:] for x in proof["storageProof"][0]["proof"]]
+
+
+def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
+    """(account nodes, storage nodes) of the chain's first gateway at the block."""
+    return proofs_of(reth, chain["gatewayAddress"], number)
+
+
+def extra_gateway_blocks(reth: Reth, chain: dict, number: str, legs: dict) -> list:
+    """Advance's `extraGateways`: one entry for each registered gateway, each with its proofs at the block and the legs it recorded in it (`legs`
+    maps an address to them). A chain with no registered gateway gets an empty list, which is still sent."""
+    blocks = []
+    for address in registered_gateways(chain):
+        account_nodes, storage_nodes = proofs_of(reth, address, number)
+        blocks.append({"address": address, "accountNodes": account_nodes, "storageNodes": storage_nodes, "legs": legs.get(address, [])})
+    return blocks
 
 
 class NoCantonSide(Exception):
@@ -1342,6 +1379,7 @@ class Built:
     storage_nodes: list
     checked_input: bool = False   # the pre-check already made input.bin of this very block in `attempt_dir`
     disclosed: list = field(default_factory=list)   # the allocations of the venue trades in `legs`, passed with Advance next to --disclosed
+    extra_gateways: list = field(default_factory=list)   # Advance's extraGateways: an entry (address, accountNodes, storageNodes, legs) for each registered gateway
 
 
 @dataclass
@@ -1544,10 +1582,14 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
     # The gateway's proofs are read while this block is reth's tip, before the prover runs.
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
-    return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
+    by_gateway: dict = {}   # the legs, by the gateway that recorded them: the events and the legs are in the same order
+    for event, leg in zip(events, legs):
+        by_gateway.setdefault(event.gateway, []).append(leg)
+    extra = extra_gateway_blocks(reth, chain, payload["blockNumber"], by_gateway)
+    return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=by_gateway.get("", []), leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
-                 disclosed=venue_disclosed(legs, canton))
+                 disclosed=venue_disclosed(legs, canton), extra_gateways=extra)
 
 
 @dataclass
@@ -1662,7 +1704,8 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
     the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet."""
     n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
-                "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}
+                "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs,
+                "extraGateways": built.extra_gateways}
     argument_text = json.dumps(argument)
     (built.work / "advance.json").write_text(argument_text)   # kept: the argument of the Advance, as it was sent
     command_id = f"ostia-{int(chain['chainId'])}-{n}-{block_hash[2:18]}-{attempt.seq}"   # the same block hash and attempt give the same id
@@ -1718,7 +1761,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
     `after_commit(reth)` runs once a commit is booked and its record is gone, before the paid traffic is read (a read of about a second): the
     next block's Advance can go first. The `answered` line is written before that, so the attempt is closed before the next block's record
     replaces its record; the paid traffic of such a block follows on a `paid_traffic` line of its attempt."""
-    attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs
+    attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs + [x for g in sub.built.extra_gateways for x in g["legs"]]
     report, command_id, answer, reason, rejected, not_taken = sub.report, sub.command_id, reply.answer, reply.reason, reply.rejected, reply.not_taken
     report["advanceSeconds"] = reply.advance_seconds
     traffic_before, traffic_after = sub.traffic_before, reply.traffic_after
