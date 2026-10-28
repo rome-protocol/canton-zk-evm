@@ -53,6 +53,17 @@ export function gatewayToken(evmToken: string, admin = FAKE_REGISTRY, id = "TKB"
   };
 }
 
+export const ZK_CHAIN_CONTRACT_ID = "abc123def456:Zk.Chain:ZkChain";
+/** One entry of the chain record's registry of EVM contracts, as the JSON API writes it. */
+export const registered = (address: string, kind: "Gateway" | "Vault", hash = "e1"): Json => ({ contractAddress: address.replace(/^0x/, ""), contractCodeHash: hash.repeat(32), contractKind: kind });
+/** The chain record as an active contract of the gateway's view, with its registry (`null` is the `None` of a chain with no registry). */
+export function zkChain(contracts: Json[] | null, over: Json = {}): ActiveContract {
+  return {
+    contractId: "00c4a1", templateId: ZK_CHAIN_CONTRACT_ID,
+    createArgument: { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gateway: FAKE_GATEWAY, builder: "builder::1220" + "11".repeat(32), chainId: "770101", contracts, ...over },
+  };
+}
+
 /** A token standard Holding as an active contract: it has an interface view and no template the gateway asked for. */
 export function holding(n: number, owner: string, amount: string, admin = FAKE_REGISTRY, id = "TKB", lock: unknown = null, view: Json | null | "unreadable" = null, signatories: string[] = [admin, owner]): ActiveContract {
   const value = view ?? { owner, instrumentId: { admin, id }, amount, lock, meta: { values: {} } };

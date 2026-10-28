@@ -188,6 +188,18 @@ table canton_parties
   CREATE UNIQUE INDEX canton_parties_party_key ON public.canton_parties USING btree (party)
   CREATE UNIQUE INDEX canton_parties_pkey ON public.canton_parties USING btree (id)
 
+table canton_registry
+  column address bytea not null
+  column kind text not null
+  column code_hash bytea not null
+  column admin text not null
+  column legs_cursor bigint not null default 0
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null default now()
+  constraint canton_registry_kind_check CHECK ((kind = ANY (ARRAY['gateway'::text, 'vault'::text])))
+  constraint canton_registry_pkey PRIMARY KEY (address)
+  CREATE UNIQUE INDEX canton_registry_pkey ON public.canton_registry USING btree (address)
+
 table canton_synchronizers
   column id smallint not null identity always
   column synchronizer_id text not null
@@ -385,6 +397,7 @@ table gateway_legs
   column account bytea not null
   column amount numeric(78,0) not null
   column party text
+  column gateway bytea
   constraint gateway_legs_pkey PRIMARY KEY (block_number, leg_index)
   CREATE INDEX gateway_legs_account_block_number_idx ON public.gateway_legs USING btree (account, block_number DESC)
   CREATE INDEX gateway_legs_leg_id_idx ON public.gateway_legs USING btree (leg_id)
