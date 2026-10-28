@@ -878,6 +878,22 @@ testSetProgramNeedsTheOperatorTheConfirmerAndTheGateway = do
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.programVK) === (chain, stubRoot)
 
+-- `AddContract` skips the proposal and the wait, so it takes the operator, the confirmer and the gateway together, and no fewer.
+testAddContractNeedsTheOperatorTheConfirmerAndTheGateway : Script ()
+testAddContractNeedsTheOperatorTheConfirmerAndTheGateway = do
+  f <- fixture
+  let add = exerciseCmd f.chain AddContract with entry = vaultEntry
+  submitMustFail f.operator add
+  submitMustFail f.confirmer add
+  submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer, f.gateway]) add
+  submitMustFail (actAs f.gateway) add
+  submitMustFail (actAs [f.operator, f.gateway]) add   -- without the confirmer
+  submitMustFail (actAs [f.operator, f.confirmer]) add   -- without the gateway
+  submitMustFail (actAs [f.confirmer, f.gateway]) add   -- without the operator
+  registryOf f f.chain >>= \x -> x === None
+  chain <- submit (actAs [f.operator, f.confirmer, f.gateway]) add
+  registryOf f chain >>= \x -> x === Some [vaultEntry]
+
 -- The operator and the gateway propose, and only the confirmer accepts. A proposal is made on the chain's contract and cannot be created by itself.
 testProgramProposalAuthorizationAndChain : Script ()
 testProgramProposalAuthorizationAndChain = do
