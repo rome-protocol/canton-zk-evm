@@ -859,6 +859,7 @@ legLine : ZkChain -> Leg -> Update Text
 legLine chain (DepositLeg requestCid tokenCid) = do
   r <- fetch requestCid
   t <- fetch tokenCid
+  assertMsg "the deposit id is not derived from the depositor and the label" (isDerived r.depositor r.depositId r.label)
   checkChain "the deposit request" chain r.chainId r.operator r.confirmer
   checkGateway "the deposit request" chain r.gateway
   checkToken chain t

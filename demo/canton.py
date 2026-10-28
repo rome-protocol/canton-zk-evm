@@ -12,6 +12,7 @@
   canton.py deposit <label> <address> <amount>
                                        U allocates <amount> TKB to the gateway (executor: the operator) and signs a deposit request for the EVM
                                        address <address>, with the deposit id derived from U and <label>. Prints the id: the claim on the EVM must carry it
+                                       (each label makes one id and the gateway takes an id once, so a label serves one deposit of U)
   canton.py dvp <label> <token> <payee> <amount>
                                        U allocates 10 TKB to V (executor: the operator, as the DvP's one leg U to V); then U and V sign
                                        DvpTerms: "if the gateway records a payment of <amount> TKA (a whole number) of <token> to <payee> with
@@ -481,9 +482,12 @@ def deposit(net: Network, label: str, recipient: str, amount: str) -> dict:
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
     address = evm_address(recipient)
     chain = chain_record(net)
-    allocation = allocate(net, label, chain["gateway"], amount if "." in amount else amount + ".0")
     unlabelled = os.environ.get("CZE_DEPOSIT_WITHOUT_LABEL") == "1"
     deposit_id = secrets.token_hex(32) if unlabelled else deposit_id_of(net.party("u"), label)
+    # The id is the same for a label every time, and the gateway takes an id once: a label is for one deposit of U.
+    if any(e["createArgument"]["depositId"] == deposit_id for e in net.template("operator", "operator", DEPOSIT_REQUEST)):
+        raise SystemExit(f"U already has an open deposit request with the label {label!r}: each label makes one deposit id, so use a label that has not been used")
+    allocation = allocate(net, label, chain["gateway"], amount if "." in amount else amount + ".0")
     arguments = {"operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"], "chainId": chain["chainId"],
                  "depositor": net.party("u"), "depositId": deposit_id, "recipient": address, "allocation": allocation["contractId"]}
     if not unlabelled:

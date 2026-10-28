@@ -739,6 +739,15 @@ testADepositIdIsDerivedFromTheDepositorAndTheLabel = do
         , request with label = None
         , request with label = Some "another" ] $ \bad ->
     submitMustFail f.d $ createCmd bad
+  -- no id of another kind: a claim id, a lock id, a release id and a DvP payment id, each with an arbitrary label
+  forA_ [ venueClaimId (venueTradeId f.v "trade-1")
+        , lockId f.v "ref-1"
+        , releaseId recipientAddr "ref-1"
+        , paymentId f.u f.v "pay-1" ] $ \other ->
+    forA_ [Some depositLabel1, Some "another"] $ \l ->
+      submitMustFail f.d $ createCmd request with depositId = other; label = l
+  -- v submits a request that names d as the depositor: that fails because d has not authorized it, which is an authorization
+  -- check and says nothing of the derivation
   -- the id derived for another depositor: the squatter v makes a request with d's id, under its own party or under d's
   submitMustFail f.v $ createCmd request with depositor = f.v
   submitMustFail f.v $ createCmd request with depositor = f.v; label = Some "another"

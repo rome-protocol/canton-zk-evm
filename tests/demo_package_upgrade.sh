@@ -11,8 +11,9 @@
 #      network/external/setup.py --package-step: check (nothing kept), upload (not vetted: the package is listed and nothing else changes), vet with
 #      a dry run first (the dry run changes nothing), vet. The chain does not switch by itself.
 #   3. The builder is pinned to the new package: the block commits (the sidecar is asked `verify2` now), the chain contract and the block's record are made
-#      under the new package, and the legs of two deposits made under it settle. The two requests made under 0.2.0 stay: they have no label, so their
-#      ids are not derived from a depositor and a label, and no leg of them settles. The block gas limit is still 30,000,000.
+#      under the new package, and the legs of two deposits made under it settle. The requests made under 0.2.0 stay: they have no label, so their
+#      ids are not derived from a depositor and a label, and no leg of them settles. A claim for one of them (V's) is left out by the builder before
+#      the block is proven, and the claim is replaced afterwards. The block gas limit is still 30,000,000.
 #   4. The chain gets a change delay of 8 s with network/external/setup.py --change-delay-step (a dry run, the proposal, the acceptance: the chain has
 #      no delay yet, so this one is at once). From here a change waits out the delay: an acceptance right after its proposal is refused with the time
 #      from which it may be accepted, and goes through once that time has passed.
@@ -140,13 +141,15 @@ BUILDER_EXTRA=()
 BUILDER_PROGRAM=$ROOT/builder/builder.py
 build() {
   CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$BUILDER_PROGRAM" once ${BUILDER_EXTRA[@]+"${BUILDER_EXTRA[@]}"} --package-id "$1" --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json"
+    "$PY" "$BUILDER_PROGRAM" once ${BUILDER_EXTRA[@]+"${BUILDER_EXTRA[@]}"} --package-id "$1" ${2:+--unlabelled-deposits} --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json"
 }
 # <package id> <block number> <legs> <what>: one pinned block commits, Canton's head is that block, and the chain contract Advance made is under the pin.
 block_under() {
   local out status
-  set +e; out=$(build "$1"); status=$?; set -e
+  # Pinned to 0.2.0, the builder settles requests without a label, as that package does; under the new package it turns them down.
+  set +e; out=$(build "$1" "$([ "$1" = "$OLD" ] && echo old)"); status=$?; set -e
   echo "$out" | jq -c .
+  BLOCK_OUT=$out   # the builder's line, for a check after the call
   is "$status" 0 "the builder's exit status for $4 ($out)"
   is "$(jq -r .committed <<<"$out")" true "$4 committed"
   is "$(jq -r .number <<<"$out")" "$2" "$4's block number"
@@ -239,9 +242,16 @@ step "stage 3: the builder is pinned to the new package; the legs of deposits ma
 # with the id of one would be refused at settlement. The deposits of this block are made now, by name, under the new package.
 deposit dep-2b "$NEW"
 deposit dep-3b "$NEW"
-block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2b and dep-3b
+# A request of 0.2.0 that names V's address, and a claim of V for it: an old request that Canton would refuse under the new package. The builder
+# turns it down before it proves the block, so the block commits with the two legs and without the claim, which stays in the pool until it is replaced.
+V_ADDR=$(jq -r .v "$DEMO/addresses.json")
+old_id=$(CZE_DEPOSIT_WITHOUT_LABEL=1 CZE_DEPOSIT_PACKAGE="$OLD" canton deposit dep-2c "$V_ADDR" 10 | jq -r .depositId)
+claim_tx=$(evm claim v "$old_id" "$WTKB" 10 | jq -r .tx)
+block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2b and dep-3b, and not the claim of dep-2c
+is "$(jq -r --arg t "$claim_tx" '[.leftOut[] | select(.transaction == $t)] | length' <<<"$BLOCK_OUT")" 1 "the claim of the request without a label is left out of block 3"
+evm replace v > /dev/null
 is "$(gas_limit 3)" 30000000 "the gas limit of block 3 (no target was asked: reth stays at the genesis cap)"
-is "$(probe DepositRequest | jq -c '[.contracts[]] | sort')" "[\"$OLD\",\"$OLD\"]" "the requests left are the two made under 0.2.0 (dep-2 and dep-3), the new ones are settled"
+is "$(probe DepositRequest | jq -c '[.contracts[]] | sort')" "[\"$OLD\",\"$OLD\",\"$OLD\"]" "the requests left are the three made under 0.2.0 (dep-2, dep-3 and dep-2c), the new ones are settled"
 [ "$(calls verify2)" -ge 1 ] || fail "block 3 ran under the new package and the sidecar was not asked verify2"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"30.0","supply":"30.0"}' "U's wTKB after block 3"
 
