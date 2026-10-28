@@ -30,7 +30,7 @@ export function CantonUpdates() {
   const items = p.data?.items;
   return (
     <>
-      <div className="ptitle"><h1>Linked to Canton</h1><span className="muted">each Canton update and the block it settled</span></div>
+      <div className="ptitle"><h1>Linked to Canton</h1><span className="muted">each Canton update and the block it settled</span><span className="grow" /><Link className="small" to="/swaps">Swaps</Link></div>
       <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof.</div>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the Canton updates…</LoadingCard> : (
         <section className="card" aria-label="Canton updates">

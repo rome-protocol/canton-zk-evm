@@ -14,6 +14,8 @@ import { Faucet } from "./pages/Faucet.tsx";
 import { Leg } from "./pages/Leg.tsx";
 import { Legs } from "./pages/Legs.tsx";
 import { Home } from "./pages/Home.tsx";
+import { Swaps } from "./pages/Swaps.tsx";
+import { SwapPage } from "./pages/SwapPage.tsx";
 import { Search } from "./pages/Search.tsx";
 import { ApiDocs } from "./pages/ApiDocs.tsx";
 import { Stats } from "./pages/Stats.tsx";
@@ -34,6 +36,8 @@ export function App() {
           <Route path="/block/:id" element={<Block />} />
           <Route path="/canton" element={<CantonUpdates />} />
           <Route path="/canton/:updateId" element={<CantonUpdate />} />
+          <Route path="/swaps" element={<Swaps />} />
+          <Route path="/swap/:id" element={<SwapPage />} />
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/addresses" element={<Addresses />} />
           <Route path="/contracts" element={<Contracts />} />

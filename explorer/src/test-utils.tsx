@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { SwapItem, BlockLeg, CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -128,7 +128,7 @@ export function route(h: {
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   labels?: (path: string) => Reply;
-  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
+  swaps?: (payId: string, path: string) => Reply; legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -143,6 +143,7 @@ export function route(h: {
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();
+    if (kind === "swaps") return h.swaps ? h.swaps(decodeURIComponent(arg), path) : gone();
     if (kind === "legs") return h.legs ? h.legs(decodeURIComponent(arg), path) : gone();
     if (kind === "tokens" && arg && !sub && !h.tokenPages) return h.tokens ? h.tokens(decodeURIComponent(arg)) : gone();
     if (kind === "tokens") return h.tokenPages ? h.tokenPages(decodeURIComponent(arg), sub, path) : gone();
@@ -284,3 +285,23 @@ export function labelsOf(known: Label[]) {
   };
 }
 export const tokenLabel = (over: Partial<Label> = {}): Label => ({ address: addr(0xcb), name: "Test token A", symbol: "TKA", kind: "token", standard: "ERC-20", decimals: 18, verified: true, ...over });
+
+/** The DevNet swap of 27 October as /api/swaps gives it (ids and amounts as they are there, the update ids shortened to the fixture's own): 2 TKA paid for 2.5 TKB, paid in block 16816 and claimed in block 23. */
+export const swapItem = (over: Partial<SwapItem> = {}): SwapItem => ({
+  payId: hash(0x6d), claimId: hash(0x94), status: "claimed", offer: { updateId: update(0x85) },
+  evm: { token: addr(0xf4), symbol: "TKA", decimals: 18, payer: addr(0x0c), payee: addr(0xb0), amount: "2000000000000000000" },
+  canton: { amount: "25000000000", instrument: { admin: "ostia2-registry::1220" + "44".repeat(32), id: "TKB" }, recipient: addr(0x0c), updateId: update(0xad) },
+  payment: { block: 16816, txHash: hash(0x04), legIndex: 0, updateId: update(0xad), recordTime: "2026-10-27T15:56:00.218912Z" },
+  claim: { block: 16823, txHash: hash(0x37), legIndex: 0, updateId: update(0xf0), recordTime: "2026-10-27T15:57:27.323737Z" },
+  ...over,
+});
+
+/** The payment leg of that swap as a block's or a transaction's answer gives it, with what Canton shows of the swap. */
+export const swapLeg = (over: Partial<BlockLeg> = {}): BlockLeg => ({
+  block: 16816, legIndex: 0, txIndex: 0, logIndex: 0, kind: "payment", legId: hash(0x6d), token: addr(0xf4), account: addr(0xb0), amount: "2000000000000000000", txHash: hash(0x04), updateId: update(0xad),
+  canton: { role: "venue-trade", amount: "25000000000", instrument: { admin: "ostia2-registry::1220" + "44".repeat(32), id: "TKB" }, settledUpdateId: update(0xad), recipient: addr(0x0c) },
+  ...over,
+});
+
+/** A leg that is no swap: a deposit, as a block's answer gives it. */
+export const plainLeg = (over: Partial<BlockLeg> = {}): BlockLeg => swapLeg({ kind: "deposit", legId: hash(0x1e), legIndex: 1, logIndex: 3, token: addr(0xcb), account: addr(0x5b), amount: "250", canton: null, ...over });

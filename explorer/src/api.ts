@@ -514,3 +514,16 @@ export interface StatsSummaryFaucet {
   requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null;
   turnedAway: StatsTurnedAway | null; turnedAwaySince: string | null;
 }
+
+/** One side of a swap's journey that is on the EVM: the payment or the claim, with its block, its transaction (null when the explorer has not stored it) and the Canton update that carried the block. */
+export interface SwapStep { block: number; txHash: string | null; legIndex: number; updateId: string; recordTime: string }
+/** A swap a Canton venue made with the EVM: a venue's trade settled by a payment (`settled`), or one whose funded claim the buyer has also redeemed (`claimed`). No Canton party is part of it. */
+export interface SwapItem {
+  payId: string; claimId: string; status: "settled" | "claimed";
+  offer: { updateId: string };
+  evm: { token: string; symbol: string | null; decimals: number | null; payer: string | null; payee: string; amount: string };
+  canton: { amount: string | null; instrument: { admin: string; id: string } | null; recipient: string; updateId: string | null };
+  payment: SwapStep; claim: SwapStep | null;
+}
+export const getSwapPage = async (before: string | null, limit = PAGE) => (await call(`/api/swaps?limit=${limit}${cursor("before", before)}`, [200])).body as Page<SwapItem>;
+export const getSwap = async (payId: string) => (await call(`/api/swaps/${encodeURIComponent(payId)}`, [200])).body as SwapItem;

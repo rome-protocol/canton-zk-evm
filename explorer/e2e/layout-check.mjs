@@ -1,14 +1,15 @@
 // A check in a real browser of the things the unit tests cannot see: that every small i's note, opened, is whole on the screen (inside it on every
 // side, and not cut by a card around it: the four corners of the note, inset past its rounded corners, are what the page shows there), that it closes on a second tap and on Escape
-// (also when only the pointer is on the i), that the header's nine links and the search share one row, and that the search box shows its whole hint. Run it against a built explorer (the server, or `vite preview` with /api passed on):
+// (also when only the pointer is on the i), that the header's links and the search share one row, and that the search box shows its whole hint. Run it against a built explorer (the server, or `vite preview` with /api passed on):
 //   BASE=http://127.0.0.1:8088 node e2e/layout-check.mjs      (needs `playwright-core` and a Chromium)
-// BLOCK, TX and TOKEN name a block number, a transaction hash and a token address the chain holds; without them those pages are left out.
+// BLOCK, TX, TOKEN and SWAP name a block number, a transaction hash, a token address and a swap's payment id the chain holds; without them those pages are left out.
 import { chromium } from "playwright-core";
 const base = process.env.BASE ?? "http://127.0.0.1:8088";
-const pages = ["/", "/stats", "/blocks", "/txs", "/tokens", "/canton", "/about"];
+const pages = ["/", "/stats", "/blocks", "/txs", "/tokens", "/canton", "/swaps", "/about"];
 if (process.env.BLOCK) pages.push(`/block/${process.env.BLOCK}`);
 if (process.env.TX) pages.push(`/tx/${process.env.TX}`);
 if (process.env.TOKEN) pages.push(`/token/${process.env.TOKEN}`);
+if (process.env.SWAP) pages.push(`/swap/${process.env.SWAP}`);
 const b = await chromium.launch();
 let bad = 0, total = 0;
 const say = (...a) => console.log(...a);
