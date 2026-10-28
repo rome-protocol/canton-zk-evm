@@ -1,0 +1,23 @@
+name: registry
+
+on:
+  pull_request:
+    paths: ["apps/twin/registry/**", ".github/workflows/registry.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/twin/registry/**", ".github/workflows/registry.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fakes only: a fake Canton JSON Ledger API and a fake Ostia JSON-RPC. The service uses the standard library alone.
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Python 3.12
+        run: python3 --version | grep -q '^Python 3\.12\.'
+      - name: Run the tests
+        run: python3 -m unittest discover -s apps/twin/registry/tests -v
