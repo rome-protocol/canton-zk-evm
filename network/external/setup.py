@@ -104,7 +104,7 @@
     gateway, gateway/Vault.bin-runtime for vault. A vault's code is no gateway's and the other way round, so each is refused as the other kind.
       propose   the operator's token (which acts for the operator and the gateway party): exercises ProposeContract on the chain's one contract. Nothing is done if the same proposal is there already.
       accept    the confirmer's token: exercises AcceptContract on the proposal for exactly this entry, once the chain's change delay has passed (the line prints "proposedAt" and "acceptableAt").
-      withdraw  the operator's token: WithdrawContract on every pending proposal for the address. reject is the confirmer's RejectContract on them.
+      withdraw  the operator's token (WithdrawContract) on every pending proposal for the address. reject is the confirmer's RejectContract on them.
       add       AddContract at once, signed by the operator, the confirmer and the gateway together: for a participant that hosts all three and whose operator user holds the confirmer's right too. It skips the change delay.
     There is no removal: a Gateway entry stops every block of the chain until the builder sends its proofs (builder 0.5.0 does), so look with --dry-run first.
     With --dry-run nothing is submitted.
