@@ -5,7 +5,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { createLedger, CUSTODY_ENDPOINTS, registryFrom } from "../ledger.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
-import { FAKE_GATEWAY, registered, startFakeLedger, zkChain, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
+import { FAKE_GATEWAY, holding, registered, startFakeLedger, zkChain, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce } from "./custody.ts";
 
@@ -36,14 +36,23 @@ const entries = async (pool: Pool) => (await pool.query("select encode(address, 
 const item = (c: ActiveContract) => ({ contractEntry: { JsActiveContract: { createdEvent: { templateId: c.templateId, createArgument: c.createArgument, signatories: [] } } } });
 
 describe("registryFrom", () => {
+  it("reads the twins the chain record pins, with the decimals Canton mints them with, and refuses a pin that cannot be right", () => {
+    const pin = (token: string, decimals: unknown) => ({ twinToken: token, twinDecimals: decimals, twinRules: "00ab" });
+    const r = registryFrom([item(zkChain([], { twins: [pin("0x" + "c2".repeat(20), 6), pin("c1".repeat(20), "18")] }))], CHAIN_ID);
+    expect(r?.twins).toEqual([{ token: "0x" + "c1".repeat(20), decimals: 18 }, { token: "0x" + "c2".repeat(20), decimals: 6 }]);
+    expect(registryFrom([item(zkChain([]))], CHAIN_ID)?.twins).toEqual([]);
+    expect(() => registryFrom([item(zkChain([], { twins: [pin("12", 6)] }))], CHAIN_ID)).toThrow(/token/);
+    expect(() => registryFrom([item(zkChain([], { twins: [pin("c1".repeat(20), 37)] }))], CHAIN_ID)).toThrow(/decimals/);
+    expect(() => registryFrom([item(zkChain([], { twins: [pin("c1".repeat(20), 6), pin("c1".repeat(20), 6)] }))], CHAIN_ID)).toThrow(/twice/);
+  });
   it("reads the gateways and the vaults of the chain record, sorted by address", () => {
     const r = registryFrom([item(zkChain([registered(VAULT, "Vault", "c2"), registered(GW2, "Gateway")]))], CHAIN_ID);
-    expect(r).toEqual({ gatewayParty: FAKE_GATEWAY, contracts: [
+    expect(r).toEqual({ gatewayParty: FAKE_GATEWAY, twins: [], contracts: [
       { address: GW2, codeHash: "0x" + "e1".repeat(32), kind: "gateway" }, { address: VAULT, codeHash: "0x" + "c2".repeat(32), kind: "vault" },
     ] });
   });
   it("takes no registry (None) as an empty one, and no chain record of the chain as null", () => {
-    expect(registryFrom([item(zkChain(null))], CHAIN_ID)).toEqual({ gatewayParty: FAKE_GATEWAY, contracts: [] });
+    expect(registryFrom([item(zkChain(null))], CHAIN_ID)).toEqual({ gatewayParty: FAKE_GATEWAY, contracts: [], twins: [] });
     expect(registryFrom([item(zkChain([registered(GW2, "Gateway")], { chainId: "5" }))], CHAIN_ID)).toBeNull();
     expect(registryFrom([], CHAIN_ID)).toBeNull();
   });
@@ -90,6 +99,19 @@ describe.skipIf(!TEST_URL)("the registry in the custody read", () => {
       expect(await entries(pool)).toHaveLength(2);
       await custodyOnce(pool, await ledgerOf([zkChain([registered(VAULT, "Vault")])]), chain.reads, 500, PARTICIPANT, CHAIN_ID);
       expect((await entries(pool)).map((e) => e.kind)).toEqual(["vault"]);
+    });
+  });
+
+  it("reads the registry in a request of its own, so that more holdings than the custody limit cannot hide a gateway or a vault", async () => {
+    await inDb(async (pool) => {
+      const chain = await indexed(pool, 2);
+      const many = Array.from({ length: 6 }, (_, i) => holding(i + 1, FAKE_GATEWAY, "5"));
+      const ledger = await ledgerOf([zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault")], { twins: [{ twinToken: "c1".repeat(20), twinDecimals: 6, twinRules: "00ab" }] }), ...many]);
+      // the custody read refuses a list as long as its limit, and says so ...
+      await expect(custodyOnce(pool, ledger, chain.reads, 5, PARTICIPANT, CHAIN_ID)).rejects.toThrow(/custody cannot be read/);
+      // ... but the registry, its own read, was kept
+      expect((await entries(pool)).map((e) => e.kind)).toEqual(["gateway", "vault"]);
+      expect((await pool.query("select encode(token, 'hex') as token, decimals from canton_twins")).rows).toEqual([{ token: "c1".repeat(20), decimals: 6 }]);
     });
   });
 });

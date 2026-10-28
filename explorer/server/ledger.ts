@@ -150,15 +150,17 @@ export interface CustodyToken { evmToken: string; instrumentAdmin: string; instr
 /** One entry of the chain record's registry of EVM contracts (`ZkChain.contracts`): a gateway whose legs Canton reads, or a vault that holds the ERC-20s behind Canton twins. */
 export interface RegisteredEntry { address: string; codeHash: string; kind: "gateway" | "vault" }
 /** The registry as the chain record holds it, with the gateway party that administers the twins (their instrument's admin). */
-export interface ChainRegistry { gatewayParty: string; contracts: RegisteredEntry[] }
+export interface ChainRegistry { gatewayParty: string; contracts: RegisteredEntry[]; twins: PinnedTwinEntry[] }
+/** One twin the chain record pins (`ZkChain.twins`): the ERC-20 (0x and 40 hex digits) and the decimals its twin is minted with on Canton. The rules' contract id is not kept. */
+export interface PinnedTwinEntry { token: string; decimals: number }
 export interface GatewayCustody {
   /** The ledger offset the contracts were read at. */
   offset: number;
   tokens: CustodyToken[];
-  /** The chain record's registry at that offset; null when the read was not asked for it, or the gateway sees no chain record of the chain. */
-  registry: ChainRegistry | null;
 }
 
+/** The most chain records one registry read takes: the gateway party sees one record per chain it serves. */
+const REGISTRY_LIMIT = 50;
 const custodyFail = (what: string): never => { throw new LedgerError(`the gateway's custody cannot be read: ${what}`); };
 const SCALE = 10;
 /** A Daml Numeric(10) as the JSON API writes it, in base units. A negative amount, an exponent or more than 10 decimals is not one. */
@@ -235,7 +237,18 @@ export function registryFrom(items: unknown[], chainId: number): ChainRegistry |
     if (typeof a.gateway !== "string" || a.gateway === "") custodyFail("the chain record has no gateway party");
     const list = a.contracts === undefined || a.contracts === null ? [] : Array.isArray(a.contracts) ? a.contracts : custodyFail("the chain record's contracts are not a list");
     const seen = new Set<string>();
-    found = { gatewayParty: a.gateway as string, contracts: list.map((v): RegisteredEntry => {
+    const pinned = a.twins === undefined || a.twins === null ? [] : Array.isArray(a.twins) ? a.twins : custodyFail("the chain record's twins are not a list");
+    const pinnedSeen = new Set<string>();
+    const twins = pinned.map((v): PinnedTwinEntry => {
+      const t = obj(v, "a pinned twin");
+      const token = typeof t.twinToken === "string" ? t.twinToken.replace(/^0x/, "") : "", decimals = Number(t.twinDecimals);
+      if (!/^[0-9a-f]{40}$/.test(token)) custodyFail("a pinned twin's token is not 40 lowercase hex digits");
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) custodyFail("a pinned twin's decimals are not a whole number from 0 to 36");
+      if (pinnedSeen.has(token)) custodyFail(`the twin ${token} is pinned twice`);
+      pinnedSeen.add(token);
+      return { token: "0x" + token, decimals };
+    }).sort((x, y) => (x.token < y.token ? -1 : 1));
+    found = { gatewayParty: a.gateway as string, twins, contracts: list.map((v): RegisteredEntry => {
       const c = obj(v, "a registered contract");
       const address = typeof c.contractAddress === "string" ? c.contractAddress.replace(/^0x/, "") : "", codeHash = typeof c.contractCodeHash === "string" ? c.contractCodeHash.replace(/^0x/, "") : "";
       if (!/^[0-9a-f]{40}$/.test(address)) custodyFail("a registered contract's address is not 40 lowercase hex digits");
@@ -383,25 +396,38 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
   }
 
   /**
+   * The chain record's registry at `offset`, in a request of its own (the chain record only, a handful of contracts at most), so that the holdings, which grow with every user, can neither cut it
+   * short nor make it fail: the registry must be read for the gateways and vaults it names to be seen at all.
+   */
+  async function chainRegistry(chainId: number, offset: number): Promise<ChainRegistry | null> {
+    if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
+    const items = await call("POST", `/v2/state/active-contracts?limit=${REGISTRY_LIMIT}`, {
+      eventFormat: { filtersByParty: { [readerParty]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId: ZK_CHAIN_TEMPLATE, includeCreatedEventBlob: false } } } }] } }, verbose: false },
+      activeAtOffset: offset,
+    });
+    if (!Array.isArray(items)) return fail("an answer that is not a list");
+    if (items.length >= REGISTRY_LIMIT) throw new LedgerError(`the chain record's registry cannot be read: Canton sent ${items.length} chain records, the limit asked`);
+    return registryFrom(items, chainId);
+  }
+
+  /**
    * What the gateway holds on Canton of each registered token's instrument, read as the gateway at `offset` (the caller's choice, so that it can set the answer
    * against the EVM at the block that offset records). One request, filtered to the GatewayToken template and the Holding interface. `limit` is asked of Canton and
    * must be at or below the participant's list maximum: a list as long as the limit may have been cut, so it is refused.
    */
-  async function gatewayCustody(limit: number, offset: number, chainId: number | null = null): Promise<GatewayCustody> {
+  async function gatewayCustody(limit: number, offset: number): Promise<GatewayCustody> {
     if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
     const filter = (identifierFilter: unknown) => ({ identifierFilter });
     const items = await call("POST", `/v2/state/active-contracts?limit=${limit}`, {
       eventFormat: { filtersByParty: { [readerParty]: { cumulative: [
         filter({ TemplateFilter: { value: { templateId: GATEWAY_TOKEN_TEMPLATE, includeCreatedEventBlob: false } } }),
         filter({ InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } }),
-        // The chain record too, when asked: its registry of EVM contracts names the gateways and vaults beside the first gateway.
-        ...(chainId === null ? [] : [filter({ TemplateFilter: { value: { templateId: ZK_CHAIN_TEMPLATE, includeCreatedEventBlob: false } } })]),
       ] } }, verbose: false },
       activeAtOffset: offset,
     });
     if (!Array.isArray(items)) return fail("an answer that is not a list");
     if (items.length >= limit) throw new LedgerError(`the gateway's custody cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short (CUSTODY_LIMIT must stay at or below the participant's list maximum, and above the number of contracts)`);
-    return { offset, tokens: custodyFrom(items, readerParty), registry: chainId === null ? null : registryFrom(items, chainId) };
+    return { offset, tokens: custodyFrom(items, readerParty) };
   }
 
   /**
@@ -436,7 +462,7 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     }
   }
 
-  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody, venuePages };
+  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody, chainRegistry, venuePages };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;

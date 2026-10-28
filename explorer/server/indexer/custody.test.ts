@@ -14,7 +14,7 @@ const SUPPLY = "0x18160ddd";
 const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
 const SOMEONE = "alice::1220" + "ab".repeat(32);
 /** The custody read as the indexer makes it, by default as the participant the synthetic chain reports. */
-const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayCustody">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
+const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayCustody" | "chainRegistry">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
 const fakes: FakeLedger[] = [];
 const opened: Indexer[] = [];
 afterEach(async () => {
@@ -130,7 +130,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
           asked.push(offset);
           return { offset, tokens: [{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: BigInt(depositsAtOffset(offset)) * 10n * units, holdings: depositsAtOffset(offset) }] };
         },
-      } as unknown as Pick<Ledger, "gatewayCustody">;
+      } as unknown as Pick<Ledger, "gatewayCustody" | "chainRegistry">;
       const reth = { call: async (_to: string, _input: string, block: number) => word(BigInt(Math.min(head, block)) * 10n * 10n ** 6n) } as unknown as SyntheticChain["reads"];
       const diff = async () => {
         const [r] = await rows(pool);

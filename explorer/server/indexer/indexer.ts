@@ -30,6 +30,7 @@ import { checkBalances, type BalanceCheck } from "./balances.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
 import { registeredLegsOnce } from "./registered-legs.ts";
+import { twinTotalsOnce } from "./twin-totals.ts";
 import { checkLegs, legsOf, stage1, type Stage1Input } from "./stage1.ts";
 
 /** Any fixed number; it only has to be the same for every indexer of this schema, and not one the migration runner (001) or the partition maintenance (002) holds. */
@@ -598,6 +599,8 @@ export function createIndexer(o: IndexerOptions) {
         // The legs of the registered gateways (the chain record's registry, read above) are indexed from the logs stage 1 wrote, a batch of blocks at a time until they are caught up.
         try {
           while (running && (await registeredLegsOnce(o.pool, o.reads)).blocks > 0) { /* the next batch */ }
+          // The twin sums go on from the legs just indexed, a batch of blocks at a time.
+          while (running && (await twinTotalsOnce(o.pool)).blocks > 0) { /* the next batch */ }
           registeredFailing = "";
         } catch (e) {
           if (registeredFailing !== (e as Error).message) log(`indexer (registered gateways): ${(e as Error).message}`);

@@ -50,7 +50,7 @@ describe("the gateway's custody, read as the gateway", () => {
 
   it("is empty when the gateway registered no token", async () => {
     const l = await ledger([holding(1, FAKE_GATEWAY, "5.0")]);
-    expect(await l.gatewayCustody(500, 12)).toEqual({ offset: 12, tokens: [], registry: null });
+    expect(await l.gatewayCustody(500, 12)).toEqual({ offset: 12, tokens: [] });
   });
 
   it("adds up what the gateway holds of each registered instrument, in base units of 10 decimals, locked holdings included", async () => {

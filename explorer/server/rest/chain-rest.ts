@@ -45,7 +45,7 @@ export interface BlockExtras {
   /** The producer's attempt that made the block, from its journal; null before the journal is loaded. */
   lifecycle: { strategy: string; cutReason: string; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null } | null;
 }
-export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; canton: LegCanton | null }
+export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; legId: string; token: string; account: string; amount: string; canton: LegCanton | null }
 export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
 export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
@@ -186,7 +186,7 @@ export function createChainRest(pool: Pool) {
   /** The legs of a block after the leg index `after`, one more than `limit` of them, each with what Canton shows of the swap it is one side of. */
   async function blockLegs(number: number, after: number | null, limit: number): Promise<LegItem[]> {
     const legs = await legsOfBlock(pool, number, { after, limit: limit + 1 }).catch((e: Error) => { throw new ChainDbError(`the database cannot be read: ${e.message}`); });
-    return legs.map((l) => ({ legIndex: l.legIndex, txIndex: l.txIndex, logIndex: l.logIndex, kind: l.kind, legId: l.legId, token: l.token, account: l.account, amount: l.amount, canton: l.canton }));
+    return legs.map((l) => ({ legIndex: l.legIndex, txIndex: l.txIndex, logIndex: l.logIndex, kind: l.kind, gateway: l.gateway, legId: l.legId, token: l.token, account: l.account, amount: l.amount, canton: l.canton }));
   }
 
   /** A block's record as the Verify page needs it: the header, the transactions and the proof, all as hex. */

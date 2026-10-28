@@ -220,6 +220,15 @@ table canton_templates
   CREATE UNIQUE INDEX canton_templates_package_id_module_entity_key ON public.canton_templates USING btree (package_id, module, entity)
   CREATE UNIQUE INDEX canton_templates_pkey ON public.canton_templates USING btree (id)
 
+table canton_twins
+  column token bytea not null
+  column decimals integer not null
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null default now()
+  constraint canton_twins_decimals_check CHECK (((decimals >= 0) AND (decimals <= 36)))
+  constraint canton_twins_pkey PRIMARY KEY (token)
+  CREATE UNIQUE INDEX canton_twins_pkey ON public.canton_twins USING btree (token)
+
 table canton_updates
   column update_id text not null
   column participant smallint not null
@@ -833,6 +842,15 @@ table transactions partition by RANGE (block_number)
   CREATE INDEX transactions_funding_idx ON ONLY public.transactions USING btree (to_address, block_number, tx_index) WHERE ((value > (0)::numeric) AND (status = 1))
   CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
   CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)
+
+table twin_totals
+  column token bytea not null
+  column locked numeric not null default 0
+  column released numeric not null default 0
+  column locks bigint not null default 0
+  column releases bigint not null default 0
+  constraint twin_totals_pkey PRIMARY KEY (token)
+  CREATE UNIQUE INDEX twin_totals_pkey ON public.twin_totals USING btree (token)
 
 table tx_hashes
   column hash bytea not null

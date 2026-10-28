@@ -6,7 +6,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
-import { legKindOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
+import { gatewayOf, legKindOf, twinOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
 import { addressOfKey, bytes, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -113,14 +113,12 @@ export interface TokenItem {
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 /**
  * The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (the locks into a registered vault less the releases out of one, in the token's base units), `vaultBalance` what the
- * registered vaults hold of the token now (the index's balances), `locks` and `releases` the legs counted. Read from at most `TWIN_WINDOW` of the token's newest payment legs: with more, `partial` is true and
- * `supply` is not given (null), because a total of part of the legs is not the supply.
+ * registered vaults hold of the token now (the index's balances), `locks` and `releases` the legs counted. The sums are kept by the indexer, once per leg, and count the legs up to the block `through` (null before the first pass).
  */
-export interface TwinSupply { supply: string | null; vaultBalance: string; locks: number; releases: number; partial: boolean }
-export const TWIN_WINDOW = 5000;
+export interface TwinSupply { supply: string; vaultBalance: string; locks: number; releases: number; through: number | null }
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
-export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; party: string | null }
+export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; twin: "lock" | "release" | null; legId: string; token: string; account: string; amount: string; party: string | null }
 /** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
 export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
@@ -505,22 +503,17 @@ export function createAccountRest(pool: Pool) {
     return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton, twin: await twinSupply(a) };
   }
 
-  /** The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): bounded to the token's newest `TWIN_WINDOW` payment legs, and one read of the vaults' balances. */
+  /**
+   * The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): one row of the sums the indexer keeps per token (`twin_totals`, counted once per leg), and one read of the
+   * vaults' balances of the token. `through` is the block the sums are counted to.
+   */
   async function twinSupply(a: string): Promise<TwinSupply | null> {
     const [held] = await query("select coalesce(sum(b.value), 0)::text as v from token_balances b join canton_registry r on r.kind = 'vault' and r.address = b.holder where b.token = $1", [bytes(a)]);
-    const legs = await query(
-      `select g.amount::numeric as amount, (rv.address is not null) as is_lock, (rl.one is not null) as is_release
-         from (select * from gateway_legs where token = $1 and kind = 3 order by block_number desc, leg_index desc limit $2) g ${TWIN_FROM}`,
-      [bytes(a), TWIN_WINDOW + 1],
-    );
+    const [t] = await query("select t.locked::text as locked, t.released::text as released, t.locks, t.releases, (select value from meta where key = 'twin_totals_block') as through from twin_totals t where t.token = $1 and exists (select 1 from canton_registry where kind = 'vault')", [bytes(a)]);
     const vaultBalance: string = held?.v ?? "0";
-    const partial = legs.length > TWIN_WINDOW, shown = partial ? legs.slice(0, TWIN_WINDOW) : legs;
-    let locked = 0n, out = 0n, locks = 0, releases = 0;
-    for (const l of shown) {
-      if (l.is_release) { out += BigInt(l.amount); releases++; } else if (l.is_lock) { locked += BigInt(l.amount); locks++; }
-    }
-    if (locks === 0 && releases === 0 && vaultBalance === "0") return null;
-    return { supply: partial ? null : (locked - out).toString(), vaultBalance, locks, releases, partial };
+    if (!t && vaultBalance === "0") return null;
+    const locked = BigInt(t?.locked ?? "0"), out = BigInt(t?.released ?? "0");
+    return { supply: (locked - out).toString(), vaultBalance, locks: Number(t?.locks ?? 0), releases: Number(t?.releases ?? 0), through: t?.through == null ? null : Number(t.through) };
   }
 
   /** Who holds a token, most first, after the key (value, holder, id). A holder of several ids of an ERC-1155 is listed once for each. */
@@ -545,11 +538,11 @@ export function createAccountRest(pool: Pool) {
     return rows.map(transferItem);
   }
 
-  const legSelect = `g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, t.hash, ${TWIN_SELECT}`;
+  const legSelect = `g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, g.gateway, t.hash, ${TWIN_SELECT}`;
   // The legs a page reads are picked first, so that the twin legs are told for the page's rows and not for the table's.
   const legFrom = (pick = "gateway_legs") => `from ${pick} g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index ${TWIN_FROM}`;
   const legItem = (r: Row): LegListItem => ({
-    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: legKindOf(r), legId: hex(r.leg_id),
+    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: legKindOf(r), gateway: gatewayOf(r), twin: twinOf(r), legId: hex(r.leg_id),
     token: hex(r.token), account: hex(r.account), amount: r.amount, party: r.party ?? null,
   });
 

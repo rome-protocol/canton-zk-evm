@@ -298,7 +298,7 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
 export async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null, gateway: string | null = null): Promise<void> {
   const of = gateway === null ? "the gateway" : `the registered gateway ${gateway}`;
   if (problem) {
-    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: problem.message }]);
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, ...(gateway === null ? {} : { gateway }) }, detail: gateway === null ? problem.message : `${of}: ${problem.message}` }]);
     return;
   }
   if (legs.length === 0) return;

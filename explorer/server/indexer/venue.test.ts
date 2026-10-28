@@ -93,11 +93,11 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
 
       expect(await blockLegs(pool, 1)).toEqual([]);
       expect(await blockLegs(pool, 2)).toEqual([
-        { block: 2, legIndex: 0, logIndex: expect.any(Number), kind: "payment", legId: "0x" + PAY, ...paid, txHash: hash(2), updateId: settling,
+        { block: 2, legIndex: 0, logIndex: expect.any(Number), kind: "payment", gateway: null, legId: "0x" + PAY, ...paid, txHash: hash(2), updateId: settling,
           canton: { role: "venue-trade", amount: "125000000000", instrument, settledUpdateId: settling, recipient: BUYER } },
       ]);
       expect(await blockLegs(pool, 3)).toEqual([
-        { block: 3, legIndex: 0, logIndex: expect.any(Number), kind: "deposit", legId: "0x" + CLAIM, ...redeemed, txHash: hash(3), updateId: redeeming,
+        { block: 3, legIndex: 0, logIndex: expect.any(Number), kind: "deposit", gateway: null, legId: "0x" + CLAIM, ...redeemed, txHash: hash(3), updateId: redeeming,
           canton: { role: "funded-claim", amount: "125000000000", instrument, settledUpdateId: settling, recipient: BUYER } },
       ]);
       // A withdrawal has nothing of the swap, and no Canton party in what is served; a payment with no trade behind it is a plain payment.
