@@ -44,3 +44,18 @@ fromBaseUnits decimals baseUnits
     units q
       | q >= pow10 27 = None
       | otherwise = Some (cast q / 10000000000.0)
+
+-- | The ERC-20 base units (a whole number, as a `Numeric 0`) of a twin `amount` of a token with `decimals` decimals (0 to 36).
+-- `None` for anything not exact: a negative amount, a finer amount than one base unit (a 6-decimal token has no 0.0000001), or
+-- more than 10^17 whole units. The inverse of `fromBaseUnits`.
+toBaseUnits : Int -> Decimal -> Optional (Numeric 0)
+toBaseUnits decimals amount
+  | decimals < 0 || decimals > 36 = None
+  | amount < 0.0 || amount >= 100000000000000000.0 = None
+  | otherwise =
+      let u = cast (amount * 10000000000.0) : Numeric 0   -- twin units of 10^-10, a whole number
+      in if decimals <= twinDecimals
+           then let step = pow10 (twinDecimals - decimals)
+                    q = u / step
+                in if q * step == u then Some q else None
+           else if u >= pow10 (46 - decimals) then None else Some (u * pow10 (decimals - twinDecimals))

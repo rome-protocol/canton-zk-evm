@@ -34,7 +34,7 @@ data F = F with
 setup : Script F
 setup = do
   [admin, alice, bob, carol] <- mapA allocateParty ["Admin", "Alice", "Bob", "Carol"]
-  rulesCid <- submit admin $ createCmd TwinRules with admin = admin; token = tokenAddr; name = "Token A"; symbol = "TKA"
+  rulesCid <- submit admin $ createCmd TwinRules with admin = admin; token = tokenAddr; name = "Token A"; symbol = "TKA"; decimals = 18
   Some rules <- queryDisclosure admin rulesCid
   pure F with instrument = instrumentOf admin tokenAddr; ..
 
@@ -148,14 +148,17 @@ testInstrumentAndMetadata = do
   _ <- mintTo f f.alice 10.0
   Some v <- queryInterfaceContractId @TI.TransferFactory f.admin (toInterfaceContractId f.rulesCid)
   v.admin === f.admin
-  TM.lookup "ostia/symbol" v.meta.values === Some "TKA"
-  TM.lookup "ostia/name" v.meta.values === Some "Token A"
-  TM.lookup "ostia/decimals" v.meta.values === Some "10"
-  TM.lookup "ostia/erc20" v.meta.values === Some tokenAddr
+  TM.lookup "romeprotocol.com/symbol" v.meta.values === Some "TKA"
+  TM.lookup "romeprotocol.com/name" v.meta.values === Some "Token A"
+  TM.lookup "romeprotocol.com/decimals" v.meta.values === Some "10"
+  TM.lookup "romeprotocol.com/erc20" v.meta.values === Some tokenAddr
+  TM.lookup "romeprotocol.com/erc20-decimals" v.meta.values === Some "18"
   -- the rules of a twin name an ERC-20 address, a name and a symbol
-  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = "0x" <> tokenAddr; name = "x"; symbol = "X"
-  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = ""; symbol = "X"
-  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = ""
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = "0x" <> tokenAddr; name = "x"; symbol = "X"; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = ""; symbol = "X"; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = ""; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = "X"; decimals = (-1)
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = "X"; decimals = 37
 
 -- The balance is the sum of the owner's holdings; the owner sees them, nobody else's.
 testBalance : Script ()
@@ -169,7 +172,7 @@ testBalance = do
   balanceOf f f.carol >>= (=== 0.0)
   -- the mint's reference is on the holding
   hs <- queryInterface @H.Holding f.bob
-  [ TM.lookup "ostia/mint-reference" v.meta.values | (_, Some v) <- hs ] === [Some "lock-1"]
+  [ TM.lookup "romeprotocol.com/mint-reference" v.meta.values | (_, Some v) <- hs ] === [Some "lock-1"]
 
 -- A transfer is complete at once: the receiver does nothing, and the sender's change comes back.
 testTransferCompletesAtOnce : Script ()
@@ -342,7 +345,7 @@ testMintAndBurnRefused = do
   submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = []; amount = 1.0; reference = "x"
   submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [bobs]; amount = 1.0; reference = "x"
   -- the holding of another ERC-20's twin is not burnt through these rules
-  otherRules <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"
+  otherRules <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"; decimals = 18
   other <- submit f.admin $ exerciseCmd otherRules Mint with owner = f.alice; amount = 5.0; reference = "x"
   submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [toInterfaceContractId other]; amount = 1.0; reference = "x"
   balanceOf f f.alice >>= (=== 10.0)
@@ -431,7 +434,7 @@ testTwoLegSettlement : Script ()
 testTwoLegSettlement = do
   f <- setup
   now <- getTime
-  rules2 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"
+  rules2 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"; decimals = 18
   Some d2 <- queryDisclosure f.admin rules2
   let instrument2 = instrumentOf f.admin otherAddr
       balance2 p = do
@@ -471,3 +474,55 @@ testTwoLegSettlement = do
   balanceOf f f.bob >>= (=== 3.0)
   lockedOf f f.alice >>= (=== 1.0)
   balance2 f.alice >>= (=== 2.0)
+
+-- Twin amounts to base units: exact, or refused, never rounded.
+testToBaseUnits : Script ()
+testToBaseUnits = do
+  -- 6 decimals (USDC): 1 is 1,000,000 base units, the smallest amount is 0.000001
+  toBaseUnits 6 1.0 === Some 1000000.0
+  toBaseUnits 6 0.000001 === Some 1.0
+  toBaseUnits 6 0.0000001 === None
+  toBaseUnits 6 2.5000001 === None
+  toBaseUnits 6 0.0 === Some 0.0
+  -- 18 decimals: every twin amount is whole, 0.0000000001 is 10^8 base units
+  toBaseUnits 18 0.0000000001 === Some 100000000.0
+  toBaseUnits 18 1.0 === Some 1000000000000000000.0
+  -- 10 decimals as it is, 0 decimals whole units only
+  toBaseUnits 10 0.0000000001 === Some 1.0
+  toBaseUnits 0 10.0 === Some 10.0
+  toBaseUnits 0 10.5 === None
+  -- out of range: a negative amount, 10^17 whole units, decimals outside 0 to 36
+  toBaseUnits 6 (-1.0) === None
+  toBaseUnits 6 100000000000000000.0 === None
+  toBaseUnits 6 99999999999999999.0 === Some 99999999999999999000000.0
+  toBaseUnits (-1) 1.0 === None
+  toBaseUnits 37 1.0 === None
+  -- the inverse of fromBaseUnits
+  fromBaseUnits 6 (hex64 "f4240") === Some 1.0
+  toBaseUnits 6 1.0 === Some 1000000.0
+
+-- A twin of a 6-decimal token (USDC) is minted, spent, allocated and burnt in whole millionths only; a finer amount is refused.
+testSixDecimalTwin : Script ()
+testSixDecimalTwin = do
+  f <- setup
+  now <- getTime
+  rules6 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Dollar"; symbol = "USD"; decimals = 6
+  Some d6 <- queryDisclosure f.admin rules6
+  let instrument6 = instrumentOf f.admin otherAddr
+      mint6 a = submit f.admin $ exerciseCmd rules6 Mint with owner = f.alice; amount = a; reference = "lock-6"
+      transfer6 a hs = submit (actAs f.alice <> disclose d6) $ exerciseCmd (toInterfaceContractId @TI.TransferFactory rules6) TI.TransferFactory_Transfer with
+        expectedAdmin = f.admin; extraArgs = noExtraArgs
+        transfer = (transferSpec f now f.alice f.bob a hs) with instrumentId = instrument6
+  submitMustFail f.admin $ exerciseCmd rules6 Mint with owner = f.alice; amount = 0.0000001; reference = "x"
+  h <- toInterfaceContractId @H.Holding <$> mint6 5.000001
+  submitMustFail (actAs f.alice <> disclose d6) $ exerciseCmd (toInterfaceContractId @TI.TransferFactory rules6) TI.TransferFactory_Transfer with
+    expectedAdmin = f.admin; extraArgs = noExtraArgs
+    transfer = (transferSpec f now f.alice f.bob 0.0000001 [h]) with instrumentId = instrument6
+  submitMustFail (actAs f.alice <> disclose d6) $ allocateVia f rules6 now
+    (legSpec f now instrument6 "leg-0" f.alice f.bob 0.0000001) [h]
+  submitMustFail f.admin $ exerciseCmd rules6 Burn with owner = f.alice; holdingCids = [h]; amount = 0.0000001; reference = "x"
+  -- whole millionths go through, and the change is whole too
+  r <- transfer6 1.000001 [h]
+  length r.senderChangeCids === 1
+  _ <- submit f.admin $ exerciseCmd rules6 Burn with owner = f.alice; holdingCids = r.senderChangeCids; amount = 2.5; reference = "release-6"
+  pure ()

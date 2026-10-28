@@ -4,7 +4,7 @@
 -- through the admin's choices on `TwinRules`; the chain's `Advance` calls them against a proven payment into or out of the vault.
 module Twin.Twin where
 
-import DA.Optional (isNone, optionalToList)
+import DA.Optional (isSome, optionalToList)
 import qualified DA.Text as T
 import qualified DA.TextMap as TM
 
@@ -24,10 +24,16 @@ hexOfLength n t = T.length t == n && all (`elem` T.explode "0123456789abcdef") (
 instrumentOf : Party -> Text -> H.InstrumentId
 instrumentOf admin token = H.InstrumentId with admin = admin; id = "erc20:" <> token
 
--- | What a wallet reads of the token: the ERC-20's address, name and symbol, and the twin's decimals.
-twinMeta : Text -> Text -> Text -> Metadata
-twinMeta token name symbol = Metadata with
-  values = TM.fromList [("ostia/erc20", token), ("ostia/name", name), ("ostia/symbol", symbol), ("ostia/decimals", show twinDecimals)]
+-- | What a wallet reads of the token (on the factories' views): the ERC-20's address, name, symbol and decimals, and the twin's decimals.
+twinMeta : Text -> Text -> Text -> Int -> Metadata
+twinMeta token name symbol decimals = Metadata with
+  values = TM.fromList
+    [ (metaKey "erc20", token), (metaKey "name", name), (metaKey "symbol", symbol)
+    , (metaKey "decimals", show twinDecimals), (metaKey "erc20-decimals", show decimals) ]
+
+-- | The twin's metadata keys are prefixed with the DNS name of the app that defines them, as MetadataV1 asks.
+metaKey : Text -> Text
+metaKey k = "romeprotocol.com/" <> k
 
 -- | A holding of the twin. Only the admin signs; the owner sees it and nothing more is needed to receive it.
 template TwinHolding with
@@ -83,7 +89,7 @@ template TwinAllocation with
 
       allocation_executeTransferImpl _self _arg = do
         now <- getTime
-        assertMsg "the settlement is past settleBefore" (now <= allocation.settlement.settleBefore)
+        assertMsg "the settlement is at or past settleBefore" (now < allocation.settlement.settleBefore)
         out <- create TwinHolding with
           admin = admin
           owner = allocation.transferLeg.receiver
@@ -116,18 +122,19 @@ giveBack admin token spec = create TwinHolding with
   amount = spec.transferLeg.amount
   meta = emptyMetadata
 
--- | Archives `owner`'s holdings of the instrument (none may be locked) and returns their total. At least one is required.
-consume : Party -> H.InstrumentId -> [ContractId H.Holding] -> Update Decimal
-consume owner instrumentId cids = do
+-- | Archives `owner`'s holdings of this twin (`admin`'s holdings of `token`; none may be locked, so an allocation is refused) and
+-- returns their total. At least one is required. Each input is fetched as a `TwinHolding`, so a contract of any other template
+-- that implements the `Holding` interface and reports the twin's instrument is refused.
+consume : Party -> Text -> Party -> [ContractId H.Holding] -> Update Decimal
+consume admin token owner cids = do
   assertMsg "at least one input holding is required" (not (null cids))
   amounts <- forA cids $ \cid -> do
-    h <- fetch cid
-    let v = view h
-    assertMsg "an input holding is not the owner's" (v.owner == owner)
-    assertMsg "an input holding is of another instrument" (v.instrumentId == instrumentId)
-    assertMsg "an input holding is locked" (isNone v.lock)
-    archive cid
-    pure v.amount
+    let tcid = fromInterfaceContractId @TwinHolding cid
+    h <- fetch tcid
+    assertMsg "an input holding is not of this twin" (h.admin == admin && h.token == token)
+    assertMsg "an input holding is not the owner's" (h.owner == owner)
+    archive tcid
+    pure h.amount
   pure (sum amounts)
 
 -- | What is left of `total` after `spent`, as the owner's new holding; none when nothing is left.
@@ -141,6 +148,12 @@ changeOf admin owner token total spent = do
       c <- create TwinHolding with admin = admin; owner = owner; token = token; amount = left; meta = emptyMetadata
       pure (Some (toInterfaceContractId c))
 
+-- | A twin of a token with fewer than 10 decimals is spent in whole base units only: the vault cannot pay out a finer amount, and
+-- never rounds one. (A token of 10 or more decimals has every twin amount whole.)
+assertWholeBaseUnits : Int -> Decimal -> Update ()
+assertWholeBaseUnits decimals amount =
+  assertMsg "the amount is not a whole number of the token's base units" (decimals >= twinDecimals || isSome (toBaseUnits decimals amount))
+
 -- | The rules of one twin: the token standard's transfer factory and allocation factory, and the admin's mint and burn. There is
 -- one per ERC-20 token. The admin is the only signatory.
 template TwinRules with
@@ -148,9 +161,10 @@ template TwinRules with
     token : Text      -- the ERC-20's address, 40 lowercase hex digits
     name : Text
     symbol : Text
+    decimals : Int    -- the ERC-20's decimals, 0 to 36
   where
     signatory admin
-    ensure hexOfLength 40 token && T.length name > 0 && T.length symbol > 0
+    ensure hexOfLength 40 token && T.length name > 0 && T.length symbol > 0 && decimals >= 0 && decimals <= 36
 
     -- | Mint `amount` to `owner` (as a new holding), against the vault payment that `reference` names. Only the admin can.
     nonconsuming choice Mint : ContractId TwinHolding
@@ -161,13 +175,14 @@ template TwinRules with
       controller admin
       do
         assertMsg "mint: the amount must be positive" (amount > 0.0)
+        assertWholeBaseUnits decimals amount
         assertMsg "mint: a reference is required" (T.length reference > 0)
         create TwinHolding with
           admin = admin
           owner = owner
           token = token
           amount = amount
-          meta = Metadata with values = TM.fromList [("ostia/mint-reference", reference)]
+          meta = Metadata with values = TM.fromList [(metaKey "mint-reference", reference)]
 
     -- | Burn `amount` out of `owner`'s holdings (the whole of each holding is archived, and what is left of the total comes back as
     -- one new holding), against the vault payment that `reference` names. Only the admin can.
@@ -180,18 +195,21 @@ template TwinRules with
       controller admin
       do
         assertMsg "burn: the amount must be positive" (amount > 0.0)
+        assertWholeBaseUnits decimals amount
         assertMsg "burn: a reference is required" (T.length reference > 0)
-        total <- consume owner (instrumentOf admin token) holdingCids
+        total <- consume admin token owner holdingCids
         changeOf admin owner token total amount
 
     interface instance TI.TransferFactory for TwinRules where
       view = TI.TransferFactoryView with
         admin = admin
-        meta = twinMeta token name symbol
+        meta = twinMeta token name symbol decimals
 
-      transferFactory_publicFetchImpl _self _arg = pure (TI.TransferFactoryView with
-        admin = admin
-        meta = twinMeta token name symbol)
+      transferFactory_publicFetchImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        pure (TI.TransferFactoryView with
+          admin = admin
+          meta = twinMeta token name symbol decimals)
 
       transferFactory_transferImpl _self arg = do
         assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
@@ -199,9 +217,10 @@ template TwinRules with
         now <- getTime
         assertMsg "the instrument is not this twin's" (t.instrumentId == instrumentOf admin token)
         assertMsg "the amount must be positive" (t.amount > 0.0)
+        assertWholeBaseUnits decimals t.amount
         assertMsg "requestedAt is in the future" (t.requestedAt <= now)
         assertMsg "executeBefore has passed" (now < t.executeBefore)
-        total <- consume t.sender t.instrumentId t.inputHoldingCids
+        total <- consume admin token t.sender t.inputHoldingCids
         change <- changeOf admin t.sender token total t.amount
         out <- create TwinHolding with
           admin = admin
@@ -217,11 +236,13 @@ template TwinRules with
     interface instance AI.AllocationFactory for TwinRules where
       view = AI.AllocationFactoryView with
         admin = admin
-        meta = twinMeta token name symbol
+        meta = twinMeta token name symbol decimals
 
-      allocationFactory_publicFetchImpl _self _arg = pure (AI.AllocationFactoryView with
-        admin = admin
-        meta = twinMeta token name symbol)
+      allocationFactory_publicFetchImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        pure (AI.AllocationFactoryView with
+          admin = admin
+          meta = twinMeta token name symbol decimals)
 
       allocationFactory_allocateImpl _self arg = do
         assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
@@ -231,11 +252,12 @@ template TwinRules with
         now <- getTime
         assertMsg "the instrument is not this twin's" (leg.instrumentId == instrumentOf admin token)
         assertMsg "the amount must be positive" (leg.amount > 0.0)
+        assertWholeBaseUnits decimals leg.amount
         assertMsg "requestedAt is in the future" (arg.requestedAt <= now)
         assertMsg "settlement.requestedAt is in the future" (settlement.requestedAt <= now)
         assertMsg "allocateBefore has passed" (now < settlement.allocateBefore)
         assertMsg "allocateBefore is after settleBefore" (settlement.allocateBefore <= settlement.settleBefore)
-        total <- consume leg.sender leg.instrumentId arg.inputHoldingCids
+        total <- consume admin token leg.sender arg.inputHoldingCids
         change <- changeOf admin leg.sender token total leg.amount
         alloc <- create TwinAllocation with
           admin = admin

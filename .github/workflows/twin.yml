@@ -2,10 +2,10 @@ name: twin
 
 on:
   pull_request:
-    paths: ["apps/twin/**", "daml/dars/**", ".github/workflows/twin.yml"]
+    paths: ["apps/twin/**", "daml/dars/**", "daml/daml.yaml", ".github/workflows/twin.yml"]
   push:
     branches: [main]
-    paths: ["apps/twin/**", "daml/dars/**", ".github/workflows/twin.yml"]
+    paths: ["apps/twin/**", "daml/dars/**", "daml/daml.yaml", ".github/workflows/twin.yml"]
 
 permissions:
   contents: read
