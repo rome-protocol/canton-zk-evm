@@ -113,7 +113,7 @@ gAllocate g sender receiver exec ref = do
           requestedAt = now; allocateBefore = addRelTime now (days 1); settleBefore = addRelTime now (days 2); meta = emptyMetadata
         transferLegId = "leg"
         transferLeg = TransferLeg with
-          sender; receiver; amount = 10.0; instrumentId = H.InstrumentId with admin = g.admin; id = "CC"; meta = emptyMetadata
+          sender; receiver; amount = 10.0; instrumentId = (H.InstrumentId with admin = g.admin; id = "CC"); meta = emptyMetadata
   c <- submit g.admin $ createCmd GatedAllocation with admin = g.admin; allocation = spec
   pure (toInterfaceContractId @Allocation c)
 
