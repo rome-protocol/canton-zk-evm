@@ -174,7 +174,7 @@ advanceWith chain header proof = advanceWithTxs chain header "" proof
 advanceWithTxs : ContractId ZkChain -> Text -> Text -> Text -> [Text] -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
 advanceWithTxs chain header txs proof accountNodes storageNodes legs = exerciseCmd chain Advance with
   headerHex = header; txsHex = txs; proofHex = proof
-  gatewayAccountNodes = accountNodes; gatewayStorageNodes = storageNodes; ..
+  gatewayAccountNodes = accountNodes; gatewayStorageNodes = storageNodes; extraGateways = None; ..
 
 -- A good call: the block recorded exactly `recorded`, and the builder attaches `legs`.
 advance : ContractId ZkChain -> Text -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
@@ -1915,3 +1915,196 @@ testATradeSettlesWhenItsAllocationReachesTheBuilderOnlyByDisclosure = do
   holds f.gateway "TKB" >>= \xs -> xs === [10.0]
   [(_, c)] <- query @FundedClaim f.gateway
   (c.claimId, c.recipient, c.amount) === (venueClaimId pid, recipientAddr, 10.0)
+
+-- The registry of EVM contracts (daml 0.5.0): `ZkChain.contracts`, `ProposeContract` / `AcceptContract`, and `Advance`'s `extraGateways`.
+
+gw2Addr, gw3Addr, vaultAddr, codeHash2, codeHash3 : Text
+gw2Addr = mconcat (replicate 20 "b8")
+gw3Addr = mconcat (replicate 20 "b9")
+vaultAddr = mconcat (replicate 20 "c9")
+codeHash2 = mconcat (replicate 32 "d4")
+codeHash3 = mconcat (replicate 32 "e5")
+
+gatewayEntry, gateway3Entry, vaultEntry : RegisteredContract
+gatewayEntry = RegisteredContract with contractAddress = gw2Addr; contractCodeHash = codeHash2; contractKind = Gateway
+gateway3Entry = RegisteredContract with contractAddress = gw3Addr; contractCodeHash = codeHash3; contractKind = Gateway
+vaultEntry = RegisteredContract with contractAddress = vaultAddr; contractCodeHash = codeHash3; contractKind = Vault
+
+-- The operator and the gateway propose the entry and the confirmer accepts it on `chain`.
+register : F -> ContractId ZkChain -> RegisteredContract -> Script (ContractId ZkChain)
+register f chain entry = do
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeContract with entry
+  submit f.confirmer $ exerciseCmd p AcceptContract with chain
+
+-- What the builder gives for a registered gateway. The stub takes the account proof as a tag (whole bytes) and the storage proof as the lines the
+-- block recorded; the account proof's last node ends in the code hash, as the leaf of an account does.
+gwBlock : Text -> Text -> [Text] -> [Leg] -> GatewayBlock
+gwBlock addr hash recorded legs = GatewayBlock with
+  address = addr; accountNodes = ["aabb", "ccdd" <> hash]; storageNodes = recordedNodes recorded; legs
+
+-- A block of the first gateway's `recorded` and `legs`, with these entries for the registered gateways.
+advanceX : ContractId ZkChain -> Text -> [Text] -> [Leg] -> [GatewayBlock] -> Commands (ContractId ZkChain, ContractId BlockRecord)
+advanceX chain header recorded legs extras = exerciseCmd chain Advance with
+  headerHex = header; txsHex = ""; proofHex = "aa"; gatewayAccountNodes = ["aa"]; gatewayStorageNodes = recordedNodes recorded
+  legs; extraGateways = Some extras
+
+registryOf : F -> ContractId ZkChain -> Script (Optional [RegisteredContract])
+registryOf f chain = do
+  Some c <- queryContractId f.operator chain
+  pure c.contracts
+
+-- A new chain has no registry, and a block with no extra gateway commits on it, as under 0.4.0.
+testANewChainHasNoRegistry : Script ()
+testANewChainHasNoRegistry = do
+  f <- fixture
+  registryOf f f.chain >>= \r -> r === None
+  (next, _) <- submit (asBuilder f) $ advance f.chain "01" [] []
+  registryOf f next >>= \r -> r === None
+  (_, _) <- submit (asBuilder f) $ advanceX next "11" [] [] []
+  pure ()
+
+-- The entries are kept in the order they were accepted, and a block keeps them.
+testAContractIsRegisteredByProposalAndAcceptance : Script ()
+testAContractIsRegisteredByProposalAndAcceptance = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  c2 <- register f c1 vaultEntry
+  registryOf f c2 >>= \r -> r === Some [gatewayEntry, vaultEntry]
+  (c3, _) <- submit (asBuilder f) $ advanceX c2 "01" [] [] [gwBlock gw2Addr codeHash2 [] []]
+  registryOf f c3 >>= \r -> r === Some [gatewayEntry, vaultEntry]
+
+-- Only the operator and the gateway propose, only the confirmer accepts, and it waits out the chain's change delay.
+testAContractWaitsOutTheDelayAndTheRightParties : Script ()
+testAContractWaitsOutTheDelayAndTheRightParties = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 100))
+  submitMustFail f.operator $ exerciseCmd chain ProposeContract with entry = gatewayEntry
+  submitMustFail f.confirmer $ exerciseCmd chain ProposeContract with entry = gatewayEntry
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeContract with entry = gatewayEntry
+  submitMustFail f.operator $ exerciseCmd p AcceptContract with chain
+  mustWait f.confirmer $ exerciseCmd p AcceptContract with chain
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptContract with chain
+  passTime (seconds 1)
+  next <- submit f.confirmer $ exerciseCmd p AcceptContract with chain
+  registryOf f next >>= \r -> r === Some [gatewayEntry]
+
+-- A proposal can be taken back by the operator or turned down by the confirmer, and then cannot be accepted.
+testAContractProposalIsWithdrawnOrRejected : Script ()
+testAContractProposalIsWithdrawnOrRejected = do
+  f <- fixture
+  let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeContract with entry = gatewayEntry
+  p1 <- propose
+  submit f.operator $ exerciseCmd p1 WithdrawContract
+  submitMustFail f.confirmer $ exerciseCmd p1 AcceptContract with chain = f.chain
+  p2 <- propose
+  submitMustFail f.operator $ exerciseCmd p2 RejectContract
+  submit f.confirmer $ exerciseCmd p2 RejectContract
+  submitMustFail f.confirmer $ exerciseCmd p2 AcceptContract with chain = f.chain
+  registryOf f f.chain >>= \r -> r === None
+
+-- An entry has a 40-digit address and a 64-digit code hash, in lowercase hex; none is registered twice, and none is the first gateway.
+testAContractEntryIsChecked : Script ()
+testAContractEntryIsChecked = do
+  f <- fixture
+  let propose e = submitMustFail (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeContract with entry = e
+  propose (gatewayEntry with contractAddress = "b8")
+  propose (gatewayEntry with contractAddress = mconcat (replicate 20 "B8"))
+  propose (gatewayEntry with contractCodeHash = "d4")
+  propose (gatewayEntry with contractCodeHash = mconcat (replicate 32 "D4"))
+  -- The first gateway's address passes the proposal's own check, and the chain refuses it on acceptance.
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeContract with entry = (gatewayEntry with contractAddress = gatewayAddr)
+  r <- trySubmit f.confirmer $ exerciseCmd p AcceptContract with chain = f.chain
+  case r of
+    Left e -> assertMsg ("refused, but not as the first gateway: " <> show e) ("first gateway" `T.isInfixOf` show e)
+    Right _ -> abort "the first gateway was registered"
+  c1 <- register f f.chain gatewayEntry
+  p2 <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c1 ProposeContract with entry = (vaultEntry with contractAddress = gw2Addr)
+  r2 <- trySubmit f.confirmer $ exerciseCmd p2 AcceptContract with chain = c1
+  case r2 of
+    Left e -> assertMsg ("refused, but not as a second entry: " <> show e) ("registered already" `T.isInfixOf` show e)
+    Right _ -> abort "an address was registered twice"
+
+-- Advance takes one entry for each registered gateway: its legs are read from its own proofs, and settled.
+testAnExtraGatewaysLegsAreSettled : Script ()
+testAnExtraGatewaysLegsAreSettled = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  (_, record) <- submit (asBuilder f) $ advanceX c1 "01" [] [] [gwBlock gw2Addr codeHash2 [paymentLine f.dvp1] [paymentLeg f]]
+  Some r <- queryContractId f.reader record
+  r.number === 1
+  -- The payment was settled: V holds the 10 TKB and the terms are consumed.
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
+  None <- queryContractId f.u f.terms
+  pure ()
+
+-- The legs of the first and of a registered gateway are read apart: each is the one its own gateway recorded.
+testTheLegsOfEachGatewayAreItsOwn : Script ()
+testTheLegsOfEachGatewayAreItsOwn = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  let why = "are not the ones the block recorded"
+  -- The payment is attached to the registered gateway but only the first recorded it.
+  refused notRecorded f $ advanceX c1 "01" [paymentLine f.dvp1] [] [gwBlock gw2Addr codeHash2 [] [paymentLeg f]]
+  -- ... and the other way round.
+  refused why f $ advanceX c1 "01" [] [] [gwBlock gw2Addr codeHash2 [paymentLine f.dvp1] []]
+  refused why f $ advanceX c1 "01" [] [] [gwBlock gw2Addr codeHash2 [] [paymentLeg f]]
+
+-- A block with no entry for a registered gateway is refused, and so is one with an entry that is not registered, a vault's, or a second one.
+testEveryRegisteredGatewayIsInEveryBlock : Script ()
+testEveryRegisteredGatewayIsInEveryBlock = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  c2 <- register f c1 gateway3Entry
+  c3 <- register f c2 vaultEntry
+  let noEntry = "the block carries no entry for the registered gateway"
+  refusedAs noEntry f (asBuilder f) $ advance c3 "01" [] []
+  refused noEntry f $ advanceX c3 "01" [] [] []
+  refused noEntry f $ advanceX c3 "01" [] [] [gwBlock gw2Addr codeHash2 [] []]
+  refused noEntry f $ advanceX c3 "01" [] [] [gwBlock gw3Addr codeHash3 [] []]
+  refused "is not in the chain's registry" f $ advanceX c3 "01" [] [] [gwBlock gw2Addr codeHash2 [] [], gwBlock gw3Addr codeHash3 [] [], gwBlock vaultAddr codeHash3 [] []]
+  refused "is not in the chain's registry" f $ advanceX c3 "01" [] [] [gwBlock gw2Addr codeHash2 [] [], gwBlock gw3Addr codeHash3 [] [], gwBlock gatewayAddr codeHash3 [] []]
+  refused "more than one entry" f $ advanceX c3 "01" [] [] [gwBlock gw2Addr codeHash2 [] [], gwBlock gw3Addr codeHash3 [] [], gwBlock gw2Addr codeHash2 [] []]
+  -- Both, in either order; the vault needs no entry.
+  (_, _) <- submit (asBuilder f) $ advanceX c3 "01" [] [] [gwBlock gw3Addr codeHash3 [] [], gwBlock gw2Addr codeHash2 [] []]
+  pure ()
+
+-- A chain whose registry holds a vault only needs no extra entry.
+testAVaultNeedsNoEntry : Script ()
+testAVaultNeedsNoEntry = do
+  f <- fixture
+  c1 <- register f f.chain vaultEntry
+  (_, _) <- submit (asBuilder f) $ advance c1 "01" [] []
+  pure ()
+
+-- The account proof of a registered gateway must end in the registered code hash.
+testTheAccountMustHaveTheRegisteredCode : Script ()
+testTheAccountMustHaveTheRegisteredCode = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  let why = "does not end in an account of the registered code hash"
+  refused why f $ advanceX c1 "01" [] [] [gwBlock gw2Addr codeHash3 [] []]
+  refused why f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = []]
+  -- The code hash must close the last node, not sit in an earlier one.
+  refused why f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = ["ccdd" <> codeHash2, "aabb"]]
+  refused why f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = ["ccdd" <> codeHash2 <> "00"]]
+  (_, _) <- submit (asBuilder f) $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = ["ccdd" <> codeHash2]]
+  pure ()
+
+-- The sidecar's refusal of a registered gateway's proofs refuses the block.
+testARegisteredGatewaysProofsAreChecked : Script ()
+testARegisteredGatewaysProofsAreChecked = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  refused "the account proof does not verify" f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = ["ba", "ccdd" <> codeHash2]]
+  refused "the storage proof does not verify" f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with storageNodes = ["ba"]]
+
+-- The pause holds the legs of a registered gateway too, and the others' blocks with none still go on.
+testThePauseHoldsAnExtraGatewaysLegs : Script ()
+testThePauseHoldsAnExtraGatewaysLegs = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  paused <- submit f.confirmer $ exerciseCmd c1 PauseLegs
+  refused "a block that carries a leg is refused" f $ advanceX paused "01" [] [] [gwBlock gw2Addr codeHash2 [paymentLine f.dvp1] [paymentLeg f]]
+  (_, _) <- submit (asBuilder f) $ advanceX paused "01" [] [] [gwBlock gw2Addr codeHash2 [] []]
+  pure ()
