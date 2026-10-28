@@ -2,6 +2,7 @@
 module Twin.TwinTest where
 
 import DA.Assert ((===))
+import DA.List (head)
 import DA.Optional (isSome)
 import qualified DA.Text as T
 import qualified DA.TextMap as TM
