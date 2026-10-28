@@ -30,7 +30,7 @@ trap cleanup EXIT
 rpc() { curl -sf -H 'content-type: application/json' \
   --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[${2:-}]}" "http://127.0.0.1:$RETH_HTTP_PORT"; }
 
-# The mocks: three badly behaved tokens, compiled with the pinned solc.
+# The mocks: the badly behaved tokens in Mocks.sol, compiled with the pinned solc.
 docker run --rm -v "$HERE:/src:ro" "$SOLC_IMAGE" --evm-version cancun --optimize --optimize-runs 200 --no-cbor-metadata \
   --combined-json bin /src/Mocks.sol > "$STATE/mocks.json"
 

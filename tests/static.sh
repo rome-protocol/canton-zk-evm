@@ -76,6 +76,20 @@ first=$(awk '/^contract Gateway /{on=1; next} on && /^    [a-z]/{print; exit}' "
 VAULT_SRC=$ROOT/gateway/Vault.sol
 ! grep -qE 'Ownable|onlyOwner|selfdestruct|delegatecall' "$VAULT_SRC" || fail "gateway/Vault.sol has an owner modifier, selfdestruct or delegatecall"
 [[ $(cat "$ROOT/gateway/Vault.bin-runtime") =~ ^[0-9a-f]{200,}$ ]] || fail "gateway/Vault.bin-runtime is not runtime code in hex without 0x"
+# The confirmer trusts the vault by its code hash, so the compiled bytes are checked too: walk the opcodes (skipping the data of PUSH1..PUSH32)
+# and fail on SSTORE, CALLCODE, DELEGATECALL or SELFDESTRUCT.
+python3 - "$ROOT/gateway/Vault.bin-runtime" <<'PY' || fail "gateway/Vault.bin-runtime has an SSTORE, CALLCODE, DELEGATECALL or SELFDESTRUCT opcode"
+import sys
+code = bytes.fromhex(open(sys.argv[1]).read().strip())
+bad = {0x55: "SSTORE", 0xF2: "CALLCODE", 0xF4: "DELEGATECALL", 0xFF: "SELFDESTRUCT"}
+i = 0
+while i < len(code):
+    op = code[i]
+    if op in bad:
+        print(f"{bad[op]} at byte {i}", file=sys.stderr)
+        sys.exit(1)
+    i += 1 + (op - 0x5F if 0x60 <= op <= 0x7F else 0)
+PY
 
 # The gateway's test starts reth only through launch.sh and checks the flags with check.sh; nothing else in gateway/ names reth's image.
 others=$(grep -rIlE 'RETH_IMAGE|paradigmxyz|reth node' "$ROOT/gateway" 2>/dev/null || true)
