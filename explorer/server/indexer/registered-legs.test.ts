@@ -8,7 +8,7 @@ import { createLedger, CUSTODY_ENDPOINTS } from "../ledger.ts";
 import { FAKE_GATEWAY, registered, startFakeLedger, zkChain, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce } from "./custody.ts";
-import { registeredLegsOnce } from "./registered-legs.ts";
+import { registeredLegsHealth, registeredLegsOnce } from "./registered-legs.ts";
 import { legsSlot } from "./legs.ts";
 
 const GW2 = "0x" + "b1".repeat(20), VAULT = "0x" + "b2".repeat(20), STRAY = "0x" + "b3".repeat(20), TOKEN = "0x" + "d1".repeat(20), ALICE = "0x" + "a1".repeat(20);
@@ -90,6 +90,19 @@ describe.skipIf(!TEST_URL)("the legs of registered gateways", () => {
       const value = (await pool.query("select value from health_checks where check_id = 'C10'")).rows[0].value;
       expect(value).toEqual({ block: 1, gateway: GW2 });
       expect(await legRows(pool)).toEqual([]);
+    });
+  });
+
+  it("says how far behind the head the slowest registered gateway's leg index is, and degraded past the limit; and nothing when none is registered", async () => {
+    await inDb(async (pool) => {
+      const chain = await indexed(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }]);
+      expect(await registeredLegsHealth(pool)).toBeNull();
+      await registry(pool, chain);
+      expect(await registeredLegsHealth(pool, 2)).toMatchObject({ id: "registered_legs", status: "degraded", value: { gateways: 1, head: 4, behind: 4, legsCursor: 0 }, detail: expect.stringContaining("4 blocks behind") });
+      await registeredLegsOnce(pool, chain.reads, 3);
+      expect(await registeredLegsHealth(pool, 2)).toMatchObject({ status: "ok", value: { behind: 1, legsCursor: 3 } });
+      await registeredLegsOnce(pool, chain.reads);
+      expect(await registeredLegsHealth(pool, 2)).toMatchObject({ status: "ok", value: { behind: 0, legsCursor: 4 }, detail: null });
     });
   });
 

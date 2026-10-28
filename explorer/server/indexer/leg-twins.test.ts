@@ -51,7 +51,7 @@ async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false): Promise
     // the indexer's own custody loop reads the registry, indexes the registered gateway's legs and counts the twin sums, with no call of the steps here
     const halt = indexer.start();
     try {
-      for (let i = 0; i < 200 && (await pool.query("select 1 from twin_totals")).rowCount === 0; i++) await new Promise((r) => setTimeout(r, 50));
+      for (let i = 0; i < 500 && (await pool.query("select 1 from health_checks where check_id = 'registered_legs'")).rowCount === 0; i++) await new Promise((r) => setTimeout(r, 50));
     } finally { await halt(); }
     return chain;
   }
@@ -217,8 +217,10 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect((await pool.query("select count(*)::int as n from gateway_legs where gateway is not null")).rows[0].n).toBeGreaterThan(0);
       expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
       expect((await blockLegs(pool, 1))[1]).toMatchObject({ canton: { role: "lock" } });
+      // the lag of the registered gateways' leg index is written by the same loop
+      expect((await pool.query("select status from health_checks where check_id = 'registered_legs'")).rows).toEqual([{ status: "ok" }]);
     });
-  });
+  }, 30_000);
 
   it("keeps the registered gateways' legs when a block is indexed again, and counts the twin sums again", async () => {
     await inDb(async (pool) => {

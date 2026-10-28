@@ -44,6 +44,8 @@ const SPECS: Record<string, CheckSpec> = {
   db_ids: { role: "indexer", worst: "down", intervalSeconds: INDEXER_ROUND, stale: "degraded" },
   producer_alive: ROUND, producer_state: ROUND, prover: ROUND,
   journal: { role: "indexer", worst: "degraded" }, reth_reads: { role: "indexer", worst: "degraded" },
+  // The leg index of the registered gateways is written from the custody loop, which is off unless the gateway party is set: the row is not expected, and never down.
+  registered_legs: { role: "indexer", worst: "degraded" },
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
   faucet: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },

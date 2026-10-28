@@ -29,7 +29,7 @@ import { deriveCursor, stage2 } from "./stage2.ts";
 import { checkBalances, type BalanceCheck } from "./balances.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
-import { registeredLegsOnce } from "./registered-legs.ts";
+import { registeredLegsHealth, registeredLegsOnce } from "./registered-legs.ts";
 import { twinTotalsOnce } from "./twin-totals.ts";
 import { checkLegs, legsOf, stage1, type Stage1Input } from "./stage1.ts";
 
@@ -601,6 +601,8 @@ export function createIndexer(o: IndexerOptions) {
           while (running && (await registeredLegsOnce(o.pool, o.reads)).blocks > 0) { /* the next batch */ }
           // The twin sums go on from the legs just indexed, a batch of blocks at a time.
           while (running && (await twinTotalsOnce(o.pool)).blocks > 0) { /* the next batch */ }
+          const lag = await registeredLegsHealth(o.pool);
+          if (lag) await setHealth(o.pool, [lag]);
           registeredFailing = "";
         } catch (e) {
           if (registeredFailing !== (e as Error).message) log(`indexer (registered gateways): ${(e as Error).message}`);

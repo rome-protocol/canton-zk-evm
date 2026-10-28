@@ -75,3 +75,19 @@ export async function registeredLegsOnce(pool: Pick<Pool, "connect" | "query">, 
   }
   return { legs, blocks };
 }
+
+/** How many blocks behind the head the slowest registered gateway's leg index may be before `registered_legs` says degraded: a few passes of `BATCH_BLOCKS`. */
+export const LEGS_BEHIND_BLOCKS = 2000;
+
+/**
+ * The row of `registered_legs`: how far the leg index of the slowest registered gateway (`legs_cursor`) is behind the newest indexed block. It is `degraded` past `limit` blocks; the index is written from the
+ * custody loop, so it runs up to `CUSTODY_MS` behind a block by design. Null when no gateway is registered (no row is written then).
+ */
+export async function registeredLegsHealth(pool: Pick<Pool, "query">, limit = LEGS_BEHIND_BLOCKS): Promise<{ id: string; status: "ok" | "degraded"; value: { gateways: number; head: number; legsCursor: number; behind: number }; threshold: { degradedBlocks: number }; detail: string | null } | null> {
+  const head = Number((await pool.query("select coalesce(max(number), 0) as n from blocks")).rows[0].n);
+  const r = (await pool.query("select count(*)::int as n, min(legs_cursor) as slowest from canton_registry where kind = 'gateway'")).rows[0];
+  if (r.n === 0) return null;
+  const legsCursor = Number(r.slowest), behind = Math.max(0, head - legsCursor), bad = behind > limit;
+  return { id: "registered_legs", status: bad ? "degraded" : "ok", value: { gateways: r.n, head, legsCursor, behind }, threshold: { degradedBlocks: limit },
+    detail: bad ? `the legs of the registered gateways are indexed to block ${legsCursor}, ${behind} blocks behind the head` : null };
+}

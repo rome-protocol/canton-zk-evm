@@ -28,7 +28,7 @@ describe("the health model (design 6.5)", () => {
   });
 
   it("is degraded for C4, C6, C8, C9 and C10, the producer's rows and the prover, and never down: they are not needed for final data", () => {
-    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal"]) {
+    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal", "registered_legs"]) {
       const e = evaluate([...fresh().filter((r) => r.id !== id), row(id, "degraded", 1, "failed")]);
       expect(e.status, id).toBe("degraded");
       expect(httpStatusOf(e.status), id).toBe(200);
