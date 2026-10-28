@@ -2003,6 +2003,9 @@ testAContractProposalIsWithdrawnOrRejected = do
   f <- fixture
   let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeContract with entry = gatewayEntry
   p1 <- propose
+  [_] <- query @ContractProposal f.reader
+  forA_ [f.builder, f.reader, f.confirmer] $ \who -> submitMustFail who $ exerciseCmd p1 WithdrawContract
+  forA_ [f.builder, f.reader] $ \who -> submitMustFail who $ exerciseCmd p1 RejectContract
   submit f.operator $ exerciseCmd p1 WithdrawContract
   submitMustFail f.confirmer $ exerciseCmd p1 AcceptContract with chain = f.chain
   p2 <- propose
