@@ -521,12 +521,12 @@ testAPinIsCheckedAgainstItsRules = do
   let good = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
   refusedPin "other decimals than the entry's" (good with twinDecimals = 6)
   refusedPin "another token than the entry's" (good with twinToken = twin6Addr)
-  forA_ [good with twinToken = "7A", good with twinDecimals = 37, good with twinDecimals = -1] $ \e ->
+  forA_ [(good with twinToken = "7A"), (good with twinDecimals = 37), (good with twinDecimals = (-1))] $ \e ->
     submitMustFail (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = e
   c <- pinTwin f f.chain t.trules twinAddr 18
   -- a second rules of the same token, even the same decimals, is not a second pin
   second <- twinRulesOf f.gateway twinAddr "TKA" 18
-  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = good with twinRules = second
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = (good with twinRules = second)
   r <- trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = c
   case r of
     Left e -> assertMsg ("refused, but not as a second pin: " <> show e) ("is pinned already" `T.isInfixOf` show e)
@@ -557,7 +557,7 @@ testAPinWaitsOutTheDelayAndTheRightParties = do
   next <- submit f.confirmer $ exerciseCmd p AcceptTwin with chain
   pinnedOf f next >>= \x -> x === Some [entry]
   -- withdrawn or rejected, a proposal cannot be accepted
-  let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd next ProposeTwin with entry = entry with twinToken = twin6Addr
+  let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd next ProposeTwin with entry = (entry with twinToken = twin6Addr)
   p1 <- propose
   forA_ [f.builder, f.reader, f.confirmer] $ \who -> submitMustFail who $ exerciseCmd p1 WithdrawTwin
   forA_ [f.builder, f.reader] $ \who -> submitMustFail who $ exerciseCmd p1 RejectTwin
