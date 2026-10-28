@@ -137,9 +137,10 @@ export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger
  * when no read was made: a gateway registered long ago is read from its first leg. An entry seen before keeps its progress.
  */
 export async function writeRegistry(c: Pick<PoolClient, "query">, registry: ChainRegistry, offset: number, block: number): Promise<void> {
-  // A vault or a pin that was not there before changes which legs are locks and releases: the sums over the legs are counted again.
-  const known = (await c.query("select encode(address, 'hex') as k from canton_registry where kind = 'vault' union all select 'pin:' || encode(token, 'hex') from canton_twins")).rows.map((r) => r.k as string);
-  const next = [...registry.contracts.filter((e) => e.kind === "vault").map((e) => e.address.slice(2)), ...registry.twins.map((t) => "pin:" + t.token.slice(2))];
+  // An entry or a pin that was not there before changes which legs count (a vault or a pin: which legs are locks and releases; a gateway: its legs
+  // from the block of the read before may lie below the block the sums are counted up to): the sums over the legs are counted again.
+  const known = (await c.query("select kind || ':' || encode(address, 'hex') as k from canton_registry union all select 'pin:' || encode(token, 'hex') from canton_twins")).rows.map((r) => r.k as string);
+  const next = [...registry.contracts.map((e) => e.kind + ":" + e.address.slice(2)), ...registry.twins.map((t) => "pin:" + t.token.slice(2))];
   if (next.some((k) => !known.includes(k)) || known.some((k) => !next.includes(k))) await resetTwinTotals(c);
   const prev = (await c.query("select value from meta where key = 'registry_read_block'")).rows[0]?.value as string | undefined;
   const start = prev === undefined ? 0 : Number(prev);

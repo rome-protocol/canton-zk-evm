@@ -17,7 +17,7 @@ import { legsSlot } from "./legs.ts";
 import { createAccountRest } from "../rest/account-rest.ts";
 import { createChainRest } from "../rest/chain-rest.ts";
 
-const GW2 = "0x" + "b1".repeat(20), VAULT = "0x" + "b2".repeat(20), OTHER_VAULT = "0x" + "b4".repeat(20), TOKEN = "0x" + "d1".repeat(20), SIX = "0x" + "d2".repeat(20), OTHER = "0x" + "d3".repeat(20), ALICE = "0x" + "a1".repeat(20);
+const GW2 = "0x" + "b1".repeat(20), GW3 = "0x" + "b5".repeat(20), VAULT = "0x" + "b2".repeat(20), OTHER_VAULT = "0x" + "b4".repeat(20), TOKEN = "0x" + "d1".repeat(20), SIX = "0x" + "d2".repeat(20), OTHER = "0x" + "d3".repeat(20), ALICE = "0x" + "a1".repeat(20);
 const ID1 = "0x" + "11".repeat(32), ID2 = "0x" + "22".repeat(32), ID3 = "0x" + "33".repeat(32), ID4 = "0x" + "44".repeat(32);
 const word = (a: string) => "0x" + "00".repeat(12) + a.slice(2);
 const released = (vault: string, id: string, token: string, to: string) => ({ address: vault, topics: [RELEASED_TOPIC, id, word(token), word(to)], data: encodeAbiParameters([{ type: "uint256" }, { type: "string" }], [1n, "ref"]) });
@@ -225,6 +225,14 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       // a pin that is new: the same
       await again([pin(TOKEN, 18), pin(SIX, 6), pin(OTHER, 8)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
       expect(await totals(pool)).toEqual([]);
+      // a gateway that is new: the same, as its legs from the block of the read before may lie below the block the sums were counted up to
+      await twinTotalsOnce(pool, chain.reads);
+      expect(await done(pool)).toBe("3");
+      const f = await startFakeLedger([], { ledgerEnd: 999, active: [zkChain([registered(GW2, "Gateway"), registered(GW3, "Gateway"), registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")], { twins: [pin(TOKEN, 18), pin(SIX, 6), pin(OTHER, 8)] })] });
+      fakes.push(f);
+      await custodyOnce(pool, createLedger(f.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS), chain.reads, 500, PARTICIPANT, CHAIN_ID);
+      expect(await totals(pool)).toEqual([]);
+      expect(await done(pool)).toBeNull();
     });
   });
 
