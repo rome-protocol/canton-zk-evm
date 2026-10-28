@@ -110,7 +110,7 @@ legsAnswer input = case T.splitOn "," input of
     | otherwise -> answer root number gateway count
     where
       count = if legs == "" then 0 else length (T.splitOn "|" legs)
-      tag = head (T.splitOn ";" account)   -- the first account node: a registered gateway's proof has the code hash node after it
+      tag = case T.splitOn ";" account of { x :: _ -> x; [] -> "" }   -- the first account node: a registered gateway's proof has the code hash node after it
   _ -> "no malformed input"
   where
     answer root number gateway count = T.intercalate " " ["ok", root, number, gateway, show count]
