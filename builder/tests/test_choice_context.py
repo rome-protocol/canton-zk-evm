@@ -16,7 +16,7 @@ from test_builder import ALICE, BOB, DEP, PAY, PAY_ID, PAYEE, REQUEST, TERMS, TK
 ADMIN = "adm::1220" + "ab" * 32
 TERMS_ADMIN = "a"   # the fake ledger's allocation of terms is of the instrument {"admin": "a", "id": "T"}; the others' is {"admin": "adm", ...}
 TOKEN_ADMIN = "adm"
-VALUES = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "rules-cid"}, "open-round": {"tag": "AV_ContractId", "value": "round-cid"}}}
+VALUES = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "00ab12"}, "open-round": {"tag": "AV_ContractId", "value": "00cd34"}}}
 ROUND = {"templateId": "pkg:Splice.Round:OpenMiningRound", "contractId": "round-cid", "createdEventBlob": "0abc", "synchronizerId": "sync::1"}
 RULES = {"templateId": "pkg:Splice.AmuletRules:AmuletRules", "contractId": "rules-cid", "createdEventBlob": "0def", "synchronizerId": "sync::1"}
 ANSWER = {"choiceContextData": VALUES, "disclosedContracts": [ROUND, RULES]}
@@ -164,7 +164,7 @@ class Contexts(tb.LegCase):
 
     def test_two_payments_each_carry_their_own_context_and_a_shared_contract_is_disclosed_once(self):
         s = self.two()
-        other = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "rules-cid"}, "open-round": {"tag": "AV_ContractId", "value": "round-2"}}}
+        other = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "00ab12"}, "open-round": {"tag": "AV_ContractId", "value": "00ef56"}}}
         round2 = {**ROUND, "contractId": "round-2"}
         base = "/registry/allocations/v1/%s/choice-contexts/execute-transfer"
         self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": ANSWER, base % "alloc-2": {"choiceContextData": other, "disclosedContracts": [round2, RULES]}})
@@ -271,6 +271,15 @@ class Contexts(tb.LegCase):
                "text is a number": {"choiceContextData": {"values": {"k": {"tag": "AV_Text", "value": 7}}}},
                "unknown tag": {"choiceContextData": {"values": {"k": {"tag": "AV_Other", "value": "x"}}}},
                "list of text": {"choiceContextData": {"values": {"k": {"tag": "AV_List", "value": "x"}}}}}
+        for name, tag, value in (("party", "AV_Party", "not a party"), ("party with a bad name", "AV_Party", "a b::1220" + "ab" * 32), ("decimal", "AV_Decimal", "abc"),
+                                 ("decimal with an exponent", "AV_Decimal", "1e3"), ("decimal with 11 places", "AV_Decimal", "0.12345678901"),
+                                 ("decimal with 29 digits", "AV_Decimal", "1" * 29), ("int", "AV_Int", "zz"), ("int over 64 bits", "AV_Int", str(2**63)),
+                                 ("empty contract id", "AV_ContractId", ""), ("contract id that is not hex", "AV_ContractId", "rules-cid"),
+                                 ("date", "AV_Date", "29/10/2026"), ("date that is not one", "AV_Date", "2026-13-40"), ("time", "AV_Time", "yesterday"),
+                                 ("time with no zone", "AV_Time", "2026-10-29T12:00:00"), ("reltime as text", "AV_RelTime", "garbage"),
+                                 ("reltime with a bad count", "AV_RelTime", {"microseconds": "x"}), ("reltime with more", "AV_RelTime", {"microseconds": "1", "x": "2"}),
+                                 ("bool as text", "AV_Bool", "true")):
+            bad[name] = {"choiceContextData": {"values": {"k": {"tag": tag, "value": value}}}}
         for name, answer in bad.items():
             with self.subTest(name):
                 b.REGISTRY_DOWN.clear()
@@ -284,8 +293,11 @@ class Contexts(tb.LegCase):
 
     def test_every_kind_of_value_a_registry_may_give_is_taken(self):
         values = {"values": {"t": {"tag": "AV_Text", "value": "x"}, "i": {"tag": "AV_Int", "value": "7"}, "b": {"tag": "AV_Bool", "value": False},
-                             "l": {"tag": "AV_List", "value": [{"tag": "AV_Party", "value": "p::1"}]},
-                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": "c"}}}}}
+                             "l": {"tag": "AV_List", "value": [{"tag": "AV_Party", "value": ADMIN}]},
+                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": "0c"}}},
+                             "d": {"tag": "AV_Decimal", "value": "-12.5"}, "n": {"tag": "AV_Decimal", "value": "7"}, "y": {"tag": "AV_Date", "value": "2026-10-29"},
+                             "ts": {"tag": "AV_Time", "value": "2026-10-29T12:00:00.123456Z"}, "r": {"tag": "AV_RelTime", "value": {"microseconds": "60000000"}},
+                             "big": {"tag": "AV_Int", "value": "-9223372036854775808"}}}
         r = Registry(answer={"choiceContextData": values})
         self.addCleanup(r.close)
         self.assertEqual(b.ChoiceContexts({ADMIN: r.url}).allocation(ADMIN, "a-1"), (values, []))
@@ -351,6 +363,51 @@ class Contexts(tb.LegCase):
         with self.assertRaisesRegex(b.NoCantonSide, "used|not asked|cannot"):
             reader.allocation(ADMIN, "a-3")
         self.assertEqual(len(r.asked), 2)
+
+    def test_a_registry_that_hangs_never_takes_the_legs_of_another_out(self):
+        slow, fast = Registry(answer=ANSWER, delay=3), Registry(answer=ANSWER)
+        self.addCleanup(slow.close); self.addCleanup(fast.close)
+        other = "oth::1220" + "cd" * 32
+        regs = {ADMIN: slow.url, other: fast.url}
+        b.REGISTRY_DOWN.clear()
+        reader = b.ChoiceContexts(regs, deadline=0.3, backoff=30, budget=0.4)
+        with self.assertRaisesRegex(b.NoCantonSide, "cannot be read"):   # the slow one uses all of its own budget
+            reader.allocation(ADMIN, "a-1")
+        self.assertEqual(reader.allocation(other, "a-2")[0], VALUES)   # the same block: the other registry has a budget of its own
+        for _ in range(2):   # the next blocks: the slow one is not asked, the other still is
+            reader = b.ChoiceContexts(regs, deadline=0.3, backoff=30, budget=0.4)
+            with self.assertRaisesRegex(b.NoCantonSide, "cannot be read"):
+                reader.allocation(ADMIN, "a-3")
+            self.assertEqual(reader.allocation(other, "a-4" + str(_))[0], VALUES)
+        self.assertEqual(len(slow.asked), 1)
+        self.assertEqual(len(fast.asked), 3)
+
+    def test_a_registry_whose_budget_is_used_up_by_another_is_not_marked_down(self):
+        a, c = Registry(answer=ANSWER, delay=0.25), Registry(answer=ANSWER)
+        self.addCleanup(a.close); self.addCleanup(c.close)
+        other = "oth::1220" + "cd" * 32
+        b.REGISTRY_DOWN.clear()
+        reader = b.ChoiceContexts({ADMIN: a.url, other: c.url}, deadline=5, budget=0.4)
+        reader.allocation(ADMIN, "a-1")
+        with self.assertRaisesRegex(b.NoCantonSide, "cannot be read"):
+            reader.allocation(ADMIN, "a-2")
+        reader.allocation(other, "c-1")
+        self.assertEqual([k for k in b.REGISTRY_DOWN if k[1] == c.url], [])
+
+    def test_one_choice_context_is_bounded_in_bytes(self):
+        big = {"choiceContextData": {"values": {"k": {"tag": "AV_Text", "value": "x" * (b.CONTEXT_MAX_CONTEXT_BYTES + 1)}}}}
+        self.left_out(answer=big)
+
+    def test_the_choice_contexts_of_a_block_are_bounded_in_bytes_and_the_later_legs_are_left_out(self):
+        s = self.two()
+        size = len(json.dumps(VALUES))
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        old, b.CONTEXT_MAX_BLOCK_BYTES = b.CONTEXT_MAX_BLOCK_BYTES, size + size // 2
+        self.addCleanup(setattr, b, "CONTEXT_MAX_BLOCK_BYTES", old)
+        result = self.build(s)
+        self.assertEqual(len(result["leftOut"]), 1)
+        self.assertIn("choice contexts", result["leftOut"][0]["reason"])
+        self.assertEqual(len(s.advance_argument()["legs"]), 1)
 
     def test_an_answer_is_asked_once(self):
         r = Registry(answer=ANSWER)

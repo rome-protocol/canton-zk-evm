@@ -305,13 +305,48 @@ def parse_registries(items) -> dict:
 
 CONTEXT_MAX_DEPTH = 16          # the deepest an AnyValue may nest (a list in a list ...): the Advance's argument nests it 3 deeper, and Python's JSON writer has a limit
 CONTEXT_MAX_NODES = 1024        # the most AnyValues (a list's and a map's too) in one choice context
+CONTEXT_MAX_CONTEXT_BYTES = 16 * 1024      # the most bytes of one choice context (a Canton Coin one is a few hundred): the participant charges traffic for every byte of the Advance
+CONTEXT_MAX_BLOCK_BYTES = 128 * 1024       # the most bytes of the choice contexts of all the legs of a block; the later legs are left out
+INT64 = re.compile(r"-?[0-9]{1,19}")
+DECIMAL = re.compile(r"-?[0-9]{1,28}(\.[0-9]{1,10})?")   # a Daml Decimal: 28 digits before the point, 10 after
+CONTRACT_ID = re.compile(r"[0-9a-fA-F]{1,256}")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")   # UTC, to the microsecond
 CONTEXT_SCALARS = {"AV_Text": (str,), "AV_Party": (str,), "AV_ContractId": (str,), "AV_Decimal": (str,), "AV_Date": (str,), "AV_Time": (str,),
-                   "AV_RelTime": (str,), "AV_Int": (str, int), "AV_Bool": (bool,)}   # the JSON API writes a Decimal as text, an Int as text (or a whole number)
+                   "AV_RelTime": (dict,), "AV_Int": (str, int), "AV_Bool": (bool,)}   # the JSON API writes a Decimal as text, an Int as text (or a whole number), a RelTime as {"microseconds": Int}
+
+
+def int64_text(x) -> bool:
+    return isinstance(x, str) and INT64.fullmatch(x) is not None and -2**63 <= int(x) < 2**63
+
+
+def scalar_ok(tag: str, payload) -> bool:
+    """Whether this scalar's value is one that Daml would parse as the tag's type (anything else makes Canton refuse the whole Advance)."""
+    if tag == "AV_Party":
+        return canton_party_text(payload)
+    if tag == "AV_Decimal":
+        return DECIMAL.fullmatch(payload) is not None
+    if tag == "AV_Int":
+        return int64_text(payload) if isinstance(payload, str) else -2**63 <= payload < 2**63
+    if tag == "AV_ContractId":
+        return CONTRACT_ID.fullmatch(payload) is not None
+    if tag == "AV_RelTime":
+        return set(payload) == {"microseconds"} and (int64_text(payload["microseconds"]) or (type(payload["microseconds"]) is int and -2**63 <= payload["microseconds"] < 2**63))
+    if tag in ("AV_Date", "AV_Time"):
+        shape, form, text = (DATE, "%Y-%m-%d", payload) if tag == "AV_Date" else (TIME, "%Y-%m-%dT%H:%M:%S", payload[:19])
+        if shape.fullmatch(payload) is None:
+            return False
+        try:
+            datetime.strptime(text, form)
+        except ValueError:
+            return False
+    return True
 
 
 def check_any_value(value) -> None:
     """`value` is a Daml `AnyValue` as the JSON API writes it ({"tag": "AV_...", "value": ...}), no deeper than CONTEXT_MAX_DEPTH and with at most
-    CONTEXT_MAX_NODES values in it, with no number that is not a whole one: anything else is a ValueError. Walks the value without recursion."""
+    CONTEXT_MAX_NODES values in it, each scalar's text one that Daml parses as its type (party grammar, Int64, Decimal of 28 and 10 digits, hex
+    contract id, YYYY-MM-DD date, UTC timestamp, a RelTime as {"microseconds": Int}), with no number that is not a whole one: anything else is a ValueError. Walks the value without recursion."""
     todo, nodes = [(value, 1)], 0
     while todo:
         v, depth = todo.pop()
@@ -326,8 +361,8 @@ def check_any_value(value) -> None:
         elif tag == "AV_Map" and isinstance(payload, dict) and all(isinstance(k, str) for k in payload):
             todo.extend((x, depth + 1) for x in payload.values())
         elif tag in CONTEXT_SCALARS and type(payload) in CONTEXT_SCALARS[tag]:
-            if type(payload) is int and not -2**63 <= payload < 2**63:
-                raise ValueError("not an Int")
+            if not scalar_ok(tag, payload):
+                raise ValueError(f"not a {tag[3:]}")
         else:
             raise ValueError("not an AnyValue")
 
@@ -346,7 +381,8 @@ def context_values(data) -> dict:
     if not all(CONTEXT_KEY.fullmatch(key) for key in values):
         raise ValueError("not an entry of a choice context")
     check_any_value({"tag": "AV_Map", "value": values})   # the values together, as the Map they are, with the limits of one value
-    json.dumps(values, allow_nan=False)
+    if len(json.dumps(values, allow_nan=False)) > CONTEXT_MAX_CONTEXT_BYTES:
+        raise ValueError("a choice context is too big")
     return {"values": values}
 
 
@@ -369,14 +405,14 @@ class ChoiceContexts:
     """What the token registries (`--registry ADMIN=URL`) say a leg's choice needs: the choice context, and the contracts it names, which go with
     the Advance as disclosed contracts. The registry is trusted for nothing (as for `twin_registry_reader`): a request is bounded by `deadline` seconds, by
     a timer; the answer is read to at most CONTEXT_MAX_BODY bytes; a redirect is not followed; the answer must be a choice context and disclosed
-    contracts and nothing else. All the requests of one reader (the builder makes one for each block) share `budget` seconds (the deadline by
-    default). A registry that cannot be reached or is too slow is not asked again for `backoff` seconds. Any bad answer leaves the leg out with a
+    contracts and nothing else. All the requests of one reader (the builder makes one for each block) to one registry share `budget` seconds (the deadline by
+    default), each registry its own. A registry that cannot be reached or is too slow is not asked again for `backoff` seconds. Any bad answer leaves the leg out with a
     reason (NoCantonSide) and never fails the build. An answer is asked once."""
 
     def __init__(self, registries: dict, tokens: dict | None = None, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF,
                  budget: float | None = None):
         self.registries, self.tokens, self.timeout, self.deadline, self.backoff = registries, tokens or {}, timeout, deadline, backoff
-        self.budget, self.spent, self.seen, self.noted = deadline if budget is None else budget, 0.0, {}, set()
+        self.budget, self.spent, self.seen, self.noted = deadline if budget is None else budget, {}, {}, set()   # spent: registry URL -> seconds
 
     def wants(self, admin: str) -> bool:
         """Whether the registry of this instrument admin is one the builder asks."""
@@ -419,8 +455,8 @@ class ChoiceContexts:
         down = REGISTRY_DOWN.get(("choice", base))
         if down and time.monotonic() < down[0]:
             raise NoCantonSide(down[1])
-        limit = min(self.deadline, self.budget - self.spent)
-        if limit <= 0:
+        limit = min(self.deadline, self.budget - self.spent.get(base, 0.0))
+        if limit <= 0:   # this registry's own time: another registry's legs are not taken out by it
             why = f"the token registry cannot be read: the block's {self.budget:g} s for it are used"
             REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
             raise NoCantonSide(why)
@@ -440,7 +476,7 @@ class ChoiceContexts:
             REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
             raise NoCantonSide(why) from e
         finally:
-            self.spent += time.monotonic() - started
+            self.spent[base] = self.spent.get(base, 0.0) + time.monotonic() - started
         return self.seen[key]
 
 
@@ -1239,6 +1275,7 @@ class Canton:
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
+        self.leg_context_bytes: dict = {}   # leg key -> the bytes of its choice context
         self.leg_disclosed: dict = {}   # leg key -> the contracts its choice context names, which the block's final legs pick from for the Advance
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
@@ -1601,8 +1638,12 @@ def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
     added = {o["contractId"]: o for o in shown if o["contractId"] not in held}
     if sum(len(json.dumps(o)) for cid, o in {**held, **added}.items() if cid not in given) > CONTEXT_MAX_DISCLOSED_BYTES:
         raise NoCantonSide("the token registry names more disclosed contracts than a block may carry")
+    size = len(json.dumps(context)) if context is not None else 0
+    if size + sum(n for k, n in canton.leg_context_bytes.items() if k != leg_key(leg)) > CONTEXT_MAX_BLOCK_BYTES:
+        raise NoCantonSide("the token registries' choice contexts are more than a block may carry")
     if context is not None:
         leg["value"]["choiceContext"] = context
+    canton.leg_context_bytes[leg_key(leg)] = size
     canton.leg_disclosed[leg_key(leg)] = shown
 
 
