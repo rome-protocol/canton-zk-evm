@@ -773,8 +773,9 @@ PAUSE_REFUSAL = re.compile(r"the legs are paused until [^\\\"]{0,64}: a block th
 QUOTA_REFUSAL = re.compile(r"the block's withdrawals of the instrument .{1,300}? are over the withdrawal quota: [0-9.]+ more would make [0-9.]+ "
                            r"in the last [0-9]+ s, and the quota is [0-9.]+")
 # Daml's refusal of a block that lacks the entry of a registered gateway (checkRegisteredGateways, Chain.daml). The builder reads the registry with the chain
-# contract; a Gateway entry accepted between that read and the submit is a race, never a transaction's fault.
-GATEWAY_REFUSAL = re.compile(r"the block carries no entry for the registered gateway [0-9a-f]{40}")
+# contract; a Gateway entry accepted between that read and the submit is a race, never a transaction's fault. The block carries an entry for every gateway the
+# builder read: a refusal that names one of those is not that race (Daml cannot say "no entry" for it), so its words are no proof and it is handled as any refusal.
+GATEWAY_REFUSAL = re.compile(r"the block carries no entry for the registered gateway ([0-9a-f]{40})")
 
 
 def no_fault_refusal(result: dict) -> str | None:
@@ -787,7 +788,8 @@ def no_fault_refusal(result: dict) -> str | None:
     cid = result.get("chainContract")
     if cid and "CONTRACT_NOT_FOUND" in text and cid in text:
         return "changed"
-    if GATEWAY_REFUSAL.search(text):
+    named = GATEWAY_REFUSAL.search(text)
+    if named and named.group(1) not in {str(a).lower().removeprefix("0x") for a in result.get("carriedGateways", [])}:
         return "changed"
     return None
 
@@ -1808,6 +1810,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             report["rewindError"] = rewind_error
         answered("refused" if rejected else "not_taken", reason=reason[:600])
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
+                **({"carriedGateways": [sub.built.chain["gatewayAddress"], *(g["address"] for g in sub.built.extra_gateways)]} if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried, to tell a race from a forged sentence
                 **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {})}   # which contract is gone: the Advance's own chain contract, or another
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))

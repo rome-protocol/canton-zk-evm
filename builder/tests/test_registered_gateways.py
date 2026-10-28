@@ -121,6 +121,8 @@ class Registered(tb.LegCase):
         self.assertEqual(b.no_fault_refusal({"reason": f"INTERPRETATION_ERROR: {text}"}), "changed")
         self.assertIsNone(b.no_fault_refusal({"reason": "the block carries no entry for the registered gateway nothing"}))
         self.assertIsNone(b.no_fault_refusal({"reason": "the block's parent is not the chain's head"}))
+        self.assertEqual(b.no_fault_refusal({"reason": text, "carriedGateways": ["0x" + G3, GATEWAY]}), "changed")   # it names a gateway the block did not carry
+        self.assertIsNone(b.no_fault_refusal({"reason": text, "carriedGateways": [GATEWAY, G2.upper()]}))   # it names one the block carried: not that race
 
     def test_an_entry_the_builder_cannot_read_stops_the_block(self):
         for bad in (entry("B8" * 20), entry("b8" * 19), entry(G2, "Pool"), {"contractAddress": G2}):
@@ -156,6 +158,18 @@ class Pipelined(Depth, tb.LegCase):
         self.drive(p, lambda: any(r["committed"] for r in self.reports))   # the next block is cut on the registry as it is now
         last = s.ledger.submitted[-1]["commands"][0]["ExerciseCommand"]["choiceArgument"]
         self.assertEqual([g["address"] for g in last["extraGateways"]], [G2])
+
+    def test_a_refusal_naming_a_gateway_the_block_carried_twice_in_a_row_holds_the_transaction(self):
+        s = self.setup({}, terms=[TERMS])
+        s.ledger.chain_extra = {"contracts": [entry(G2)]}   # registered before the read: the block carries its entry
+        p = self.pipeline(s, 2)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        text = f"the block carries no entry for the registered gateway {G2}"
+        s.ledger.refusal = lambda header, cid: (409, "INTERPRETATION_ERROR", text)   # every time: a forged sentence, not a race
+        self.drive(p, lambda: p.excluded)
+        self.assertEqual(list(p.excluded), [t["hash"]])
+        self.assertTrue(all(not r["committed"] for r in self.reports))
 
 
 if __name__ == "__main__":
