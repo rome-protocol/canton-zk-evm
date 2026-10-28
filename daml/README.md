@@ -28,11 +28,11 @@ In one Canton transaction, the builder's `Advance`:
 
 1. calls the sidecar's `verify2` (from package 0.3.0; `verify` before) with the proof, header and transactions;
 2. checks the answer: the block was proven under the pinned `programVK` and `rootC`; its parent is the current head; its number is the head's plus one; its gas limit and gas used are within the cap;
-3. builds one line for each attached leg (a deposit, a withdrawal, a payment, or from package 0.4.0 a trade or a claim), from the Canton contracts that the leg names, and calls the sidecar's `legs` with those lines and the gateway's proofs. The sidecar hashes the lines as the gateway contract does and compares the result with the value the proven block recorded. Daml requires the exact answer. A block that recorded no legs is checked in the same way, with no lines: that is how it is proven that it needs none;
-4. settles every leg, in order: `Lock` for a deposit, `Receive` for a withdrawal, `Settle` for a payment, `SettleTrade` for a trade and `Redeem` for a claim;
+3. builds one line for each attached leg (a deposit, a withdrawal, a payment, or from package 0.4.0 a trade or a claim, or from package 0.5.0 a lock or a release), from the Canton contracts that the leg names, and calls the sidecar's `legs` with those lines and the gateway's proofs. The sidecar hashes the lines as the gateway contract does and compares the result with the value the proven block recorded. Daml requires the exact answer. A block that recorded no legs is checked in the same way, with no lines: that is how it is proven that it needs none;
+4. settles every leg, in order: `Lock` for a deposit, `Receive` for a withdrawal, `Settle` for a payment, `SettleTrade` for a trade, `Redeem` for a claim, `TwinRules.Mint` for a lock and `RedeemRequest.BurnForRelease` for a release;
 5. creates the `BlockRecord` and the next `ZkChain`, whose head state root is this block's.
 
-If any step fails, nothing changes. A missing leg, an extra one, two in another order, or one with any field changed (another recipient, amount, id, token or party) gives another hash, so `Advance` is refused. Daml checks no proofs and hashes no blocks or legs; it compares the text the sidecar answers. The only hashes it takes are ids that name things and prove nothing: a payment's id (`paymentId`, see `DvpTerms` above), a venue trade's payment id (`venueTradeId`) and the id of the claim it makes (`venueClaimId`, see "A venue's trade" below).
+If any step fails, nothing changes. A missing leg, an extra one, two in another order, or one with any field changed (another recipient, amount, id, token or party) gives another hash, so `Advance` is refused. Daml checks no proofs and hashes no blocks or legs; it compares the text the sidecar answers. The only hashes it takes are ids that name things and prove nothing: a payment's id (`paymentId`, see `DvpTerms` above), a venue trade's payment id (`venueTradeId`), the id of the claim it makes (`venueClaimId`, see "A venue's trade" below), a lock's id (`lockId`) and a release's id (`releaseId`).
 
 What Daml checks before it writes a leg's line:
 
@@ -41,7 +41,7 @@ What Daml checks before it writes a leg's line:
 - a withdrawal's amount is more than zero, its id is 64 lowercase hex digits and its burner 40. The receiver is the party of the acceptance, so the line carries exactly that party;
 - a payment's line is written from the terms alone. `Settle` checks that the allocation goes from U to V, with the operator as executor.
 
-Daml writes the line of a deposit and of a payment from the contracts, never from text that the builder sends. No Canton contract holds a withdrawal's id, burner or amount, so the builder sends those three as text. The proven hash binds them, with the rest, to what the block recorded.
+Daml writes the line of a deposit and of a payment from the contracts, never from text that the builder sends. No Canton contract holds a withdrawal's id, burner or amount, so the builder sends those three as text. A lock's receiver, `ref`, vault and amount are builder text in the same way, and so is a release's vault. The proven hash binds them, with the rest, to what the block recorded.
 
 Who provides the authority: `Advance` runs with the authority of the signatories of `ZkChain` (the operator, the confirmer and the gateway) and of its controller, the builder. Each settlement choice adds the signer of its own contract.
 
@@ -52,6 +52,8 @@ Who provides the authority: `Advance` runs with the authority of the signatories
 | Payment | `DvpTerms.Settle` | U and V, the operator and the confirmer |
 | Trade (0.4.0) | `VenueTrade.SettleTrade` | the venue, the seller, the operator, the confirmer and the gateway |
 | Claim (0.4.0) | `FundedClaim.Redeem` | the operator, the confirmer and the gateway |
+| Lock (0.5.0) | `TwinRules.Mint` | the gateway, as the twin's admin |
+| Release (0.5.0) | `RedeemRequest.BurnForRelease`, which calls `TwinRules.Burn` | the holder, the operator, the confirmer and the gateway |
 
 `Lock` and `Receive` need the operator, the confirmer and the gateway together, and `Settle` the operator and the confirmer together. As the signatories of `ZkChain`, they provide that authority inside `Advance`; the design provides it nowhere else. None of them can settle alone, and the builder cannot settle at all. The operator, the confirmer and the gateway can settle together by design. They are the chain's root of trust.
 
@@ -130,7 +132,7 @@ Daml makes the id again from `lockReceiver` and `lockRef` and writes the line `p
 
 Daml writes the line `payment/<releaseId releaseVault request.ref>/<request.token>/<request.recipient>/<the request's amount in base units>/` from the request, so a recorded payment that is not the request's (another ref, vault, token, recipient or amount) is refused, and so is a release with no request attached. The request's amount converts back with `Twin.Amount.toBaseUnits`; for a token with fewer than 10 decimals an amount that is not a whole number of base units is refused. Then `Advance` exercises `BurnForRelease`: the twin's admin `Burn` takes the amount out of the request's holdings (the holder keeps the change) and the request is archived, so the same request cannot be released again. A release is a payment anyone can make from their own tokens (the id is public), so the vault's `Released` event, and not this leg, shows that the tokens left the vault; Daml answers only for a payment that matches a request.
 
-**What both share with the other legs.** The legs pause holds them. A release counts against the withdrawal quota under the twin's instrument (`<gateway party>/erc20:<token address>`), by the request's twin amount, like a withdrawal; a lock is not counted. A block that carries one payment id twice among its twin legs is refused (the gateway uses each id once, so an honest block cannot); across blocks the gateway's used ids and the block's proof are the guard, and a request is released once. Each `ref` of a request must be unique, because the gateway uses the id once and a request whose id is used already can never be paid. The builder must see the `TwinRules` contract and the holdings of the request (the gateway party is their signatory; the holder is an observer of its holdings), by disclosure if they are not its own.
+**What both share with the other legs.** The legs pause holds them. A release counts against the withdrawal quota under the twin's instrument (`<gateway party>/erc20:<token address>`), by the request's twin amount, like a withdrawal; a lock is not counted. A block that carries one payment id twice among its twin legs is refused (the gateway uses each id once, so an honest block cannot; the check is made for each gateway on its own, so the same id paid on two gateways is not refused); across blocks the gateway's used ids and the block's proof are the guard, and a request is released once. Each `ref` of a request must be unique, because the gateway uses the id once and a request whose id is used already can never be paid. The builder must see the `TwinRules` contract and the holdings of the request (the gateway party is their signatory; the holder is an observer of its holdings), by disclosure if they are not its own.
 
 Four limits, known, each to be closed before mainnet:
 

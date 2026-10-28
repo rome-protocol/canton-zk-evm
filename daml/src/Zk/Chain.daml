@@ -357,7 +357,7 @@ template ZkChain
         -- of each attached leg from its own contracts, the sidecar hashes the lines as the gateway contract does and compares the
         -- result with the proven value. One call is made also for a block with no legs: it proves that the block needs none.
         legLines <- mapA (legLine this) legs
-        checkTwinIdsDistinct allLegs
+        checkTwinIdsDistinct legs
         legsAnswer <- legsCall (T.intercalate "," [b.stateRoot, show b.number, gatewayAddress,
           T.intercalate ";" gatewayAccountNodes, T.intercalate ";" gatewayStorageNodes, T.intercalate "|" legLines])
         assertMsg ("the legs are not the ones the block recorded: " <> legsAnswer)
@@ -367,6 +367,7 @@ template ZkChain
         checkRegisteredGateways this extras
         forA_ extras $ \g -> do
           gLines <- mapA (legLine this) g.legs
+          checkTwinIdsDistinct g.legs
           gAnswer <- legsCall (T.intercalate "," [b.stateRoot, show b.number, g.address,
             T.intercalate ";" g.accountNodes, T.intercalate ";" g.storageNodes, T.intercalate "|" gLines])
           assertMsg ("the legs of the gateway " <> g.address <> " are not the ones the block recorded: " <> gAnswer)
@@ -881,7 +882,8 @@ amountDigits k x acc
 hexDigitOf : Numeric 0 -> Text
 hexDigitOf r = fromOptional "0" (lookup r (zip (map intToNumeric [0 .. 15]) hexDigits))
 
--- The gateway uses each payment id once, so no honest block carries one id twice; a block that does is refused before it settles anything.
+-- The gateway uses each payment id once, so no honest block carries one id twice for one gateway; a block that does is refused before it settles
+-- anything. The used ids belong to each gateway, so the check runs over one gateway's legs at a time: the same id paid on two gateways is allowed.
 twinIds : Leg -> Update [Text]
 twinIds (LockLeg _ receiver ref _ _) = pure [lockId receiver ref]
 twinIds (ReleaseLeg requestCid _ vault) = do

@@ -133,6 +133,19 @@ testALockIsMintedOnce = do
     [l, lockLegOf t f.v "ref-2" fiveTokens]
   twinHeld f.v >>= \xs -> xs === [5.0, 10.0]
 
+-- The used ids belong to each gateway: the same lock paid once on each of two gateways is two payments, and the block is not refused.
+testTheSameLockOnTwoGatewaysIsTwoPayments : Script ()
+testTheSameLockOnTwoGatewaysIsTwoPayments = do
+  t <- twinFixture
+  let f = t.fx
+  c <- register f t.tchain gatewayEntry
+  let l = lockLegOf t f.v "ref-1" tenTokens
+  let recorded = lockLine f.v "ref-1" vaultAddr tenTokens
+  (_, _) <- submit (asBuilder f) $ advanceX c "01" [recorded] [l] [gwBlock gw2Addr codeHash2 [recorded] [l]]
+  twinHeld f.v >>= \xs -> xs === [10.0, 10.0]
+  -- on one gateway the same id twice is still refused
+  refused "the same twin payment id twice" f $ advanceX c "01" [] [] [gwBlock gw2Addr codeHash2 [recorded, recorded] [l, l]]
+
 -- The payee must be a vault of the chain's registry: not an address it has never heard of, not the gateway, not a registered gateway.
 testALockToAnUnregisteredVaultIsRefused : Script ()
 testALockToAnUnregisteredVaultIsRefused = do
