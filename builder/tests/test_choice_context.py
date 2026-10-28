@@ -182,6 +182,42 @@ class Contexts(tb.LegCase):
         self.assertIn("differently", result["leftOut"][0]["reason"])
         self.assertEqual(self.disclosed(s), [ROUND, RULES])
 
+    def test_a_contract_that_is_given_with_disclosed_is_sent_once_whatever_its_form_and_a_different_form_leaves_the_leg_out(self):
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        bare = {k: v for k, v in ROUND.items() if k != "synchronizerId"}
+        s.cfg.disclosed = [bare]
+        self.assert_left_out(s, t, "token registry", "differently")
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        s.cfg.disclosed = [ROUND]
+        self.build(s)
+        self.assertEqual(self.disclosed(s), [ROUND, RULES])
+
+    def test_a_contract_that_a_venues_allocation_names_in_another_form_leaves_the_trade_out(self):
+        s = self.setup({ALICE: []})
+        s.ledger.trades, s.ledger.tokens = [TRADE], [TOKEN]
+        s.cfg.venues = ("venue::1",)
+        s.ledger.allocations = []
+        t = self.leg_tx(s, TRADE_PAY)
+        s.reth.pool[ALICE] = [t]
+        same = {**ROUND, "contractId": tb.DISCLOSED_ALLOCATION["contractId"], "createdEventBlob": "zz"}
+        self.registry(s, TOKEN_ADMIN, answer={"choiceContextData": VALUES, "disclosedContracts": [same]})
+        self.assert_left_out(s, t, "token registry", "differently")
+
+    def test_the_contracts_a_blocks_registries_name_are_bounded_in_bytes(self):
+        s = self.two()
+        big = lambda cid: {**ROUND, "contractId": cid, "createdEventBlob": "ab" * 600}
+        base = "/registry/allocations/v1/%s/choice-contexts/execute-transfer"
+        self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": {"choiceContextData": VALUES, "disclosedContracts": [big("c-1")]},
+                                               base % "alloc-2": {"choiceContextData": VALUES, "disclosedContracts": [big("c-2")]}})
+        old, b.CONTEXT_MAX_DISCLOSED_BYTES = b.CONTEXT_MAX_DISCLOSED_BYTES, 2000
+        self.addCleanup(setattr, b, "CONTEXT_MAX_DISCLOSED_BYTES", old)
+        result = self.build(s)
+        self.assertEqual(len(result["leftOut"]), 1)
+        self.assertIn("token registry", result["leftOut"][0]["reason"])
+        self.assertEqual([d["contractId"] for d in self.disclosed(s)], ["c-1"])
+
     # ---- a registry trusted for nothing
     def left_out(self, **k):
         s, t = self.pay()
@@ -385,6 +421,13 @@ class CommandLine(tb.Case):
         code, out = self.run_main(s, "--registry-token-file", f"{ADMIN}=/nonexistent")
         self.assertEqual(code, 1)
         self.assertIn("no token registry", out["error"])
+
+
+    def test_a_registry_with_a_builder_pinned_to_a_package_before_0_5_0_is_refused(self):
+        s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+        code, out = self.run_main(s, "--registry", f"{ADMIN}=https://v.example/x", "--unlabelled-deposits")
+        self.assertEqual(code, 1)
+        self.assertIn("--unlabelled-deposits", out["error"])
 
 
 if __name__ == "__main__":

@@ -282,6 +282,7 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
 
 CONTEXT_MAX_BODY = 256 * 1024   # the most the builder reads of a token registry's choice context (its disclosed contracts carry blobs)
 CONTEXT_MAX_VALUES = 64         # the most entries in a choice context's values
+CONTEXT_MAX_DISCLOSED_BYTES = 512 * 1024   # the most bytes of the disclosed contracts that a block's registries name (those not given otherwise): the participant refuses a request over its size limit
 CONTEXT_MAX_DISCLOSED = 16      # the most disclosed contracts one registry answer names
 CONTEXT_KEY = re.compile(r"[ -~]{1,128}")
 
@@ -903,7 +904,8 @@ class Ledger:
         command = {"ExerciseCommand": {"templateId": CHAIN, "contractId": chain["contractId"], "choice": "Advance", "choiceArgument": argument}}
         body = {"commands": [command], "commandId": command_id or str(uuid.uuid4()), "userId": self.cfg.ledger_user,
                 "actAs": [self.cfg.party], "readAs": self.readers()}
-        shown = [*self.cfg.disclosed, *(d for d in disclosed or [] if d not in self.cfg.disclosed)]   # --disclosed, then the venue trades' allocations
+        have = {d.get("contractId") for d in self.cfg.disclosed if isinstance(d, dict)}
+        shown = [*self.cfg.disclosed, *(d for d in disclosed or [] if d.get("contractId") not in have)]   # --disclosed, then the venue trades' allocations and what the registries name: a contract once, by its id
         if shown:
             body["disclosedContracts"] = shown
         if self.cfg.package_id:   # without it Canton picks the highest version every hosting participant has vetted, so vetting a new one would switch it
@@ -1547,6 +1549,8 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
     if claimed is not None:
         claimed["allocations"].add(trade["allocation"])
     shown = disclosed_allocation(trade)
+    if shown and any(o != shown for o in canton.leg_disclosed.get(leg_key(leg_out), ()) if o["contractId"] == shown.get("contractId")):
+        raise NoCantonSide("the token registry names the venue's allocation differently than the trade carries it")
     if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
         canton.disclosed[trade["contractId"]] = shown
     return leg_out
@@ -1570,6 +1574,12 @@ def leg_key(leg: dict) -> tuple:
     return leg["tag"], value.get({"DepositLeg": "request", "PaymentLeg": "terms", "TradeLeg": "tradeCid"}.get(leg["tag"], "id"))
 
 
+def disclosed_forms(canton: Canton, contract_id: str) -> list:
+    """The disclosed contracts with this id that the block already has: those the registry named for its legs, `--disclosed`, and the venues' allocations."""
+    held = [*(o for legs in canton.leg_disclosed.values() for o in legs), *canton.ledger.cfg.disclosed, *canton.disclosed.values()]
+    return [o for o in held if isinstance(o, dict) and o.get("contractId") == contract_id]
+
+
 def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
     """The leg gets the choice context that the registry of its instrument says its choice needs, when the builder is given that registry
     (`--registry`); `ask(contexts, admin)` is what to ask it. The contracts the context names are kept for the Advance: one that another leg
@@ -1578,9 +1588,13 @@ def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
         return
     context, shown = ask(canton.contexts, admin)
     for named in shown:
-        for other in (o for held in canton.leg_disclosed.values() for o in held if o["contractId"] == named["contractId"]):
-            if other != named:
-                raise NoCantonSide("the token registry names a contract differently than for another leg of the block")
+        if any(o != named for o in disclosed_forms(canton, named["contractId"])):
+            raise NoCantonSide("the token registry names a contract differently than it is given for another leg of the block, with --disclosed or by a venue")
+    held = {o["contractId"]: o for legs in canton.leg_disclosed.values() for o in legs}
+    given = {d.get("contractId") for d in [*canton.ledger.cfg.disclosed, *canton.disclosed.values()] if isinstance(d, dict)}
+    added = {o["contractId"]: o for o in shown if o["contractId"] not in held}
+    if sum(len(json.dumps(o)) for cid, o in {**held, **added}.items() if cid not in given) > CONTEXT_MAX_DISCLOSED_BYTES:
+        raise NoCantonSide("the token registry names more disclosed contracts than a block may carry")
     if context is not None:
         leg["value"]["choiceContext"] = context
     canton.leg_disclosed[leg_key(leg)] = shown
@@ -4102,6 +4116,8 @@ def main() -> int:
         cfg.venues = tuple(dict.fromkeys(args.venue))
         cfg.twin_registry_url = args.twin_registry_url
         cfg.registries = parse_registries(x.strip() for x in args.registry)
+        if cfg.registries and args.unlabelled_deposits:
+            raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
         cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
