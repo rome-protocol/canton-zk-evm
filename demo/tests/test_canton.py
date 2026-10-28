@@ -475,10 +475,12 @@ class DepositTests(LedgerTestCase):
         [request] = self.made(canton.CHAIN + "DepositRequest")
         [allocation] = [e for e in FakeLedger.created if e["templateId"] == canton.ALLOCATION_OF_TOKEN]
         self.assertEqual(request["allocation"], allocation["contractId"])
-        self.assertEqual({k: v for k, v in request.items() if k not in ("depositId", "allocation")},
+        self.assertEqual({k: v for k, v in request.items() if k not in ("depositId", "allocation", "label")},
                          {"operator": "op::1", "confirmer": "co::1", "gateway": "gw::1", "builder": "bu::1", "chainId": "770101", "depositor": "u::1", "recipient": "ab" * 20})
         self.assertRegex(request["depositId"], r"^[0-9a-f]{64}$")
         self.assertEqual(out["depositId"], request["depositId"])        # the id the EVM claim must carry
+        self.assertEqual(request["label"], "deposit-1")
+        self.assertEqual(request["depositId"], hashlib.sha256(b"deposit,u::1,deposit-1").hexdigest())   # Daml's `depositIdOf u::1 "deposit-1"`
         self.assertEqual(out["recipient"], "0x" + "ab" * 20)
         request_event = [b for n, b in FakeLedger.submitted if "DepositRequest" in b["commands"][0].get("CreateCommand", {}).get("templateId", "")]
         self.assertEqual(request_event[0]["actAs"], ["u::1"])           # the depositor alone signs it
@@ -488,6 +490,29 @@ class DepositTests(LedgerTestCase):
         first = canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])["depositId"]
         second = canton.main(["deposit", "deposit-2", EVM_TOKEN, "10"])["depositId"]
         self.assertNotEqual(first, second)
+
+    def test_a_label_serves_one_deposit(self):
+        canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])
+        allocated = len(self.exercised("AllocationFactory_Allocate"))
+        with self.assertRaises(SystemExit) as refused:
+            canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])
+        self.assertIn("each label makes one deposit id", str(refused.exception))
+        self.assertEqual(len(self.exercised("AllocationFactory_Allocate")), allocated)   # nothing was allocated for the second
+        canton.main(["deposit", "deposit-2", EVM_TOKEN, "10"])   # another label goes on
+
+    def test_the_deposit_id_is_derived_from_the_depositor_and_the_label(self):
+        self.assertEqual(canton.deposit_id_of("u::1", "deposit-1"), hashlib.sha256(b"deposit,u::1,deposit-1").hexdigest())
+        self.assertNotEqual(canton.deposit_id_of("u::1", "a"), canton.deposit_id_of("v::1", "a"))
+        self.assertNotEqual(canton.deposit_id_of("u::1", "a"), canton.payment_id("u::1", "a", "x"))
+        self.assertEqual(canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])["depositId"], canton.deposit_id_of("u::1", "deposit-1"))
+
+    def test_a_chain_without_the_label_gets_a_request_without_it(self):
+        with mock.patch.dict(os.environ, {"CZE_DEPOSIT_WITHOUT_LABEL": "1"}):
+            out = canton.main(["deposit", "deposit-1", EVM_TOKEN, "10"])
+        [request] = self.made(canton.CHAIN + "DepositRequest")
+        self.assertNotIn("label", request)
+        self.assertNotEqual(request["depositId"], canton.deposit_id_of("u::1", "deposit-1"))
+        self.assertEqual(out["depositId"], request["depositId"])
 
     def test_amounts_keep_their_decimals_and_are_written_as_daml_does(self):
         canton.main(["deposit", "d", EVM_TOKEN, "0.5"])

@@ -3,7 +3,7 @@
 -- ones the block recorded in the gateway contract's state, settles them, and moves the head on. Daml does no proof checking
 -- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The only hashes it takes name things and
 -- prove nothing: the payment id of a pair of parties (`paymentId`), the payment id of a venue's trade (`venueTradeId`), the id of the
--- claim that trade makes (`venueClaimId`), the id of a lock (`lockId`) and the id of a vault's release (`releaseId`).
+-- claim that trade makes (`venueClaimId`), the id of a deposit (`depositIdOf`), the id of a lock (`lockId`) and the id of a vault's release (`releaseId`).
 module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
@@ -859,6 +859,7 @@ legLine : ZkChain -> Leg -> Update Text
 legLine chain (DepositLeg requestCid tokenCid) = do
   r <- fetch requestCid
   t <- fetch tokenCid
+  assertMsg "the deposit id is not derived from the depositor and the label" (isDerived r.depositor r.depositId r.label)
   checkChain "the deposit request" chain r.chainId r.operator r.confirmer
   checkGateway "the deposit request" chain r.gateway
   checkToken chain t
@@ -1074,10 +1075,11 @@ template DepositRequest
     depositId : Text
     recipient : Text
     allocation : ContractId Allocation
+    label : Optional Text
   where
     signatory depositor
     observer operator, confirmer, gateway, builder
-    ensure chainId > 0 && hexOfLength 64 depositId && hexOfLength 40 recipient
+    ensure chainId > 0 && hexOfLength 64 depositId && hexOfLength 40 recipient && isDerived depositor depositId label
 
     -- The operator, the confirmer and the gateway together are the signatories of `ZkChain`, so their authority is present
     -- inside `Advance` and nowhere else: none of them can lock alone, and the builder cannot lock at all.
@@ -1175,6 +1177,20 @@ template DvpTerms
         assertMsg "the allocation is not from u to v" (leg.transferLeg.sender == u && leg.transferLeg.receiver == v)
         _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
         pure ()
+
+-- The id of a deposit: the SHA-256 of the tag "deposit", the depositor's party id and a label that the depositor chooses, as
+-- `venueTradeId` is made. A `DepositRequest` is signed by its depositor, so only the depositor can make a request with an id derived
+-- from their party id: no other party can take an id that someone else's deposit is to use. The tag is not a party id and not one of
+-- "venue-trade", "lock" or "vault-release", so no id of another kind equals it.
+depositIdOf : Party -> Text -> Text
+depositIdOf depositor label = T.sha256 (T.intercalate "," ["deposit", partyToText depositor, label])
+
+-- Whether `depositId` is the derived id of the depositor and a label: what a request's `ensure` asks of a request made from package
+-- 0.5.0. A request made under 0.4.0 or earlier has no label, and the engine runs `ensure` again when it uses such a contract under this
+-- package, so that request is refused when its leg settles (README.md).
+isDerived : Party -> Text -> Optional Text -> Bool
+isDerived depositor depositId (Some label) = depositId == depositIdOf depositor label
+isDerived _ _ None = False
 
 -- The id of the EVM payment that settles a venue's trade: the SHA-256 of a domain tag, the venue's party id and a label. The tag
 -- "venue-trade" is not a party id, so this id can never equal a `paymentId` (whose first part is one): a payment recorded for

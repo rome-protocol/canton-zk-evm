@@ -90,6 +90,7 @@ class Config:
     read_as: tuple = ()    # more parties whose contracts the builder may read (--read-as); the builder never acts as them
     venues: tuple = ()     # the venue parties whose trades may name an allocation the builder cannot see, only a disclosed one (--venue)
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
+    unlabelled_deposits: bool = False   # --unlabelled-deposits: for a builder pinned to a package before 0.5.0, whose deposit requests have no label: a request whose id is not derived from its depositor and a label is then settled, not turned down
     package_id: str = ""   # the Daml package version Advance runs under (--package-id): sent as packageIdSelectionPreference; empty: Canton picks by package name
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
@@ -1060,9 +1061,10 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
+        self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
         self.parties: dict = {}   # party -> whether the participant knows it (a lock's receiver)
@@ -1163,7 +1165,8 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     request that names a claim's id, so a request never holds the claim back. The reverse holds too: a claim's id is public (the payment's id is
     in the chain's event), so an id that is the claim id of a funded claim, or of a venue trade whose payment would create one, is never settled
     by a request: only that funded claim, with its own recipient, may settle it. Otherwise another party's request could use the id at the
-    gateway first, and the claim would be refused as used for ever."""
+    gateway first, and the claim would be refused as used for ever. (From package 0.5.0 a request's id is derived from its depositor and a label, so this
+    applies to requests made before 0.5.0 and to a builder run with --unlabelled-deposits, which in turn turns down a request that carries a label.)"""
     chain = canton.chain
     claims = [c for c in canton.claims if c["claimId"] == leg.id and names_chain(c, chain, "gateway")]
     reserved = bool(claims) or any(t["claimId"] == leg.id and names_chain(t, chain, "gateway") for t in canton.trades)
@@ -1182,11 +1185,35 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     raise problem or NoCantonSide("no deposit request of this chain for this id and recipient")
 
 
+def deposit_id_of(depositor: str, label: str) -> str:
+    """The deposit id Daml's `depositIdOf` makes: the SHA-256, in lowercase hex, of "deposit,<depositor party id>,<label>"."""
+    return hashlib.sha256(f"deposit,{depositor},{label}".encode("utf-8")).hexdigest()
+
+
+def derived_problem(r: dict) -> str | None:
+    """Package 0.5.0 refuses a request whose id is not derived from its depositor and its label, and Canton refuses the whole Advance that
+    carries one, after the block is proven: so the builder leaves such a request out. That covers a request made under an older package."""
+    label = r.get("label")
+    if not isinstance(label, str):
+        return "it has no label, so its id is not derived from its depositor (package 0.5.0 refuses it)"
+    if r["depositId"] != deposit_id_of(r["depositor"], label):
+        return "its id is not derived from its depositor and its label (package 0.5.0 refuses it)"
+    return None
+
+
 def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: list) -> dict:
     chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
     token = canton.token(leg)
 
     def problem(r):
+        if canton.derived_ids:
+            found = derived_problem(r)
+        elif r.get("label") is not None:
+            found = "it carries a label (made under 0.5.0), which a package before 0.5.0 cannot take"
+        else:
+            found = None
+        if found:
+            return found
         if r["allocation"] not in canton.allocations:
             return "its allocation is not active, or not visible to the builder"
         spec = canton.allocations[r["allocation"]]
@@ -1879,7 +1906,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=lock_parts)
+                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -3768,6 +3795,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--precheck-max-input-bytes", type=int, default=pc.DEFAULT_MAX_INPUT_BYTES, metavar="BYTES", help=f"--precheck: the most bytes the block's input may have (default {pc.DEFAULT_MAX_INPUT_BYTES})")
     ap.add_argument("--precheck-max-codes", type=int, default=pc.DEFAULT_MAX_CODES, metavar="N", help=f"--precheck: the most distinct contract codes a block may load (default {pc.DEFAULT_MAX_CODES})")
     ap.add_argument("--precheck-max-code-bytes", type=int, default=pc.DEFAULT_MAX_CODE_BYTES, metavar="BYTES", help=f"--precheck: the most bytes of contract code a block may load (default {pc.DEFAULT_MAX_CODE_BYTES})")
+    ap.add_argument("--unlabelled-deposits", action="store_true", help="for a builder pinned (--package-id) to a package before 0.5.0: settle a deposit request whose id is not derived from its depositor and a label, as that package does (default: such a request is turned down, as 0.5.0 refuses it)")
     ap.add_argument("--package-id", metavar="ID", help="submit every Advance with packageIdSelectionPreference [ID], so that it runs under that Daml package version whatever else is vetted (default: Canton picks by package name)")
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
@@ -3837,6 +3865,7 @@ def main() -> int:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
             cfg.package_id = check_package_id(args.package_id)
+        cfg.unlabelled_deposits = args.unlabelled_deposits
         with work_lock(cfg.work_dir):
             if args.command == "run":
                 return produce(cfg, args)

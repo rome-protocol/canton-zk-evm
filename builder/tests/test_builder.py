@@ -14,7 +14,8 @@ from fakes import (BUILDER, DEPOSIT, GATEWAY, HEAD_HASH, HEAD_NUMBER, JWT_SECRET
                    FakeLedger, FakeReth, Leg, Raw, hash_of, raw_of, rlp, tx)
 
 ALICE, BOB, CAROL = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "c4" * 20   # senders of EVM transactions
-PAY_ID, DEP_ID, WD_ID = "ee" * 32, "dd" * 32, "ab" * 32
+PAY_ID, WD_ID = "ee" * 32, "ab" * 32
+DEP_ID = b.deposit_id_of("d::1", "dep-1")   # a deposit id is derived from its depositor and a label
 TKA, WTKB, WTKC = "11" * 20, "22" * 20, "33" * 20   # an ERC-20 that payments are made in, and two wrapped tokens
 PAYEE = "c3" * 20
 OTHER = "d5" * 20   # another recipient on Canton's chain
@@ -26,7 +27,7 @@ UNIT = 10**10   # base units in one Canton unit
 named = {"operator": "op", "confirmer": "co", "builder": BUILDER, "chainId": "770101"}
 TERMS = ("terms-1", {**named, "u": "u::1", "v": "v::1", "label": "dvp-1", "dvpId": PAY_ID, "token": TKA, "payee": PAYEE,
                      "amount": "00" * 31 + "0a", "allocation": "alloc-1"})
-REQUEST = ("req-1", {**named, "gateway": "gw", "depositor": "d::1", "depositId": DEP_ID, "recipient": PAYEE, "allocation": "alloc-d1"})
+REQUEST = ("req-1", {**named, "gateway": "gw", "depositor": "d::1", "depositId": DEP_ID, "label": "dep-1", "recipient": PAYEE, "allocation": "alloc-d1"})
 TOKEN = ("tok-1", {**named, "gateway": "gw", "evmToken": WTKB, "instrumentId": TKB, "factory": "fac-1"})
 TOKEN_C = ("tok-2", {**named, "gateway": "gw", "evmToken": WTKC, "instrumentId": TKC, "factory": "fac-2"})
 ACCEPTANCE = ("acc-1", {**named, "gateway": "gw", "party": "r::1"})
@@ -496,9 +497,10 @@ class Deposits(LegCase):
         self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
 
     def test_one_allocation_is_used_by_one_leg_of_a_block(self):
-        second = ("req-2", {**REQUEST[1], "depositId": "ff" * 32})   # the same allocation, claimed under another id
+        id2 = b.deposit_id_of("d::1", "dep-2")
+        second = ("req-2", {**REQUEST[1], "depositId": id2, "label": "dep-2"})   # the same allocation, claimed under another id
         s, t1 = self.setup_dep(requests=[REQUEST, second])
-        t2 = self.leg_tx(s, Leg(DEPOSIT, "ff" * 32, WTKB, PAYEE, 10 * UNIT), BOB, price=1)
+        t2 = self.leg_tx(s, Leg(DEPOSIT, id2, WTKB, PAYEE, 10 * UNIT), BOB, price=1)
         s.reth.pool[BOB] = [t2]
         result = self.build(s)
         self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
@@ -721,11 +723,17 @@ class VenueLegs(LegCase):
         self.assertEqual([x["transaction"] for x in result["leftOut"]], [grab["hash"]])
         self.assertIn("belongs to a venue trade", result["leftOut"][0]["reason"])
 
-    def test_a_trade_of_another_chain_does_not_reserve_its_claim_id(self):
-        req = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
-        s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[("trade-1", {**TRADE[1], "gateway": "other"})], requests=[req])
+    def test_a_trade_of_another_chain_does_not_reserve_a_derived_id(self):
+        id2 = b.deposit_id_of("d::1", "dep-2")
+        req = ("req-x", {**REQUEST[1], "depositId": id2, "label": "dep-2", "recipient": OTHER})
+        s, t = self.setup_leg(Leg(DEPOSIT, id2, WTKB, OTHER, 10 * UNIT), trades=[("trade-1", {**TRADE[1], "gateway": "other"})], requests=[req])
         self.build(s)
         self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-x", "token": "tok-1"})
+
+    def test_a_request_with_a_claim_id_is_turned_down_whoever_made_the_trade(self):
+        req = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "label": "any", "recipient": OTHER})
+        s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[("trade-1", {**TRADE[1], "gateway": "other"})], requests=[req])
+        self.assert_left_out(s, t, "not derived")
 
     def test_a_plain_deposit_is_unchanged_beside_a_trade_and_a_claim_with_other_ids(self):
         s, t = self.setup_leg(DEP, trades=[TRADE], claims=[CLAIM], requests=[REQUEST])
@@ -734,9 +742,29 @@ class VenueLegs(LegCase):
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
 
     def test_a_request_that_cannot_settle_and_no_claim_keeps_the_requests_reason(self):
-        grief = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "allocation": "alloc-gone"})
-        s, t = self.setup_leg(CLAIM_DEP, requests=[grief], allocations=[])
+        id2 = b.deposit_id_of("d::1", "dep-2")
+        grief = ("req-x", {**REQUEST[1], "depositId": id2, "label": "dep-2", "allocation": "alloc-gone"})
+        s, t = self.setup_leg(Leg(DEPOSIT, id2, WTKB, PAYEE, 10 * UNIT), requests=[grief], allocations=[])
         self.assert_left_out(s, t, "allocation")
+
+    def test_a_request_without_a_label_or_with_an_id_not_derived_from_it_is_turned_down(self):
+        for what, request in (("no label", {**REQUEST[1], "label": None}), ("no label field", {k: v for k, v in REQUEST[1].items() if k != "label"}),
+                              ("another label", {**REQUEST[1], "label": "other"}), ("another depositor", {**REQUEST[1], "depositor": "e::1"})):
+            with self.subTest(what):
+                s, t = self.setup_leg(DEP, requests=[("req-1", request)], allocations=["alloc-d1"])
+                self.assert_left_out(s, t, "not derived" if what != "no label" and what != "no label field" else "no label")
+
+    def test_a_builder_pinned_before_the_derived_ids_settles_a_request_without_a_label(self):
+        s, t = self.setup_leg(Leg(DEPOSIT, "dd" * 32, WTKB, PAYEE, 10 * UNIT), requests=[("req-1", {**REQUEST[1], "label": None, "depositId": "dd" * 32})], allocations=["alloc-d1"])
+        s.cfg.unlabelled_deposits = True
+        self.build(s)
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+
+    def test_a_builder_pinned_before_the_derived_ids_turns_down_a_request_that_carries_a_label(self):
+        # a request with a label was made under 0.5.0, and an older package cannot take it: the Advance would be refused after the proof
+        s, t = self.setup_leg(DEP, requests=[("req-1", REQUEST[1])], allocations=["alloc-d1"])
+        s.cfg.unlabelled_deposits = True
+        self.assert_left_out(s, t, "carries a label")
 
     def test_a_claim_whose_token_is_not_a_token_of_this_chain_is_not_used(self):
         s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], tokens=[("tok-1", {**TOKEN[1], "gateway": "other"})])

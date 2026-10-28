@@ -7,11 +7,13 @@
 #
 #   1. The chain starts on 0.2.0: the DAR built from the tag v0.2.0 (its package id must be the one the live chain runs). Blocks commit with the
 #      builder pinned to that id (--package-id): a setup block, and a deposit whose leg settles. The sidecar is asked `verify`, never `verify2`.
-#   2. A second deposit is made, still on 0.2.0. Then the new DAR (the current source) goes onto each participant in the steps of
+#   2. Two deposit requests are made, still on 0.2.0 (no EVM claim for them). Then the new DAR (the current source) goes onto each participant in the steps of
 #      network/external/setup.py --package-step: check (nothing kept), upload (not vetted: the package is listed and nothing else changes), vet with
 #      a dry run first (the dry run changes nothing), vet. The chain does not switch by itself.
 #   3. The builder is pinned to the new package: the block commits (the sidecar is asked `verify2` now), the chain contract and the block's record are made
-#      under the new package, and the legs of the deposits that were made under 0.2.0 settle. The block gas limit is still 30,000,000.
+#      under the new package, and the legs of two deposits made under it settle. The requests made under 0.2.0 stay: they have no label, so their
+#      ids are not derived from a depositor and a label, and no leg of them settles. A claim for one of them (dep-3's, from V) is left out by the builder before
+#      the block is proven, and the claim is replaced afterwards. The block gas limit is still 30,000,000.
 #   4. The chain gets a change delay of 8 s with network/external/setup.py --change-delay-step (a dry run, the proposal, the acceptance: the chain has
 #      no delay yet, so this one is at once). From here a change waits out the delay: an acceptance right after its proposal is refused with the time
 #      from which it may be accepted, and goes through once that time has passed.
@@ -28,8 +30,9 @@
 #      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
 #      without the capital letter and commits under the new package, and each header's gas limit moves up by exactly parent/1024 - 1, so the first block is
 #      over the old cap of 30,000,000.
-#   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the new chain
-#      contract and deposit, and the new chain contract is a 0.2.0 one, with the raised cap.
+#   6. A deposit request is made under 0.2.0, by the package id (a request of the new package has a label, which 0.2.0 code cannot take). The builder
+#      is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the new chain contract and the
+#      request, and the new chain contract is a 0.2.0 one, with the raised cap.
 #   7. Forward again: a deposit, the builder pinned to the new package, the block commits. Then the legs are paused for real (setup.py --pause-step pause, the
 #      confirmer alone): a block with no legs still commits, a block that carries a deposit is refused by Canton and reth goes back, and after
 #      --pause-step unpause the same deposit's block commits.
@@ -138,13 +141,15 @@ BUILDER_EXTRA=()
 BUILDER_PROGRAM=$ROOT/builder/builder.py
 build() {
   CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$BUILDER_PROGRAM" once ${BUILDER_EXTRA[@]+"${BUILDER_EXTRA[@]}"} --package-id "$1" --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json"
+    "$PY" "$BUILDER_PROGRAM" once ${BUILDER_EXTRA[@]+"${BUILDER_EXTRA[@]}"} --package-id "$1" ${2:+--unlabelled-deposits} --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json"
 }
 # <package id> <block number> <legs> <what>: one pinned block commits, Canton's head is that block, and the chain contract Advance made is under the pin.
 block_under() {
   local out status
-  set +e; out=$(build "$1"); status=$?; set -e
+  # Pinned to 0.2.0, the builder settles requests without a label, as that package does; under the new package it turns them down.
+  set +e; out=$(build "$1" "$([ "$1" = "$OLD" ] && echo old)"); status=$?; set -e
   echo "$out" | jq -c .
+  BLOCK_OUT=$out   # the builder's line, for a check after the call
   is "$status" 0 "the builder's exit status for $4 ($out)"
   is "$(jq -r .committed <<<"$out")" true "$4 committed"
   is "$(jq -r .number <<<"$out")" "$2" "$4's block number"
@@ -158,12 +163,15 @@ block_under() {
   is "$(jq -r '.numbers | length' <<<"$records")" "$2" "the block records after $4"
   is "$(rpc eth_getBlockByNumber '"finalized",false' | jq -r .hash)" "$(jq -r .blockHash <<<"$out")" "reth's finalized block after $4"
 }
-# <label> <package id the request is made under>: U deposits 10 TKB and claims 10 wTKB. The request is a contract of the package, made by name.
+# <label> <package id the request is made under> [noclaim]: U deposits 10 TKB and claims 10 wTKB (with noclaim, the request is made and no EVM claim is sent).
+# The request is a contract of the package, made by name.
 deposit() {
   local made id before new=""
   before=$(probe DepositRequest | jq -c '.contracts | keys')
-  made=$(canton deposit "$1" "$U_ADDR" 10); id=$(jq -r .depositId <<<"$made")
-  evm claim u "$id" "$WTKB" 10 | jq -r .tx > /dev/null
+  # A request of 0.2.0 has no label (a later one carries the label its id is derived from), so the old package's request is made without it.
+  if [ "$2" = "$OLD" ]; then made=$(CZE_DEPOSIT_WITHOUT_LABEL=1 CZE_DEPOSIT_PACKAGE="$OLD" canton deposit "$1" "${DEPOSIT_TO:-$U_ADDR}" 10); else made=$(canton deposit "$1" "${DEPOSIT_TO:-$U_ADDR}" 10); fi
+  id=$(jq -r .depositId <<<"$made"); LAST_ID=$id
+  [ "${3:-}" = noclaim ] || evm claim u "$id" "$WTKB" 10 | jq -r .tx > /dev/null
   for _ in $(seq 1 30); do   # the request reaches the operator's participant a moment after the depositor's commit
     new=$(probe DepositRequest | jq -c --argjson b "$before" '.contracts | with_entries(select(.key as $k | $b | index($k) | not)) | [.[]]')
     [ "$new" = "[]" ] || break
@@ -189,7 +197,7 @@ is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"10.0","su
 is "$(calls verify2)" 0 "the verify2 calls under 0.2.0"
 
 step "stage 2: a deposit on 0.2.0, then the new package goes on every participant: check, upload (not vetted), vet with a dry run first"
-deposit dep-2 "$OLD"
+deposit dep-2 "$OLD" noclaim
 step_on() {   # <participant port> <step> [--dry-run]: network/external/setup.py --package-step on one participant, which has no login here
   local port=$1; shift
   CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --dar "$NEW_DAR" --package-step "$@" 2> "$WORK/setup.err" \
@@ -210,7 +218,8 @@ for port in $PARTICIPANTS; do
   r=$(step_on "$port" upload); jq -e '.vetted == false' <<<"$r" >/dev/null || fail "the dry run vetted the package on $port: $r"
 done
 # Listed but not vetted: a deposit made by name still makes 0.2.0 contracts, and an unpinned choice would still be 0.2.0.
-deposit dep-3 "$OLD"
+DEPOSIT_TO=$(jq -r .v "$DEMO/addresses.json") deposit dep-3 "$OLD" noclaim   # for V's address: stage 3 sends V's claim for it, from the account nothing else needs
+DEP3_ID=$LAST_ID
 for port in $PARTICIPANTS; do
   r=$(step_on "$port" vet); jq -e '.dryRun == false and (.synchronizers | to_entries | all(.value == "vetted"))' <<<"$r" >/dev/null || fail "vet on $port: $r"
   r=$(step_on "$port" vet); jq -e '.synchronizers | to_entries | all(.value == "already")' <<<"$r" >/dev/null || fail "the second vet on $port: $r"
@@ -229,10 +238,27 @@ done
 [ "$seen" = 3 ] || fail "after 30 s only $seen of 3 participants list the package $NEW as vetted (the vetting did not reach them)"
 is "$(chain_package)" "$OLD" "the package the chain contract is under after the new package was vetted (nothing switched)"
 
-step "stage 3: the builder is pinned to the new package; the legs of deposits made under 0.2.0 settle"
-block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2 and dep-3, both made under 0.2.0
+step "stage 3: the builder is pinned to the new package; the legs of deposits made under it settle, and the two requests of 0.2.0 stay as they are"
+# The requests of 0.2.0 have no label, so a deposit id derived from the depositor and a label is not theirs: no claim is sent for them, and a claim
+# with the id of one would be refused at settlement. The deposits of this block are made now, by name, under the new package.
+deposit dep-2b "$NEW"
+deposit dep-3b "$NEW"
+# dep-3 is a request of 0.2.0 that names V's address, and V claims it: Canton would refuse it under the new package. The builder turns it down before
+# it proves the block, so the block commits with the two legs and without the claim, which stays in the pool until it is replaced.
+claim_tx=$(evm claim v "$DEP3_ID" "$WTKB" 10 | jq -r .tx)
+block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2b and dep-3b, and not the claim of dep-3
+is "$(jq -r --arg t "$claim_tx" '[.leftOut[] | select(.transaction == $t)] | length' <<<"$BLOCK_OUT")" 1 "the claim of the request without a label is left out of block 3"
+# What protects the chain if a builder is malicious or misconfigured: a builder pinned to the new package that does attach the request without a label
+# (--unlabelled-deposits turns its own turn-down off) is refused by Canton when the leg settles, so a request made under 0.2.0 cannot settle under 0.5.0.
+# (The same id check in the deposit leg inside Advance is defence in depth: Daml Script cannot make a request that fails the template's ensure, so no test reaches it.)
+set +e; out=$(build "$NEW" old); status=$?; set -e
+echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
+is "$(jq -r .committed <<<"$out")" false "the block that attaches the request without a label under the new package committed"
+jq -e '.rejected == true and (.reason | test("precondition|not derived"))' <<<"$out" >/dev/null || fail "Canton did not refuse the block that attaches the request without a label, or not for its precondition: $out"
+is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the refused block (nothing changed)"
+evm replace v > /dev/null
 is "$(gas_limit 3)" 30000000 "the gas limit of block 3 (no target was asked: reth stays at the genesis cap)"
-is "$(probe DepositRequest | jq '.contracts | length')" 0 "the requests of dep-2 and dep-3 are settled"
+is "$(probe DepositRequest | jq -c '[.contracts[]] | sort')" "[\"$OLD\",\"$OLD\"]" "the requests left are the two made under 0.2.0 (dep-2 and dep-3), the new ones are settled"
 [ "$(calls verify2)" -ge 1 ] || fail "block 3 ran under the new package and the sidecar was not asked verify2"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"30.0","supply":"30.0"}' "U's wTKB after block 3"
 
@@ -395,8 +421,9 @@ is "$(gas_limit 5)" "$(( $(gas_limit 4) + $(gas_limit 4) / 1024 - 1 ))" "the gas
 [ "$(gas_limit 5)" -gt 30000000 ] || fail "block 5 is not over the old cap"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"50.0","supply":"50.0"}' "U's wTKB after block 5"
 
-step "stage 6: a deposit made under the new package, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
-deposit dep-6 "$NEW"
+step "stage 6: a deposit made under 0.2.0, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
+# A request made under the new package has a label, which 0.2.0 code cannot take (a downgrade drops no value), so this one is made under 0.2.0, by its id.
+deposit dep-6 "$OLD"
 block_under "$OLD" 6 1 "the block pinned back to 0.2.0"
 is "$(gas_limit 6)" "$(( $(gas_limit 5) + $(gas_limit 5) / 1024 - 1 ))" "the gas limit of block 6 (over the old cap, under 0.2.0)"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the downgrade (the chain contract keeps it)"
