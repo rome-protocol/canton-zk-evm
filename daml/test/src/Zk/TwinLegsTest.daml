@@ -7,6 +7,7 @@ module Zk.TwinLegsTest where
 import DA.Assert ((===))
 import DA.Foldable (forA_)
 import DA.List (sort)
+import DA.Time (seconds)
 import qualified DA.Text as T
 import Daml.Script
 
