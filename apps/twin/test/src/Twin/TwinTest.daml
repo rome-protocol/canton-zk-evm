@@ -394,7 +394,9 @@ testForeignHoldingRefused = do
   real <- mintTo f f.alice 10.0
   submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 5.0 (real :: foreign))
   balanceOf f f.bob >>= (=== 0.0)
-  balanceOf f f.alice >>= (=== 10.0)
+  -- the real holding is still there, unspent (Alice's balance also counts the fakes, which report the instrument)
+  stillThere <- queryInterfaceContractId @H.Holding f.alice real
+  isSome stillThere === True
 
 -- The factories' PublicFetch checks the expected admin, as Transfer and Allocate do.
 testPublicFetchChecksAdmin : Script ()
