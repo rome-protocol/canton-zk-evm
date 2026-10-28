@@ -563,6 +563,7 @@
       "ExerciseCommand": {
        "choice": "Advance",
        "choiceArgument": {
+        "extraGateways": [],
         "gatewayAccountNodes": [
          "aa01",
          "aa02"
@@ -721,7 +722,7 @@
    "v": 1
   },
   {
-   "argument_bytes": 3049,
+   "argument_bytes": 3070,
    "attempt": 2,
    "command_id": "ostia-770101-5-07a9c4aef00c646c-2",
    "event": "submitted",
