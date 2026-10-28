@@ -1950,6 +1950,11 @@ advanceX chain header recorded legs extras = exerciseCmd chain Advance with
   headerHex = header; txsHex = ""; proofHex = "aa"; gatewayAccountNodes = ["aa"]; gatewayStorageNodes = recordedNodes recorded
   legs; extraGateways = Some extras
 
+-- Each entry in turn, on the chain contract the one before made.
+registerAll : F -> ContractId ZkChain -> [RegisteredContract] -> Script (ContractId ZkChain)
+registerAll _ chain [] = pure chain
+registerAll f chain (e :: es) = register f chain e >>= \next -> registerAll f next es
+
 registryOf : F -> ContractId ZkChain -> Script (Optional [RegisteredContract])
 registryOf f chain = do
   Some c <- queryContractId f.operator chain
@@ -2135,9 +2140,7 @@ testTheRegistryHoldsSixteenEntries : Script ()
 testTheRegistryHoldsSixteenEntries = do
   f <- fixture
   let entry d = RegisteredContract with contractAddress = mconcat (replicate 20 ("f" <> d)); contractCodeHash = codeHash3; contractKind = Vault
-  let go c [] = pure c
-      go c (d :: ds) = register f c (entry d) >>= \c' -> go c' ds
-  c16 <- go f.chain (T.explode "0123456789abcdef")
+  c16 <- registerAll f f.chain (map entry (T.explode "0123456789abcdef"))
   Some r <- registryOf f c16
   length r === 16
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c16 ProposeContract with entry = gatewayEntry
