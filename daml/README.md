@@ -80,6 +80,34 @@ A deposit's id is `depositIdOf depositor label`: the SHA-256 of `deposit,<deposi
 
 A request made under 0.4.0 or earlier has no label, and it is refused when its leg settles: Canton runs a template's `ensure` again on a contract that was made under an older package when a transaction uses it, and a request with no label fails the check (`Template precondition violated`; the upgrade test `tests/demo_package_upgrade.sh` makes two requests under 0.2.0 and leaves them unclaimed). This is the choice, and the reason: a request with no label would have an id that nothing ties to its depositor, which is the hole this closes, and letting such a request through (an `ensure` that lets a missing label pass, so that it upgrades) would also let anyone make a new request with no label and any id. A depositor with a request open at the upgrade makes a new request with a label (its allocation is its own to take back). A request without a label can be archived by its depositor, who signs it alone, through the old package's id, for as long as that package is vetted; once the old packages are unvetted it can no longer be archived and stays on the ledger. So, before vetting 0.5.0 on DevNet, list the active `DepositRequest`s and have any request without a label archived, before the old packages are unvetted. A request without a label can still be made under an older package while that package is vetted, and it is refused as well; unvet 0.4.0 and the older packages on the participants after the upgrade so that none is made. The builder turns a request without a derived id down before it proves the block (`--unlabelled-deposits` is for a builder pinned to a package before 0.5.0, which settles such a request), so one cannot hold blocks back.
 
+## A leg's choice context (from package 0.5.0)
+
+The token standard lets a registry ask for a choice context: data that the registry's choices read from `extraArgs.context`, found through the registry's own off-ledger service. The reference test token needs none, but Canton Coin does: its transfers need the open mining round, the amulet rules and, for a featured app, the featured app right.
+
+A leg that exercises a token-standard choice (`DepositLeg`, `WithdrawalLeg`, `PaymentLeg` and `TradeLeg`) therefore has one more field, the last in its record:
+
+```
+choiceContext : Optional ChoiceContext
+```
+
+`ChoiceContext` is the standard's own type (`Splice.Api.Token.MetadataV1`): a record with one field, `values`, a map from text to `AnyValue`. In the JSON of the Ledger API that is, for a Canton Coin transfer:
+
+```json
+{"tag": "PaymentLeg", "value": {"terms": "<contract id>", "choiceContext": {"values": {
+  "amulet-rules": {"tag": "AV_ContractId", "value": "<contract id>"},
+  "open-round":   {"tag": "AV_ContractId", "value": "<contract id>"}}}}}
+```
+
+`null`, or leaving the field out, passes the empty context, as 0.4.0 did, so a token that needs none works as before. A value is passed as it is, as `extraArgs.context` of the choice that the leg calls: `Allocation_ExecuteTransfer` for a deposit, a payment and a trade, and `TransferFactory_Transfer` for a withdrawal. A withdrawal that the registry leaves pending also passes the same context to `TransferInstruction_Accept`; a registry that wants another context for the accept needs the receiver to have a pre-approval, so that the transfer completes at once.
+
+What the builder must pass:
+
+- The context entries: for each leg of a token that needs them, the registry's context for that choice, from the registry's off-ledger service (for Canton Coin, the Splice token standard's registry API for the choice). Daml does not read the entries or check them; the registry's choice does, and it refuses the leg without them. A refused leg refuses the whole block.
+- The disclosed contracts that the context names (the open mining round, the amulet rules, the featured app right and the transfer factory itself). They are not part of the leg: they go in the `disclosedContracts` of the submission, as the factory of a token already does. The builder must be able to see, or be handed, every contract that the context refers to.
+- One context for each leg. Two Canton Coin payments in one block each carry their own, and the context of a leg never reaches another.
+
+The leg line that the sidecar checks does not change: the context is for the registry, not for the proof. `Zk.ChoiceContextTest` runs each of the four legs against a test registry that refuses to move anything unless its context holds an entry.
+
 ## The registry of EVM contracts (from package 0.5.0)
 
 `ZkChain.contracts` is an optional list at the end of the record (`None` is an empty registry, so a 0.4.0 chain upgrades and behaves as before). An entry is a `RegisteredContract`:
@@ -264,7 +292,7 @@ On DevNet, 0.4.0 (package id `4f57b2ae083bf65b23d90f90aca64bab42ba4269a16c77a023
 
 ### Package 0.5.0 is an upgrade of 0.4.0, 0.3.0, 0.2.0 and 0.1.0
 
-0.5.0 adds the registry above: the optional field `contracts` at the end of `ZkChain`, the choices `AddContract` and `ProposeContract` on `ZkChain`, the template `ContractProposal`, the types `RegisteredContract`, `ContractKind` and `GatewayBlock`, and the optional argument `extraGateways` at the end of `Advance`, then the twin legs: the constructors `LockLeg` and `ReleaseLeg` at the end of `Leg`, the template `RedeemRequest` and a dependency on `ostia-twin`, and the pinned twins: the optional field `twins` at the end of `ZkChain` (after `contracts`), the choices `AddTwin` and `ProposeTwin` on `ZkChain`, the template `TwinProposal` and the type `PinnedTwin`, and the deposit ids: the optional field `label` at the end of `DepositRequest` and the function `depositIdOf`. The `DepositRequest`'s `ensure` is stricter (it asks `isDerived`, so a request without a label is refused under 0.5.0: requests made before the upgrade are refused when their leg settles, and a builder pinned back to an older package cannot settle a request made under 0.5.0, which carries a label that older code cannot take). No other existing field, choice or template changes, so a chain made under 0.4.0 or earlier becomes one with an empty registry, and a builder that sends no `extraGateways` still commits blocks on a chain with no registered gateway. Once an entry is accepted, the chain holds `contracts`, which 0.4.0 and earlier code cannot consume; with no removal the chain cannot go back, and a builder pinned to an older package stops. Pin the builder to 0.5.0 before any entry or twin is accepted, a Vault entry included. The CI job `upgrade` checks 0.5.0 against 0.4.0 (rebuilt from its commit, as it has no tag), 0.3.0, 0.2.0 and 0.1.0, and the package ids of the old ones.
+0.5.0 adds the registry above: the optional field `contracts` at the end of `ZkChain`, the choices `AddContract` and `ProposeContract` on `ZkChain`, the template `ContractProposal`, the types `RegisteredContract`, `ContractKind` and `GatewayBlock`, and the optional argument `extraGateways` at the end of `Advance`, then the twin legs: the constructors `LockLeg` and `ReleaseLeg` at the end of `Leg`, the template `RedeemRequest` and a dependency on `ostia-twin`, and the pinned twins: the optional field `twins` at the end of `ZkChain` (after `contracts`), the choices `AddTwin` and `ProposeTwin` on `ZkChain`, the template `TwinProposal` and the type `PinnedTwin`, and the deposit ids: the optional field `label` at the end of `DepositRequest` and the function `depositIdOf`. 0.5.0 also adds the legs' choice context: the optional field `choiceContext` at the end of `DepositLeg`, `WithdrawalLeg`, `PaymentLeg` and `TradeLeg`, and the optional argument `choiceContext` of the choices `Lock`, `Receive`, `Settle` and `SettleTrade`. The `DepositRequest`'s `ensure` is stricter (it asks `isDerived`, so a request without a label is refused under 0.5.0: requests made before the upgrade are refused when their leg settles, and a builder pinned back to an older package cannot settle a request made under 0.5.0, which carries a label that older code cannot take). No other existing field, choice or template changes, so a chain made under 0.4.0 or earlier becomes one with an empty registry, and a builder that sends no `extraGateways` still commits blocks on a chain with no registered gateway. Once an entry is accepted, the chain holds `contracts`, which 0.4.0 and earlier code cannot consume; with no removal the chain cannot go back, and a builder pinned to an older package stops. Pin the builder to 0.5.0 before any entry or twin is accepted, a Vault entry included. The CI job `upgrade` checks 0.5.0 against 0.4.0 (rebuilt from its commit, as it has no tag), 0.3.0, 0.2.0 and 0.1.0, and the package ids of the old ones.
 
 ### The gas cap
 
