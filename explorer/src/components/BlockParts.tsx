@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { getBlockLegs, getBlockTxs, getFaucetAddress, type TxListItem } from "../api.ts";
 import { count, units } from "../format.ts";
 import { methodOf } from "../method.ts";
+import { LegAmount, LegToken, legKindWord } from "../pages/LegParts.tsx";
+import { LoadingCard } from "./Cards.tsx";
 import { HashLink } from "./HashLink.tsx";
 import { Icon } from "./Icon.tsx";
 import { Pager, usePaged } from "./Pager.tsx";
@@ -62,11 +64,13 @@ export function PagedTransactions({ id, total, coin, chain }: { id: string; tota
   );
 }
 
-/** The gateway legs a block recorded, from the block's legs route. A block with none shows nothing, and so does a route that cannot answer. */
+/** The gateway legs a block recorded, from the block's legs route. Amounts and tokens read as the panel reads them. A block with none shows nothing; a route still loading, or that cannot answer, says so. */
 export function BlockLegs({ id }: { id: string }) {
   const p = usePaged(["blocks", "legs", id], (c) => getBlockLegs(id, c, PER_PAGE));
   const rows = p.data?.items;
-  if (!rows?.length) return null;
+  if (p.error && !rows) return <section className="card" aria-labelledby="legs-h"><div className="sec-h"><h3 id="legs-h">Gateway legs</h3></div><p className="muted">The explorer cannot read the legs of this block right now.</p></section>;
+  if (!rows) return <LoadingCard>Reading the legs of this block…</LoadingCard>;
+  if (!rows.length) return null;
   return (
     <section className="card" aria-labelledby="legs-h">
       <div className="list-h">
@@ -80,10 +84,10 @@ export function BlockLegs({ id }: { id: string }) {
             {rows.map((l) => (
               <tr key={l.legIndex}>
                 <td className="r"><Link to={`/leg/${l.legId}`}>{l.legIndex}</Link></td>
-                <td><span className="tag">{l.kind}</span></td>
-                <td><HashLink value={l.token} to={`/token/${l.token}`} /></td>
+                <td><span className="tag">{legKindWord(l.kind, l.canton?.role === "funded-claim")}</span></td>
+                <td><LegToken token={l.token} /></td>
                 <td><HashLink value={l.account} to={`/address/${l.account}`} /></td>
-                <td className="r num">{l.amount}</td>
+                <td className="r"><LegAmount l={l} /></td>
                 <td className="r">{l.txIndex}</td>
               </tr>
             ))}

@@ -343,7 +343,7 @@ export const txsCsvPath = (filter: TxFilter) => `/api/txs?format=csv&filter=${fi
 /** A block's record as Canton holds it, read only when Verify is pressed. */
 export const getBlockRecord = async (id: string | number) => (await call(`/api/blocks/${encodeURIComponent(String(id))}/record`, [200])).body as { number: number; hash: string; contractId: string; header: string; txs: string; proof: string | null };
 export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
-export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem>;
+export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem & { canton: LegCanton | null }>;
 /** A gateway leg as the legs routes give it: what the EVM recorded, with the block and the transaction that made it. `txHash` is null when the explorer has not stored that transaction; `party` is the Canton party a withdrawal paid, null on the other kinds. */
 export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null }
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;

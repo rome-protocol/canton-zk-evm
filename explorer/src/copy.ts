@@ -3,6 +3,8 @@ export const LEGS_NOT_PUBLIC_THIS = "Daml legs settled with this block are not s
 /** The same, for a list of the legs of many blocks. */
 export const LEGS_NOT_PUBLIC_THESE = "Daml legs settled with these blocks are not shown to the public.";
 export const LEGS_WHO_SEES = "Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+/** The sentence behind the small i of the panel of a block's legs: what a swap shows, what stays private, and who does know it. */
+export const LEGS_PANEL_WHO = "A swap shows both its amounts; the Canton party behind it stays private: only the parties to each leg and the chain's operator, confirmer, gateway and builder know who it is, and each token's registry sees its own token move.";
 export const LEGS_THIS_BLOCK = `${LEGS_NOT_PUBLIC_THIS} ${LEGS_WHO_SEES}`;
 export const LEGS_THESE_BLOCKS = `${LEGS_NOT_PUBLIC_THESE} ${LEGS_WHO_SEES}`;
 

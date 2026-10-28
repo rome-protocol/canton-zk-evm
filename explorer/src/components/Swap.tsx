@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { getSwap, type BlockLeg, type SwapItem } from "../api.ts";
 import { count, dateTime, short, units } from "../format.ts";
-import { LegAmount, LegToken, useLegToken } from "../pages/LegParts.tsx";
+import { LegAmount, LegToken, legKindWord, useLegToken } from "../pages/LegParts.tsx";
 import { BlockLegs } from "./BlockParts.tsx";
 import { HashLink } from "./HashLink.tsx";
 import { Icon } from "./Icon.tsx";
@@ -96,12 +96,10 @@ function LegCard({ v, lookup }: { v: SwapView; lookup: boolean }) {
   return <SwapCard v={q.data ? viewOfSwap(q.data) : v} />;
 }
 
-const KIND: Record<string, string> = { deposit: "Deposit", withdrawal: "Withdrawal", payment: "Payment" };
-
 /** One leg that is no swap, in a line: what it was, its amount, the account, and its page. */
 export function LegLine({ l }: { l: BlockLeg }) {
   const claim = l.canton?.role === "funded-claim";
-  const word = claim ? "Claim" : (KIND[l.kind] ?? l.kind);
+  const word = legKindWord(l.kind, claim);
   const to = l.kind === "withdrawal" ? "from" : "to";
   return (
     <li className="sw-line">

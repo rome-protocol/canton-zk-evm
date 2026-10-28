@@ -79,15 +79,31 @@ describe("the block page: Settled with this block", () => {
     expect(screen.queryByRole("region", { name: "Settled with this block" })).toBeNull();
   });
 
+  it("says so inline when the block's legs route cannot answer after paging is asked for", async () => {
+    const first = Array.from({ length: 50 }, (_, i) => plainLeg({ legIndex: i, legId: hash(0x10 + i) }));
+    await openBlock(first, { blockLegs: () => reply({ error: "unavailable" }, 503) }, 73);
+    const s = settled();
+    await userEvent.click(await s.findByRole("button", { name: "Page through all 73 legs" }));
+    expect(await screen.findByText(/cannot read the legs of this block right now/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "50" })).toBeNull();
+  });
+
   it("says how many legs a block recorded when it recorded more than 50, and pages through them from the block's own route", async () => {
     const first = Array.from({ length: 50 }, (_, i) => plainLeg({ legIndex: i, legId: hash(0x10 + i) }));
-    const calls = await openBlock(first, { blockLegs: () => reply(page([plainLeg({ legIndex: 50, legId: hash(0xaa) })])) }, 73);
+    const calls = await openBlock(first, { blockLegs: () => reply(page([plainLeg({ legIndex: 50, legId: hash(0xaa), amount: "2000000000000000000" }), plainLeg({ legIndex: 51, legId: hash(0xab), canton: { role: "funded-claim", amount: "25000000000", instrument: { admin: "a::1220", id: "TKB" }, settledUpdateId: update(0xf0), recipient: addr(0x0c) } })])) }, 73);
     const s = settled();
     expect(s.getAllByRole("listitem")).toHaveLength(50);
     expect(await s.findByText(/73 legs in this block/)).toBeInTheDocument();
     await userEvent.click(s.getByRole("button", { name: "Page through all 73 legs" }));
     expect(await screen.findByRole("link", { name: "50" })).toHaveAttribute("href", `/leg/${hash(0xaa)}`);
     expect(calls.some((c) => c.startsWith("/api/blocks/16816/legs"))).toBe(true);
+    // an 18-decimal paged leg reads in whole tokens with its symbol, and its kind in words, as the panel does
+    const row = screen.getByRole("link", { name: "50" }).closest("tr") as HTMLElement;
+    await waitFor(() => expect(row).toHaveTextContent("2 TKA"));
+    expect(within(row).getByText("Deposit")).toBeInTheDocument();
+    // a deposit that redeemed a funded claim reads "Claim" in the table, as on the panel
+    const claimRow = screen.getByRole("link", { name: "51" }).closest("tr") as HTMLElement;
+    expect(within(claimRow).getByText("Claim")).toBeInTheDocument();
     // the paged table replaces the first 50, which are not listed twice, and one button goes back
     expect(screen.queryAllByRole("link", { name: "Leg 0" })).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Show the first 50 again" }));
