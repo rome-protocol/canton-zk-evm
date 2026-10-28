@@ -1,6 +1,6 @@
 """Fakes for the builder's tests: reth's builder-only WebSocket port and Engine port, the Canton JSON Ledger
 API, and (as shell scripts next to this file) the prover input tool and the prover. Nothing here is real."""
-import base64, hashlib, hmac, json, os, socket, sys, threading, time
+import base64, hashlib, hmac, json, os, socket, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from websockets.exceptions import ConnectionClosed
@@ -405,8 +405,12 @@ class FakeLedger:
         self.acceptances: list = []   # ... of the WithdrawalAcceptance contracts
         self.trades: list = []        # ... of the VenueTrade contracts (their allocation is executed by the trade's venue)
         self.claims: list = []        # ... of the FundedClaim contracts
+        self.redeems: list = []       # ... of the RedeemRequest contracts (a twin's release)
         self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
+        self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
+        self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
+        self.known_parties = None     # the parties GET /v2/parties/<party> knows; None: every one
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
         self.commit = True   # a test can set it False: then a dropped Advance leaves the head alone
@@ -526,10 +530,13 @@ class FakeLedger:
         def entry(cid, name, args):
             return {"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "templateId": f"pkg:Zk.Chain:{name}", "createArgument": args}}}}
+        if template.endswith(":TwinRules"):
+            return [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": cid, "templateId": "pkg:Twin.Twin:TwinRules", "createArgument": args}}}}
+                    for cid, args in self.twin_rules]
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
-        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims)):
+        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems)):
             if template.endswith(":" + name):
                 return [entry(c, name, a) for c, a in found]
         return []
@@ -567,6 +574,14 @@ class FakeLedger:
                 if self.path == "/traffic":
                     state = ledger.traffic.pop(0) if ledger.traffic else None   # one answer for each read
                     return self._reply(404, {}) if state is None else self._reply(200, state)
+                for prefix, code in ledger.get_failures.items():
+                    if self.path.startswith(prefix):
+                        return self._reply(code, {})
+                if self.path.startswith("/v2/parties/"):
+                    party = urllib.parse.unquote(self.path[len("/v2/parties/"):])
+                    if ledger.known_parties is not None and party not in ledger.known_parties:
+                        return self._reply(404, {"code": "PARTY_NOT_FOUND"})
+                    return self._reply(200, {"partyDetails": [{"party": party, "isLocal": False}]})
                 self._reply(200, {"offset": 42} if self.path == "/v2/state/ledger-end" else {})
 
             def do_POST(self):
@@ -580,7 +595,7 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
-                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim")):
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":
