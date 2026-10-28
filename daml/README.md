@@ -83,6 +83,8 @@ data RegisteredContract = RegisteredContract with
 
 An entry is added the way a program is changed. The operator and the gateway call `ProposeContract` (nonconsuming, on the chain contract), which makes a `ContractProposal` stamped with the ledger time. The confirmer calls `AcceptContract` on the chain's current contract once the chain's change delay has passed; `WithdrawContract` (the operator) and `RejectContract` (the confirmer) take it away, either alone. `AcceptContract` exercises `ZkChain.AddContract`, which refuses an address that is registered already, the chain's first gateway (`gatewayAddress`, which is not in the registry) and a registry of more than 16 entries. This version has no removal. The confirmer is expected to accept an entry only when the code at the address is a reviewed build whose code hash is the entry's; Daml reads the entry and does not look at any code.
 
+A running chain should accept no `Gateway` entry until two things are true: the builder sends `extraGateways` for it (a block without its entry is refused, and with no removal that stops every block), and the explorer indexes and checks the legs of registered gateways (it reads legs from the first gateway's receipts only, so a withdrawal released through a registered gateway would settle on Canton without being seen or checked there).
+
 - **A `Gateway` entry** is a contract whose legs `Advance` reads as it reads the first gateway's. `Advance` takes, after `legs`, a last argument `extraGateways : Optional [GatewayBlock]`, one entry for each registered gateway (in any order) and none for the first gateway:
 
   ```daml
