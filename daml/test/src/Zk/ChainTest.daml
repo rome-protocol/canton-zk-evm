@@ -1192,10 +1192,12 @@ testAProposalForAnotherChainIsRefused = do
   g <- submit f.operator $ exerciseCmd other ProposeGasCap with newCap = 60000000
   q <- submit both $ exerciseCmd other ProposeProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
   d <- submit both $ exerciseCmd other ProposeChangeDelay with newDelay = None
+  k <- submit both $ exerciseCmd other ProposeContract with entry = gatewayEntry
   passTime (seconds 100)
   refusedAsOtherChain $ exerciseCmd g AcceptGasCap with chain = f.chain
   refusedAsOtherChain $ exerciseCmd q AcceptProgram with chain = f.chain
   refusedAsOtherChain $ exerciseCmd d AcceptChangeDelay with chain = f.chain
+  refusedAsOtherChain $ exerciseCmd k AcceptContract with chain = f.chain
   -- and each is accepted on its own chain
   _ <- submit f.confirmer $ exerciseCmd g AcceptGasCap with chain = other
   pure ()
@@ -1980,6 +1982,7 @@ testAContractWaitsOutTheDelayAndTheRightParties = do
   chain <- setDelay f f.chain (Some (seconds 100))
   submitMustFail f.operator $ exerciseCmd chain ProposeContract with entry = gatewayEntry
   submitMustFail f.confirmer $ exerciseCmd chain ProposeContract with entry = gatewayEntry
+  submitMustFail f.gateway $ exerciseCmd chain ProposeContract with entry = gatewayEntry
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeContract with entry = gatewayEntry
   submitMustFail f.operator $ exerciseCmd p AcceptContract with chain
   mustWait f.confirmer $ exerciseCmd p AcceptContract with chain
@@ -2108,3 +2111,45 @@ testThePauseHoldsAnExtraGatewaysLegs = do
   refused "a block that carries a leg is refused" f $ advanceX paused "01" [] [] [gwBlock gw2Addr codeHash2 [paymentLine f.dvp1] [paymentLeg f]]
   (_, _) <- submit (asBuilder f) $ advanceX paused "01" [] [] [gwBlock gw2Addr codeHash2 [] []]
   pure ()
+
+-- The withdrawals of a registered gateway count against the chain's withdrawal quota, with the first gateway's.
+testTheQuotaCountsAnExtraGatewaysWithdrawals : Script ()
+testTheQuotaCountsAnExtraGatewaysWithdrawals = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  chain <- quota5 f
+  c1 <- register f chain gatewayEntry
+  -- 6.0 by the registered gateway alone is over the quota of 5.0
+  refused "over the withdrawal quota" f $ advanceX c1 "01" [] [] [gwBlock gw2Addr codeHash2 [wLine wTkb 6.0 f.u] [withdrawalOf f f.token h1 6.0]]
+  -- 3.0 by the first gateway and 3.0 by the registered one are added up
+  refused "over the withdrawal quota" f $ advanceX c1 "01" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0] [gwBlock gw2Addr codeHash2 [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h2 3.0]]
+  -- 3.0 and 2.0 commit, and the tally is 5.0
+  (c2, _) <- submit (asBuilder f) $ advanceX c1 "01" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0] [gwBlock gw2Addr codeHash2 [wLine wTkb 2.0 f.u] [withdrawalOf f f.token h2 2.0]]
+  Some c <- queryContractId f.operator c2
+  Some [t] <- pure c.withdrawn
+  t.tallyAmount === 5.0
+
+-- The registry holds 16 entries and refuses a 17th.
+testTheRegistryHoldsSixteenEntries : Script ()
+testTheRegistryHoldsSixteenEntries = do
+  f <- fixture
+  let entry d = RegisteredContract with contractAddress = mconcat (replicate 20 ("f" <> d)); contractCodeHash = codeHash3; contractKind = Vault
+  let go c [] = pure c
+      go c (d :: ds) = register f c (entry d) >>= \c' -> go c' ds
+  c16 <- go f.chain (T.explode "0123456789abcdef")
+  Some r <- registryOf f c16
+  length r === 16
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c16 ProposeContract with entry = gatewayEntry
+  r17 <- trySubmit f.confirmer $ exerciseCmd p AcceptContract with chain = c16
+  case r17 of
+    Left e -> assertMsg ("refused, but not as the 17th: " <> show e) ("at most 16" `T.isInfixOf` show e)
+    Right _ -> abort "a 17th entry was registered"
+
+-- A registered gateway's answer must repeat the block's root and number, its own address and the count of its legs.
+testARegisteredGatewaysAnswerIsChecked : Script ()
+testARegisteredGatewaysAnswerIsChecked = do
+  f <- fixture
+  c1 <- register f f.chain gatewayEntry
+  forA_ ["e1", "e2", "e3", "e4"] $ \tag ->
+    refused "are not the ones the block recorded: ok" f $ advanceX c1 "01" [] [] [(gwBlock gw2Addr codeHash2 [] []) with accountNodes = [tag, "ccdd" <> codeHash2]]

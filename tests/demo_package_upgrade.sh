@@ -7,11 +7,11 @@
 #
 #   1. The chain starts on 0.2.0: the DAR built from the tag v0.2.0 (its package id must be the one the live chain runs). Blocks commit with the
 #      builder pinned to that id (--package-id): a setup block, and a deposit whose leg settles. The sidecar is asked `verify`, never `verify2`.
-#   2. A second deposit is made, still on 0.2.0. Then the new DAR (the current source, 0.4.0) goes onto each participant in the steps of
+#   2. A second deposit is made, still on 0.2.0. Then the new DAR (the current source) goes onto each participant in the steps of
 #      network/external/setup.py --package-step: check (nothing kept), upload (not vetted: the package is listed and nothing else changes), vet with
 #      a dry run first (the dry run changes nothing), vet. The chain does not switch by itself.
-#   3. The builder is pinned to 0.4.0: the block commits (the sidecar is asked `verify2` now), the chain contract and the block's record are made
-#      under 0.4.0, and the legs of the deposits that were made under 0.2.0 settle. The block gas limit is still 30,000,000.
+#   3. The builder is pinned to the new package: the block commits (the sidecar is asked `verify2` now), the chain contract and the block's record are made
+#      under the new package, and the legs of the deposits that were made under 0.2.0 settle. The block gas limit is still 30,000,000.
 #   4. The chain gets a change delay of 8 s with network/external/setup.py --change-delay-step (a dry run, the proposal, the acceptance: the chain has
 #      no delay yet, so this one is at once). From here a change waits out the delay: an acceptance right after its proposal is refused with the time
 #      from which it may be accepted, and goes through once that time has passed.
@@ -26,11 +26,11 @@
 #   5. The builder asks reth for a block gas limit of 31,000,000 (--target-gas-limit). First an Advance whose header hex has a capital letter in it
 #      is refused by Canton at `verify2` (the runtime lowercases what it sends, so the hash in the line differs: the stand-in says it refused at the
 #      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
-#      without the capital letter and commits under 0.4.0, and each header's gas limit moves up by exactly parent/1024 - 1, so the first block is
+#      without the capital letter and commits under the new package, and each header's gas limit moves up by exactly parent/1024 - 1, so the first block is
 #      over the old cap of 30,000,000.
-#   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the 0.4.0 chain
+#   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the new chain
 #      contract and deposit, and the new chain contract is a 0.2.0 one, with the raised cap.
-#   7. Forward again: a deposit, the builder pinned to 0.4.0, the block commits. Then the legs are paused for real (setup.py --pause-step pause, the
+#   7. Forward again: a deposit, the builder pinned to the new package, the block commits. Then the legs are paused for real (setup.py --pause-step pause, the
 #      confirmer alone): a block with no legs still commits, a block that carries a deposit is refused by Canton and reth goes back, and after
 #      --pause-step unpause the same deposit's block commits.
 # At every block the package id of the chain contract that Advance made is read from the ledger and compared with the pin.
@@ -81,7 +81,7 @@ rpc eth_chainId >/dev/null || fail "reth does not answer"
 GENESIS_HASH=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .hash)
 GENESIS_STATE_ROOT=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .stateRoot)
 
-step "the two DARs: 0.2.0 from the tag v0.2.0, and 0.4.0 from this source, with the pinned Daml compiler"
+step "the two DARs: 0.2.0 from the tag v0.2.0, and the new package from this source, with the pinned Daml compiler"
 tools=$("$ROOT/network/canton/fetch.sh")
 CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools")
 export CZE_TOOLS_DIR=${CZE_TOOLS_DIR:-$CZE_STATE_DIR/tools}
@@ -96,7 +96,7 @@ NEW=$("$ROOT/network/canton/dar-id.sh" "$NEW_DAR" | sed -n 's/^package_id=//p')
 is "$OLD" "$LIVE_PACKAGE_ID" "the package id of 0.2.0 as rebuilt from the tag"
 [[ $NEW =~ ^[0-9a-f]{64}$ ]] || fail "no package id for the current DAR: $NEW"
 [ "$NEW" != "$OLD" ] || fail "the current source has the package id of 0.2.0: it was not changed, so there is nothing to upgrade to"
-echo "0.2.0 is $OLD, 0.4.0 is $NEW"
+echo "0.2.0 is $OLD, the new package is $NEW"
 { echo "dar_sha256=$(sha256sum "$OLD_DAR" | cut -d' ' -f1)"; echo "package_id=$OLD"; } > "$NET/dar.txt"
 
 step "the sidecars: the real one for legs, the stand-in in front of it for verify/verify2"
@@ -188,7 +188,7 @@ is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"10.0","su
 [ "$(calls verify)" -ge 1 ] || fail "blocks 1 and 2 ran under 0.2.0 and the sidecar was not asked verify"
 is "$(calls verify2)" 0 "the verify2 calls under 0.2.0"
 
-step "stage 2: a deposit on 0.2.0, then 0.4.0 goes on every participant: check, upload (not vetted), vet with a dry run first"
+step "stage 2: a deposit on 0.2.0, then the new package goes on every participant: check, upload (not vetted), vet with a dry run first"
 deposit dep-2 "$OLD"
 step_on() {   # <participant port> <step> [--dry-run]: network/external/setup.py --package-step on one participant, which has no login here
   local port=$1; shift
@@ -227,13 +227,13 @@ for _ in $(seq 1 30); do
   seen=$(vetted_by || echo 0); [ "$seen" = 3 ] && break; sleep 1
 done
 [ "$seen" = 3 ] || fail "after 30 s only $seen of 3 participants list the package $NEW as vetted (the vetting did not reach them)"
-is "$(chain_package)" "$OLD" "the package the chain contract is under after 0.4.0 was vetted (nothing switched)"
+is "$(chain_package)" "$OLD" "the package the chain contract is under after the new package was vetted (nothing switched)"
 
-step "stage 3: the builder is pinned to 0.4.0; the legs of deposits made under 0.2.0 settle"
-block_under "$NEW" 3 2 "the block pinned to 0.4.0"   # dep-2 and dep-3, both made under 0.2.0
+step "stage 3: the builder is pinned to the new package; the legs of deposits made under 0.2.0 settle"
+block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2 and dep-3, both made under 0.2.0
 is "$(gas_limit 3)" 30000000 "the gas limit of block 3 (no target was asked: reth stays at the genesis cap)"
 is "$(probe DepositRequest | jq '.contracts | length')" 0 "the requests of dep-2 and dep-3 are settled"
-[ "$(calls verify2)" -ge 1 ] || fail "block 3 ran under 0.4.0 and the sidecar was not asked verify2"
+[ "$(calls verify2)" -ge 1 ] || fail "block 3 ran under the new package and the sidecar was not asked verify2"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"30.0","supply":"30.0"}' "U's wTKB after block 3"
 
 
@@ -387,28 +387,28 @@ is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the 
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the refused block"
 is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .number)" 0x3 "reth's head after the refused block (it went back)"
 # Block 4 is built again, without the capital letter, and commits: the first one over the old cap.
-block_under "$NEW" 4 1 "the first block of the ramp, pinned to 0.4.0"
+block_under "$NEW" 4 1 "the first block of the ramp, pinned to the new package"
 is "$(gas_limit 4)" 30029295 "the gas limit of block 4 (30,000,000 and 30,000,000/1024 - 1)"
 deposit dep-5 "$NEW"
-block_under "$NEW" 5 1 "the second block of the ramp, pinned to 0.4.0"
+block_under "$NEW" 5 1 "the second block of the ramp, pinned to the new package"
 is "$(gas_limit 5)" "$(( $(gas_limit 4) + $(gas_limit 4) / 1024 - 1 ))" "the gas limit of block 5 (the parent's and its 1/1024 - 1)"
 [ "$(gas_limit 5)" -gt 30000000 ] || fail "block 5 is not over the old cap"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"50.0","supply":"50.0"}' "U's wTKB after block 5"
 
-step "stage 6: a deposit made under 0.4.0, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
+step "stage 6: a deposit made under the new package, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
 deposit dep-6 "$NEW"
 block_under "$OLD" 6 1 "the block pinned back to 0.2.0"
 is "$(gas_limit 6)" "$(( $(gas_limit 5) + $(gas_limit 5) / 1024 - 1 ))" "the gas limit of block 6 (over the old cap, under 0.2.0)"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the downgrade (the chain contract keeps it)"
 is "$(probe BlockRecord | jq -c '.contracts | length')" 6 "the block records after the downgrade"
 
-step "stage 7: forward again, to 0.4.0"
+step "stage 7: forward again, to the new package"
 deposit dep-7 "$NEW"
-block_under "$NEW" 7 1 "the block pinned to 0.4.0 again"
+block_under "$NEW" 7 1 "the block pinned to the new package again"
 is "$(gas_limit 7)" "$(( $(gas_limit 6) + $(gas_limit 6) / 1024 - 1 ))" "the gas limit of block 7"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"70.0","supply":"70.0"}' "U's wTKB after block 7"
 
-# The pause for real, under 0.4.0, which the scenario does not leave again: the emergency brake is sent for the first time here and not during an incident.
+# The pause for real, under the new package, which the scenario does not leave again: the emergency brake is sent for the first time here and not during an incident.
 pause_run() {   # <pause|unpause>: network/external/setup.py --pause-step on the confirmer's participant, which has no login here
   CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --pause-step "$1" 2> "$WORK/setup.err" \
     || { cat "$WORK/setup.err" >&2; fail "setup.py --pause-step $1 failed"; }
