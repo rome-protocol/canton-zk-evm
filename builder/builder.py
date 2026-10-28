@@ -302,15 +302,50 @@ def parse_registries(items) -> dict:
     return found
 
 
+CONTEXT_MAX_DEPTH = 16          # the deepest an AnyValue may nest (a list in a list ...): the Advance's argument nests it 3 deeper, and Python's JSON writer has a limit
+CONTEXT_MAX_NODES = 1024        # the most AnyValues (a list's and a map's too) in one choice context
+CONTEXT_SCALARS = {"AV_Text": (str,), "AV_Party": (str,), "AV_ContractId": (str,), "AV_Decimal": (str,), "AV_Date": (str,), "AV_Time": (str,),
+                   "AV_RelTime": (str,), "AV_Int": (str, int), "AV_Bool": (bool,)}   # the JSON API writes a Decimal as text, an Int as text (or a whole number)
+
+
+def check_any_value(value) -> None:
+    """`value` is a Daml `AnyValue` as the JSON API writes it ({"tag": "AV_...", "value": ...}), no deeper than CONTEXT_MAX_DEPTH and with at most
+    CONTEXT_MAX_NODES values in it, with no number that is not a whole one: anything else is a ValueError. Walks the value without recursion."""
+    todo, nodes = [(value, 1)], 0
+    while todo:
+        v, depth = todo.pop()
+        nodes += 1
+        if nodes > CONTEXT_MAX_NODES or depth > CONTEXT_MAX_DEPTH:
+            raise ValueError("a choice context value is too big")
+        if not isinstance(v, dict) or set(v) != {"tag", "value"} or not isinstance(v["tag"], str):
+            raise ValueError("not an AnyValue")
+        tag, payload = v["tag"], v["value"]
+        if tag == "AV_List" and isinstance(payload, list):
+            todo.extend((x, depth + 1) for x in payload)
+        elif tag == "AV_Map" and isinstance(payload, dict) and all(isinstance(k, str) for k in payload):
+            todo.extend((x, depth + 1) for x in payload.values())
+        elif tag in CONTEXT_SCALARS and type(payload) in CONTEXT_SCALARS[tag]:
+            if type(payload) is int and not -2**63 <= payload < 2**63:
+                raise ValueError("not an Int")
+        else:
+            raise ValueError("not an AnyValue")
+
+
+def refuse_constant(name: str):
+    """json.loads accepts NaN and Infinity; a choice context is not written with them."""
+    raise ValueError(f"{name} is not JSON")
+
+
 def context_values(data) -> dict:
     """The `values` of a choice context in the registry's answer (Daml's `ChoiceContext`, as JSON): at most CONTEXT_MAX_VALUES entries, each an
-    `AnyValue` ({"tag": "AV_...", "value": ...}). Anything else is a ValueError."""
+    `AnyValue` that Daml could hold (see check_any_value). Anything else is a ValueError."""
     values = data.get("values") if isinstance(data, dict) and set(data) == {"values"} else None
     if not isinstance(values, dict) or len(values) > CONTEXT_MAX_VALUES:
         raise ValueError("not a choice context")
-    for key, v in values.items():
-        if not CONTEXT_KEY.fullmatch(key) or not isinstance(v, dict) or set(v) != {"tag", "value"} or not isinstance(v["tag"], str) or not v["tag"].startswith("AV_"):
-            raise ValueError("not an entry of a choice context")
+    if not all(CONTEXT_KEY.fullmatch(key) for key in values):
+        raise ValueError("not an entry of a choice context")
+    check_any_value({"tag": "AV_Map", "value": values})   # the values together, as the Map they are, with the limits of one value
+    json.dumps(values, allow_nan=False)
     return {"values": values}
 
 
@@ -387,7 +422,8 @@ class ChoiceContexts:
             headers["authorization"] = f"Bearer {self.tokens[admin]}"
         started = time.monotonic()
         try:
-            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers))
+            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
+                                        parse_constant=refuse_constant)
         except _RegistryStatus as e:
             raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e
         except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written

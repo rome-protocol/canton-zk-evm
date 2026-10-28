@@ -224,6 +224,36 @@ class Contexts(tb.LegCase):
                 b.REGISTRY_DOWN.clear()
                 self.left_out(answer=answer)
 
+    def test_a_value_that_daml_could_not_hold_leaves_the_leg_out_before_anything_is_proven(self):
+        deep = {"tag": "AV_Text", "value": "t"}
+        for _ in range(40):
+            deep = {"tag": "AV_List", "value": [deep]}
+        wide = {"tag": "AV_List", "value": [{"tag": "AV_Bool", "value": True}] * (b.CONTEXT_MAX_NODES + 1)}
+        bad = {"deep": {"choiceContextData": {"values": {"k": deep}}},
+               "wide": {"choiceContextData": {"values": {"k": wide}}},
+               "float": {"choiceContextData": {"values": {"k": {"tag": "AV_Decimal", "value": 1.5}}}},
+               "text is a number": {"choiceContextData": {"values": {"k": {"tag": "AV_Text", "value": 7}}}},
+               "unknown tag": {"choiceContextData": {"values": {"k": {"tag": "AV_Other", "value": "x"}}}},
+               "list of text": {"choiceContextData": {"values": {"k": {"tag": "AV_List", "value": "x"}}}}}
+        for name, answer in bad.items():
+            with self.subTest(name):
+                b.REGISTRY_DOWN.clear()
+                self.left_out(answer=answer)
+        for name, raw in (("NaN", b'{"choiceContextData": {"values": {"k": {"tag": "AV_Decimal", "value": NaN}}}}'),
+                          ("Infinity", b'{"choiceContextData": {"values": {"k": {"tag": "AV_Int", "value": Infinity}}}}'),
+                          ("nested under the size limit", b'{"choiceContextData": {"values": {"k": ' + b'{"tag": "AV_List", "value": [' * 2000 + b'{"tag": "AV_Bool", "value": true}' + b"]}" * 2000 + b'}}}')):
+            with self.subTest(name):
+                b.REGISTRY_DOWN.clear()
+                self.left_out(raw=raw)
+
+    def test_every_kind_of_value_a_registry_may_give_is_taken(self):
+        values = {"values": {"t": {"tag": "AV_Text", "value": "x"}, "i": {"tag": "AV_Int", "value": "7"}, "b": {"tag": "AV_Bool", "value": False},
+                             "l": {"tag": "AV_List", "value": [{"tag": "AV_Party", "value": "p::1"}]},
+                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": "c"}}}}}
+        r = Registry(answer={"choiceContextData": values})
+        self.addCleanup(r.close)
+        self.assertEqual(b.ChoiceContexts({ADMIN: r.url}).allocation(ADMIN, "a-1"), (values, []))
+
     def test_a_registry_that_cannot_be_reached_leaves_the_leg_out(self):
         s, t = self.pay()
         s.cfg.registries = {TERMS_ADMIN: "http://127.0.0.1:1"}
