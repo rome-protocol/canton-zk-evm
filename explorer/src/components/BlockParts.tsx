@@ -4,7 +4,7 @@ import { getBlockLegs, getBlockTxs, getFaucetAddress, type TxListItem } from "..
 import { count, units } from "../format.ts";
 import { methodOf } from "../method.ts";
 import { LegAmount, LegToken, legKindWord } from "../pages/LegParts.tsx";
-import { ErrorCard, LoadingCard } from "./Cards.tsx";
+import { LoadingCard } from "./Cards.tsx";
 import { HashLink } from "./HashLink.tsx";
 import { Icon } from "./Icon.tsx";
 import { Pager, usePaged } from "./Pager.tsx";
@@ -68,8 +68,8 @@ export function PagedTransactions({ id, total, coin, chain }: { id: string; tota
 export function BlockLegs({ id }: { id: string }) {
   const p = usePaged(["blocks", "legs", id], (c) => getBlockLegs(id, c, PER_PAGE));
   const rows = p.data?.items;
-  if (p.error && !rows) return <ErrorCard message={p.error.message} retrying />;
-  if (!rows) return <LoadingCard>Reading the legs of this block...</LoadingCard>;
+  if (p.error && !rows) return <section className="card" aria-labelledby="legs-h"><div className="sec-h"><h3 id="legs-h">Gateway legs</h3></div><p className="muted">The explorer cannot read the legs of this block right now.</p></section>;
+  if (!rows) return <LoadingCard>Reading the legs of this block…</LoadingCard>;
   if (!rows.length) return null;
   return (
     <section className="card" aria-labelledby="legs-h">
@@ -84,7 +84,7 @@ export function BlockLegs({ id }: { id: string }) {
             {rows.map((l) => (
               <tr key={l.legIndex}>
                 <td className="r"><Link to={`/leg/${l.legId}`}>{l.legIndex}</Link></td>
-                <td><span className="tag">{legKindWord(l.kind)}</span></td>
+                <td><span className="tag">{legKindWord(l.kind, l.canton?.role === "funded-claim")}</span></td>
                 <td><LegToken token={l.token} /></td>
                 <td><HashLink value={l.account} to={`/address/${l.account}`} /></td>
                 <td className="r"><LegAmount l={l} /></td>
