@@ -92,23 +92,25 @@ verifyAnswer proof header txs
 
 -- The stub cannot hash, so it stands in for the gateway's proofs like this. The roots and numbers are the ones of its blocks:
 -- block 1 under the first state root, block 2 under the second; under any other pair the account proof does not verify.
--- Account nodes "ba" fail it too. "e1", "e2", "e3" and "e4" answer well-formed but for another root, another number,
--- another gateway and another count. The storage nodes are the legs the block recorded, as hex (none: no legs); the
+-- Account nodes with a node "ba" fail it too. "e1", "e2", "e3" and "e4" answer well-formed but for another root, another number,
+-- another gateway and another count (as the first node of the account proof). The storage nodes are the legs the block recorded, as hex (none: no legs); the
 -- stub answers `ok` only if the attached legs are exactly those, and storage nodes "ba" fail the storage proof.
 legsAnswer : Text -> Text
 legsAnswer input = case T.splitOn "," input of
   [root, number, gateway, account, storage, legs]
     | not (nodesOk account && nodesOk storage) -> "no malformed input"
     | (root, number) `notElem` [(stubStateRoot, "1"), (stubStateRoot2, "2")] -> "no the account proof does not verify"
-    | account == "ba" -> "no the account proof does not verify"
+    | "ba" `elem` T.splitOn ";" account -> "no the account proof does not verify"
     | storage == "ba" -> "no the storage proof does not verify"
     | fromHex storage /= legs -> "no the legs are not the ones the block recorded"
-    | account == "e1" -> answer (mconcat (replicate 64 "9")) number gateway count
-    | account == "e2" -> answer root "3" gateway count
-    | account == "e3" -> answer root number (mconcat (replicate 40 "3")) count
-    | account == "e4" -> answer root number gateway (count + 1)
+    | tag == "e1" -> answer (mconcat (replicate 64 "9")) number gateway count
+    | tag == "e2" -> answer root "3" gateway count
+    | tag == "e3" -> answer root number (mconcat (replicate 40 "3")) count
+    | tag == "e4" -> answer root number gateway (count + 1)
     | otherwise -> answer root number gateway count
-    where count = if legs == "" then 0 else length (T.splitOn "|" legs)
+    where
+      count = if legs == "" then 0 else length (T.splitOn "|" legs)
+      tag = case T.splitOn ";" account of { x :: _ -> x; [] -> "" }   -- the first account node: a registered gateway's proof has the code hash node after it
   _ -> "no malformed input"
   where
     answer root number gateway count = T.intercalate " " ["ok", root, number, gateway, show count]

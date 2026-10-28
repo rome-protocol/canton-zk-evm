@@ -8,7 +8,7 @@ module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
-import DA.List (dedup)
+import DA.List (dedup, last)
 import DA.Optional (fromOptional, isSome)
 import DA.Time (RelTime, addRelTime, subTime, time, days, hours, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
@@ -110,7 +110,8 @@ template ChainProposal
       do
         create ZkChain with
           headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None
-          pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; pauseStartedAt = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None; ..
+          pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; pauseStartedAt = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None
+          contracts = None; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
 -- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
@@ -151,6 +152,9 @@ template ZkChain
     quotaWindow : Optional RelTime
     -- The withdrawals that still count against the quota; see `Tally`.
     withdrawn : Optional [Tally]
+    -- The registry of EVM contracts the chain trusts besides the first gateway (see `RegisteredContract`). Last in the record and optional, so a
+    -- chain made under 0.4.0 or earlier still upgrades; `None` is an empty registry, which behaves as 0.4.0 did.
+    contracts : Optional [RegisteredContract]
   where
     signatory operator, confirmer, gateway
     observer builder
@@ -179,6 +183,19 @@ template ZkChain
       do
         assertMsg "the new program key, ZisK root and rules hash must each be 64 lowercase hex digits" (all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash])
         create this with programVK = newProgramVK; rootC = newRootC; rulesHash = newRulesHash
+
+    -- One contract is added to the registry by the operator, the confirmer and the gateway together; see `ContractProposal`. An address is
+    -- registered once, never the first gateway's own, and at most `maxContracts` are kept. There is no removal in this version.
+    choice AddContract : ContractId ZkChain
+      with entry : RegisteredContract
+      controller operator, confirmer, gateway
+      do
+        assertMsg "the contract's address must be 40 lowercase hex digits and its code hash 64" (registeredOk entry)
+        assertMsg "the contract is the chain's first gateway, which is not in the registry" (entry.contractAddress /= gatewayAddress)
+        let known = fromOptional [] contracts
+        assertMsg "the contract is registered already" (entry.contractAddress `notElem` map (.contractAddress) known)
+        assertMsg ("the registry holds at most " <> show maxContracts <> " contracts") (length known < maxContracts)
+        create this with contracts = Some (known ++ [entry])
 
     -- The wait that gas-cap and program changes sit out is replaced like the program is, and by a proposal that itself waited
     -- out the current wait; see `ChangeDelayProposal`.
@@ -260,6 +277,13 @@ template ZkChain
         now <- getTime
         create ProgramProposal with operator; confirmer; gateway; reader; chainId; newProgramVK; newRootC; newRulesHash; proposedAt = now
 
+    nonconsuming choice ProposeContract : ContractId ContractProposal
+      with entry : RegisteredContract
+      controller operator, gateway
+      do
+        now <- getTime
+        create ContractProposal with operator; confirmer; gateway; reader; chainId; entry; proposedAt = now
+
     nonconsuming choice ProposeChangeDelay : ContractId ChangeDelayProposal
       with newDelay : Optional RelTime
       controller operator, gateway
@@ -292,12 +316,17 @@ template ZkChain
         gatewayAccountNodes : [Text]
         gatewayStorageNodes : [Text]
         legs : [Leg]
+        -- One entry per gateway in the registry (`contracts`), in any order, and none for the first gateway, whose proofs and legs are the
+        -- arguments above. `None` is a chain whose registry holds no gateway.
+        extraGateways : Optional [GatewayBlock]
       controller builder
       do
         now <- getTime
         -- While the legs are paused a block may still carry no leg, so the chain goes on; one that carries a leg waits for the expiry or
         -- the early unpause (the gateway contract on the EVM side has no pause of its own).
-        assertMsg ("the legs are paused until " <> optional "" show pausedUntil <> ": a block that carries a leg is refused") (null legs || not (pausedAt this now))
+        let extras = fromOptional [] extraGateways
+        let allLegs = legs ++ concatMap (.legs) extras
+        assertMsg ("the legs are paused until " <> optional "" show pausedUntil <> ": a block that carries a leg is refused") (null allLegs || not (pausedAt this now))
         answer <- verifyBlockCall proofHex headerHex txsHex
         b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
         assertMsg "the block was proven by another program" (b.programVK == programVK)
@@ -313,13 +342,65 @@ template ZkChain
           T.intercalate ";" gatewayAccountNodes, T.intercalate ";" gatewayStorageNodes, T.intercalate "|" legLines])
         assertMsg ("the legs are not the ones the block recorded: " <> legsAnswer)
           (legsAnswer == T.intercalate " " ["ok", b.stateRoot, show b.number, gatewayAddress, show (length legs)])
+        -- The same for every gateway in the registry: the block must carry exactly one entry for each, and its account proof must be of the
+        -- contract the registry names.
+        checkRegisteredGateways this extras
+        forA_ extras $ \g -> do
+          gLines <- mapA (legLine this) g.legs
+          gAnswer <- legsCall (T.intercalate "," [b.stateRoot, show b.number, g.address,
+            T.intercalate ";" g.accountNodes, T.intercalate ";" g.storageNodes, T.intercalate "|" gLines])
+          assertMsg ("the legs of the gateway " <> g.address <> " are not the ones the block recorded: " <> gAnswer)
+            (gAnswer == T.intercalate " " ["ok", b.stateRoot, show b.number, g.address, show (length g.legs)])
         -- The withdrawals of the block, with those still counted from earlier blocks, may not be over the quota.
-        tallies <- takeAgainstQuota this now legs
-        forA_ legs settle
+        tallies <- takeAgainstQuota this now allLegs
+        forA_ allLegs settle
         record <- create BlockRecord with
           number = b.number; blockHash = b.blockHash; parentHash = b.parentHash; ..
         next <- create this with headNumber = b.number; headHash = b.blockHash; headStateRoot = b.stateRoot; withdrawn = tallies
         pure (next, record)
+
+-- What a registered contract is for. A `Gateway` is a contract whose legs `Advance` reads, as it reads the first gateway's; a `Vault` is only an
+-- address that Daml trusts as a payee (a later version uses it).
+data ContractKind = Gateway | Vault
+  deriving (Eq, Show)
+
+-- One entry of the chain's registry of EVM contracts (`ZkChain.contracts`). The code hash is the keccak-256 of the contract's runtime code
+-- (64 lowercase hex digits), the one the confirmer checked against a reviewed build before it accepted the entry.
+data RegisteredContract = RegisteredContract with
+    contractAddress : Text
+    contractCodeHash : Text
+    contractKind : ContractKind
+  deriving (Eq, Show)
+
+registeredOk : RegisteredContract -> Bool
+registeredOk c = hexOfLength 40 c.contractAddress && hexOfLength 64 c.contractCodeHash
+
+-- The most contracts a registry may hold, so a block's argument and `Advance`'s work stay bounded.
+maxContracts : Int
+maxContracts = 16
+
+-- What the builder gives `Advance` for one registered gateway: what it gives for the first one (`gatewayAccountNodes`,
+-- `gatewayStorageNodes` and `legs`), and the gateway's address.
+data GatewayBlock = GatewayBlock with
+    address : Text
+    accountNodes : [Text]
+    storageNodes : [Text]
+    legs : [Leg]
+  deriving (Eq, Show)
+
+-- Every gateway in the registry has an entry in the block, each once, and no other; the last node of an entry's account proof is the leaf of
+-- the account, which ends with the account's code hash, and the sidecar checks that path against the proven state root (so the
+-- code hash is the one in the proven state).
+checkRegisteredGateways : ZkChain -> [GatewayBlock] -> Update ()
+checkRegisteredGateways chain extras = do
+  let registered = [c | c <- fromOptional [] chain.contracts, c.contractKind == Gateway]
+  forA_ extras $ \g ->
+    assertMsg ("the gateway " <> g.address <> " is not in the chain's registry") (g.address `elem` map (.contractAddress) registered)
+  assertMsg "a gateway has more than one entry in the block" (length (dedup (map (.address) extras)) == length extras)
+  forA_ registered $ \c -> case filter (\g -> g.address == c.contractAddress) extras of
+    [g] -> assertMsg ("the account proof of the gateway " <> c.contractAddress <> " does not end in an account of the registered code hash")
+             (not (null g.accountNodes) && c.contractCodeHash `T.isSuffixOf` T.asciiToLower (last g.accountNodes))
+    _ -> abort ("the block carries no entry for the registered gateway " <> c.contractAddress)
 
 -- The operator proposes new leg limits; the confirmer accepts them on the chain's current contract once the chain's change delay has
 -- passed, like a gas-cap change (`GasCapProposal`). A change may loosen a limit or tighten it.
@@ -553,6 +634,42 @@ template ProgramProposal
         assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
         waitedOut "the program" proposedAt c.changeDelay
         exercise chain SetProgram with newProgramVK; newRootC; newRulesHash
+
+-- The operator proposes a contract for the registry, and the gateway consents to it, as to a new program; the confirmer accepts it on the
+-- chain's current contract once the chain's change delay has passed, like `ProgramProposal`. The confirmer is expected to accept only when
+-- the code at the address, in the proven state, is a reviewed build whose code hash is the entry's.
+template ContractProposal
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    reader : Party
+    chainId : Int
+    entry : RegisteredContract
+    proposedAt : Time
+  where
+    -- Made by `ZkChain.ProposeContract` only (the confirmer signs as well), which stamps it with the ledger time.
+    signatory operator, gateway, confirmer
+    ensure chainId > 0 && registeredOk entry
+    observer reader
+
+    -- Either one alone takes it away, as for `ProgramProposal`.
+    choice WithdrawContract : ()
+      controller operator
+      do pure ()
+
+    choice RejectContract : ()
+      controller confirmer
+      do pure ()
+
+    choice AcceptContract : ContractId ZkChain
+      with chain : ContractId ZkChain
+      controller confirmer
+      do
+        c <- fetch chain
+        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
+        waitedOut "the contract" proposedAt c.changeDelay
+        exercise chain AddContract with entry
 
 -- The operator proposes a new change delay, and the gateway consents to it; the confirmer accepts it on the chain's current contract.
 -- The proposal waits out the delay that is in force when it is accepted, like any other change, so a delay cannot be cut short
