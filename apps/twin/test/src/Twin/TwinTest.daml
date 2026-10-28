@@ -6,7 +6,7 @@ import DA.List (head)
 import DA.Optional (isSome)
 import qualified DA.Text as T
 import qualified DA.TextMap as TM
-import DA.Time (addRelTime, hours)
+import DA.Time (addRelTime, hours, minutes)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -73,7 +73,11 @@ completedHoldings r = case r.output of
   _ -> abort "the transfer did not complete at once"
 
 allocSpec : F -> Time -> Party -> Party -> Decimal -> A.AllocationSpecification
-allocSpec f now sender receiver amt =
+allocSpec f now = legSpec f now f.instrument "leg-0"
+
+-- One leg of the settlement "swap-1", of any instrument.
+legSpec : F -> Time -> H.InstrumentId -> Text -> Party -> Party -> Decimal -> A.AllocationSpecification
+legSpec f now instrument legId sender receiver amt =
   let ref = A.Reference with id = "swap-1"; cid = None
       settlement = A.SettlementInfo with
         executor = f.carol
@@ -86,12 +90,15 @@ allocSpec f now sender receiver amt =
         sender = sender
         receiver = receiver
         amount = amt
-        instrumentId = f.instrument
+        instrumentId = instrument
         meta = emptyMetadata
-  in A.AllocationSpecification with settlement = settlement; transferLegId = "leg-0"; transferLeg = leg
+  in A.AllocationSpecification with settlement = settlement; transferLegId = legId; transferLeg = leg
 
 allocateCmd : F -> Time -> A.AllocationSpecification -> [ContractId H.Holding] -> Commands AI.AllocationInstructionResult
-allocateCmd f now spec inputs = exerciseCmd (toInterfaceContractId @AI.AllocationFactory f.rulesCid) AI.AllocationFactory_Allocate with
+allocateCmd f = allocateVia f f.rulesCid
+
+allocateVia : F -> ContractId TwinRules -> Time -> A.AllocationSpecification -> [ContractId H.Holding] -> Commands AI.AllocationInstructionResult
+allocateVia f rulesCid now spec inputs = exerciseCmd (toInterfaceContractId @AI.AllocationFactory rulesCid) AI.AllocationFactory_Allocate with
   expectedAdmin = f.admin; allocation = spec; requestedAt = now; inputHoldingCids = inputs; extraArgs = noExtraArgs
 
 -- Alice allocates 3 to Bob for Carol's settlement; the allocation and the change come back.
@@ -103,11 +110,35 @@ allocated f inputs = do
     AI.AllocationInstructionResult_Completed c -> pure c
     _ -> abort "the allocation did not complete at once"
 
+-- Test-only holdings of templates this package does not own, which report this twin's instrument. The first is signed by its owner
+-- (a package an attacker vets), the second by the admin (another asset the admin issues).
+template FakeHolding with
+    owner : Party
+    admin : Party
+    token : Text
+    amount : Decimal
+  where
+    signatory owner
+    observer admin
+    interface instance H.Holding for FakeHolding where
+      view = H.HoldingView with owner = owner; instrumentId = instrumentOf admin token; amount = amount; lock = None; meta = emptyMetadata
+
+template AdminFakeHolding with
+    owner : Party
+    admin : Party
+    token : Text
+    amount : Decimal
+  where
+    signatory admin
+    observer owner
+    interface instance H.Holding for AdminFakeHolding where
+      view = H.HoldingView with owner = owner; instrumentId = instrumentOf admin token; amount = amount; lock = None; meta = emptyMetadata
+
 -- | 64 hex digits from the short form.
 hex64 : Text -> Text
 hex64 s = T.implode (replicate (64 - T.length s) "0") <> s
 
--- Metadata: the instrument id is `erc20:<address>`, the factory and the holdings carry the name, symbol and 10 decimals.
+-- Metadata: the instrument id is `erc20:<address>`, and the factory's view carries the name, symbol and 10 decimals.
 testInstrumentAndMetadata : Script ()
 testInstrumentAndMetadata = do
   f <- setup
@@ -341,3 +372,102 @@ testBaseUnits = do
   fromBaseUnits 6 ("8" <> T.implode (replicate 63 "0")) === None
   fromBaseUnits 6 (hex64 "16345785d8a0000") === Some 100000000000.0
   fromBaseUnits 6 (hex64 "152d02c7e14af6800000") === None
+
+-- Only this twin's own holdings are spent: a holding of another template that reports the instrument is refused by a transfer, an
+-- allocation and a burn, so it mints nothing and releases nothing.
+testForeignHoldingRefused : Script ()
+testForeignHoldingRefused = do
+  f <- setup
+  now <- getTime
+  fake <- submit f.alice $ createCmd FakeHolding with owner = f.alice; admin = f.admin; token = tokenAddr; amount = 1000.0
+  adminFake <- submit f.admin $ createCmd AdminFakeHolding with owner = f.alice; admin = f.admin; token = tokenAddr; amount = 1000.0
+  let foreign = [toInterfaceContractId @H.Holding fake, toInterfaceContractId @H.Holding adminFake]
+  _ <- forA foreign $ \h -> do
+    submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 500.0 [h])
+    submitMustFail (actAs f.alice <> disclose f.rules) $ allocateCmd f now (allocSpec f now f.alice f.bob 3.0) [h]
+    submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 1.0; reference = "x"
+    pure ()
+  -- mixed with a real holding of the twin, it is still refused
+  real <- mintTo f f.alice 10.0
+  submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 5.0 (real :: foreign))
+  balanceOf f f.bob >>= (=== 0.0)
+  balanceOf f f.alice >>= (=== 10.0)
+
+-- The factories' PublicFetch checks the expected admin, as Transfer and Allocate do.
+testPublicFetchChecksAdmin : Script ()
+testPublicFetchChecksAdmin = do
+  f <- setup
+  let tf = toInterfaceContractId @TI.TransferFactory f.rulesCid
+      af = toInterfaceContractId @AI.AllocationFactory f.rulesCid
+      asAlice = actAs f.alice <> disclose f.rules
+  tv <- submit asAlice $ exerciseCmd tf TI.TransferFactory_PublicFetch with expectedAdmin = f.admin; actor = f.alice
+  tv.admin === f.admin
+  av <- submit asAlice $ exerciseCmd af AI.AllocationFactory_PublicFetch with expectedAdmin = f.admin; actor = f.alice
+  av.admin === f.admin
+  submitMustFail asAlice $ exerciseCmd tf TI.TransferFactory_PublicFetch with expectedAdmin = f.bob; actor = f.alice
+  submitMustFail asAlice $ exerciseCmd af AI.AllocationFactory_PublicFetch with expectedAdmin = f.bob; actor = f.alice
+
+-- settleBefore is exclusive: an allocation executes just before it, not at it, and is still withdrawn after.
+testExecuteBoundary : Script ()
+testExecuteBoundary = do
+  f <- setup
+  h1 <- mintTo f f.alice 4.0
+  h2 <- mintTo f f.alice 4.0
+  a1 <- allocated f [h1]
+  a2 <- allocated f [h2]
+  let execute a = submit (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd a A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  -- settleBefore is two hours after the allocations were made
+  passTime (minutes 119)
+  _ <- execute a1
+  passTime (minutes 1)
+  submitMustFail (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd a2 A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  _ <- submit f.alice $ exerciseCmd a2 A.Allocation_Withdraw with extraArgs = noExtraArgs
+  balanceOf f f.bob >>= (=== 3.0)
+  balanceOf f f.alice >>= (=== 5.0)
+
+-- Two legs of one settlement, in two twins: the executor settles both in one transaction, and when one leg has been withdrawn
+-- the combined execution fails and no balance changes.
+testTwoLegSettlement : Script ()
+testTwoLegSettlement = do
+  f <- setup
+  now <- getTime
+  rules2 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"
+  Some d2 <- queryDisclosure f.admin rules2
+  let instrument2 = instrumentOf f.admin otherAddr
+      balance2 p = do
+        hs <- queryInterface @H.Holding p
+        pure (sum [ v.amount | (_, Some v) <- hs, v.owner == p, v.instrumentId == instrument2, not (isSome v.lock) ])
+      ex a = exerciseCmd a A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+      settle a1 a2 = (,) <$> ex a1 <*> ex a2
+      executor = actAs [f.carol, f.alice, f.bob]
+      allocate who rulesCid d spec h = do
+        r <- submit (actAs who <> disclose d) $ allocateVia f rulesCid now spec [h]
+        case r.output of
+          AI.AllocationInstructionResult_Completed c -> pure c
+          _ -> abort "the allocation did not complete at once"
+  tka <- mintTo f f.alice 10.0
+  tkb <- do
+    c <- submit f.admin $ exerciseCmd rules2 Mint with owner = f.bob; amount = 5.0; reference = "lock-2"
+    pure (toInterfaceContractId @H.Holding c)
+  -- Alice sends 3 TKA to Bob, Bob sends 2 TKB to Alice
+  a1 <- allocate f.alice f.rulesCid f.rules (legSpec f now f.instrument "leg-0" f.alice f.bob 3.0) tka
+  a2 <- allocate f.bob rules2 d2 (legSpec f now instrument2 "leg-1" f.bob f.alice 2.0) tkb
+  (r1, r2) <- submit executor $ settle a1 a2
+  length r1.receiverHoldingCids === 1
+  length r2.receiverHoldingCids === 1
+  balanceOf f f.bob >>= (=== 3.0)
+  balance2 f.alice >>= (=== 2.0)
+  balanceOf f f.alice >>= (=== 7.0)
+  balance2 f.bob >>= (=== 3.0)
+  -- the same again, with Bob's leg withdrawn before the settlement: nothing moves
+  tka2 <- mintTo f f.alice 4.0
+  tkb2 <- do
+    c <- submit f.admin $ exerciseCmd rules2 Mint with owner = f.bob; amount = 4.0; reference = "lock-3"
+    pure (toInterfaceContractId @H.Holding c)
+  b1 <- allocate f.alice f.rulesCid f.rules (legSpec f now f.instrument "leg-0" f.alice f.bob 1.0) tka2
+  b2 <- allocate f.bob rules2 d2 (legSpec f now instrument2 "leg-1" f.bob f.alice 1.0) tkb2
+  _ <- submit f.bob $ exerciseCmd b2 A.Allocation_Withdraw with extraArgs = noExtraArgs
+  submitMustFail executor $ settle b1 b2
+  balanceOf f f.bob >>= (=== 3.0)
+  lockedOf f f.alice >>= (=== 1.0)
+  balance2 f.alice >>= (=== 2.0)
