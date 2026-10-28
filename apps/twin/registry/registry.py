@@ -18,7 +18,7 @@ APIS = {f"splice-api-token-{n}-v1": 1 for n in ("metadata", "holding", "transfer
 TWIN_DECIMALS = 10
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 PARTY = re.compile(r"[^\s:,]+::1220[0-9a-f]{64}\Z")   # name::namespace: a hash fingerprint is "1220" and 64 lowercase hex digits
-LOCK_PARTS_TTL = 14 * 24 * 3600   # seconds an announced lock stays; a payer can announce it again
+LOCK_PARTS_TTL = 2 * 24 * 3600   # seconds an announced lock stays; a payer can announce it again
 HEX64 = re.compile(r"0x[0-9a-fA-F]{64}\Z")
 BALANCE_OF = "0x70a08231"
 MAX_BODY = 64 * 1024
@@ -138,7 +138,7 @@ class LockParts:
         lid = lock_id(receiver, ref)
         with self.lock:
             now = self.clock()
-            if now - self.swept > 3600 or len(self.parts) >= self.limit:
+            if now - self.swept > (60 if len(self.parts) >= self.limit else 3600):   # a full store is swept at most once a minute
                 self.sweep()
             known = self.parts.get(lid)
             if known is None and len(self.parts) >= self.limit:
@@ -198,7 +198,7 @@ class Registry:
         return self._read()[2]
 
     def instrument(self, rules: dict) -> dict:
-        out = {"id": "erc20:" + rules["token"], "name": rules["name"], "symbol": rules["symbol"], "decimals": TWIN_DECIMALS,
+        out = {"id": "erc20:" + rules["token"], "name": rules["name"], "symbol": rules["symbol"], "decimals": min(int(rules["decimals"]), TWIN_DECIMALS),
                "paused": False, "supportedApis": APIS}
         supply = self.supply(rules)
         if supply:

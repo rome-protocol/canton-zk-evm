@@ -114,7 +114,7 @@ class RegistryTest(unittest.TestCase):
     def test_metadata_has_the_supply_the_vault_holds(self):
         status, out = self.call("/registry/metadata/v1/instruments/erc20%3A" + TOKEN)
         self.assertEqual(status, 200)
-        self.assertEqual((out["id"], out["name"], out["symbol"], out["decimals"], out["totalSupply"]), ("erc20:" + TOKEN, "Test USD", "TUSD", 10, "1.5000000000"))
+        self.assertEqual((out["id"], out["name"], out["symbol"], out["decimals"], out["totalSupply"]), ("erc20:" + TOKEN, "Test USD", "TUSD", 6, "1.5000000000"))
         self.assertTrue(out["totalSupplyAsOf"].endswith("Z"))
         call = self.fake.rpc_calls[-1]
         self.assertEqual((call["to"], call["data"]), ("0x" + TOKEN, "0x70a08231" + "0" * 24 + VAULT))
@@ -130,6 +130,11 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(R.twin_amount(1, 18), "0.0000000000")   # finer than the twin's 10 places: rounded down
         self.assertEqual(R.twin_amount(10**18 + 5 * 10**8, 18), "1.0000000005")
         self.assertEqual(R.twin_amount(123, 0), "123.0000000000")
+
+    def test_the_metadata_decimals_are_the_pinned_ones_capped_at_ten(self):
+        self.fake.set_rules([rules_event(token="1" * 40, cid="r6", decimals=6), rules_event(token="2" * 40, cid="r18", decimals=18)])
+        self.assertEqual(self.call("/registry/metadata/v1/instruments/erc20:" + "1" * 40)[1]["decimals"], 6)
+        self.assertEqual(self.call("/registry/metadata/v1/instruments/erc20:" + "2" * 40)[1]["decimals"], 10)
 
     def test_list_instruments_pages(self):
         self.fake.set_rules([rules_event(token=c * 40, cid="r" + c) for c in "123"])
@@ -267,6 +272,21 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "3"})[0], 200)
         with open(self.state) as f:
             self.assertEqual([json.loads(l)["ref"] for l in f], ["3"])   # the file is compacted too
+
+    def test_a_full_store_is_swept_once_a_minute(self):
+        self.registry.parts.limit = 2
+        for ref in ("1", "2"):
+            self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": ref})
+        calls = []
+        real = self.registry.parts.sweep
+        self.registry.parts.sweep = lambda force=False: (calls.append(1), real(force))[1]
+        for i in range(5):
+            self.now += 5
+            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "x%d" % i})[0], 503)
+        self.assertEqual(calls, [])   # a full store costs a lookup per request, not a scan
+        self.now += 60
+        self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "y"})
+        self.assertEqual(len(calls), 1)
 
     def test_the_state_file_is_compacted_when_it_loads(self):
         old = self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "old"})[1]["lockId"]
