@@ -6,11 +6,11 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { legKindOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
 import { addressOfKey, bytes, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
-const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 /** A Canton amount's own scale (Daml Numeric 10): the unit of `canton.custody`. */
 const CUSTODY_DECIMALS = 10;
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
@@ -520,10 +520,11 @@ export function createAccountRest(pool: Pool) {
     return rows.map(transferItem);
   }
 
-  const legSelect = "g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, t.hash";
-  const legFrom = "from gateway_legs g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index";
+  const legSelect = `g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, t.hash, ${TWIN_SELECT}`;
+  // The legs a page reads are picked first, so that the twin legs are told for the page's rows and not for the table's.
+  const legFrom = (pick = "gateway_legs") => `from ${pick} g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index ${TWIN_FROM}`;
   const legItem = (r: Row): LegListItem => ({
-    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: LEG_KINDS[r.kind] ?? String(r.kind), legId: hex(r.leg_id),
+    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: legKindOf(r), legId: hex(r.leg_id),
     token: hex(r.token), account: hex(r.account), amount: r.amount, party: r.party ?? null,
   });
 
@@ -531,7 +532,7 @@ export function createAccountRest(pool: Pool) {
   async function legs(before: Key | null, limit: number): Promise<LegListItem[]> {
     const [bn, li] = before ?? [null, null];
     const rows = await query(
-      `select ${legSelect} ${legFrom} where ($1::bigint is null or (g.block_number, g.leg_index) < ($1::bigint, $2::int)) order by g.block_number desc, g.leg_index desc limit $3`,
+      `select ${legSelect} ${legFrom("(select * from gateway_legs where ($1::bigint is null or (block_number, leg_index) < ($1::bigint, $2::int)) order by block_number desc, leg_index desc limit $3)")} order by g.block_number desc, g.leg_index desc`,
       [bn, li, limit + 1],
     );
     return rows.map(legItem);
@@ -586,7 +587,7 @@ export function createAccountRest(pool: Pool) {
 
   /** One leg by its id. An id is a hash of the leg, so one is expected to name one leg; if the same leg is ever recorded twice, this is the first. */
   async function leg(id: string): Promise<LegListItem | undefined> {
-    const [r] = await query(`select ${legSelect} ${legFrom} where g.leg_id = $1 order by g.block_number, g.leg_index limit 1`, [bytes(id)]);
+    const [r] = await query(`select ${legSelect} ${legFrom()} where g.leg_id = $1 order by g.block_number, g.leg_index limit 1`, [bytes(id)]);
     return r && legItem(r);
   }
 

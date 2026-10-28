@@ -34,6 +34,8 @@ export interface BlockShape {
   legAmount?: bigint;
   /** Legs that other contracts (a registered gateway) record in the first transaction, after the first gateway's: each is a `Leg` log of `gateway`. */
   extra?: { gateway: string; kind: number; id: string; token: string; account: string; amount: bigint; party?: string }[];
+  /** Other logs of the first transaction, after the legs (a vault's `Released` event). */
+  extraLogs?: { address: string; topics: string[]; data?: string }[];
   /** The sender of every `hotEvery`th transaction (an address with a long history: the load test's one address with a million). */
   hot?: string;
   /** Every how many transactions the hot address sends one: 10 when absent. */
@@ -121,6 +123,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
           [e.kind, e.id as `0x${string}`, e.token as `0x${string}`, e.account as `0x${string}`, e.amount, e.party ?? ""]) });
       }
     }
+    if (k === 0) for (const l of shape.extraLogs ?? []) logs.push({ address: l.address, topics: l.topics, data: l.data ?? "0x" });
     const gasUsed = failed ? 30000 : kind === 3 ? 90000 : 21000 + (kind === 2 ? 50000 : 0);
     cumulative += gasUsed;
     txs.push({ hash, type: 2, from: senderOf(k), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
