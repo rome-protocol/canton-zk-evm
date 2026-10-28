@@ -5,7 +5,7 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count } from "../format.ts";
 import { listPoll } from "../stats.ts";
-import { LegAmount, LegsPrivacy, LegToken } from "./LegParts.tsx";
+import { LegAmount, LegsPrivacy, LegToken, legKindWord } from "./LegParts.tsx";
 
 const PER = 25;
 
@@ -13,7 +13,7 @@ function Row({ l }: { l: LegListItem }) {
   return (
     <tr>
       <td><HashLink value={l.legId} to={`/leg/${l.legId}`} /></td>
-      <td><span className="tag">{l.kind}</span></td>
+      <td><span className="tag">{l.kind}</span>{l.twin && <span className="tag">{legKindWord(l.kind, l.twin)}</span>}</td>
       <td><Link className="num" to={`/block/${l.block}`}>{l.block}</Link></td>
       <td>{l.txHash ? <HashLink value={l.txHash} to={`/tx/${l.txHash}`} /> : <span className="muted" title="The explorer has not stored this transaction">—</span>}</td>
       <td><LegToken token={l.token} /></td>

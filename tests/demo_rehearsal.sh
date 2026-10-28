@@ -196,9 +196,9 @@ EXPLORER=$EXPLORER ETHERSCAN_ADDRESS=$TO ETHERSCAN_BALANCE=1000000000000000000 E
 
 echo "--- what the explorer asked reth and Canton for"
 # Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else, with one exception:
-# the custody read (POST /v2/state/active-contracts, the registered tokens and the gateway's holdings), which the indexer makes only when GATEWAY_PARTY and its token file are set
-# (off in this rehearsal: the local participant has no login, and the gateway is on a different participant than the reader). When it is made, it is for the gateway party alone, the token contracts and the holding interface alone.
-# Every update request names the reader party and the block record, or (the gateway's venue read, set the same way) the gateway party and the token, trade and claim templates, and no other party.
+# the custody read (POST /v2/state/active-contracts for the chain record's registry and the registered tokens, and POST /v2/updates for the gateway's holdings), which the indexer makes only when GATEWAY_PARTY and its token file are set
+# (off in this rehearsal: the local participant has no login, and the gateway is on a different participant than the reader). When it is made, the active-contracts call carries only the chain record and GatewayToken, for the gateway party alone, and the holdings walk (updates) names the holding interface alone.
+# Every update request names the reader party and the block record, or (the gateway's venue read, set the same way) the gateway party and the token, trade and claim templates, or (the custody read) the gateway party and the holding interface alone, and no other party.
 CALLS=$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)
 [ "$(printf '%s\n' "$CALLS" | grep -v '^POST /v2/state/active-contracts$')" = $'GET /v2/parties/participant-id\nGET /v2/state/ledger-end\nPOST /v2/updates' ] \
   || fail "the explorer or its indexer called Canton's Ledger API for something else than the ledger end, the updates, the participant id and the custody read: $(jq -r '.method + " " + .path' "$WORK/ledger-calls" | sort | uniq -c)"
@@ -210,13 +210,13 @@ if printf '%s\n' "$CALLS" | grep -qx 'POST /v2/state/active-contracts'; then
     and ($bodies | all(
         (.eventFormat.filtersByParty | keys) == [$g]
         and ([.. | objects | select(has("filtersForAnyParty"))] | length == 0)
-        and ([.. | objects | select(has("templateId")) | .templateId] | all(endswith(":Zk.Chain:GatewayToken")))
+        and ([.. | objects | select(has("templateId")) | .templateId] | all(endswith(":Zk.Chain:GatewayToken") or endswith(":Zk.Chain:ZkChain")))
         and ([.. | objects | select(has("interfaceId")) | .interfaceId] | all(endswith(":Splice.Api.Token.HoldingV1:Holding")))
     ))' "$WORK/ledger-calls" >/dev/null \
-    || fail "a custody read was not for the gateway party alone, the registered tokens and the holding interface alone"
+    || fail "a custody read was not for the gateway party alone, the chain record, the registered tokens and the holding interface alone"
 fi
-# Every update request is, in structure, one of two: the reader's (filtersByParty has the reader party as its only key and every template is the block record), or, only when the gateway
-# party is set, the gateway's read of the Canton side of the swaps (the gateway party as the only key and every template one of GatewayToken, VenueTrade and FundedClaim).
+# Every update request is, in structure, one of three: the reader's (filtersByParty has the reader party as its only key and every template is the block record), or, only when the gateway
+# party is set, the gateway's read of the Canton side of the swaps (the gateway party as the only key and every template one of GatewayToken, VenueTrade and FundedClaim), or the custody read's walk of the gateway's holdings (the gateway party as the only key, no template, and every interface the holding interface).
 # Neither has filtersForAnyParty.
 jq -s -e --arg r "$READER_PARTY" --arg g "${GATEWAY_PARTY:-}" '
   def keys_are($p): .updateFormat.includeTransactions.eventFormat | (.filtersByParty | keys) == [$p];
@@ -228,9 +228,10 @@ jq -s -e --arg r "$READER_PARTY" --arg g "${GATEWAY_PARTY:-}" '
       and (
         (keys_are($r) and (templates | (length > 0 and all(endswith(":Zk.Chain:BlockRecord")))))
         or ($g != "" and keys_are($g) and (templates | (length > 0 and all(endswith(":Zk.Chain:GatewayToken") or endswith(":Zk.Chain:VenueTrade") or endswith(":Zk.Chain:FundedClaim")))))
+        or ($g != "" and keys_are($g) and (templates | length == 0) and ([.. | objects | select(has("interfaceId")) | .interfaceId] | (length > 0 and all(endswith(":Splice.Api.Token.HoldingV1:Holding")))))
       )
   ))' "$WORK/ledger-calls" >/dev/null \
-  || fail "an update request was not for the reader party and the block record alone, nor for the gateway party and the token, trade and claim templates alone: $(jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | head -n 3 | cut -c1-600)"
+  || fail "an update request was not for the reader party and the block record alone, nor for the gateway party and the token, trade and claim templates alone, nor for the gateway party and the holding interface alone: $(jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | head -n 3 | cut -c1-600)"
 for party in "$OPERATOR_PARTY" "$BUILDER_PARTY" "$CONFIRMER_PARTY" "$U_PARTY" "$V_PARTY" "$REGISTRY_PARTY"; do
   ! jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | grep -qF "$party" || fail "a request named a party other than the reader or, for the custody read, the gateway: $party"
 done

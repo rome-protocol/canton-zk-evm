@@ -5,6 +5,7 @@ import { cleanup, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenDetail } from "../api.ts";
+import { compareTwin } from "./TwinSupply.tsx";
 import { addr, cantonCustody, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, status, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -516,5 +517,44 @@ describe("the token page: review fixes", () => {
   it("does not repeat the contract address under the title: the Contract card carries it", async () => {
     await open();
     expect(document.querySelector(".bighash")).toBeNull();
+  });
+});
+
+describe("the Canton twin line", () => {
+  const twin = (over: Partial<NonNullable<TokenDetail["twin"]>> = {}) => ({ supply: "2000000000000000000", vaultBalance: "2000000000000000000", locks: 3, releases: 1, through: 120, ...over });
+  const line = () => screen.getByRole("region", { name: "Canton twin" });
+
+  it("shows nothing for a token that is not a twin", async () => {
+    await open();
+    expect(screen.queryByRole("region", { name: "Canton twin" })).toBeNull();
+  });
+
+  it("sets the twin's supply against what the vaults hold, and says when they are equal", async () => {
+    await open(tokenDetail(0xcb, { twin: twin() }));
+    expect(within(line()).getByText("Twin supply", { selector: "dt" })).toBeTruthy();
+    expect(within(line()).getByText(/Equal: the vaults hold exactly/)).toBeTruthy();
+    expect(within(line()).getByText(/3 locks · 1 release\b/)).toBeTruthy();
+    expect(within(line()).getByText(/counted to block 120/)).toBeTruthy();
+  });
+
+  it("says lock and release in the singular for one of each, and says nothing of a block before the first count", async () => {
+    await open(tokenDetail(0xcb, { twin: twin({ locks: 1, releases: 1, through: null }) }));
+    expect(within(line()).getByText(/1 lock · 1 release$/)).toBeTruthy();
+    expect(within(line()).queryByText(/counted to block/)).toBeNull();
+  });
+
+  it("names the gap when the vaults hold more or less than the twin has in issue, ", async () => {
+    await open(tokenDetail(0xcb, { twin: twin({ vaultBalance: "3000000000000000000" }) }));
+    expect(within(line()).getByText(/The vaults hold .* more than the twin has in issue/)).toBeTruthy();
+    cleanup();
+    await open(tokenDetail(0xcb, { twin: twin({ supply: "3000000000000000000" }) }));
+    expect(within(line()).getByText(/The twin has .* more in issue than the vaults hold/)).toBeTruthy();
+  });
+
+  it("compares the numbers exactly", () => {
+    expect(compareTwin({ supply: "5", vaultBalance: "5" })).toEqual({ state: "equal", diff: "0" });
+    expect(compareTwin({ supply: "5", vaultBalance: "7" })).toEqual({ state: "vault-higher", diff: "2" });
+    expect(compareTwin({ supply: "9", vaultBalance: "7" })).toEqual({ state: "twin-higher", diff: "2" });
+    expect(compareTwin({ supply: "9", vaultBalance: null })).toEqual({ state: "unread", diff: "0" });
   });
 });

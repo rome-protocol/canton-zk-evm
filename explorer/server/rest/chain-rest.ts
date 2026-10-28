@@ -45,7 +45,7 @@ export interface BlockExtras {
   /** The producer's attempt that made the block, from its journal; null before the journal is loaded. */
   lifecycle: { strategy: string; cutReason: string; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null } | null;
 }
-export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; canton: LegCanton | null }
+export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; legId: string; token: string; account: string; amount: string; canton: LegCanton | null }
 export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
 export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
@@ -129,7 +129,7 @@ export function createChainRest(pool: Pool) {
   async function blocks(before: number | null, limit: number, filter: BlockFilter = "all"): Promise<BlockListItem[]> {
     const where = { all: "", transactions: "and b.tx_count > 0", empty: "and b.tx_count = 0 and b.number > 0" }[filter];
     const rows = await query(
-      `select b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.gas_used, b.gas_limit, b.fee_recipient, b.legs_count, b.base_fee_per_gas::text as base_fee, b.update_id, ${US("b.record_time")} as record_time,
+      `select b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.gas_used, b.gas_limit, b.fee_recipient, (b.legs_count + (select count(*) from gateway_legs x where x.block_number = b.number and x.gateway is not null)::int) as legs_count, b.base_fee_per_gas::text as base_fee, b.update_id, ${US("b.record_time")} as record_time,
          round(extract(epoch from a.proof_ended_at - a.proof_started_at)::numeric, 3)::float8 as proof_seconds, round(extract(epoch from b.record_time - a.cut_at)::numeric, 3)::float8 as final_seconds,
          round(extract(epoch from b.record_time - a.submitted_at)::numeric, 3)::float8 as commit_seconds
        from blocks b left join block_attempts a on a.attempt_id = b.attempt_id where ($1::bigint is null or b.number < $1) ${where} order by b.number desc limit $2`,
@@ -144,7 +144,7 @@ export function createChainRest(pool: Pool) {
   /** The legs count and the producer's times for a final block. */
   async function blockExtras(number: number): Promise<BlockExtras | undefined> {
     const [r] = await query(
-      `select b.legs_count, a.strategy, a.cut_reason, ${MS("a.cut_at")} as cut_at, ${MS("a.built_at")} as built_at, ${MS("a.proof_started_at")} as proof_started_at,
+      `select (b.legs_count + (select count(*) from gateway_legs x where x.block_number = b.number and x.gateway is not null)::int) as legs_count, a.strategy, a.cut_reason, ${MS("a.cut_at")} as cut_at, ${MS("a.built_at")} as built_at, ${MS("a.proof_started_at")} as proof_started_at,
          ${MS("a.proof_ended_at")} as proof_ended_at, ${MS("a.submitted_at")} as submitted_at, ${MS("a.answered_at")} as answered_at
        from blocks b left join block_attempts a on a.attempt_id = b.attempt_id where b.number = $1`,
       [number],
@@ -186,7 +186,7 @@ export function createChainRest(pool: Pool) {
   /** The legs of a block after the leg index `after`, one more than `limit` of them, each with what Canton shows of the swap it is one side of. */
   async function blockLegs(number: number, after: number | null, limit: number): Promise<LegItem[]> {
     const legs = await legsOfBlock(pool, number, { after, limit: limit + 1 }).catch((e: Error) => { throw new ChainDbError(`the database cannot be read: ${e.message}`); });
-    return legs.map((l) => ({ legIndex: l.legIndex, txIndex: l.txIndex, logIndex: l.logIndex, kind: l.kind, legId: l.legId, token: l.token, account: l.account, amount: l.amount, canton: l.canton }));
+    return legs.map((l) => ({ legIndex: l.legIndex, txIndex: l.txIndex, logIndex: l.logIndex, kind: l.kind, gateway: l.gateway, legId: l.legId, token: l.token, account: l.account, amount: l.amount, canton: l.canton }));
   }
 
   /** A block's record as the Verify page needs it: the header, the transactions and the proof, all as hex. */

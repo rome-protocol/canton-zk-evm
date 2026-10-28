@@ -188,6 +188,18 @@ table canton_parties
   CREATE UNIQUE INDEX canton_parties_party_key ON public.canton_parties USING btree (party)
   CREATE UNIQUE INDEX canton_parties_pkey ON public.canton_parties USING btree (id)
 
+table canton_registry
+  column address bytea not null
+  column kind text not null
+  column code_hash bytea not null
+  column admin text not null
+  column legs_cursor bigint not null default 0
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null default now()
+  constraint canton_registry_kind_check CHECK ((kind = ANY (ARRAY['gateway'::text, 'vault'::text])))
+  constraint canton_registry_pkey PRIMARY KEY (address)
+  CREATE UNIQUE INDEX canton_registry_pkey ON public.canton_registry USING btree (address)
+
 table canton_synchronizers
   column id smallint not null identity always
   column synchronizer_id text not null
@@ -207,6 +219,15 @@ table canton_templates
   constraint canton_templates_pkey PRIMARY KEY (id)
   CREATE UNIQUE INDEX canton_templates_package_id_module_entity_key ON public.canton_templates USING btree (package_id, module, entity)
   CREATE UNIQUE INDEX canton_templates_pkey ON public.canton_templates USING btree (id)
+
+table canton_twins
+  column token bytea not null
+  column decimals integer not null
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null default now()
+  constraint canton_twins_decimals_check CHECK (((decimals >= 0) AND (decimals <= 36)))
+  constraint canton_twins_pkey PRIMARY KEY (token)
+  CREATE UNIQUE INDEX canton_twins_pkey ON public.canton_twins USING btree (token)
 
 table canton_updates
   column update_id text not null
@@ -374,6 +395,16 @@ table faucet_requests
   CREATE INDEX faucet_requests_updated_at_idx ON public.faucet_requests USING btree (updated_at)
   CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)
 
+table gateway_holdings
+  column contract_hash bytea not null
+  column instrument_admin text not null
+  column instrument_id text not null
+  column amount numeric not null
+  constraint gateway_holdings_amount_check CHECK ((amount >= (0)::numeric))
+  constraint gateway_holdings_pkey PRIMARY KEY (contract_hash)
+  CREATE INDEX gateway_holdings_instrument_idx ON public.gateway_holdings USING btree (instrument_admin, instrument_id)
+  CREATE UNIQUE INDEX gateway_holdings_pkey ON public.gateway_holdings USING btree (contract_hash)
+
 table gateway_legs
   column block_number bigint not null
   column leg_index integer not null
@@ -385,6 +416,7 @@ table gateway_legs
   column account bytea not null
   column amount numeric(78,0) not null
   column party text
+  column gateway bytea
   constraint gateway_legs_pkey PRIMARY KEY (block_number, leg_index)
   CREATE INDEX gateway_legs_account_block_number_idx ON public.gateway_legs USING btree (account, block_number DESC)
   CREATE INDEX gateway_legs_leg_id_idx ON public.gateway_legs USING btree (leg_id)
@@ -820,6 +852,16 @@ table transactions partition by RANGE (block_number)
   CREATE INDEX transactions_funding_idx ON ONLY public.transactions USING btree (to_address, block_number, tx_index) WHERE ((value > (0)::numeric) AND (status = 1))
   CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
   CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)
+
+table twin_totals
+  column token bytea not null
+  column locked numeric not null default 0
+  column released numeric not null default 0
+  column locks bigint not null default 0
+  column releases bigint not null default 0
+  column vault_balance numeric
+  constraint twin_totals_pkey PRIMARY KEY (token)
+  CREATE UNIQUE INDEX twin_totals_pkey ON public.twin_totals USING btree (token)
 
 table tx_hashes
   column hash bytea not null

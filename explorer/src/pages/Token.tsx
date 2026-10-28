@@ -13,6 +13,7 @@ import { methodOf } from "../method.ts";
 import { listPoll } from "../stats.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { CantonCustody } from "./CantonCustody.tsx";
+import { TwinSupply } from "./TwinSupply.tsx";
 import { Avatar, failedNote, Mint, NftCount, noName, Supply } from "./TokenParts.tsx";
 import "./token.css";
 import { Info } from "../components/Info.tsx";
@@ -260,6 +261,7 @@ export function Token() {
       )}
       <Cards t={t} />
       {t.canton && <CantonCustody t={t} canton={t.canton} />}
+      {t.twin && <TwinSupply t={t} twin={t.twin} />}
       <Holders t={t} />
       <Transfers t={t} />
       <Information t={t} />

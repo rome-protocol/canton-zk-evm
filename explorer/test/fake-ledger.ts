@@ -53,6 +53,17 @@ export function gatewayToken(evmToken: string, admin = FAKE_REGISTRY, id = "TKB"
   };
 }
 
+export const ZK_CHAIN_CONTRACT_ID = "abc123def456:Zk.Chain:ZkChain";
+/** One entry of the chain record's registry of EVM contracts, as the JSON API writes it. */
+export const registered = (address: string, kind: "Gateway" | "Vault", hash = "e1"): Json => ({ contractAddress: address.replace(/^0x/, ""), contractCodeHash: hash.repeat(32), contractKind: kind });
+/** The chain record as an active contract of the gateway's view, with its registry (`null` is the `None` of a chain with no registry). */
+export function zkChain(contracts: Json[] | null, over: Json = {}): ActiveContract {
+  return {
+    contractId: "00c4a1", templateId: ZK_CHAIN_CONTRACT_ID,
+    createArgument: { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gateway: FAKE_GATEWAY, builder: "builder::1220" + "11".repeat(32), chainId: "770101", contracts, ...over },
+  };
+}
+
 /** A token standard Holding as an active contract: it has an interface view and no template the gateway asked for. */
 export function holding(n: number, owner: string, amount: string, admin = FAKE_REGISTRY, id = "TKB", lock: unknown = null, view: Json | null | "unreadable" = null, signatories: string[] = [admin, owner]): ActiveContract {
   const value = view ?? { owner, instrumentId: { admin, id }, amount, lock, meta: { values: {} } };
@@ -101,6 +112,10 @@ function activeEntry(c: ActiveContract, withView: boolean): Json {
   }, synchronizerId: "sync::1220" + "99".repeat(32), reassignmentCounter: 0 } } };
 }
 
+/** A created Holding (an active contract of the fake) as an event of a transaction, with its interface view. */
+export const holdingEvent = (c: ActiveContract): Json => ({ CreatedEvent: ((activeEntry(c, true).contractEntry as Json).JsActiveContract as { createdEvent: Json }).createdEvent });
+/** The archive of a contract that implements the Holding interface, as the ACS delta tells it. */
+export const archivedEvent = (contractId: string): Json => ({ ArchivedEvent: { offset: 5, nodeId: 0, contractId, templateId: "999999:Some.Token:Holding", packageName: "x", witnessParties: [FAKE_GATEWAY], implementedInterfaces: [HOLDING_INTERFACE_ID] } });
 export const checkpoint = (offset: number): Json => ({ update: { OffsetCheckpoint: { value: { offset, synchronizerTimes: [] } } } });
 
 const offsetOf = (item: Json): number => {
@@ -131,7 +146,11 @@ export async function startFakeLedger(items: Json[], opts: { httpStatus?: number
         const begin = body?.beginExclusive, end = body?.endInclusive;
         if (typeof begin !== "number" || typeof end !== "number" || !body?.updateFormat) return send(400, { code: "INVALID_ARGUMENT" });
         const limit = Math.min(Number(u.searchParams.get("limit") ?? Infinity), opts.cap ?? Infinity);
-        return send(200, items.filter((i) => offsetOf(i) > begin && offsetOf(i) <= end).slice(0, limit));
+        // A walk of the Holding interface's views starts with the holdings the fake has as active: one transaction at offset 1 that created them (a test that needs a history passes transactions as items).
+        const wanted = JSON.stringify(body?.updateFormat).includes("Holding");
+        const seed = wanted ? (opts.active ?? []).filter((c) => (c.interfaceViews ?? []).length > 0) : [];
+        const all = seed.length > 0 ? [transaction(1, "seed", seed.map(holdingEvent)), ...items] : items;
+        return send(200, all.filter((i) => offsetOf(i) > begin && offsetOf(i) <= end).slice(0, limit));
       }
       if (req.method === "POST" && u.pathname === "/v2/state/active-contracts") {
         // Like Canton's: a number to read at, the parties to read as, and filters that pick the contracts (a template by its entity, an interface by its views).

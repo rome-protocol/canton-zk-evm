@@ -4,8 +4,8 @@ import { isHexBytes } from "./hex.ts";
 /**
  * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, three calls only, all reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
- * The custody read (`gatewayCustody`) and the venue read (`venuePages`) belong to a second client, made only when the gateway party and a token for it are configured:
- * it is the one place the explorer reads as the gateway, for the registered tokens, the sum of the holdings and the Canton side of the swaps (a venue's trades and the
+ * The custody read (`gatewayTokens` and `holdingPages`) and the venue read (`venuePages`) belong to a second client, made only when the gateway party and a token for it are configured:
+ * it is the one place the explorer reads as the gateway, for the registered tokens, the walk of the holdings and the Canton side of the swaps (a venue's trades and the
  * funded claims they leave, without the venue's or the seller's party), and it keeps nothing else the answer carries.
  * The gateway party must be hosted on the participant at the same URL, since the offset it reads at is that participant's.
  */
@@ -19,6 +19,8 @@ export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set([...READER_ENDPOIN
 export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
 const RECORD_SUFFIX = ":Zk.Chain:BlockRecord";
 export const GATEWAY_TOKEN_TEMPLATE = "#canton-zk-evm:Zk.Chain:GatewayToken";
+export const ZK_CHAIN_TEMPLATE = "#canton-zk-evm:Zk.Chain:ZkChain";
+const ZK_CHAIN_SUFFIX = ":Zk.Chain:ZkChain";
 const GATEWAY_TOKEN_SUFFIX = ":Zk.Chain:GatewayToken";
 /** The Canton side of a swap, as the gateway party sees it (Daml 0.4.0): a venue's trade, and the claim that settling it leaves. */
 export const VENUE_TRADE_TEMPLATE = "#canton-zk-evm:Zk.Chain:VenueTrade";
@@ -143,14 +145,17 @@ function recordsIn(item: unknown): { offset: number; records: BlockRecord[] } {
   return { offset: offset as number, records };
 }
 
-/** One registered token and what the gateway holds of its instrument. The amount is in base units of 10 decimals (a Canton amount's own). No owner and no contract id is kept. */
-export interface CustodyToken { evmToken: string; instrumentAdmin: string; instrumentId: string; custody: bigint; holdings: number }
-export interface GatewayCustody {
-  /** The ledger offset the contracts were read at. */
-  offset: number;
-  tokens: CustodyToken[];
-}
+/** One registered token (a `GatewayToken` of the gateway): the EVM token and the Canton instrument it stands for. */
+export interface RegisteredToken { evmToken: string; instrumentAdmin: string; instrumentId: string }
+/** One entry of the chain record's registry of EVM contracts (`ZkChain.contracts`): a gateway whose legs Canton reads, or a vault that holds the ERC-20s behind Canton twins. */
+export interface RegisteredEntry { address: string; codeHash: string; kind: "gateway" | "vault" }
+/** The registry as the chain record holds it, with the gateway party that administers the twins (their instrument's admin). */
+export interface ChainRegistry { gatewayParty: string; contracts: RegisteredEntry[]; twins: PinnedTwinEntry[] }
+/** One twin the chain record pins (`ZkChain.twins`): the ERC-20 (0x and 40 hex digits) and the decimals its twin is minted with on Canton. The rules' contract id is not kept. */
+export interface PinnedTwinEntry { token: string; decimals: number }
 
+/** The most chain records one registry read takes: the gateway party sees one record per chain it serves. */
+const REGISTRY_LIMIT = 50;
 const custodyFail = (what: string): never => { throw new LedgerError(`the gateway's custody cannot be read: ${what}`); };
 const SCALE = 10;
 /** A Daml Numeric(10) as the JSON API writes it, in base units. A negative amount, an exponent or more than 10 decimals is not one. */
@@ -166,48 +171,110 @@ const instrumentOf = (v: unknown, what: string): { admin: string; id: string } =
 };
 
 /**
- * The registered tokens and the gateway's holdings, from the active contracts of one party's view at one offset. `party` is the gateway: the
- * holdings count only where it is the owner (the view may show others it is a stakeholder of), locked ones included, since a lock does not move the coin.
- * A holding it cannot read, an amount that is not a decimal, a token registered twice or an instrument shared by two tokens fails the whole read:
- * a total that might be short, or counted for two tokens, is worse than none.
+ * The registered tokens (the gateway's `GatewayToken` contracts), from the active contracts of one party's view at one offset. A token registered twice or an instrument shared by two tokens fails the whole read:
+ * a total counted for two tokens is worse than none.
  */
-export function custodyFrom(items: unknown[], party: string): CustodyToken[] {
-  const registered: { evmToken: string; admin: string; id: string }[] = [];
-  const held: { admin: string; id: string; amount: bigint }[] = [];
+export function registeredFrom(items: unknown[]): RegisteredToken[] {
+  const out: RegisteredToken[] = [];
   for (const item of items) {
     const entry = obj(obj(obj(item, "an active contract").contractEntry, "an active contract").JsActiveContract, "an active contract");
     const e = obj(entry.createdEvent, "an active contract"), template = typeof e.templateId === "string" ? e.templateId : "";
-    if (template.endsWith(GATEWAY_TOKEN_SUFFIX)) {
-      const a = obj(e.createArgument, "a registered token");
-      const evm = typeof a.evmToken === "string" ? a.evmToken.replace(/^0x/, "").toLowerCase() : "";
-      if (!/^[0-9a-f]{40}$/.test(evm)) custodyFail("a registered token's evmToken is not an address");
-      const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
-      registered.push({ evmToken: "0x" + evm, admin, id });
+    if (!template.endsWith(GATEWAY_TOKEN_SUFFIX)) continue;
+    const a = obj(e.createArgument, "a registered token");
+    const evm = typeof a.evmToken === "string" ? a.evmToken.replace(/^0x/, "").toLowerCase() : "";
+    if (!/^[0-9a-f]{40}$/.test(evm)) custodyFail("a registered token's evmToken is not an address");
+    const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
+    out.push({ evmToken: "0x" + evm, instrumentAdmin: admin, instrumentId: id });
+  }
+  const seen = new Set<string>(), instruments = new Set<string>();
+  for (const r of out) {
+    if (seen.has(r.evmToken)) custodyFail(`token ${r.evmToken} is registered twice`);
+    seen.add(r.evmToken);
+    const key = JSON.stringify([r.instrumentAdmin, r.instrumentId]);
+    if (instruments.has(key)) custodyFail(`instrument ${r.instrumentId} is registered twice, for two tokens`);
+    instruments.add(key);
+  }
+  return out.sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
+}
+
+/** A change to the gateway's holdings that one Canton update made: a holding it owns (and the instrument's admin signed) was created, or a contract was archived (any archived contract of the filtered stream: one that was never kept is a no-op). */
+export type HoldingChange = { kind: "created"; contractId: string; instrumentAdmin: string; instrumentId: string; amount: bigint } | { kind: "archived"; contractId: string };
+
+/**
+ * What one item of the `/v2/updates` answer (ACS delta, the Holding interface's views) did to the gateway's holdings. A holding counts only where the gateway owns it (the view may show others it is a
+ * stakeholder of; a locked holding counts, as a lock does not move the coin) and the instrument's admin signed it, so a template of someone else's cannot claim the registry. A holding with no readable
+ * view or an amount that is not a decimal fails the walk: a total that might be short is worse than none. No owner is kept.
+ */
+export function holdingsIn(item: unknown, party: string): { offset: number; changes: HoldingChange[] } {
+  const [kind, body] = Object.entries(obj(obj(item, "an update").update, "an update"))[0] ?? fail("an empty update");
+  const value = obj(obj(body, "an update").value, "an update");
+  const offset = value.offset;
+  if (typeof offset !== "number") fail("an update with no offset");
+  const changes: HoldingChange[] = [];
+  if (kind !== "Transaction") return { offset: offset as number, changes };
+  for (const ev of (Array.isArray(value.events) ? value.events : fail("a transaction with no events")) as unknown[]) {
+    const o = obj(ev, "an event");
+    if (o.ArchivedEvent !== undefined) {
+      const contractId = obj(o.ArchivedEvent, "an event").contractId;
+      changes.push({ kind: "archived", contractId: typeof contractId === "string" && contractId !== "" ? contractId : fail("an event with no contract id") });
     }
+    if (o.CreatedEvent === undefined) continue;
+    const e = obj(o.CreatedEvent, "an event");
     for (const v of Array.isArray(e.interfaceViews) ? (e.interfaceViews as Json[]) : []) {
       if (typeof v.interfaceId !== "string" || !v.interfaceId.endsWith(HOLDING_SUFFIX)) continue;
       const status = (v.viewStatus as Json | undefined)?.code ?? 0;
       if (status !== 0 || typeof v.viewValue !== "object" || v.viewValue === null) custodyFail("a holding has no readable view");
       const view = v.viewValue as Json;
       if (view.owner !== party) continue;
-      // The view is what the template says of itself: a holding counts only where the instrument's admin signed it, so a template of someone else's cannot claim the registry.
       const instrument = instrumentOf(view.instrumentId, "a holding");
       if (!(Array.isArray(e.signatories) ? e.signatories : []).includes(instrument.admin)) continue;
-      held.push({ ...instrument, amount: baseUnits(view.amount) });
+      const contractId = typeof e.contractId === "string" && e.contractId !== "" ? e.contractId : fail("an event with no contract id");
+      changes.push({ kind: "created", contractId, instrumentAdmin: instrument.admin, instrumentId: instrument.id, amount: baseUnits(view.amount) });
     }
   }
-  const seen = new Set<string>(), instruments = new Set<string>();
-  for (const r of registered) {
-    if (seen.has(r.evmToken)) custodyFail(`token ${r.evmToken} is registered twice`);
-    seen.add(r.evmToken);
-    const key = JSON.stringify([r.admin, r.id]);
-    if (instruments.has(key)) custodyFail(`instrument ${r.id} is registered twice, for two tokens`);
-    instruments.add(key);
+  return { offset: offset as number, changes };
+}
+
+/**
+ * The registry of EVM contracts in the chain record (`ZkChain.contracts`, an optional list: absent or null is an empty registry, as on a chain made before package 0.5.0), from the active contracts
+ * of the gateway's view. The chain record of `chainId` is the one the explorer follows; one chain with two active records, an address that is not 40 hex digits, a code hash that is not 64 or a kind
+ * that is neither Gateway nor Vault fails the read, because a registry that might be wrong is worse than none. No record of the chain is a null, not an empty registry.
+ */
+export function registryFrom(items: unknown[], chainId: number): ChainRegistry | null {
+  let found: ChainRegistry | null = null;
+  for (const item of items) {
+    const e = obj(obj(obj(item, "an active contract").contractEntry, "an active contract").JsActiveContract, "an active contract");
+    const created = obj(e.createdEvent, "an active contract");
+    if (typeof created.templateId !== "string" || !created.templateId.endsWith(ZK_CHAIN_SUFFIX)) continue;
+    const a = obj(created.createArgument, "the chain record");
+    if (Number(a.chainId) !== chainId) continue;
+    if (found) custodyFail(`the chain ${chainId} has two active chain records`);
+    if (typeof a.gateway !== "string" || a.gateway === "") custodyFail("the chain record has no gateway party");
+    const list = a.contracts === undefined || a.contracts === null ? [] : Array.isArray(a.contracts) ? a.contracts : custodyFail("the chain record's contracts are not a list");
+    const seen = new Set<string>();
+    const pinned = a.twins === undefined || a.twins === null ? [] : Array.isArray(a.twins) ? a.twins : custodyFail("the chain record's twins are not a list");
+    const pinnedSeen = new Set<string>();
+    const twins = pinned.map((v): PinnedTwinEntry => {
+      const t = obj(v, "a pinned twin");
+      const token = typeof t.twinToken === "string" ? t.twinToken.replace(/^0x/, "") : "", decimals = Number(t.twinDecimals);
+      if (!/^[0-9a-f]{40}$/.test(token)) custodyFail("a pinned twin's token is not 40 lowercase hex digits");
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) custodyFail("a pinned twin's decimals are not a whole number from 0 to 36");
+      if (pinnedSeen.has(token)) custodyFail(`the twin ${token} is pinned twice`);
+      pinnedSeen.add(token);
+      return { token: "0x" + token, decimals };
+    }).sort((x, y) => (x.token < y.token ? -1 : 1));
+    found = { gatewayParty: a.gateway as string, twins, contracts: list.map((v): RegisteredEntry => {
+      const c = obj(v, "a registered contract");
+      const address = typeof c.contractAddress === "string" ? c.contractAddress.replace(/^0x/, "") : "", codeHash = typeof c.contractCodeHash === "string" ? c.contractCodeHash.replace(/^0x/, "") : "";
+      if (!/^[0-9a-f]{40}$/.test(address)) custodyFail("a registered contract's address is not 40 lowercase hex digits");
+      if (!/^[0-9a-f]{64}$/.test(codeHash)) custodyFail("a registered contract's code hash is not 64 lowercase hex digits");
+      if (c.contractKind !== "Gateway" && c.contractKind !== "Vault") custodyFail("a registered contract is neither a Gateway nor a Vault");
+      if (seen.has(address)) custodyFail(`the contract ${address} is registered twice`);
+      seen.add(address);
+      return { address: "0x" + address, codeHash: "0x" + codeHash, kind: c.contractKind === "Gateway" ? "gateway" : "vault" };
+    }).sort((x, y) => (x.address < y.address ? -1 : 1)) };
   }
-  return registered.map((r): CustodyToken => {
-    const mine = held.filter((h) => h.admin === r.admin && h.id === r.id);
-    return { evmToken: r.evmToken, instrumentAdmin: r.admin, instrumentId: r.id, custody: mine.reduce((s, h) => s + h.amount, 0n), holdings: mine.length };
-  }).sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
+  return found;
 }
 
 /**
@@ -344,23 +411,65 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
   }
 
   /**
-   * What the gateway holds on Canton of each registered token's instrument, read as the gateway at `offset` (the caller's choice, so that it can set the answer
-   * against the EVM at the block that offset records). One request, filtered to the GatewayToken template and the Holding interface. `limit` is asked of Canton and
-   * must be at or below the participant's list maximum: a list as long as the limit may have been cut, so it is refused.
+   * The chain record's registry at `offset`, in a request of its own (the chain record only, a handful of contracts at most), so that the holdings, which grow with every user, can neither cut it
+   * short nor make it fail: the registry must be read for the gateways and vaults it names to be seen at all.
    */
-  async function gatewayCustody(limit: number, offset: number): Promise<GatewayCustody> {
+  async function chainRegistry(chainId: number, offset: number): Promise<ChainRegistry | null> {
     if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
-    const filter = (identifierFilter: unknown) => ({ identifierFilter });
-    const items = await call("POST", `/v2/state/active-contracts?limit=${limit}`, {
-      eventFormat: { filtersByParty: { [readerParty]: { cumulative: [
-        filter({ TemplateFilter: { value: { templateId: GATEWAY_TOKEN_TEMPLATE, includeCreatedEventBlob: false } } }),
-        filter({ InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } }),
-      ] } }, verbose: false },
+    const items = await call("POST", `/v2/state/active-contracts?limit=${REGISTRY_LIMIT}`, {
+      eventFormat: { filtersByParty: { [readerParty]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId: ZK_CHAIN_TEMPLATE, includeCreatedEventBlob: false } } } }] } }, verbose: false },
       activeAtOffset: offset,
     });
     if (!Array.isArray(items)) return fail("an answer that is not a list");
-    if (items.length >= limit) throw new LedgerError(`the gateway's custody cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short (CUSTODY_LIMIT must stay at or below the participant's list maximum, and above the number of contracts)`);
-    return { offset, tokens: custodyFrom(items, readerParty) };
+    if (items.length >= REGISTRY_LIMIT) throw new LedgerError(`the chain record's registry cannot be read: Canton sent ${items.length} chain records, the limit asked`);
+    return registryFrom(items, chainId);
+  }
+
+  /**
+   * The gateway's registered tokens, read as the gateway at `offset` (the caller's choice, so that it can set the answer against the EVM at the block that offset records). One request, filtered to the
+   * GatewayToken template: a handful of contracts, however many holdings there are. `limit` is asked of Canton and must be at or below the participant's list maximum: a list as long as the limit may have
+   * been cut, so it is refused.
+   */
+  async function gatewayTokens(limit: number, offset: number): Promise<RegisteredToken[]> {
+    if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
+    const items = await call("POST", `/v2/state/active-contracts?limit=${limit}`, {
+      eventFormat: { filtersByParty: { [readerParty]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId: GATEWAY_TOKEN_TEMPLATE, includeCreatedEventBlob: false } } } }] } }, verbose: false },
+      activeAtOffset: offset,
+    });
+    if (!Array.isArray(items)) return fail("an answer that is not a list");
+    if (items.length >= limit) throw new LedgerError(`the gateway's registered tokens cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short (CUSTODY_LIMIT must stay at or below the participant's list maximum, and above the number of registered tokens)`);
+    return registeredFrom(items);
+  }
+
+  /**
+   * The changes to the gateway's holdings that Canton committed after offset `after`, up to and including `upTo`, oldest first, one page of the walk at a time (like `recordPages`): the Holding interface's
+   * views, as the gateway, in the ACS delta. The holdings are read by walking the updates and not as one list of the active contracts, so that no number of holdings (the gateway sees the twin holdings of every
+   * user too) can cut or fail the read. `offset` of a page is how far the walk has got.
+   */
+  async function* holdingPages(after: number, upTo: number): AsyncGenerator<{ changes: HoldingChange[]; offset: number }> {
+    if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
+    for (let begin = after; begin < upTo; ) {
+      const items = await call("POST", `/v2/updates?limit=${pageSize}`, {
+        beginExclusive: begin, endInclusive: upTo,
+        updateFormat: { includeTransactions: {
+          eventFormat: { filtersByParty: { [readerParty]: { cumulative: [{ identifierFilter: { InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } } }] } }, verbose: false },
+          transactionShape: "TRANSACTION_SHAPE_ACS_DELTA",
+        } },
+      });
+      if (!Array.isArray(items)) return fail("an answer that is not a list");
+      // Only an empty answer ends the walk, as for the block records.
+      if (items.length === 0) break;
+      let last = begin;
+      const changes: HoldingChange[] = [];
+      for (const item of items) {
+        const r = holdingsIn(item, readerParty);
+        last = Math.max(last, r.offset);
+        changes.push(...r.changes);
+      }
+      if (last <= begin) throw new LedgerError("Canton's updates did not move forward");
+      begin = last;
+      yield { changes, offset: last };
+    }
   }
 
   /**
@@ -395,7 +504,7 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     }
   }
 
-  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody, venuePages };
+  return { call, ledgerEnd, records, recordPages, participantId, gatewayTokens, holdingPages, chainRegistry, venuePages };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;

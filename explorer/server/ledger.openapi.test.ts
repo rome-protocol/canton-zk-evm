@@ -30,7 +30,7 @@ describe.skipIf(!file)("the Ledger API calls, against Canton's own OpenAPI docum
 
   it("sends the custody read's request body as the document accepts it, and is given an answer of the documented shape by the fake", async () => {
     fake = await startFakeLedger([], { ledgerEnd: 999, active: [gatewayToken("0x" + "d1".repeat(20)), holding(1, FAKE_GATEWAY, "1")] });
-    await createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS).gatewayCustody(100, 20);
+    await createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS).gatewayTokens(100, 20);
     const post = spec().paths["/v2/state/active-contracts"]!.post;
     const sent = fake.requests.find((r) => r.path.startsWith("/v2/state/active-contracts"));
     expect(sent).toBeDefined();

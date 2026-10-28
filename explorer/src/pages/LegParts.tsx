@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getTokenInfo, type LegListItem } from "../api.ts";
+import { getTokenInfo, type BlockLeg, type LegListItem } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -12,11 +12,23 @@ export function useLegToken(token: string, enabled = true) {
   return useQuery({ queryKey: ["token-info", token], queryFn: () => getTokenInfo(token), retry: false, staleTime: 60_000, enabled }).data ?? null;
 }
 
-const KIND: Record<string, string> = { deposit: "Deposit", withdrawal: "Withdrawal", payment: "Payment" };
+/** The decimals of an instrument on Canton: the twins and the swaps count in tenths of a billionth. */
+export const CANTON_DECIMALS = 10;
 
-/** What a leg was, in words: the same on the panel's lines and in the table of a block's legs. A leg that is the claim of a Canton payment says so. */
-export function legKindWord(kind: string, claim = false): string {
-  return claim ? "Claim" : (KIND[kind] ?? kind);
+const KIND: Record<string, string> = { deposit: "Deposit", withdrawal: "Withdrawal", payment: "Payment" };
+/** What a leg is when Canton has a part in it that its gateway kind does not tell: the claim of a swap, or a twin locked or released. */
+const ROLE: Record<string, string> = { "funded-claim": "Claim", lock: "Lock", release: "Release" };
+
+/** What a leg was, in words: the same on the panel's lines and in the table of a block's legs. A leg that is the claim of a Canton payment, a lock or a release of a twin says so. */
+export function legKindWord(kind: string, role: string | null = null): string {
+  return (role !== null && ROLE[role]) || (KIND[kind] ?? kind);
+}
+
+/** The twin a lock or release leg moves, as Canton holds it: its amount (the twin has 10 decimals) and its instrument. Nothing for any other leg. */
+export function TwinNote({ l }: { l: Pick<BlockLeg, "canton"> }) {
+  const c = l.canton;
+  if (!c || (c.role !== "lock" && c.role !== "release") || c.amount === null) return null;
+  return <span className="twin-note"><span className="muted">twin</span> <span className="num">{units(c.amount, CANTON_DECIMALS)}</span> {c.instrument?.id}</span>;
 }
 
 /** The amount of a leg in whole tokens with the token's decimals; the raw amount, and nothing guessed, when they are not known. */
