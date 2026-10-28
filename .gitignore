@@ -15,3 +15,5 @@ explorer/dist/
 explorer/public/verify/
 apps/otc/build/
 apps/otc/dist/
+apps/twin/build/
+apps/twin/dist/

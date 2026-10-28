@@ -1,0 +1,17 @@
+# The twin app: the Canton token (CIP-0056) that stands for an ERC-20 locked in an Ostia vault. It depends only on the Canton token
+# standard packages, which are in ../../daml/dars; it does not depend on the canton-zk-evm package. Build it with build.sh.
+sdk-version: 3.5.12
+name: ostia-twin
+version: 0.1.0
+source: src
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - __DARS__/splice-api-token-metadata-v1-1.0.0.dar
+  - __DARS__/splice-api-token-holding-v1-1.0.0.dar
+  - __DARS__/splice-api-token-allocation-v1-1.0.0.dar
+  - __DARS__/splice-api-token-allocation-instruction-v1-1.0.0.dar
+  - __DARS__/splice-api-token-transfer-instruction-v1-1.0.0.dar
+build-options:
+  - --target=2.1
