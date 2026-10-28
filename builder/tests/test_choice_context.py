@@ -1,7 +1,8 @@
 """The token registry's choice context (Daml 0.5.0): a deposit, withdrawal, payment or trade leg of an instrument whose registry the builder is given
 (`--registry ADMIN=URL`) carries the registry's context for its choice, and the contracts the context names go with the Advance as disclosed contracts.
 The registry is a fake CIP-0056 off-ledger service; the tests run against test_builder.py's fake ledger."""
-import contextlib, io, json, sys, tempfile, threading, time, unittest
+import contextlib, http.client, io, json, sys, tempfile, threading, time, unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -61,6 +62,19 @@ class Registry:
 
     def close(self):
         self.server.shutdown(); self.server.server_close()
+
+
+class Odd(Exception):
+    """What a registry's answer can do to the code that reads it: an error whose own text cannot be made."""
+    def __str__(self):
+        raise RecursionError("maximum recursion depth exceeded")
+
+
+class Bomb:
+    """A value from a registry whose str() raises."""
+    def __str__(self):
+        raise RecursionError("maximum recursion depth exceeded")
+    __repr__ = __str__
 
 
 class Contexts(tb.LegCase):
@@ -232,6 +246,57 @@ class Contexts(tb.LegCase):
         self.assertIsNone(self.disclosed(s))
         return r, result
 
+    # ---- one guard for every entry point: whatever a registry's answer does, the leg is left out and the build never fails
+    def test_a_payment_whose_answer_raises_anything_is_left_out(self):
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        with mock.patch.object(b, "context_values", side_effect=Odd(Bomb())):
+            result = self.assert_left_out(s, t, "token registry", "Odd")
+        self.assertIsNone(self.disclosed(s))
+
+    def test_a_trade_whose_answer_raises_anything_is_left_out(self):
+        s = self.setup({ALICE: []})
+        s.ledger.trades, s.ledger.tokens = [TRADE], [TOKEN]
+        s.cfg.venues = ("venue::1",)
+        s.ledger.allocations = []
+        t = self.leg_tx(s, TRADE_PAY)
+        s.reth.pool[ALICE] = [t]
+        self.registry(s, TOKEN_ADMIN, answer=ANSWER)
+        with mock.patch.object(b, "context_values", side_effect=Odd(Bomb())):
+            self.assert_left_out(s, t, "token registry", "Odd")
+
+    def test_a_withdrawal_whose_answer_raises_anything_is_left_out(self):
+        s = self.withdrawal()
+        self.registry(s, TOKEN_ADMIN, answer=FACTORY)
+        with mock.patch.object(b, "context_values", side_effect=Odd(Bomb())):
+            self.assert_left_out(s, s.reth.pool[ALICE][0], "token registry", "Odd")
+
+    def test_a_withdrawal_whose_kind_cannot_be_shown_does_not_fail_the_build(self):
+        s = self.withdrawal()
+        self.registry(s, TOKEN_ADMIN, answer=FACTORY)
+        with mock.patch.object(b.ChoiceContexts, "ask", return_value={**FACTORY, "transferKind": Bomb()}), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.build(s)["legs"], 1)
+
+    def test_each_entry_point_turns_any_exception_into_a_bounded_reason(self):
+        c = b.ChoiceContexts({TOKEN_ADMIN: "http://127.0.0.1:1"})
+        for name, call in (("allocation", lambda: c.allocation(TOKEN_ADMIN, "a-1")), ("transfer", lambda: c.transfer(TOKEN_ADMIN, "fac-1", {"receiver": "r::1"}))):
+            for error in (Odd(Bomb()), RecursionError(Bomb()), RuntimeError("x" * 100000), KeyError("\ud800" * 500), MemoryError()):
+                with self.subTest(name=name, error=type(error).__name__), mock.patch.object(c, "ask", side_effect=error):
+                    with self.assertRaises(b.NoCantonSide) as caught:
+                        call()
+                    self.assertLessEqual(len(str(caught.exception)), 300)
+                    str(caught.exception).encode("ascii")   # printable and writable
+        with mock.patch.object(c, "ask", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+            c.allocation(TOKEN_ADMIN, "a-1")
+
+    def test_text_from_a_registry_that_goes_into_a_reason_is_bounded(self):
+        s, t = self.pay()
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        with mock.patch.object(b, "bounded_fetch", side_effect=http.client.BadStatusLine("x" * 60000)):
+            result = self.assert_left_out(s, t, "token registry cannot be read")
+        self.assertLess(len(result["leftOut"][0]["reason"]), 300)
+        self.assertTrue(all(len(v[1]) < 300 for v in b.REGISTRY_DOWN.values()))
+
     def test_a_registry_that_fails_leaves_the_leg_out(self):
         _, result = self.left_out(answer=ANSWER, status=500)
         self.assertIn("HTTP 500", result["leftOut"][0]["reason"])
@@ -293,7 +358,7 @@ class Contexts(tb.LegCase):
                                  ("empty contract id", "AV_ContractId", ""), ("contract id that is not hex", "AV_ContractId", "rules-cid"),
                                  ("contract id in uppercase", "AV_ContractId", cid(0xab).upper()), ("contract id of an odd length", "AV_ContractId", cid(0xab) + "a"),
                                  ("contract id with no 00 prefix", "AV_ContractId", cid(0xab)[2:]), ("contract id that is too short", "AV_ContractId", "00ab12"),
-                                 ("contract id over 254 characters", "AV_ContractId", cid(0xab, "ab" * 95)),
+                                 ("contract id over 254 characters", "AV_ContractId", cid(0xab, "ab" * 95)), ("contract id with no suffix", "AV_ContractId", cid(0xab, "")),
                                  ("date", "AV_Date", "29/10/2026"), ("date that is not one", "AV_Date", "2026-13-40"), ("time", "AV_Time", "yesterday"),
                                  ("time with no zone", "AV_Time", "2026-10-29T12:00:00"), ("reltime as text", "AV_RelTime", "garbage"),
                                  ("reltime with a bad count", "AV_RelTime", {"microseconds": "x"}), ("reltime with more", "AV_RelTime", {"microseconds": "1", "x": "2"}),
@@ -313,7 +378,7 @@ class Contexts(tb.LegCase):
     def test_every_kind_of_value_a_registry_may_give_is_taken(self):
         values = {"values": {"t": {"tag": "AV_Text", "value": "x"}, "i": {"tag": "AV_Int", "value": "7"}, "b": {"tag": "AV_Bool", "value": False},
                              "l": {"tag": "AV_List", "value": [{"tag": "AV_Party", "value": ADMIN}]},
-                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": cid(0x0c, "")}, "z": {"tag": "AV_ContractId", "value": cid(0x0d, "ab" * 94)}}},
+                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": cid(0x0c, "ab")}, "z": {"tag": "AV_ContractId", "value": cid(0x0d, "ab" * 94)}}},
                              "d": {"tag": "AV_Decimal", "value": "-12.5"}, "n": {"tag": "AV_Decimal", "value": "7"}, "y": {"tag": "AV_Date", "value": "2026-10-29"},
                              "ts": {"tag": "AV_Time", "value": "2026-10-29T12:00:00.123456Z"}, "r": {"tag": "AV_RelTime", "value": {"microseconds": "60000000"}},
                              "big": {"tag": "AV_Int", "value": "-9223372036854775808"}}}

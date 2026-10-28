@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from websockets.sync.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
@@ -225,6 +226,36 @@ def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: 
     return out["body"]
 
 
+REASON_MAX = 200   # the most of an outside party's text that goes into a leg's reason (leftOut, the journal, the reports)
+
+
+def bounded_text(value) -> str:
+    """Text from outside, made safe to keep: printable ASCII (anything else escaped), at most REASON_MAX characters, never an exception (a value whose
+    own str() raises gives its type's name)."""
+    try:
+        text = value if isinstance(value, str) else str(value)
+    except Exception:
+        return type(value).__name__
+    return ascii(text[:REASON_MAX])[1:-1][:REASON_MAX]
+
+
+def registry_guard(who: str):
+    """A decorator for every entry point that handles a registry's answer: whatever the answer does (an exception of any kind, text of any size), it
+    comes out as NoCantonSide with a bounded reason (the exception's type and at most REASON_MAX characters of its text), so the leg is left out and the
+    build never fails. Not caught: what the builder must still raise (a closed WebSocket, KeyboardInterrupt and SystemExit, which are not Exceptions)."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def guarded(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (NoCantonSide, ConnectionClosed):
+                raise
+            except Exception as e:
+                raise NoCantonSide(f"the {who} gave an answer that cannot be used ({type(e).__name__}: {bounded_text(e)})") from None
+        return guarded
+    return decorate
+
+
 def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
     """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
     or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
@@ -250,6 +281,7 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             raise ValueError("the ref is empty or too long")
         return {"receiver": body["receiver"], "ref": body["ref"]}
 
+    @registry_guard("twin registry service")
     def read(lock_id: str):
         if lock_id in seen:
             return seen[lock_id]
@@ -271,7 +303,7 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
         except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
             raise NoCantonSide("the twin registry service gave an answer that is not the parts of a lock's id") from e
         except (OSError, http.client.HTTPException) as e:
-            why = f"the twin registry service cannot be read: {e}"
+            why = f"the twin registry service cannot be read: {bounded_text(e)}"
             REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
             raise NoCantonSide(why) from e
         finally:
@@ -309,7 +341,7 @@ CONTEXT_MAX_CONTEXT_BYTES = 16 * 1024      # the most bytes of one choice contex
 CONTEXT_MAX_BLOCK_BYTES = 128 * 1024       # the most bytes of the choice contexts of all the legs of a block; the later legs are left out
 INT64 = re.compile(r"-?[0-9]{1,19}")
 DECIMAL = re.compile(r"-?[0-9]{1,28}(\.[0-9]{1,10})?")   # a Daml Decimal: 28 digits before the point, 10 after
-CONTRACT_ID = re.compile(r"00[0-9a-f]{64}([0-9a-f]{2})*")   # a Daml contract id (V1): "00", a 32-byte discriminator, a suffix; lowercase hex, at most 254 characters
+CONTRACT_ID = re.compile(r"00[0-9a-f]{64}([0-9a-f]{2})+")   # a Daml contract id (V1): "00", a 32-byte discriminator, a non-empty suffix; lowercase hex, at most 254 characters
 CONTRACT_ID_MAX = 254
 TEMPLATE_ID = re.compile(r"(#[A-Za-z0-9_-]+|[0-9a-f]{64}):[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")   # the Ledger API's identifier: <package id or #package name>:<module>:<entity>
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -432,11 +464,13 @@ class ChoiceContexts:
         """Whether the registry of this instrument admin is one the builder asks."""
         return admin in self.registries
 
+    @registry_guard("token registry")
     def allocation(self, admin: str, allocation: str):
         """(context, disclosed contracts) for `Allocation_ExecuteTransfer` of this allocation."""
         reply = self.ask(admin, f"/registry/allocations/v1/{urllib.parse.quote(allocation, safe='')}/choice-contexts/execute-transfer", {"meta": {}, "excludeDebugFields": True})
         return self.read(reply)
 
+    @registry_guard("token registry")
     def transfer(self, admin: str, factory: str, transfer: dict):
         """(context, disclosed contracts) for `TransferFactory_Transfer` of this transfer through this factory; the factory the registry names must be the token's."""
         args = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
@@ -447,7 +481,7 @@ class ChoiceContexts:
             raise NoCantonSide("the token registry names another transfer factory than the token's")
         if reply.get("transferKind") != "direct" and (admin, args["transfer"].get("receiver")) not in self.noted:   # Daml's Receive then reuses this context to accept an offer
             self.noted.add((admin, args["transfer"].get("receiver")))
-            print(f"the token registry's transfer to {args['transfer'].get('receiver')} is of kind {str(reply.get('transferKind'))[:32]!r}, not 'direct'", file=sys.stderr)
+            print(f"the token registry's transfer to {args['transfer'].get('receiver')} is of kind {bounded_text(reply.get('transferKind'))[:32]!r}, not 'direct'", file=sys.stderr)
         return self.read(reply.get("choiceContext"))
 
     def read(self, reply):
@@ -484,7 +518,7 @@ class ChoiceContexts:
         except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
             raise NoCantonSide("the token registry gave an answer that is not JSON") from e
         except (OSError, http.client.HTTPException) as e:
-            why = f"the token registry cannot be read: {e}"
+            why = f"the token registry cannot be read: {bounded_text(e)}"
             if limit >= self.deadline or not isinstance(e, TimeoutError):   # a request cut short by what was left of the block's budget is not the registry's failure
                 REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
             raise NoCantonSide(why) from e
