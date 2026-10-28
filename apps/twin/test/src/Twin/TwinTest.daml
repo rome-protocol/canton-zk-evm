@@ -267,7 +267,7 @@ testAllocationRefused = do
   -- an allocation is a locked holding, and cannot be spent
   alloc <- allocated f [h]
   _ <- mintTo f f.alice 5.0
-  submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 1.0 [toInterfaceContractId @H.Holding alloc])
+  submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 1.0 [coerceInterfaceContractId @H.Holding alloc])
   -- after settleBefore it cannot be executed, and Alice still takes it back
   passTime (hours 3)
   submitMustFail (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
