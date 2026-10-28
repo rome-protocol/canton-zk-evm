@@ -602,7 +602,7 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
 
 # ---- the registry of EVM contracts (Daml 0.5.0: ZkChain.contracts) --------------------------------------------------------------------------
 
-CONTRACT_BUILDS = {"gateway": "Gateway.bin-runtime", "vault": "Vault.bin-runtime"}   # the reviewed builds in the repo (gateway/build.sh --check keeps them true)
+CONTRACT_BUILDS = {"gateway": "Gateway.bin-runtime", "vault": "Vault.bin-runtime"}   # the reviewed builds in the repo
 CONTRACT_KINDS = {"gateway": "Gateway", "vault": "Vault"}
 ADDRESS40 = re.compile(r"[0-9a-f]{40}")
 MAX_CONTRACTS = 16   # the Daml's maxContracts
