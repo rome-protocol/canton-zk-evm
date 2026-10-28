@@ -47,3 +47,7 @@ apps/twin/test.sh    # builds, then runs the Daml Script tests in apps/twin/test
 ```
 
 CI runs it in [`twin.yml`](../../.github/workflows/twin.yml). The tests cover the instrument and metadata, the balance, a transfer completed at once (change, merging, a split, the smallest amount), allocation and execution (DvP: a single leg, the exclusive `settleBefore`, and two legs of two twins settled in one transaction, which fail together when one is withdrawn), withdraw and cancel, mint and burn by the admin alone, every refused case (including holdings of other templates that report the instrument, and a wrong expected admin on every factory choice), a 6-decimal twin, and the base-unit conversions.
+
+## Registry service
+
+[`registry/`](registry) serves the token standard's off-ledger registry API for the twins (metadata, factories, choice contexts) and the parts of lock ids. See its README.
