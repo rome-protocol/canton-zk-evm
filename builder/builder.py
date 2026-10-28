@@ -796,7 +796,7 @@ def no_fault_refusal(result: dict) -> str | None:
     return None
 
 
-def gateway_evidence(cfg: Config, sub: Submission) -> dict:
+def gateway_evidence(cfg: "Config", sub: "Submission") -> dict:
     """What tells the registry race from a forged refusal sentence: the gateways the block carried, and the Gateway entries of the registry as Canton holds
     it now (one chain read). The registry has no removal, so a real race names an entry that is there now. A read that fails leaves the list empty: an ordinary refusal."""
     try:
