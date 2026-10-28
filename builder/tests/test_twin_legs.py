@@ -10,6 +10,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
+from test_legs_limits import at, quota
 from fakes import PAYMENT, Leg, tx
 
 ALICE, TKA, PAYEE, named = tb.ALICE, tb.TKA, tb.PAYEE, tb.named
@@ -29,7 +30,17 @@ VAULT_ENTRY = {"contractAddress": VAULT, "contractCodeHash": "c1" * 32, "contrac
 PIN = {"twinToken": TKA, "twinDecimals": str(USDC_DECIMALS), "twinRules": RULES}
 LOCK = Leg(PAYMENT, LOCK_ID, TKA, VAULT, 2_500_000)   # 2.5 of a 6-decimal token
 RELEASE = Leg(PAYMENT, RELEASE_ID, TKA, PAYEE, 2_500_000)
-REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": RECEIVER, "token": TKA, "holdings": ["h-1"], "amount": "2.5", "recipient": PAYEE, "ref": REF})
+REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": RECEIVER, "token": TKA, "holdings": ["th-1"], "amount": "2.5", "recipient": PAYEE, "ref": REF})
+
+
+TWIN = {"admin": "gw", "id": "erc20:" + TKA}
+HOLDING = tb.holding("th-1", "2.5", instrument=TWIN, owner=RECEIVER)
+RULES_ARGS = (RULES, {"admin": "gw", "token": TKA, "decimals": str(USDC_DECIMALS), "name": "USD Coin", "symbol": "USDC"})
+REF2 = "order-8"
+RELEASE2 = Leg(PAYMENT, sha(f"vault-release,{VAULT},{REF2}"), TKA, PAYEE, 2_500_000)
+REDEEM2 = ("redeem-2", {**REDEEM[1], "holdings": ["th-2"], "ref": REF2})
+HOLDING2 = tb.holding("th-2", "2.5", instrument=TWIN, owner=RECEIVER)
+QUOTA_NAME = f"gw/erc20:{TKA}"
 
 
 class Registry:
@@ -82,10 +93,12 @@ class Twins(tb.LegCase):
         super().setUp()
         b.REGISTRY_DOWN.clear()
 
-    def setup_twin(self, leg, parts=True, pins=(PIN,), vaults=(VAULT_ENTRY,), redeems=(), registry=True, **k):
+    def setup_twin(self, leg, parts=True, pins=(PIN,), vaults=(VAULT_ENTRY,), redeems=(), registry=True, holdings=(HOLDING,), rules=(RULES_ARGS,), quota=None, **k):
         s = self.setup({ALICE: []}, **k)
-        s.ledger.chain_extra = {"contracts": list(vaults), "twins": list(pins) if pins is not None else None}
+        s.ledger.chain_extra = {"contracts": list(vaults), "twins": list(pins) if pins is not None else None, **(quota or {})}
         s.ledger.redeems = list(redeems)
+        s.ledger.holdings = list(holdings)
+        s.ledger.twin_rules = list(rules)
         t = self.leg_tx(s, leg)
         s.reth.pool[ALICE] = [t]
         if registry:
@@ -130,11 +143,11 @@ class Twins(tb.LegCase):
             self.assert_left_out(s, t, "not pinned")
 
     def test_a_lock_finer_than_the_twin_is_left_out(self):
-        s, t = self.setup_twin(LOCK, pins=[{**PIN, "twinDecimals": "18"}])   # 2_500_000 base units of 18 decimals: not a multiple of 10^8
+        s, t = self.setup_twin(LOCK, pins=[{**PIN, "twinDecimals": "18"}], rules=[(RULES, {**RULES_ARGS[1], "decimals": "18"})])   # 2_500_000 base units of 18 decimals: not a multiple of 10^8
         self.assert_left_out(s, t, "not exact")
 
     def test_an_18_decimal_lock_that_is_a_multiple_is_attached(self):
-        s, t = self.setup_twin(Leg(PAYMENT, LOCK_ID, TKA, VAULT, 3 * 10**18), pins=[{**PIN, "twinDecimals": "18"}])
+        s, t = self.setup_twin(Leg(PAYMENT, LOCK_ID, TKA, VAULT, 3 * 10**18), pins=[{**PIN, "twinDecimals": "18"}], rules=[(RULES, {**RULES_ARGS[1], "decimals": "18"})])
         self.build(s)
         self.assertEqual(self.attached(s, "LockLeg")["lockAmount"], f"{3 * 10**18:064x}")
 
@@ -250,6 +263,116 @@ class Twins(tb.LegCase):
         s, t = self.setup_twin(RELEASE, redeems=[REDEEM])
         s.ledger.no_040 = True
         self.assert_left_out(s, t, "no terms of this chain")
+
+    # ---- what Canton would refuse is not proven
+    def test_a_release_whose_holdings_are_not_all_the_holders_unlocked_twin_is_left_out(self):
+        lock = {"holders": ["x"], "expiresAt": None, "expiresAfter": None, "context": None}
+        for holdings, words in (([], "not active, or not visible"),
+                                ([tb.holding("th-1", "2.5", instrument=TWIN, owner="someone")], "not the holder's unlocked twin"),
+                                ([tb.holding("th-1", "2.5", instrument={"admin": "gw", "id": "erc20:" + "55" * 20}, owner=RECEIVER)], "not the holder's unlocked twin"),
+                                ([tb.holding("th-1", "2.5", instrument=TWIN, owner=RECEIVER, lock=lock)], "not the holder's unlocked twin"),
+                                ([tb.holding("th-1", "2.4", instrument=TWIN, owner=RECEIVER)], "less than its amount"),
+                                ([tb.holding("th-1", "2.5", instrument=TWIN, owner=RECEIVER)], None)):
+            s, t = self.setup_twin(RELEASE, redeems=[REDEEM], holdings=holdings)
+            if words is None:
+                self.build(s)
+                self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
+            else:
+                self.assert_left_out(s, t, words)
+
+    def test_a_release_whose_holdings_add_up_is_attached(self):
+        s, t = self.setup_twin(RELEASE, redeems=[(REDEEM[0], {**REDEEM[1], "holdings": ["th-1", "th-2"]})],
+                               holdings=[tb.holding("th-1", "1.0", instrument=TWIN, owner=RECEIVER), tb.holding("th-2", "1.5", instrument=TWIN, owner=RECEIVER)])
+        self.build(s)
+        self.attached(s, "ReleaseLeg")
+
+    def test_a_release_that_lists_a_holding_twice_is_left_out(self):
+        s, t = self.setup_twin(RELEASE, redeems=[(REDEEM[0], {**REDEEM[1], "holdings": ["th-1", "th-1"]})])
+        self.assert_left_out(s, t, "lists no holdings, or one twice")
+
+    def test_a_request_with_no_holdings_is_left_out(self):
+        s, t = self.setup_twin(RELEASE, redeems=[(REDEEM[0], {**REDEEM[1], "holdings": []})])
+        self.assert_left_out(s, t, "lists no holdings")
+
+    def test_a_bogus_request_ahead_of_a_good_one_does_not_block_it(self):
+        bogus = ("redeem-0", {**REDEEM[1], "holdings": ["ghost"], "holder": "mallory"})   # the same ref, token, recipient and amount, holdings that are not there
+        s, t = self.setup_twin(RELEASE, redeems=[bogus, REDEEM])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+
+    def test_two_requests_that_share_a_holding_are_not_both_in_a_block(self):
+        shared = (REDEEM2[0], {**REDEEM2[1], "holdings": ["th-1"]})
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM, shared], holdings=[HOLDING])
+        t2 = self.leg_tx(s, RELEASE2, nonce=0, sender=tb.BOB)
+        s.reth.pool[tb.BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
+        self.assertIn("same holding", result["leftOut"][0]["reason"])
+
+    def test_two_requests_with_their_own_holdings_both_go_in(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM, REDEEM2], holdings=[HOLDING, HOLDING2])
+        t2 = self.leg_tx(s, RELEASE2, nonce=0, sender=tb.BOB)
+        s.reth.pool[tb.BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["leftOut"]), (2, []))
+
+    def test_a_release_over_the_withdrawal_quota_is_left_out(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM], quota=quota("2.0"))
+        self.assert_left_out(s, t, "over the whole withdrawal quota")
+
+    def test_a_release_within_the_quota_is_attached(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM], quota=quota("2.5"))
+        self.build(s)
+        self.attached(s, "ReleaseLeg")
+
+    def test_a_release_that_the_quota_used_up_is_left_out_with_the_time(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM], quota=quota("5.0", [(QUOTA_NAME, at(3600), "3.0")]))
+        self.assert_left_out(s, t, "used up until")
+
+    def test_two_releases_that_each_fit_the_quota_alone_but_not_together(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM, REDEEM2], holdings=[HOLDING, HOLDING2], quota=quota("4.0"))
+        t2 = self.leg_tx(s, RELEASE2, nonce=0, sender=tb.BOB)
+        s.reth.pool[tb.BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
+        self.assertIn("withdrawal quota", result["leftOut"][0]["reason"])
+
+    def test_a_release_with_no_quota_on_the_chain_is_not_held_to_one(self):
+        s, t = self.setup_twin(RELEASE, redeems=[REDEEM], quota={"withdrawalQuota": None, "quotaWindow": None})
+        self.build(s)
+        self.attached(s, "ReleaseLeg")
+
+    # ---- the pinned rules
+    def test_a_token_whose_pinned_rules_are_archived_is_left_out(self):
+        for kind, kw in (("lock", dict(leg=LOCK)), ("release", dict(leg=RELEASE, redeems=[REDEEM]))):
+            s, t = self.setup_twin(rules=[], **kw)
+            self.assert_left_out(s, t, "TwinRules is not active")
+
+    def test_pinned_rules_that_are_not_the_pin_are_left_out(self):
+        for args in ({**RULES_ARGS[1], "admin": "other"}, {**RULES_ARGS[1], "token": "55" * 20}, {**RULES_ARGS[1], "decimals": "18"}):
+            s, t = self.setup_twin(LOCK, rules=[(RULES, args)])
+            self.assert_left_out(s, t, "not the admin, token and decimals")
+
+    def test_rules_other_than_the_pinned_are_no_use(self):
+        s, t = self.setup_twin(LOCK, rules=[("rules-2", RULES_ARGS[1])])
+        self.assert_left_out(s, t, "TwinRules is not active")
+
+    def test_rules_that_are_only_disclosed_to_the_builder_are_used(self):
+        s, t = self.setup_twin(LOCK, rules=[])
+        s.cfg.disclosed = [{"templateId": "pkg:Twin.Twin:TwinRules", "contractId": RULES, "createdEventBlob": "beef", "synchronizerId": "sync::1"}]
+        self.build(s)
+        self.attached(s, "LockLeg")
+
+    # ---- a release to a registered vault
+    def test_a_release_whose_recipient_is_another_registered_vault_is_attached(self):
+        to_vault = Leg(PAYMENT, RELEASE_ID, TKA, OTHER_VAULT, 2_500_000)
+        s, t = self.setup_twin(to_vault, redeems=[(REDEEM[0], {**REDEEM[1], "recipient": OTHER_VAULT})],
+                               vaults=[VAULT_ENTRY, {**VAULT_ENTRY, "contractAddress": OTHER_VAULT, "contractCodeHash": "c2" * 32}])
+        self.build(s)
+        self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
 
     # ---- the readers
     def test_the_amount_conversions_are_exact(self):

@@ -40,6 +40,7 @@ TERMS = "#canton-zk-evm:Zk.Chain:DvpTerms"
 TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
 CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
 REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
+TWIN_RULES = "#ostia-twin:Twin.Twin:TwinRules"
 NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
@@ -1010,6 +1011,7 @@ class Canton:
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
+        self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
         self.parties: dict = {}   # party -> whether the participant knows it (a lock's receiver)
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
@@ -1047,6 +1049,19 @@ class Canton:
 
     @functools.cached_property
     def redeems(self): return self.active_if_uploaded(REDEEM)
+
+    @functools.cached_property
+    def rules(self) -> dict:
+        """The TwinRules contracts the builder can use: contract id -> its create arguments (None for one that is only disclosed to it, whose
+        arguments it cannot read)."""
+        found = {r["contractId"]: r for r in self.active_if_uploaded(TWIN_RULES)}
+        for d in self.ledger.cfg.disclosed:
+            if isinstance(d, dict) and str(d.get("templateId", "")).endswith(":Twin.Twin:TwinRules"):
+                found.setdefault(d.get("contractId"), None)
+        return found
+
+    @functools.cached_property
+    def quota(self): return quota_state(self.chain, self.now)
 
     @functools.cached_property
     def vaults(self): return registered_of_kind(self.chain, "Vault")
@@ -1332,20 +1347,32 @@ def release_id_of(vault: str, ref: str) -> str:
 
 
 def twin_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> "dict | None":
-    """The twin legs. A payment into a registered vault is a lock; a payment whose id is the release id of a redeem request of this chain (for a
-    registered vault) is a release. A payment that is neither returns None, so that the caller says what it always says."""
+    """The twin legs. A payment whose id is the release id of a redeem request of this chain (for a registered vault) is a release, whoever the
+    payee is; a payment into a registered vault is otherwise a lock. A payment that is neither returns None, so that the caller says what it always says."""
     if not canton.vaults:   # a chain with no registered vault has no twin legs, and nothing is read for them
         return None
-    if leg.account in canton.vaults:
-        return lock_leg(leg, canton)
     requests = [(q, v) for q in canton.redeems if names_chain(q, canton.chain, "gateway") for v in canton.vaults if release_id_of(v, q["ref"]) == leg.id]
-    return release_leg(leg, canton, claimed, requests) if requests else None
+    if requests:
+        return release_leg(leg, canton, claimed, requests)
+    return lock_leg(leg, canton) if leg.account in canton.vaults else None
 
 
 def pinned_for(leg: LegEvent, canton: Canton) -> tuple:
+    """(the pinned TwinRules contract id, the ERC-20's decimals) of the token's twin. The rules must be active and visible to the builder (archiving
+    them is how a token is stopped: Canton refuses every leg that names them), and be the pinned token's of this chain's gateway."""
     if leg.token not in canton.twins:
         raise NoCantonSide("the token's Canton twin is not pinned in the chain record")
-    return canton.twins[leg.token]
+    rules, decimals = canton.twins[leg.token]
+    if rules not in canton.rules:
+        raise NoCantonSide("the token's pinned TwinRules is not active, or not visible to the builder")
+    r = canton.rules[rules]
+    try:
+        same = r is None or (r.get("admin") == canton.chain["gateway"] and r.get("token") == leg.token and int(r.get("decimals")) == decimals)
+    except (TypeError, ValueError):
+        same = False
+    if not same:
+        raise NoCantonSide("the token's pinned TwinRules is not the admin, token and decimals that the chain record pins")
+    return rules, decimals
 
 
 def lock_leg(leg: LegEvent, canton: Canton) -> dict:
@@ -1374,9 +1401,37 @@ def lock_leg(leg: LegEvent, canton: Canton) -> dict:
     return {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
 
 
+def release_holdings_problem(q: dict, units: int, canton: Canton, taken: set | None) -> str | None:
+    """Why the redeem request's burn would be refused, or None: Canton burns the request's holdings, which must be the holder's own twin holdings
+    (each listed once, active, unlocked, visible to the builder) that cover the amount. Any party can sign a request, so nothing in it is believed.
+    `taken` is the holdings an earlier release of this block burns (None while only a leg's own faults are looked for)."""
+    cids = q["holdings"]
+    if not isinstance(cids, list) or not cids or len(set(cids)) != len(cids):
+        return "the redeem request lists no holdings, or one twice"
+    instrument = {"admin": canton.chain["gateway"], "id": "erc20:" + q["token"]}
+    seen = {h["contractId"]: h for h in canton.holdings}
+    total = 0
+    for cid in cids:
+        h = seen.get(cid)
+        if h is None:
+            return "a holding of the redeem request is not active, or not visible to the builder"
+        if h["owner"] != q["holder"] or h["instrumentId"] != instrument or h.get("lock"):
+            return "a holding of the redeem request is not the holder's unlocked twin"
+        held = base_units(h["amount"])
+        if held is None:
+            return "a holding of the redeem request has an amount the builder cannot read"
+        total += held
+    if total < units:
+        return "the holdings of the redeem request are less than its amount"
+    return "an earlier leg of this block burns the same holding" if taken is not None and any(c in taken for c in cids) else None
+
+
 def release_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: list) -> dict:
-    """A release: a redeem request of this chain with the payment's ref (its release id), token, recipient and amount; the token's twin is pinned."""
+    """A release: a redeem request of this chain with the payment's ref (its release id), token, recipient and amount; the token's twin is pinned
+    and active. The builder includes it only while Canton would accept it: the request's holdings are there and cover the amount, and the amount
+    is within the withdrawal quota (a release counts against it like a withdrawal, under the twin's instrument)."""
     taken = None if claimed is None else claimed["redeems"]
+    rules, decimals = pinned_for(leg, canton)
 
     def problem(found):
         q, _ = found
@@ -1385,15 +1440,25 @@ def release_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         if q["recipient"] != leg.account:
             return "the redeem request names another recipient"
         units = base_units(q["amount"])
-        if units is None or twin_base_units(units, pinned_for(leg, canton)[1]) != leg.amount:
+        if units is None or twin_base_units(units, decimals) != leg.amount:
             return "the redeem request's amount is not the amount paid"
+        found_problem = release_holdings_problem(q, units, canton, None if claimed is None else claimed["holdings"])
+        if found_problem:
+            return found_problem
+        if canton.quota_limits and canton.quota is not None:
+            name = f"{canton.chain['gateway']}/erc20:{leg.token}"
+            said = quota_problem(canton.quota, name, units + (0 if claimed is None else claimed["quota"].get(name, 0)))
+            if said:
+                return str(said)
         return "an earlier leg of this block releases the same request" if taken is not None and q["contractId"] in taken else None
 
-    pinned_for(leg, canton)
     request, vault = first_fit(requests, problem, "")
     if claimed is not None:
         claimed["redeems"].add(request["contractId"])
-    return {"tag": "ReleaseLeg", "value": {"releaseRequest": request["contractId"], "releaseRules": canton.twins[leg.token][0], "releaseVault": vault}}
+        claimed["holdings"].update(request["holdings"])
+        name = f"{canton.chain['gateway']}/erc20:{leg.token}"
+        claimed["quota"][name] = claimed["quota"].get(name, 0) + base_units(request["amount"])
+    return {"tag": "ReleaseLeg", "value": {"releaseRequest": request["contractId"], "releaseRules": rules, "releaseVault": vault}}
 
 
 def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
@@ -1403,8 +1468,9 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     can take its place. Only when every leg is fine on its own is it asked whether two legs want the same allocation or the same instrument's
     holdings, so a leg that is going to be left out never takes the place of another."""
     finders = {DEPOSIT: deposit_leg, WITHDRAWAL: withdrawal_leg, PAYMENT: payment_leg}
-    state = quota_state(canton.chain, canton.now) if limits and any(e.kind == WITHDRAWAL for e in events) else None
-    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "redeems": set()}):
+    canton.quota_limits = limits
+    state = canton.quota if limits and any(e.kind == WITHDRAWAL for e in events) else None
+    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "redeems": set(), "holdings": set(), "quota": {}}):
         legs, missing = [], []
         for event in events:
             try:
@@ -1414,6 +1480,9 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
                     if found:
                         missing.append((event, found))
                         continue
+                if claimed is not None and state is not None and event.kind == WITHDRAWAL:   # what the release legs of this block add to is counted with it
+                    name = instrument_name(canton.token(event))
+                    claimed["quota"][name] = claimed["quota"].get(name, 0) + event.amount
                 legs.append(leg)
             except NoCantonSide as e:
                 missing.append((event, str(e)))

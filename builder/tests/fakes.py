@@ -530,6 +530,9 @@ class FakeLedger:
         def entry(cid, name, args):
             return {"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "templateId": f"pkg:Zk.Chain:{name}", "createArgument": args}}}}
+        if template.endswith(":TwinRules"):
+            return [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": cid, "templateId": "pkg:Twin.Twin:TwinRules", "createArgument": args}}}}
+                    for cid, args in self.twin_rules]
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
@@ -592,7 +595,7 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
-                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest")):
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":
