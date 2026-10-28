@@ -8,7 +8,7 @@ module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
-import DA.List (dedup)
+import DA.List (dedup, last)
 import DA.Optional (fromOptional, isSome)
 import DA.Time (RelTime, addRelTime, subTime, time, days, hours, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
