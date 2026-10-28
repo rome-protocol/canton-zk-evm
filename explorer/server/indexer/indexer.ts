@@ -29,6 +29,7 @@ import { deriveCursor, stage2 } from "./stage2.ts";
 import { checkBalances, type BalanceCheck } from "./balances.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
+import { registeredLegsOnce } from "./registered-legs.ts";
 import { checkLegs, legsOf, stage1, type Stage1Input } from "./stage1.ts";
 
 /** Any fixed number; it only has to be the same for every indexer of this schema, and not one the migration runner (001) or the partition maintenance (002) holds. */
@@ -576,7 +577,7 @@ export function createIndexer(o: IndexerOptions) {
     // The custody is Canton's side only and never on the way of a block: a read that fails is logged, and the last rows stay with the time they were read at.
     const custodyMs = o.custody?.ms ?? 30_000;
     const custodyLoop = async () => {
-      let failing = "", venueFailing = "";
+      let failing = "", venueFailing = "", registeredFailing = "";
       while (running && o.custody) {
         try {
           await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
@@ -593,6 +594,14 @@ export function createIndexer(o: IndexerOptions) {
         } catch (e) {
           if (venueFailing !== (e as Error).message) log(`indexer (venue trades): ${(e as Error).message}`);
           venueFailing = (e as Error).message;
+        }
+        // The legs of the registered gateways (the chain record's registry, read above) are indexed from the logs stage 1 wrote, a batch of blocks at a time until they are caught up.
+        try {
+          while (running && (await registeredLegsOnce(o.pool, o.reads)).blocks > 0) { /* the next batch */ }
+          registeredFailing = "";
+        } catch (e) {
+          if (registeredFailing !== (e as Error).message) log(`indexer (registered gateways): ${(e as Error).message}`);
+          registeredFailing = (e as Error).message;
         }
         for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
       }

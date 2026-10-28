@@ -32,6 +32,8 @@ export interface BlockShape {
   legToken?: string;
   legAccount?: string;
   legAmount?: bigint;
+  /** Legs that other contracts (a registered gateway) record in the first transaction, after the first gateway's: each is a `Leg` log of `gateway`. */
+  extra?: { gateway: string; kind: number; id: string; token: string; account: string; amount: bigint; party?: string }[];
   /** The sender of every `hotEvery`th transaction (an address with a long history: the load test's one address with a million). */
   hot?: string;
   /** Every how many transactions the hot address sends one: 10 when absent. */
@@ -112,6 +114,12 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
       const data = encodeAbiParameters([{ type: "uint8" }, { type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "string" }],
         [shape.leg, (shape.legId ?? "0x" + "01".repeat(32)) as `0x${string}`, (shape.legToken ?? hex(0xd000)) as `0x${string}`, (shape.legAccount ?? hex(0xa11ce)) as `0x${string}`, shape.legAmount ?? 42n, "alice::1220" + "ab".repeat(32)]);
       logs.push({ address: GATEWAY, topics: [LEG_TOPIC], data });
+    }
+    if (k === 0) {
+      for (const e of shape.extra ?? []) {
+        logs.push({ address: e.gateway, topics: [LEG_TOPIC], data: encodeAbiParameters([{ type: "uint8" }, { type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "string" }],
+          [e.kind, e.id as `0x${string}`, e.token as `0x${string}`, e.account as `0x${string}`, e.amount, e.party ?? ""]) });
+      }
     }
     const gasUsed = failed ? 30000 : kind === 3 ? 90000 : 21000 + (kind === 2 ? 50000 : 0);
     cumulative += gasUsed;
