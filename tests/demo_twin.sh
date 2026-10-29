@@ -203,7 +203,7 @@ step "(a) U locks 5 TKA for itself: the twin of 5 is minted to U"
 tka_u_before=$(tka_of "$TOKEN" "$U_ADDR"); tka_v_before=$(tka_of "$TOKEN" "$V_ADDR")
 locked=$(twin lock u "$TOKEN" 5 u lock-1 --registry-url "$REGISTRY_URL"); echo "$locked" | jq -c .
 is "$(jq -r .vault <<<"$locked")" "$VAULT" "the vault the lock went to"
-is "$(jq -r '.amount | tonumber' <<<"$locked")" 5 "the amount of the minted holding"
+jq -e '(.amount | tonumber) == 5' <<<"$locked" >/dev/null || fail "the amount of the minted holding: $(jq -r .amount <<<"$locked")"
 expect_twin "$(twin_of "$TOKEN")" 5 0 5 "after the lock"
 is "$(tka_of "$TOKEN" "$U_ADDR")" $((tka_u_before - 5)) "U's TKA after the lock"
 is "$(tka_of "$TOKEN" "${VAULT}")" 5 "the vault's TKA after the lock"
@@ -246,7 +246,7 @@ is "$(jq -c '.leftOut | map(.transaction)' <<<"$OUT")" "[\"$no_twin_tx\"]" "the 
 jq -e '.leftOut[0].reason | contains("twin is not pinned")' <<<"$OUT" >/dev/null || fail "the payment was left out for another reason: $(jq -c .leftOut <<<"$OUT")"
 is "$(jq -r '.legs // 0' <<<"$OUT")" 0 "the legs of the block after the payment of a token with no twin"
 expect_twin "$(twin_of "$TOKEN")" 3 0 3 "after the payment of a token with no twin"
-is "$(twin balances "$TOKEN2" u v | jq -r '.supply | tonumber')" 0 "the supply of a twin of TKA2 (there is none)"
+twin balances "$TOKEN2" u v | jq -e '(.supply | tonumber) == 0' >/dev/null || fail "the supply of a twin of TKA2 (there is none)"
 is "$(tka_of "$TOKEN2" "$VAULT")" 0 "the vault's TKA2 (the payment was not taken)"
 # The left-out payment stays in reth's pool and holds back V's later transactions: V replaces it (same nonce) before anything else.
 replaced=$(evm replace v); echo "$replaced" | jq -c .

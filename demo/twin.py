@@ -38,7 +38,6 @@ All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U
 """
 import hashlib, json, os, re, sys, time, urllib.error, urllib.request, uuid
 from datetime import timedelta
-from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -185,12 +184,18 @@ def twin_units(base_units: int, decimals: int, what: str) -> int:
     return units
 
 
+LEDGER_DECIMAL = re.compile(r"([0-9]{1,40})(?:\.([0-9]{1,40}))?")
+
+
 def ledger_units(text: str) -> int:
     """A Daml Decimal as the ledger writes it ("10.0000000000"), in units of 10^-10. The ledger never gives a finer one."""
-    units = Decimal(text).scaleb(TWIN_DECIMALS)
-    if units != units.to_integral_value() or units < 0:
+    match = LEDGER_DECIMAL.fullmatch(text) if isinstance(text, str) else None
+    if not match:
         raise canton.Fail(f"the ledger gave the amount {text!r}: not a twin amount")
-    return int(units)
+    whole, fraction = match.group(1), (match.group(2) or "").rstrip("0")
+    if len(fraction) > TWIN_DECIMALS:
+        raise canton.Fail(f"the ledger gave the amount {text!r}: not a twin amount")
+    return int(whole) * 10**TWIN_DECIMALS + int(fraction.ljust(TWIN_DECIMALS, "0"))   # integers only: a Daml Decimal of 38 digits is not rounded
 
 
 def amount_text(units: int) -> str:
@@ -316,10 +321,13 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
     who, token = evm.who_sends(who), canton.evm_address(address)
     if not ref:
         raise SystemExit("the ref must not be empty")
-    base = base_units(amount, erc20_decimals("0x" + token))
+    decimals = erc20_decimals("0x" + token)
+    base = base_units(amount, decimals)
     party = party_of(net, receiver)
     expected = lock_id(party, ref)
     paid = choose_vault(registered_vaults(net), vault)   # from the ledger: the registry's list is a hint only
+    if not any(str(t.get("twinToken", "")).lower().removeprefix("0x") == token and str(t.get("twinDecimals")) == str(decimals) for t in canton.chain_record(net).get("twins") or []):
+        raise canton.Fail(f"the chain's record pins no twin of 0x{token} with {decimals} decimals: nothing was sent")
     answer = post_json(registry_url_of(registry_url) + "/twin/v1/lock-parts", {"receiver": party, "ref": ref, "token": token})
     if answer.get("lockId") != expected:
         raise canton.Fail(f"the registry gave the lock id {answer.get('lockId')!r}, not the {expected} that lock,{party},{ref} makes: nothing was sent")
@@ -417,6 +425,12 @@ def send(net: canton.Network, sender: str, receiver: str, address: str, amount: 
             "inputs": inputs, "result": tag}
 
 
+def vault_gateway(vault: str) -> str:
+    """The gateway the vault pays through: its own GATEWAY() constant, which is what release uses, whatever CZE_DEMO_GATEWAY_ADDRESS says."""
+    word = evm.read_word(evm.address_of("0x" + vault, "the vault"), evm.keccak(text="GATEWAY()")[:4].hex(), "latest")
+    return "0x" + f"{word:040x}"[-40:]
+
+
 def redeem(net: canton.Network, holder: str, address: str, amount: str, recipient: str, ref: str, vault: str = None) -> dict:
     """u or v redeems twin for the ERC-20: the holder signs a RedeemRequest (the holdings that cover the amount, the amount, the EVM recipient and the ref), then key U calls the vault's
     release(ref, token, recipient, amount), which the chain's release leg matches to the request by the release id and burns the twin against. What can be seen to fail
@@ -434,7 +448,7 @@ def redeem(net: canton.Network, holder: str, address: str, amount: str, recipien
     if chain["gateway"] != admin:
         raise canton.Fail(f"the chain's gateway party is {chain['gateway']}, not the twin's admin {admin}")
     inputs = pick_holdings(holdings_of(net, holder, token), units, holder)
-    rid, gateway = release_id(paying, ref), evm.gateway_address()
+    rid, gateway = release_id(paying, ref), vault_gateway(paying)
     if evm.read_word(gateway, evm.call_data("used(bytes32)", [bytes.fromhex(rid)]), "latest"):
         raise canton.Fail(f"the release id {rid} of this ref in vault 0x{paying} is used already: use another ref")
     held = evm.read_word("0x" + token, evm.SELECTOR_BALANCE_OF + evm.pad32(paying), "latest")

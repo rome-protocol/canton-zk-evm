@@ -338,7 +338,8 @@ class BalancesTests(TwinTestCase):
 class FakeEvm:
     """Ostia for the commands that send: the transactions that U's and V's keys sent (the nth has the hash 0x...n), their receipts, and the token's reads."""
     def __init__(self, token):
-        self.token, self.sent, self.failing, self.used, self.after_send = token, [], set(), set(), None   # `used`: the ids that the gateway has used; `after_send`: called with each sent transaction
+        self.token, self.sent, self.failing, self.used, self.after_send = token, [], set(), set(), None
+        self.vault_gateway = evm.gateway_address()   # `used`: the ids that the gateway has used; `after_send`: called with each sent transaction
 
     def send(self, folder, who, to, data, gas, *rest):
         self.sent.append({"who": who, "to": to, "data": data, "gas": gas})
@@ -347,8 +348,10 @@ class FakeEvm:
         return f"0x{len(self.sent):064x}"
 
     def rpc(self, method, params):
+        if method == "eth_call" and params[0]["data"] == "0x" + evm.keccak(text="GATEWAY()")[:4].hex():
+            return "0x" + self.vault_gateway[2:].rjust(64, "0")   # the vault's own constant, which the CZE_DEMO_GATEWAY_ADDRESS override does not change
         if method == "eth_call" and params[0]["data"].startswith("0x" + evm.keccak(text="used(bytes32)")[:4].hex()):
-            return f"0x{int(params[0]['data'][10:] in self.used):064x}"
+            return f"0x{int(params[0]['to'] == self.vault_gateway and params[0]['data'][10:] in self.used):064x}"   # `used` is the vault's gateway's: another contract has none
         if method == "eth_getTransactionReceipt":
             n = int(params[0], 16)
             return {"blockNumber": hex(100 + n), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(50_000), "status": hex(0 if n in self.failing else 1)}
@@ -372,7 +375,8 @@ class ChainTestCase(TwinTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         chain = FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]
-        chain["createArgument"] = {**chain["createArgument"], "contracts": [{"contractAddress": a, "contractCodeHash": "00" * 32, "contractKind": "Vault"} for a in (VAULT_A, VAULT_B)]}
+        chain["createArgument"] = {**chain["createArgument"], "contracts": [{"contractAddress": a, "contractCodeHash": "00" * 32, "contractKind": "Vault"} for a in (VAULT_A, VAULT_B)],
+                                    "twins": [{"twinToken": TOKEN, "twinDecimals": "6", "twinRules": "00ab"}]}
 
 
 def minted(owner, amount, reference, token=TOKEN, admin=GW, cid="minted-1"):
@@ -419,6 +423,19 @@ class AmountTests(unittest.TestCase):
         for text in ("", "-1", "+1", "1e3", "1,5", ".5", "5.", " 1", "1 ", "0x10", "1" * 81, "1.5.2", "\u0661"):
             with self.assertRaises(SystemExit, msg=text):
                 twin.base_units(text, 6)
+
+
+class LedgerUnitsTests(unittest.TestCase):
+    def test_a_ledger_amount_is_exact_to_38_digits(self):
+        self.assertEqual(twin.ledger_units("123456789012345678901.1234567891"), 1234567890123456789011234567891)   # a 28-digit decimal context rounds this
+        self.assertEqual(twin.ledger_units("9999999999999999999999999999.9999999999"), 10**38 - 1)
+        for text, want in (("10.0000000000", 10**11), ("0.0000000001", 1), ("5", 5 * 10**10), ("2.50", 25 * 10**9), ("0.0", 0)):
+            self.assertEqual(twin.ledger_units(text), want, text)
+
+    def test_what_is_not_a_twin_amount_is_refused(self):
+        for text in ("-1", "1e3", "0.00000000011", "", ".5", "1.", " 1", "x", None):
+            with self.assertRaisesRegex(canton.Fail, "not a twin amount"):
+                twin.ledger_units(text)
 
 
 class LockTests(ChainTestCase):
@@ -480,6 +497,17 @@ class LockTests(ChainTestCase):
         with self.assertRaisesRegex(canton.Fail, "no Vault"):
             self.lock()
         self.assertEqual(self.evm.sent, [])
+
+    def test_a_token_the_chain_record_does_not_pin_is_refused_and_nothing_is_sent_or_asked(self):
+        chain = FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"]
+        for twins in (None, [], [{"twinToken": "cd" * 20, "twinDecimals": "6"}], [{"twinToken": TOKEN, "twinDecimals": "18"}]):   # none, another token, the wrong decimals
+            chain["twins"] = twins
+            with self.assertRaisesRegex(canton.Fail, "pins no twin of 0x" + TOKEN + " with 6 decimals: nothing was sent"):
+                self.lock()
+        self.assertEqual((self.evm.sent, self.posts), ([], []))
+        chain["twins"] = [{"twinToken": "0x" + TOKEN.upper(), "twinDecimals": 6}]   # the form of the entry does not matter
+        self.holds()
+        self.assertEqual(self.lock()["vault"], "0x" + VAULT_A)
 
     def test_a_lock_id_that_is_not_the_hash_of_the_parts_is_refused_and_nothing_is_sent(self):
         for wrong in ("00" * 32, twin.lock_id(U, "ref-1"), twin.lock_id(V, "ref-2"), twin.lock_id(V, "ref-1").upper(), None, 5):
@@ -774,6 +802,16 @@ class RedeemTests(ChainTestCase):
         with self.assertRaisesRegex(canton.Fail, "holds 0.0 of the twin"):
             self.redeem("v", TOKEN, "1", self.RECIPIENT, "r-1")   # V has no holdings on U's participant read
         self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+
+    def test_the_release_id_is_looked_up_at_the_gateway_the_vault_pays_through(self):
+        other = "0x" + "11" * 20
+        with mock.patch.dict(os.environ, {"CZE_DEMO_GATEWAY_ADDRESS": other}):
+            self.evm.used = {twin.release_id(VAULT_A, "r-1")}   # used at the vault's gateway; the override is another contract
+            with self.assertRaisesRegex(canton.Fail, "used already"):
+                self.redeem()
+            self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+            self.evm.used = {twin.release_id(VAULT_A, "r-2")}   # used at the vault's gateway for another ref only
+            self.assertEqual(self.redeem()["releaseId"], twin.release_id(VAULT_A, "r-1"))
 
     def test_the_vault_is_the_first_registered_or_a_registered_one(self):
         self.token.balances[VAULT_B] = 10**9
