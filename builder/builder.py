@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from websockets.sync.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
@@ -100,6 +101,8 @@ class Config:
     pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
     stop: object = None               # the producer's stop event (threading.Event), set by produce(): a stop ends the wait that follows a prover's refusal
     twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
+    registries: dict = field(default_factory=dict)   # --registry ADMIN=URL (CZE_TOKEN_REGISTRIES): the token registry of each instrument admin whose legs get a choice context
+    registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the file with the bearer token that registry wants, read again for each request
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -170,6 +173,89 @@ class _RegistryStatus(Exception):
     """The registry answered with this HTTP status instead of 200."""
 
 
+def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: float = 10, max_body: int = REGISTRY_MAX_BODY, body: bytes | None = None,
+                  headers: dict | None = None) -> bytes:
+    """One request to a service that is trusted for nothing: bounded as a whole by `limit` seconds, by a timer (see twin_registry_reader), its answer
+    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body."""
+    url = urllib.parse.urlsplit(base_url)
+    connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
+    out: dict = {}
+    over = threading.Event()
+
+    def run():
+        r = None
+        try:
+            connection.connect()
+            if over.is_set():
+                return
+            connection.request(method, f"{url.path.rstrip('/')}{path}", body=body, headers={"accept": "application/json", **(headers or {})})
+            r = connection.getresponse()
+            if r.status != 200:
+                raise _RegistryStatus(r.status)
+            chunks, size = [], 0
+            while True:
+                chunk = r.read1(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_body:
+                    raise ValueError("the answer is too long")
+                chunks.append(chunk)
+            out["body"] = b"".join(chunks)
+        except BaseException as e:   # handed to the caller's thread
+            out["error"] = e
+        finally:   # the response too: a stored error holds this frame, and the frame the response's file, which would keep the socket open
+            if r is not None:
+                r.close()
+            connection.close()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(limit)
+    if worker.is_alive():   # still connecting, or waiting for a byte: close the socket under it, which ends its read
+        over.set()
+        sock = connection.sock
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
+        raise TimeoutError(f"no answer within {limit:g} s")
+    if "error" in out:
+        raise out["error"]
+    return out["body"]
+
+
+REASON_MAX = 200   # the most of an outside party's text that goes into a leg's reason (leftOut, the journal, the reports)
+
+
+def bounded_text(value) -> str:
+    """Text from outside, made safe to keep: printable ASCII (anything else escaped), at most REASON_MAX characters, never an exception (a value whose
+    own str() raises gives its type's name)."""
+    try:
+        text = value if isinstance(value, str) else str(value)
+    except Exception:
+        return type(value).__name__
+    return ascii(text[:REASON_MAX])[1:-1][:REASON_MAX]
+
+
+def registry_guard(who: str):
+    """A decorator for every entry point that handles a registry's answer: whatever the answer does (an exception of any kind, text of any size), it
+    comes out as NoCantonSide with a bounded reason (the exception's type and at most REASON_MAX characters of its text), so the leg is left out and the
+    build never fails. Not caught: what the builder must still raise (a closed WebSocket, KeyboardInterrupt and SystemExit, which are not Exceptions)."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def guarded(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (NoCantonSide, ConnectionClosed):
+                raise
+            except Exception as e:
+                raise NoCantonSide(f"the {who} gave an answer that cannot be used ({type(e).__name__}: {bounded_text(e)})") from None
+        return guarded
+    return decorate
+
+
 def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
     """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
     or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
@@ -183,55 +269,9 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
     seen: dict = {}
     spent = [0.0]
     budget = deadline if budget is None else budget
-    url = urllib.parse.urlsplit(base_url)
 
     def fetch(lock_id: str, limit: float) -> bytes:
-        connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
-        out: dict = {}
-        over = threading.Event()
-
-        def run():
-            r = None
-            try:
-                connection.connect()
-                if over.is_set():
-                    return
-                connection.request("GET", f"{url.path.rstrip('/')}/twin/v1/lock-parts/{lock_id}", headers={"accept": "application/json"})
-                r = connection.getresponse()
-                if r.status != 200:
-                    raise _RegistryStatus(r.status)
-                chunks, size = [], 0
-                while True:
-                    chunk = r.read1(8192)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > REGISTRY_MAX_BODY:
-                        raise ValueError("the answer is too long")
-                    chunks.append(chunk)
-                out["body"] = b"".join(chunks)
-            except BaseException as e:   # handed to the caller's thread
-                out["error"] = e
-            finally:   # the response too: a stored error holds this frame, and the frame the response's file, which would keep the socket open
-                if r is not None:
-                    r.close()
-                connection.close()
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        worker.join(limit)
-        if worker.is_alive():   # still connecting, or waiting for a byte: close the socket under it, which ends its read
-            over.set()
-            sock = connection.sock
-            if sock is not None:
-                with contextlib.suppress(OSError):
-                    sock.shutdown(socket.SHUT_RDWR)
-                with contextlib.suppress(OSError):
-                    sock.close()
-            raise TimeoutError(f"no answer within {limit:g} s")
-        if "error" in out:
-            raise out["error"]
-        return out["body"]
+        return bounded_fetch(base_url, "GET", f"/twin/v1/lock-parts/{lock_id}", limit, timeout)
 
     def parse(raw: bytes):
         body = json.loads(raw)
@@ -241,6 +281,7 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             raise ValueError("the ref is empty or too long")
         return {"receiver": body["receiver"], "ref": body["ref"]}
 
+    @registry_guard("twin registry service")
     def read(lock_id: str):
         if lock_id in seen:
             return seen[lock_id]
@@ -262,13 +303,237 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
         except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
             raise NoCantonSide("the twin registry service gave an answer that is not the parts of a lock's id") from e
         except (OSError, http.client.HTTPException) as e:
-            why = f"the twin registry service cannot be read: {e}"
+            why = f"the twin registry service cannot be read: {bounded_text(e)}"
             REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
             raise NoCantonSide(why) from e
         finally:
             spent[0] += time.monotonic() - started
         return seen[lock_id]
     return read
+
+
+CONTEXT_MAX_BODY = 256 * 1024   # the most the builder reads of a token registry's choice context (its disclosed contracts carry blobs)
+CONTEXT_MAX_VALUES = 64         # the most entries in a choice context's values
+CONTEXT_MAX_DISCLOSED_BYTES = 512 * 1024   # the most bytes of the disclosed contracts that a block's registries name (those not given otherwise): the participant refuses a request over its size limit
+CONTEXT_MAX_DISCLOSED = 16      # the most disclosed contracts one registry answer names
+CONTEXT_KEY = re.compile(r"[ -~]{1,128}")
+
+
+def check_port(parts, what: str) -> None:
+    """A URL's port must be a number from 0 to 65535: a bad one fails the run at start, not every request to the service later."""
+    try:
+        parts.port
+    except ValueError:
+        raise BuilderError(f"the port of {what!r} is not a port (a number from 0 to 65535)") from None
+
+
+def parse_registries(items) -> dict:
+    """`ADMIN=URL` (a token registry for the instruments of the party ADMIN) for each item, as {admin: URL}. The URL is the root of the registry's
+    CIP-0056 off-ledger API, so that `<URL>/registry/allocations/v1/...` and `<URL>/registry/transfer-instruction/v1/...` are its endpoints; for Canton
+    Coin that is the validator's scan proxy (`https://<validator>/api/validator/v0/scan-proxy`)."""
+    found = {}
+    for item in items:
+        admin, _, url = item.partition("=")
+        parts = urllib.parse.urlsplit(url)
+        check_port(parts, item)
+        if not canton_party_text(admin) or parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+            raise BuilderError(f"a token registry must be ADMIN=URL (an http or https URL with no query and no user or password), not {item!r}")
+        if admin in found:
+            raise BuilderError(f"two token registries for {admin}")
+        found[admin] = url
+    return found
+
+
+CONTEXT_MAX_DEPTH = 16          # the deepest an AnyValue may nest (a list in a list ...): the Advance's argument nests it 3 deeper, and Python's JSON writer has a limit
+CONTEXT_MAX_NODES = 1024        # the most AnyValues (a list's and a map's too) in one choice context
+CONTEXT_MAX_CONTEXT_BYTES = 16 * 1024      # the most bytes of one choice context (a Canton Coin one is a few hundred): the participant charges traffic for every byte of the Advance
+CONTEXT_MAX_BLOCK_BYTES = 128 * 1024       # the most bytes of the choice contexts of all the legs of a block; the later legs are left out
+INT64 = re.compile(r"-?[0-9]{1,19}")
+DECIMAL = re.compile(r"-?[0-9]{1,28}(\.[0-9]{1,10})?")   # a Daml Decimal: 28 digits before the point, 10 after
+CONTRACT_ID = re.compile(r"00[0-9a-f]{64}([0-9a-f]{2})+")   # a Daml contract id (V1): "00", a 32-byte discriminator, a non-empty suffix; lowercase hex, at most 254 characters
+CONTRACT_ID_MAX = 254
+TEMPLATE_ID = re.compile(r"(#[A-Za-z0-9_-]+|[0-9a-f]{64}):[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")   # the Ledger API's identifier: <package id or #package name>:<module>:<entity>
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")   # UTC, to the microsecond
+CONTEXT_SCALARS = {"AV_Text": (str,), "AV_Party": (str,), "AV_ContractId": (str,), "AV_Decimal": (str,), "AV_Date": (str,), "AV_Time": (str,),
+                   "AV_RelTime": (dict,), "AV_Int": (str, int), "AV_Bool": (bool,)}   # the JSON API writes a Decimal as text, an Int as text (or a whole number), a RelTime as {"microseconds": Int}
+
+
+def contract_id_ok(x) -> bool:
+    return isinstance(x, str) and len(x) <= CONTRACT_ID_MAX and CONTRACT_ID.fullmatch(x) is not None
+
+
+def int64_text(x) -> bool:
+    return isinstance(x, str) and INT64.fullmatch(x) is not None and -2**63 <= int(x) < 2**63
+
+
+def scalar_ok(tag: str, payload) -> bool:
+    """Whether this scalar's value is one that Daml would parse as the tag's type (anything else makes Canton refuse the whole Advance)."""
+    if tag == "AV_Party":
+        return canton_party_text(payload)
+    if tag == "AV_Decimal":
+        return DECIMAL.fullmatch(payload) is not None
+    if tag == "AV_Int":
+        return int64_text(payload) if isinstance(payload, str) else -2**63 <= payload < 2**63
+    if tag == "AV_ContractId":
+        return contract_id_ok(payload)
+    if tag == "AV_RelTime":
+        return set(payload) == {"microseconds"} and (int64_text(payload["microseconds"]) or (type(payload["microseconds"]) is int and -2**63 <= payload["microseconds"] < 2**63))
+    if tag in ("AV_Date", "AV_Time"):
+        shape, form, text = (DATE, "%Y-%m-%d", payload) if tag == "AV_Date" else (TIME, "%Y-%m-%dT%H:%M:%S", payload[:19])
+        if shape.fullmatch(payload) is None:
+            return False
+        try:
+            datetime.strptime(text, form)
+        except ValueError:
+            return False
+    return True
+
+
+def check_any_value(value) -> None:
+    """`value` is a Daml `AnyValue` as the JSON API writes it ({"tag": "AV_...", "value": ...}), no deeper than CONTEXT_MAX_DEPTH and with at most
+    CONTEXT_MAX_NODES values in it, each scalar's text one that Daml parses as its type (party grammar, Int64, Decimal of 28 and 10 digits, hex
+    contract id, YYYY-MM-DD date, UTC timestamp, a RelTime as {"microseconds": Int}), with no number that is not a whole one: anything else is a ValueError. Walks the value without recursion."""
+    todo, nodes = [(value, 1)], 0
+    while todo:
+        v, depth = todo.pop()
+        nodes += 1
+        if nodes > CONTEXT_MAX_NODES or depth > CONTEXT_MAX_DEPTH:
+            raise ValueError("a choice context value is too big")
+        if not isinstance(v, dict) or set(v) != {"tag", "value"} or not isinstance(v["tag"], str):
+            raise ValueError("not an AnyValue")
+        tag, payload = v["tag"], v["value"]
+        if tag == "AV_List" and isinstance(payload, list):
+            todo.extend((x, depth + 1) for x in payload)
+        elif tag == "AV_Map" and isinstance(payload, dict) and all(isinstance(k, str) for k in payload):
+            todo.extend((x, depth + 1) for x in payload.values())
+        elif tag in CONTEXT_SCALARS and type(payload) in CONTEXT_SCALARS[tag]:
+            if not scalar_ok(tag, payload):
+                raise ValueError(f"not a {tag[3:]}")
+        else:
+            raise ValueError("not an AnyValue")
+
+
+def refuse_constant(name: str):
+    """json.loads accepts NaN and Infinity; a choice context is not written with them."""
+    raise ValueError(f"{name} is not JSON")
+
+
+def context_values(data) -> dict:
+    """The `values` of a choice context in the registry's answer (Daml's `ChoiceContext`, as JSON): at most CONTEXT_MAX_VALUES entries, each an
+    `AnyValue` that Daml could hold (see check_any_value). Anything else is a ValueError."""
+    values = data.get("values") if isinstance(data, dict) and set(data) == {"values"} else None
+    if not isinstance(values, dict) or len(values) > CONTEXT_MAX_VALUES:
+        raise ValueError("not a choice context")
+    if not all(CONTEXT_KEY.fullmatch(key) for key in values):
+        raise ValueError("not an entry of a choice context")
+    check_any_value({"tag": "AV_Map", "value": values})   # the values together, as the Map they are, with the limits of one value
+    if len(json.dumps(values, allow_nan=False)) > CONTEXT_MAX_CONTEXT_BYTES:
+        raise ValueError("a choice context is too big")
+    return {"values": values}
+
+
+def context_disclosed(items) -> list:
+    """The disclosed contracts in the registry's answer, in the Ledger API's form: templateId, contractId and createdEventBlob (text), and a
+    synchronizerId (text) when the registry names one. At most CONTEXT_MAX_DISCLOSED; anything else is a ValueError."""
+    if not isinstance(items, list) or len(items) > CONTEXT_MAX_DISCLOSED:
+        raise ValueError("not a list of disclosed contracts")
+    found = []
+    for d in items:
+        if not isinstance(d, dict) or not all(isinstance(d.get(k), str) and d[k] for k in ("templateId", "contractId", "createdEventBlob")):
+            raise ValueError("not a disclosed contract")
+        if d.get("synchronizerId") is not None and not isinstance(d["synchronizerId"], str):
+            raise ValueError("not a disclosed contract")
+        if not contract_id_ok(d["contractId"]) or TEMPLATE_ID.fullmatch(d["templateId"]) is None:
+            raise ValueError("not a disclosed contract")
+        try:   # the JSON API decodes the blob while it parses the request: strict base64 (binascii.Error is a ValueError), and something in it
+            blob = base64.b64decode(d["createdEventBlob"], validate=True)
+        except ValueError as e:
+            raise ValueError("not a disclosed contract") from e
+        if not blob:
+            raise ValueError("not a disclosed contract")
+        found.append({k: d[k] for k in ("templateId", "contractId", "createdEventBlob", "synchronizerId") if d.get(k)})
+    return found
+
+
+class ChoiceContexts:
+    """What the token registries (`--registry ADMIN=URL`) say a leg's choice needs: the choice context, and the contracts it names, which go with
+    the Advance as disclosed contracts. The registry is trusted for nothing (as for `twin_registry_reader`): a request is bounded by `deadline` seconds, by
+    a timer; the answer is read to at most CONTEXT_MAX_BODY bytes; a redirect is not followed; the answer must be a choice context and disclosed
+    contracts and nothing else. All the requests of one reader (the builder makes one for each block) to one registry share `budget` seconds (the deadline by
+    default), each registry its own. A registry that cannot be reached or is too slow is not asked again for `backoff` seconds. Any bad answer leaves the leg out with a
+    reason (NoCantonSide) and never fails the build. An answer is asked once."""
+
+    def __init__(self, registries: dict, tokens: dict | None = None, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF,
+                 budget: float | None = None):
+        self.registries, self.tokens, self.timeout, self.deadline, self.backoff = registries, tokens or {}, timeout, deadline, backoff
+        self.budget, self.spent, self.seen, self.noted = deadline if budget is None else budget, {}, {}, set()   # spent: registry URL -> seconds
+
+    def wants(self, admin: str) -> bool:
+        """Whether the registry of this instrument admin is one the builder asks."""
+        return admin in self.registries
+
+    @registry_guard("token registry")
+    def allocation(self, admin: str, allocation: str):
+        """(context, disclosed contracts) for `Allocation_ExecuteTransfer` of this allocation."""
+        reply = self.ask(admin, f"/registry/allocations/v1/{urllib.parse.quote(allocation, safe='')}/choice-contexts/execute-transfer", {"meta": {}, "excludeDebugFields": True})
+        return self.read(reply)
+
+    @registry_guard("token registry")
+    def transfer(self, admin: str, factory: str, transfer: dict):
+        """(context, disclosed contracts) for `TransferFactory_Transfer` of this transfer through this factory; the factory the registry names must be the token's."""
+        args = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
+        timeless = {**transfer, "requestedAt": None, "executeBefore": None}   # the builder's clock moves on in a rebuild: the same transfer is not asked again for it
+        reply = self.ask(admin, "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": args, "excludeDebugFields": True},
+                         {"choiceArguments": {**args, "transfer": timeless}})
+        if not isinstance(reply, dict) or reply.get("factoryId") != factory:
+            raise NoCantonSide("the token registry names another transfer factory than the token's")
+        if reply.get("transferKind") != "direct" and (admin, args["transfer"].get("receiver")) not in self.noted:   # Daml's Receive then reuses this context to accept an offer
+            self.noted.add((admin, args["transfer"].get("receiver")))
+            print(f"the token registry's transfer to {args['transfer'].get('receiver')} is of kind {bounded_text(reply.get('transferKind'))[:32]!r}, not 'direct'", file=sys.stderr)
+        return self.read(reply.get("choiceContext"))
+
+    def read(self, reply):
+        try:
+            if not isinstance(reply, dict):
+                raise ValueError("not a choice context")
+            context = context_values(reply.get("choiceContextData"))
+            disclosed = context_disclosed(reply.get("disclosedContracts", []))
+        except (ValueError, TypeError, RecursionError) as e:
+            raise NoCantonSide("the token registry gave an answer that is not a choice context") from e
+        return (context if context["values"] else None), disclosed
+
+    def ask(self, admin: str, path: str, payload: dict, identity: dict | None = None):
+        """The registry's answer to this request; `identity` (the payload by default) tells which requests are the same one."""
+        base = self.registries[admin]
+        key = (base, path, json.dumps(payload if identity is None else identity, sort_keys=True))
+        if key in self.seen:
+            return self.seen[key]
+        down = REGISTRY_DOWN.get(("choice", base))
+        if down and time.monotonic() < down[0]:
+            raise NoCantonSide(down[1])
+        limit = min(self.deadline, self.budget - self.spent.get(base, 0.0))
+        if limit <= 0:   # this registry's own time is used: its remaining legs are left out for this block only (it is not marked down; it answered what it was asked)
+            raise NoCantonSide(f"the token registry cannot be read: the block's {self.budget:g} s for it are used")
+        headers = {"content-type": "application/json"}
+        if self.tokens.get(admin):
+            headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
+        started = time.monotonic()
+        try:
+            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
+                                        parse_constant=refuse_constant)
+        except _RegistryStatus as e:
+            raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e
+        except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
+            raise NoCantonSide("the token registry gave an answer that is not JSON") from e
+        except (OSError, http.client.HTTPException) as e:
+            why = f"the token registry cannot be read: {bounded_text(e)}"
+            if limit >= self.deadline or not isinstance(e, TimeoutError):   # a request cut short by what was left of the block's budget is not the registry's failure
+                REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
+            raise NoCantonSide(why) from e
+        finally:
+            self.spent[base] = self.spent.get(base, 0.0) + time.monotonic() - started
+        return self.seen[key]
 
 
 class Reth:
@@ -737,7 +1002,15 @@ class Ledger:
         command = {"ExerciseCommand": {"templateId": CHAIN, "contractId": chain["contractId"], "choice": "Advance", "choiceArgument": argument}}
         body = {"commands": [command], "commandId": command_id or str(uuid.uuid4()), "userId": self.cfg.ledger_user,
                 "actAs": [self.cfg.party], "readAs": self.readers()}
-        shown = [*self.cfg.disclosed, *(d for d in disclosed or [] if d not in self.cfg.disclosed)]   # --disclosed, then the venue trades' allocations
+        shown = list(self.cfg.disclosed)   # --disclosed, then the venue trades' allocations and what the registries name: a contract once, by its id, as the copy that has a synchronizerId
+        where = {d.get("contractId"): i for i, d in enumerate(shown) if isinstance(d, dict)}
+        for d in disclosed or []:
+            i = where.get(d.get("contractId"))
+            if i is None:
+                where[d.get("contractId")] = len(shown)
+                shown.append(d)
+            else:
+                shown[i] = better_copy(shown[i], d)
         if shown:
             body["disclosedContracts"] = shown
         if self.cfg.package_id:   # without it Canton picks the highest version every hosting participant has vetted, so vetting a new one would switch it
@@ -1061,9 +1334,12 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
+        self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
+        self.leg_context_bytes: dict = {}   # leg key -> the bytes of its choice context
+        self.leg_disclosed: dict = {}   # leg key -> the contracts its choice context names, which the block's final legs pick from for the Advance
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
@@ -1228,9 +1504,11 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         return allocation_in_use(r["allocation"], taken)
 
     request = first_fit(requests, problem, "")
+    leg_out = {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+    with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, request["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(request["allocation"])
-    return {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+    return leg_out
 
 
 def claim_leg(leg: LegEvent, canton: Canton, claimed: dict | None, claims: list) -> dict:
@@ -1274,10 +1552,14 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
         total += base_units(h["amount"])
     if total < needed:
         raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    leg_out = {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
+                                                 "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
+    transfer = {"sender": chain["gateway"], "receiver": leg.party, "amount": canton_amount(leg.amount), "instrumentId": token["instrumentId"],
+                "requestedAt": stamp(canton.now), "executeBefore": stamp(canton.now + timedelta(days=1)), "inputHoldingCids": inputs, "meta": {"values": {}}}
+    with_context(canton, leg_out, instrument[0], lambda c, admin: c.transfer(admin, token["factory"], transfer))
     if claimed is not None:
         claimed["instruments"].add(instrument)
-    return {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
-                                              "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
+    return leg_out
 
 
 def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
@@ -1316,9 +1598,12 @@ def terms_leg(leg: LegEvent, canton: Canton, claimed: dict | None, named: list) 
         return found or allocation_in_use(t["allocation"], taken)
 
     terms = first_fit(named, problem, "")
+    leg_out = {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+    admin = canton.allocations[terms["allocation"]]["transferLeg"]["instrumentId"]["admin"]
+    with_context(canton, leg_out, admin, lambda c, a: c.allocation(a, terms["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(terms["allocation"])
-    return {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+    return leg_out
 
 
 def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list) -> dict:
@@ -1364,12 +1649,18 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
         return allocation_in_use(t["allocation"], taken)
 
     trade = first_fit(trades, problem, "")
+    leg_out = {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+    token = next(g for g in canton.tokens if g["contractId"] == trade["gatewayToken"])
+    with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, trade["allocation"]))
+    shown = disclosed_allocation(trade)
+    if shown and any(not same_contract(o, shown) for o in canton.leg_disclosed.get(leg_key(leg_out), ()) if o["contractId"] == shown.get("contractId")):
+        forget_leg(canton, leg_out)   # a leg that is left out holds no bytes and no contracts of the block's
+        raise NoCantonSide("the token registry names the venue's allocation differently than the trade carries it")
     if claimed is not None:
         claimed["allocations"].add(trade["allocation"])
-    shown = disclosed_allocation(trade)
     if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
         canton.disclosed[trade["contractId"]] = shown
-    return {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+    return leg_out
 
 
 def venue_disclosed(legs: list, canton: Canton) -> list:
@@ -1378,8 +1669,63 @@ def venue_disclosed(legs: list, canton: Canton) -> list:
     for leg in legs:
         shown = canton.disclosed.get(leg["value"]["tradeCid"]) if leg["tag"] == "TradeLeg" else None
         if shown:
-            found[shown.get("contractId")] = shown
+            found[shown.get("contractId")] = better_copy(found.get(shown.get("contractId")), shown)
+        for named in canton.leg_disclosed.get(leg_key(leg), ()):   # what the registry's choice context for the leg names
+            found[named["contractId"]] = better_copy(found.get(named["contractId"]), named)
     return list(found.values())
+
+
+def better_copy(have: dict | None, other: dict) -> dict:
+    """Of two copies of one contract (the same id and blob), the one to send: the first, unless only the other has a synchronizerId."""
+    return other if have is not None and not have.get("synchronizerId") and other.get("synchronizerId") else (have or other)
+
+
+def same_contract(a: dict, b: dict) -> bool:
+    """Two copies with the same contract id are one contract when their blobs are the same: the blob is the contract, and the spelling of
+    the template id or a missing synchronizerId do not make it another."""
+    return a.get("contractId") == b.get("contractId") and a.get("createdEventBlob") == b.get("createdEventBlob")
+
+
+def leg_key(leg: dict) -> tuple:
+    """What tells a leg of a block from the others: its kind, and the contract (a withdrawal: the id) that it settles."""
+    value = leg["value"]
+    return leg["tag"], value.get({"DepositLeg": "request", "PaymentLeg": "terms", "TradeLeg": "tradeCid"}.get(leg["tag"], "id"))
+
+
+def disclosed_forms(canton: Canton, contract_id: str) -> list:
+    """The disclosed contracts with this id that the block already has: those the registry named for its legs, `--disclosed`, and the venues' allocations."""
+    held = [*(o for legs in canton.leg_disclosed.values() for o in legs), *canton.ledger.cfg.disclosed, *canton.disclosed.values()]
+    return [o for o in held if isinstance(o, dict) and o.get("contractId") == contract_id]
+
+
+def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
+    """The leg gets the choice context that the registry of its instrument says its choice needs, when the builder is given that registry
+    (`--registry`); `ask(contexts, admin)` is what to ask it. The contracts the context names are kept for the Advance: one that another leg
+    of the block names too must be the same contract. A registry that has no entry to give leaves the field out (the empty context)."""
+    if canton.contexts is None or not canton.contexts.wants(admin):
+        return
+    context, shown = ask(canton.contexts, admin)
+    for named in shown:
+        if any(not same_contract(o, named) for o in disclosed_forms(canton, named["contractId"])):
+            raise NoCantonSide("the token registry names a contract differently than it is given for another leg of the block, with --disclosed or by a venue")
+    held = {o["contractId"]: o for legs in canton.leg_disclosed.values() for o in legs}
+    given = {d.get("contractId") for d in [*canton.ledger.cfg.disclosed, *canton.disclosed.values()] if isinstance(d, dict)}
+    added = {o["contractId"]: o for o in shown if o["contractId"] not in held}
+    if sum(len(json.dumps(o)) for cid, o in {**held, **added}.items() if cid not in given) > CONTEXT_MAX_DISCLOSED_BYTES:
+        raise NoCantonSide("the token registry names more disclosed contracts than a block may carry")
+    size = len(json.dumps(context)) if context is not None else 0
+    if size + sum(n for k, n in canton.leg_context_bytes.items() if k != leg_key(leg)) > CONTEXT_MAX_BLOCK_BYTES:
+        raise NoCantonSide("the token registries' choice contexts are more than a block may carry")
+    if context is not None:
+        leg["value"]["choiceContext"] = context
+    canton.leg_context_bytes[leg_key(leg)] = size
+    canton.leg_disclosed[leg_key(leg)] = shown
+
+
+def forget_leg(canton: Canton, leg: dict) -> None:
+    """What with_context recorded for a leg that is then left out: its context's bytes and the contracts it named do not count for the block."""
+    canton.leg_context_bytes.pop(leg_key(leg), None)
+    canton.leg_disclosed.pop(leg_key(leg), None)
 
 
 def disclosed_allocation(trade: dict) -> "dict | None | bool":
@@ -1552,12 +1898,16 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     state = canton.quota if limits and any(e.kind == WITHDRAWAL for e in events) else None
     for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "redeems": set(), "holdings": set(), "quota": {}}):
         legs, missing = [], []
+        canton.leg_context_bytes.clear()   # each pass counts the legs it keeps, and only those
+        canton.leg_disclosed.clear()
         for event in events:
+            before = set(canton.leg_context_bytes)
             try:
                 leg = finders[event.kind](event, canton, claimed)
                 if claimed is None and state is not None and event.kind == WITHDRAWAL:
                     found = quota_problem(state, instrument_name(canton.token(event)), event.amount)
                     if found:
+                        forget_leg(canton, leg)   # the finder gave it a context; a leg that is left out holds no bytes and no contracts of the block's
                         missing.append((event, found))
                         continue
                 if claimed is not None and state is not None and event.kind == WITHDRAWAL:   # what the release legs of this block add to is counted with it
@@ -1565,6 +1915,9 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
                     claimed["quota"][name] = claimed["quota"].get(name, 0) + event.amount
                 legs.append(leg)
             except NoCantonSide as e:
+                for key in set(canton.leg_context_bytes) - before:   # a leg left out after its context was recorded
+                    canton.leg_context_bytes.pop(key, None)
+                    canton.leg_disclosed.pop(key, None)
                 missing.append((event, str(e)))
         if missing:
             return legs, missing
@@ -1888,6 +2241,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     checked, staged = False, None   # with the pre-check on: whether this block was checked, and the prefix it cut the block back to (reth's tip already)
     reuse: dict = {}   # the files of the pre-check of the whole block, when it passed (the prover's input is made once)
     work = Path(cfg.work_dir) / f"block-{n}"
+    contexts = ChoiceContexts(cfg.registries, cfg.registry_tokens) if cfg.registries else None   # one for the block, like the twin registry's reader
     lock_parts = twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None   # one for the block: its answers and its time budget hold across rebuilds
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
@@ -1906,7 +2260,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits)
+                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -2497,6 +2851,37 @@ def check_package_id(value: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise BuilderError("bad arguments: --package-id must be a package id: 64 lowercase hex digits")
     return value
+
+
+def registry_token(path: str) -> str:
+    """The bearer token in the file, read now (a token that is renewed in its file needs no restart); a file that cannot be read or does not hold one token
+    is a NoCantonSide, which leaves the leg out, never a failed build. The token is never printed."""
+    try:
+        token = Path(path).read_text().strip()
+    except (OSError, ValueError) as e:
+        raise NoCantonSide("the token registry's token cannot be read") from e
+    if not token or any(c in token for c in "\r\n\0"):
+        raise NoCantonSide("the token registry's token file does not hold one token")
+    return token
+
+
+def read_registry_tokens(items, registries: dict) -> dict:
+    """{admin: token file} from `ADMIN=FILE` items, each for an admin that has a registry that is https or on this machine (a token is not sent in the
+    clear); the file is checked to hold one token now, and read again for each request. The token is never printed."""
+    found = {}
+    for item in items:
+        admin, _, path = item.strip().partition("=")
+        if admin not in registries:
+            raise BuilderError(f"a registry token for {admin}, which has no token registry (--registry)")
+        url = urllib.parse.urlsplit(registries[admin])
+        if url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
+            raise BuilderError(f"a registry token for {admin}, whose token registry is not https (a token is not sent in the clear, except to this machine)")
+        try:
+            registry_token(path)
+        except NoCantonSide as e:
+            raise BuilderError(f"the registry token file {path} must hold one token that can be read") from e
+        found[admin] = path
+    return found
 
 
 def read_disclosed(path: str) -> list:
@@ -3771,6 +4156,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
     ap.add_argument("--twin-registry-url", metavar="URL", default=os.environ.get("CZE_TWIN_REGISTRY_URL", ""), help="the twin registry service (apps/twin/registry) that gives the parts of a lock's id, so that a payment into a registered vault gets its lock leg (also CZE_TWIN_REGISTRY_URL; empty: no lock leg is attached)")
+    ap.add_argument("--registry", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRIES", "").split(",") if x.strip()], metavar="ADMIN=URL",
+                    help="the token registry (the root of its CIP-0056 off-ledger API; for Canton Coin the validator's scan proxy) of the instruments of the party ADMIN (repeatable, also CZE_TOKEN_REGISTRIES, comma separated): a deposit, withdrawal, payment or trade leg of such an instrument gets the registry's choice context, and the contracts it names are disclosed with the Advance. An instrument with no registry here gets none")
+    ap.add_argument("--registry-token-file", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
+                    help="a file with the bearer token that the registry of ADMIN wants (repeatable, also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated); sent to that registry only")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -3860,7 +4249,12 @@ def main() -> int:
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         cfg.venues = tuple(dict.fromkeys(args.venue))
+        check_port(urllib.parse.urlsplit(args.twin_registry_url), args.twin_registry_url)
         cfg.twin_registry_url = args.twin_registry_url
+        cfg.registries = parse_registries(x.strip() for x in args.registry)
+        if cfg.registries and args.unlabelled_deposits:
+            raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
+        cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:

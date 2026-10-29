@@ -1,7 +1,8 @@
 """The twin legs (Daml 0.5.0): a payment into a registered vault is a LockLeg, with the parts of the lock's id from the twin registry service; a payment
 whose id is the release id of a redeem request is a ReleaseLeg. Both name the twin pinned for the token in `ZkChain.twins`. Against the same fakes as
 test_builder.py, and a fake registry service."""
-import hashlib, json, sys, threading, time, unittest
+import hashlib, http.client, json, sys, threading, time, unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -189,6 +190,20 @@ class Twins(tb.LegCase):
         s, t = self.setup_twin(LOCK)
         s.ledger.get_failures = {"/v2/parties/": 500}
         self.assert_left_out(s, t, "cannot say whether")
+
+    def test_a_twin_answer_that_raises_anything_leaves_the_lock_out(self):
+        class Odd(Exception):
+            def __str__(self):
+                raise RecursionError("maximum recursion depth exceeded")
+        s, t = self.setup_twin(LOCK)
+        with mock.patch.object(b, "canton_party_text", side_effect=Odd()):
+            self.assert_left_out(s, t, "twin registry service", "Odd")
+
+    def test_text_from_the_twin_registry_that_goes_into_a_reason_is_bounded(self):
+        s, t = self.setup_twin(LOCK)
+        with mock.patch.object(b, "bounded_fetch", side_effect=http.client.BadStatusLine("x" * 60000)):
+            result = self.assert_left_out(s, t, "cannot be read")
+        self.assertLess(len(result["leftOut"][0]["reason"]), 300)
 
     def test_a_hostile_registry_answer_leaves_the_lock_out_and_never_stops_the_block(self):
         good = {"receiver": RECEIVER, "ref": REF}
