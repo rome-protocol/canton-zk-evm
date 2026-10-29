@@ -342,6 +342,9 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
             if a["admin"] == admin and a["token"] == token and a["owner"] == party and (a.get("meta") or {}).get("values", {}).get(MINT_REFERENCE) == expected:
                 return e
     holding = net.wait_for("the twin to be minted", minted, WAIT_SECONDS)
+    # The mint shows on Canton as soon as the block is booked, but reth finalizes the payment's block only after that: whoever reads the vault's balance at
+    # the finalized block next must see the payment, so the command returns when the block is final.
+    evm.wait_finalized(paid_tx["tx"], WAIT_SECONDS)
     return {"tx": paid_tx["tx"], "block": paid_tx["block"], "approveTx": approved["tx"], "lockId": expected, "vault": "0x" + paid, "receiver": party,
             "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
 
@@ -421,6 +424,9 @@ def send(net: canton.Network, sender: str, receiver: str, address: str, amount: 
     tag = ((result or {}).get("output") or {}).get("tag") if isinstance(result, dict) else None
     if tag != TRANSFER_COMPLETED:
         raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {TRANSFER_COMPLETED}")
+    # The sender's participant has committed; the twin's balances are read on the gateway's, which spends the input holdings a moment later.
+    net.wait_for("the sender's holdings to be spent on the gateway's participant",
+                 lambda: not {e["contractId"] for e in net.template("operator", ADMIN, TWIN_HOLDING)} & set(inputs) or None, WAIT_SECONDS)
     return {"updateId": tx["updateId"], "from": sender, "to": to, "amount": transfer["amount"], "instrument": "erc20:" + token, "factory": factory,
             "inputs": inputs, "result": tag}
 
@@ -466,6 +472,7 @@ def redeem(net: canton.Network, holder: str, address: str, amount: str, recipien
     except canton.Fail as e:
         raise canton.Fail(f"{e}; the redeem request {cid} is still open") from None
     net.wait_for("the release to burn the twin", lambda: cid not in [e["contractId"] for e in open_requests()] or None, WAIT_SECONDS)
+    evm.wait_finalized(released["tx"], WAIT_SECONDS)   # the release's block is final before the command returns: the balances read at the finalized block show it
     return {"tx": released["tx"], "block": released["block"], "releaseId": rid, "vault": "0x" + paying, "recipient": "0x" + to, "amount": request["amount"], "baseUnits": str(base),
             "request": cid, "requestArchived": True}
 

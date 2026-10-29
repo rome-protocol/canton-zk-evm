@@ -340,6 +340,7 @@ class FakeEvm:
     def __init__(self, token):
         self.token, self.sent, self.failing, self.used, self.after_send = token, [], set(), set(), None
         self.vault_gateway = evm.gateway_address()   # `used`: the ids that the gateway has used; `after_send`: called with each sent transaction
+        self.finalized_lag, self.finalized_reads = 0, 0   # reth's finalized block is behind every block until it has been asked for this many times
 
     def send(self, folder, who, to, data, gas, *rest):
         self.sent.append({"who": who, "to": to, "data": data, "gas": gas})
@@ -355,6 +356,11 @@ class FakeEvm:
         if method == "eth_getTransactionReceipt":
             n = int(params[0], 16)
             return {"blockNumber": hex(100 + n), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(50_000), "status": hex(0 if n in self.failing else 1)}
+        if method == "eth_getBlockByNumber":
+            if params[0] == "finalized":
+                self.finalized_reads += 1
+                return {"number": hex(10**6 if self.finalized_reads > self.finalized_lag else 0), "hash": "0x" + "ff" * 32}
+            return {"number": params[0], "hash": "0x" + "bb" * 32}   # the block the receipts name
         return self.token.rpc(method, params)
 
 
@@ -578,6 +584,17 @@ class LockTests(ChainTestCase):
         FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [minted("v::1", "1.0", "x"), minted("v::1", "2.5", twin.lock_id("v::1", "ref-1"), cid="right")]
         self.assertEqual(self.lock()["holding"], "right")
 
+    def test_it_returns_only_when_the_payments_block_is_final(self):
+        self.holds()
+        self.evm.finalized_lag = 3
+        with mock.patch.dict(os.environ, {"CZE_POLL_SECONDS": "0"}):
+            self.lock()
+        self.assertEqual(self.evm.finalized_reads, 4)   # three reads of a finalized block that is behind the payment's, then one that is not
+        self.holds()
+        self.evm.finalized_lag, self.evm.finalized_reads = 10**9, 0
+        with mock.patch.dict(os.environ, {"CZE_POLL_SECONDS": "0"}), mock.patch.object(twin, "WAIT_SECONDS", 0), self.assertRaisesRegex(SystemExit, "not in a finalized block"):
+            self.lock()
+
     def test_the_mint_is_read_as_the_gateway_party(self):
         self.holds()
         FakeLedger.asked.clear()
@@ -651,6 +668,21 @@ class SendTests(ChainTestCase):
 
     def send(self, *args):
         return twin.send(self.net, *(args or ("u", "v", TOKEN, "1.75")), self.URL)
+
+    def test_it_returns_only_when_the_gateways_participant_has_spent_the_inputs(self):
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [holding(U, "2.0"), holding(V, "9.0")]   # what the gateway's participant still shows
+        looks = []
+
+        def sleep(seconds):
+            looks.append(seconds)
+            if len(looks) == 2:   # the sender's commit reaches the gateway's participant
+                FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [holding(V, "9.0")]
+        with mock.patch.object(canton.time, "sleep", sleep):
+            self.send()
+        self.assertEqual(len(looks), 2)
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [holding(U, "2.0")]
+        with mock.patch.object(canton.time, "sleep"), mock.patch.object(twin, "WAIT_SECONDS", 0), self.assertRaisesRegex(canton.Fail, "timed out waiting for the sender's holdings"):
+            self.send()
 
     def test_the_transfer_is_asked_of_the_registry_and_exercised_as_the_sender(self):
         got = self.send()
@@ -791,6 +823,15 @@ class RedeemTests(ChainTestCase):
         self.assertEqual(release["data"], evm.call_data("release(string,address,address,uint256)", ["r-1", self.TOKEN_ADDRESS, evm.address_of(self.RECIPIENT, "r"), 1_750_000]))
         self.assertEqual(got, {"tx": f"0x{1:064x}", "block": 101, "releaseId": twin.release_id(VAULT_A, "r-1"), "vault": "0x" + VAULT_A, "recipient": self.RECIPIENT, "amount": "1.75",
                                "baseUnits": "1750000", "request": "cid-1", "requestArchived": True})
+
+    def test_it_returns_only_when_the_releases_block_is_final(self):
+        self.evm.finalized_lag = 3
+        with mock.patch.dict(os.environ, {"CZE_POLL_SECONDS": "0"}):
+            self.redeem()
+        self.assertEqual(self.evm.finalized_reads, 4)
+        self.evm.finalized_lag, self.evm.finalized_reads = 10**9, 0
+        with mock.patch.dict(os.environ, {"CZE_POLL_SECONDS": "0"}), mock.patch.object(twin, "WAIT_SECONDS", 0), self.assertRaisesRegex(SystemExit, "not in a finalized block"):
+            self.redeem("u", TOKEN, "1.75", self.RECIPIENT, "r-2")
 
     def test_the_holdings_are_the_holders_own_and_cover_the_amount(self):
         self.redeem("u", TOKEN, "3.5", self.RECIPIENT, "r-1")
