@@ -29,6 +29,7 @@ jobs:
       - name: The EVM side (a fake reth) and the sidecar stand-in
         run: |
           "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest discover -s demo/tests -v
+          "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest tests/test_demo_twin.py -v
           python3 -m unittest discover -s tests -p 'test_demo_sidecar.py' -v
           python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_demo_call_log.py' -v
           python3 -m unittest discover -s tests -p 'test_demo_nightly_l3.py' -v

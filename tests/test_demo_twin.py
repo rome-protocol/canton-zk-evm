@@ -112,13 +112,18 @@ class FakeToken:
     """An ERC-20 on Ostia: what name(), symbol() and decimals() give at the finalized block. `decimals` None is an address with no code."""
     def __init__(self, name="Tether USD", symbol="USDT", decimals=6):
         self.name, self.symbol, self.decimals, self.reads = name, symbol, decimals, []
+        self.balances = {}   # holder address (40 lowercase hex digits) -> balanceOf, in base units
 
     def read_text(self, token, signature, tag):
         self.reads.append((token, signature, tag))
         return None if self.decimals is None else {"name()": self.name, "symbol()": self.symbol}[signature]
 
     def rpc(self, method, params):
-        assert method == "eth_call" and params[0]["data"] == "0x313ce567", (method, params)
+        data = params[0]["data"]
+        assert method == "eth_call" and data[:10] in ("0x313ce567", "0x70a08231"), (method, params)
+        if data.startswith("0x70a08231"):
+            self.reads.append((params[0]["to"], "balanceOf", params[1], data[-40:]))
+            return f"0x{self.balances[data[-40:]]:064x}"
         self.reads.append((params[0]["to"], "decimals()", params[1]))
         return "0x" if self.decimals is None else f"0x{self.decimals:064x}"
 
@@ -142,7 +147,7 @@ class RulesTests(TwinTestCase):
         self.assertEqual((node, body["actAs"], body["userId"]), ("operator", ["gw::1"], "operator"))
         self.assertEqual(got, {"created": True, "contractId": "cid-1", "admin": "gw::1", "token": TOKEN, "name": "Tether USD", "symbol": "USDT", "decimals": 6,
                                "instrument": "erc20:" + TOKEN})
-        self.assertEqual({tag for _, _, tag in self.token.reads}, {"finalized"})
+        self.assertEqual({read[2] for read in self.token.reads}, {"finalized"})
 
     def test_a_second_run_changes_nothing_and_prints_the_existing_rules(self):
         first = twin.rules(self.net, TOKEN)
@@ -227,6 +232,107 @@ class DisclosedTests(TwinTestCase):
         with self.assertRaisesRegex(canton.Fail, "without createdEventBlob"):
             twin.disclosed(self.net, TOKEN, str(out))
         self.assertFalse(out.exists())
+
+
+U, V, GW = "u::1", "v::1", "gw::1"
+VAULT_A, VAULT_B = "a1" * 20, "b2" * 20
+
+
+def holding(owner, amount, token=TOKEN, admin=GW):
+    return {"contractId": f"h-{owner}-{amount}", "offset": 1, "createArgument": {"admin": admin, "owner": owner, "token": token, "amount": amount, "meta": {"values": {}}}}
+
+
+def allocation(sender, amount, token=TOKEN, admin=GW):
+    leg = {"sender": sender, "receiver": "x::1", "amount": amount, "instrumentId": {"admin": admin, "id": "erc20:" + token}}
+    return {"contractId": f"a-{sender}-{amount}", "offset": 1, "createArgument": {"admin": admin, "token": token, "allocation": {"transferLeg": leg}}}
+
+
+class BalancesTests(TwinTestCase):
+    def setup_twin(self, decimals, held, vaults, locked=(), kinds=("Vault", "Vault")):
+        """A twin of `decimals` decimals with these holdings (and allocations) on the ledger, and these vault balances (base units) on Ostia."""
+        self.token.decimals = decimals
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = list(held)
+        FakeLedger.contracts[(GW, twin.TWIN_ALLOCATION)] = list(locked)
+        registry = [{"contractAddress": a, "contractCodeHash": "00" * 32, "contractKind": k} for a, k in zip((VAULT_A, VAULT_B), kinds)]
+        FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"] = {**FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"], "contracts": registry}
+        self.token.balances = dict(zip((VAULT_A, VAULT_B), vaults))
+
+    def test_six_decimals(self):
+        self.setup_twin(6, [holding(U, "2.5000000000"), holding(U, "0.0000010000"), holding(V, "1.0000000000")], [3_500_001, 0])
+        got = twin.main(["balances", "0x" + TOKEN])
+        self.assertEqual(got["holders"], {"u": {"party": U, "amount": "2.500001"}, "v": {"party": V, "amount": "1.0"}})
+        self.assertEqual((got["supply"], got["vaultsTotal"], got["supplyMatches"]), ("3.500001", "3.500001", True))
+        self.assertEqual(got["vaults"], [{"address": "0x" + VAULT_A, "baseUnits": "3500001", "amount": "3.500001"}, {"address": "0x" + VAULT_B, "baseUnits": "0", "amount": "0.0"}])
+        self.assertEqual((got["token"], got["instrument"], got["admin"], got["decimals"]), ("0x" + TOKEN, "erc20:" + TOKEN, GW, 6))
+
+    def test_ten_decimals_are_the_twin_amount(self):
+        self.setup_twin(10, [holding(U, "12.3456789012")], [123_456_789_012, 0])
+        got = twin.balances(self.net, TOKEN, [])
+        self.assertEqual((got["supply"], got["vaultsTotal"], got["supplyMatches"]), ("12.3456789012", "12.3456789012", True))
+        self.assertEqual(got["holders"]["v"]["amount"], "0.0")
+
+    def test_eighteen_decimals_split_over_two_vaults(self):
+        self.setup_twin(18, [holding(U, "7.0")], [5 * 10**18, 2 * 10**18 + 10**8])
+        got = twin.balances(self.net, TOKEN, ["u"])
+        self.assertEqual(list(got["holders"]), ["u"])
+        self.assertEqual((got["supply"], got["vaultsTotal"]), ("7.0", "7.0000000001"))
+        self.assertFalse(got["supplyMatches"])   # the second vault holds one twin unit more than the twin's supply
+
+    def test_a_mismatch(self):
+        self.setup_twin(6, [holding(U, "1.0")], [900_000, 0])
+        got = twin.balances(self.net, TOKEN, ["u", "v"])
+        self.assertEqual((got["supply"], got["vaultsTotal"], got["supplyMatches"]), ("1.0", "0.9", False))
+
+    def test_the_supply_counts_allocations_and_other_parties_and_leaves_out_other_twins(self):
+        other = holding(V, "5.0", token="cd" * 20)
+        self.setup_twin(6, [holding(U, "1.0"), holding("w::1", "2.0"), other, holding(V, "9.0", admin="x::1")], [4_000_000, 0], locked=[allocation(V, "1.0"), allocation(V, "3.0", token="cd" * 20)])
+        got = twin.balances(self.net, TOKEN, ["u", "v", "w::1"])
+        self.assertEqual({k: v["amount"] for k, v in got["holders"].items()}, {"u": "1.0", "v": "0.0", "w::1": "2.0"})
+        self.assertEqual((got["supply"], got["lockedInAllocations"], got["supplyMatches"]), ("4.0", "1.0", True))
+
+    def test_only_vaults_count(self):
+        self.setup_twin(6, [], [0, 1_000_000], kinds=("Gateway", "Vault"))
+        got = twin.balances(self.net, TOKEN, [])
+        self.assertEqual([v["address"] for v in got["vaults"]], ["0x" + VAULT_B])
+        self.assertEqual((got["supply"], got["vaultsTotal"], got["supplyMatches"]), ("0.0", "1.0", False))
+
+    def test_no_registry_and_no_twin_match_at_zero(self):
+        self.setup_twin(6, [], [])
+        chain = FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"]
+        chain["contracts"] = None
+        got = twin.balances(self.net, TOKEN, [])
+        self.assertEqual((got["vaults"], got["supply"], got["vaultsTotal"], got["supplyMatches"]), ([], "0.0", "0.0", True))
+
+    def test_a_vault_amount_a_twin_cannot_hold_stops_the_command(self):
+        self.setup_twin(18, [], [10**8 + 1, 0])   # 10^-10 plus 10^-18: finer than a twin amount
+        with self.assertRaisesRegex(canton.Fail, "finer than a twin amount"):
+            twin.balances(self.net, TOKEN, [])
+        self.setup_twin(6, [], [10**23, 0])   # 10^17 whole units
+        with self.assertRaisesRegex(canton.Fail, "above 10"):
+            twin.balances(self.net, TOKEN, [])
+
+    def test_conversions_are_exact(self):
+        self.assertEqual(twin.twin_units(1, 6, "x"), 10**4)
+        self.assertEqual(twin.twin_units(1, 10, "x"), 1)
+        self.assertEqual(twin.twin_units(10**8, 18, "x"), 1)
+        self.assertEqual(twin.twin_units(10**17 * 10**6 - 1, 6, "x") % 10**4, 0)
+        self.assertEqual(twin.twin_units(0, 36, "x"), 0)
+        for base, decimals in ((10**17 * 10**6, 6), (10**27, 10), (10**17 * 10**18, 18), (10**8 - 1, 18)):
+            with self.assertRaises(canton.Fail):
+                twin.twin_units(base, decimals, "x")
+        self.assertEqual(twin.ledger_units("0.0000000001"), 1)
+        self.assertEqual(twin.ledger_units("10"), 10**11)
+        for bad in ("-1.0", "0.00000000001"):
+            with self.assertRaises(canton.Fail):
+                twin.ledger_units(bad)
+
+    def test_a_party_is_u_v_or_an_id(self):
+        self.setup_twin(6, [], [0, 0])
+        for who in (["x"], ["U"]):
+            with self.assertRaises(SystemExit):
+                twin.balances(self.net, TOKEN, who)
+        with self.assertRaises(SystemExit):
+            twin.main(["balances"])
 
 
 if __name__ == "__main__":

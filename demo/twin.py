@@ -8,10 +8,17 @@
                                         (finalized block), unless the admin has them already: a second run changes nothing and prints the existing ones. Prints the contract id and the fields
   twin.py disclosed <token> <file>      writes the TwinRules of that token as one disclosed contract, {templateId, contractId, createdEventBlob, synchronizerId}, read as the gateway
                                         party with the created-event blob, to <file> (mode 0644): the file that network/external/setup.py --twin-rules-disclosed reads
+  twin.py balances <token> [u|v|<party id> ...]
+                                        each party's TwinHolding total of the instrument erc20:<token> of the gateway party (U and V if none is named); the twin's supply (every
+                                        holding of the instrument that the admin sees: the holdings and the amounts locked in allocations); balanceOf(vault) at the finalized block
+                                        on Ostia for each Vault of the chain's registry (the active ZkChain's `contracts`, read from the ledger), as a twin amount; and
+                                        supplyMatches, whether the supply is the sum of the vaults' balances. An amount that a twin cannot hold exactly (finer than 10 decimals,
+                                        or above 10^17 whole units) stops the command: nothing is rounded
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
 import json, os, sys, time
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,9 +33,11 @@ MAX_CODE_BYTES = 0xFFFF   # what PUSH2 can say; a contract is never larger than 
 VAULT_GAS = 800_000       # 53,000 + 200 per byte of code is about 360,000 for the vault, and the transaction's own data on top
 RECEIPT_SECONDS = 600
 TWIN = "#ostia-twin:Twin.Twin:"
-TWIN_RULES = TWIN + "TwinRules"
+TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION = TWIN + "TwinRules", TWIN + "TwinHolding", TWIN + "TwinAllocation"
+TWIN_DECIMALS = 10   # every twin has 10 decimals, like a Daml Decimal (apps/twin/README.md, "Amounts")
+TWIN_LIMIT = 10**27  # in units of 10^-10: 10^17 whole units, the most a Decimal of the twin holds
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 
@@ -132,6 +141,64 @@ def disclosed(net: canton.Network, address: str, out: str) -> dict:
     return {"file": str(path), "contractId": contract["contractId"], "templateId": contract["templateId"], "synchronizerId": contract["synchronizerId"]}
 
 
+def twin_units(base_units: int, decimals: int, what: str) -> int:
+    """An ERC-20 amount as a twin amount, in units of 10^-10: Twin.Amount.fromBaseUnits. Exact: a token of more than 10 decimals converts only when the amount is a whole
+    number of twin units, and an amount above 10^17 whole units does not fit. Anything else stops the command."""
+    if decimals <= TWIN_DECIMALS:
+        units = base_units * 10 ** (TWIN_DECIMALS - decimals)
+    else:
+        units, rest = divmod(base_units, 10 ** (decimals - TWIN_DECIMALS))
+        if rest:
+            raise canton.Fail(f"{what}: {base_units} base units of a {decimals}-decimal token are finer than a twin amount (10 decimals)")
+    if units >= TWIN_LIMIT:
+        raise canton.Fail(f"{what}: {base_units} base units are above 10^17 whole units, more than a twin amount holds")
+    return units
+
+
+def ledger_units(text: str) -> int:
+    """A Daml Decimal as the ledger writes it ("10.0000000000"), in units of 10^-10. The ledger never gives a finer one."""
+    units = Decimal(text).scaleb(TWIN_DECIMALS)
+    if units != units.to_integral_value() or units < 0:
+        raise canton.Fail(f"the ledger gave the amount {text!r}: not a twin amount")
+    return int(units)
+
+
+def amount_text(units: int) -> str:
+    return evm.wrapped_text(units)   # as Canton writes an amount: "10.0", "0.0000000001"
+
+
+def party_of(net: canton.Network, who: str) -> str:
+    if who in ("u", "v"):
+        return net.party(who)
+    if "::" not in who:
+        raise SystemExit(f"a party is u, v or a party id (name::fingerprint), not {who!r}")
+    return who
+
+
+def balances(net: canton.Network, address: str, who: list) -> dict:
+    token = canton.evm_address(address)
+    admin, instrument = net.party(ADMIN), "erc20:" + token
+    decimals = erc20_decimals("0x" + token)
+    mine = lambda e: e["createArgument"]["admin"] == admin and e["createArgument"]["token"] == token
+    held = [e["createArgument"] for e in net.template("operator", ADMIN, TWIN_HOLDING) if mine(e)]
+    locked = [e["createArgument"]["allocation"]["transferLeg"] for e in net.template("operator", ADMIN, TWIN_ALLOCATION) if mine(e)]
+    parties = {name: party_of(net, name) for name in who or ["u", "v"]}
+    holders = {name: {"party": party, "amount": amount_text(sum(ledger_units(h["amount"]) for h in held if h["owner"] == party))} for name, party in parties.items()}
+    in_allocations = sum(ledger_units(leg["amount"]) for leg in locked)
+    supply = sum(ledger_units(h["amount"]) for h in held) + in_allocations
+    vaults, total = [], 0
+    for entry in canton.chain_record(net).get("contracts") or []:
+        if entry["contractKind"] != "Vault":
+            continue
+        vault = entry["contractAddress"]
+        base = evm.read_word("0x" + token, evm.SELECTOR_BALANCE_OF + evm.pad32(vault), READ_AT)
+        units = twin_units(base, decimals, f"the vault 0x{vault}")
+        vaults.append({"address": "0x" + vault, "baseUnits": str(base), "amount": amount_text(units)})
+        total += units
+    return {"token": "0x" + token, "instrument": instrument, "admin": admin, "decimals": decimals, "holders": holders, "supply": amount_text(supply),
+            "lockedInAllocations": amount_text(in_allocations), "vaults": vaults, "vaultsTotal": amount_text(total), "supplyMatches": supply == total}
+
+
 def main(argv: list) -> dict:
     n, cmd = len(argv), argv[:1]
     if argv == ["deploy-vault"]:
@@ -144,6 +211,8 @@ def main(argv: list) -> dict:
             return rules(net, argv[1])
         if cmd == ["disclosed"] and n == 3:
             return disclosed(net, argv[1], argv[2])
+        if cmd == ["balances"] and n >= 2:
+            return balances(net, argv[1], argv[2:])
     raise SystemExit(__doc__)
 
 
