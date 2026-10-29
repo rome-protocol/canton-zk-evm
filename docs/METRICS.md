@@ -212,7 +212,7 @@ These are measurements taken on 29 October 2026 at 11:00 UTC, on one prover with
 | Prove plus commit, one block, p50 | 12.3 s | the last 1,286 blocks |
 | Prove plus commit, one block, p95 | 14.8 s | the same blocks |
 | Prove plus commit, one block, maximum | 24.2 s | the same blocks |
-| Canton Coin mining round: tick of the DSO | 600 s (10 minutes) | the `tickDuration` of the rules contract |
+| Canton Coin mining round: tick of the DSO | 600 s (10 minutes) | the `tickDuration` of `AmuletRules` |
 | Canton Coin mining round: open time | 20 minutes, from `opensAt` to `targetClosesAt` | three rounds open at once (rounds 67445 to 67447) |
 
 - A block's choice context for Canton Coin names the open round. A round stays open 1,200 s and the slowest of the 1,286 blocks took 24.2 s to prove and commit, so the margin is about 50 times on a light load. A prover backlog of about 10 minutes would be needed before a context went stale.
