@@ -14,7 +14,7 @@ Seven sets of measurements are reported:
 
 ## The machine
 
-The 2026-10-03 benchmark and the 2026-10-05 runs used one NVIDIA RTX PRO 6000 GPU (the benchmark's machine is described below; for the runs only the GPU and driver were recorded); the 2026-10-25 benchmark machine has its own section, the DevNet runs of 2026-10-25 used one prover on one RTX PRO 6000, and those of 2026-10-26 and 27 used two spot GPU provers (see "DevNet throughput, 2026-10-26 and 27"). The 2026-10-28 peak test used the same two provers. Since 28 October 2026 at 19:27 UTC DevNet runs one GPU prover, on a local GPU, with `--max-in-flight 2`; the second prover machine was stopped.
+The 2026-10-03 benchmark and the 2026-10-05 runs used one NVIDIA RTX PRO 6000 GPU (the benchmark's machine is described below; for the runs only the GPU and driver were recorded); the 2026-10-25 benchmark machine has its own section, the DevNet runs of 2026-10-25 used one prover on one RTX PRO 6000, and those of 2026-10-26 and 27 used two spot GPU provers (see "DevNet throughput, 2026-10-26 and 27"). The 2026-10-28 peak test used the same two provers. Since 28 October 2026 at 19:27 UTC DevNet runs one GPU prover, on the GPU of the machine that runs the builder, with `--max-in-flight 2`; the second prover machine was stopped.
 
 | | Prover benchmark, 2026-10-03 | Runs on this chain, 2026-10-05 |
 |---|---|---|
@@ -198,7 +198,7 @@ What these numbers do not show: plain transfers are the cheapest transaction the
 - The fixed 4.34 s a block is now the larger part of a commit. The per-transaction cost of 1.06 ms is about half of the 1.9 to 2.9 ms the design had assumed.
 - Commits run one at a time. By arithmetic from the fit, Canton alone would allow about 390 tx/s on full blocks of 2,857 plain transfers at 60,000,000 gas (one block about every 7.4 s) and about 550 tx/s on full blocks at 120,000,000 gas. Neither was run; the 188 tx/s above is what was measured.
 - Canton traffic is about 170 to 250 bytes a transaction, with an `Advance` argument of about 240 to 290 bytes. The design had assumed about 105 bytes.
-- The top-up rate of the participant that hosts Ostia's parties is 40,000 bytes a second, and that of a second participant is 20,000. At 170 to 250 bytes a transaction, the first caps the chain near 160 to 200 tx/s. At 400 tx/s and 250 bytes the rate would have to reach about 100,000 bytes a second, paid in DevNet Canton Coin. The price of a megabyte of traffic has not been read yet.
+- The top-up rate of the participant that hosts Ostia's parties is 40,000 bytes a second, and that of a second participant is 20,000. At 170 to 250 bytes a transaction, the first caps the chain near 160 to 235 tx/s. At 400 tx/s and 250 bytes the rate would have to reach about 100,000 bytes a second, paid in DevNet Canton Coin. The price of a megabyte of traffic has not been read yet.
 - DevNet's flat-fee rate of about 93 tx/s (previous section) is therefore not Canton's commit limit.
 
 **One prover since 28 October, 19:27 UTC.** The builder moved to its one GPU prover with `--max-in-flight 2` and the second prover machine was stopped. The peak test above ran before that, on two provers. It has not been repeated on one.
