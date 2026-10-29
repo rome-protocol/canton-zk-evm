@@ -3,10 +3,10 @@ name: demo
 on:
   workflow_dispatch:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "apps/twin/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "apps/twin/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
@@ -76,6 +76,24 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: tests/demo_otc.sh
+
+  # The Canton twins of ERC-20 tokens (apps/twin, demo/twin.py) on the real network: reth (launch.sh, discovery off), Canton with the real Daml package, the twin
+  # app's package and the token standard, the real twin registry service on loopback, the builder started with --twin-registry-url, the sidecar for the legs; the
+  # proof is a stand-in. U locks an ERC-20 in a vault (the vault is in the chain's registry, the twin pinned), the twin is minted, sent to V and redeemed, with the
+  # twin's supply equal to the vault's balance throughout; a payment of an ERC-20 with no twin and a payment against an id with no announced parts are left out
+  # (tests/demo_twin.sh).
+  twin-round-trip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_twin.sh
 
   # A second gateway in the chain's registry (Daml 0.5.0), on the real network: reth with the reviewed gateway code at a second address, the Gateway entry
   # proposed by the operator and accepted by the confirmer (network/external/setup.py --contract-step), and blocks with and without a leg of that gateway
