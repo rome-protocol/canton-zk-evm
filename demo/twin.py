@@ -27,6 +27,12 @@
                                         TwinHolding cids that cover the amount, empty meta), checked to be a TwinRules of the gateway party on the ledger with its disclosure, then
                                         TransferFactory_Transfer as the sender with the answer's choice context and disclosed contracts. Stops unless the result is
                                         TransferInstructionResult_Completed. Prints the update id
+  twin.py redeem <u|v> <token> <amount> <evm address> <ref> [--vault ADDRESS]
+                                        the holder signs a RedeemRequest (the chain id, the ERC-20, the holder's TwinHolding cids that cover the amount, the amount, the recipient, the ref
+                                        and the chain's parties), then key U calls release(ref, token, recipient, amount in base units) on the vault (the first registered one, or --vault,
+                                        which must be registered). Before the request it stops if the release id is used already, or the vault holds less than the amount. Waits for the
+                                        receipt and (up to 10 minutes) until the RedeemRequest is archived, which is the release leg burning the twin. Prints the release transaction,
+                                        its block, the release id and the request's contract id. The ref must be unique: make it from a fresh random value
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
@@ -51,7 +57,7 @@ TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION = TWIN + "TwinRules", TWIN + "TwinHold
 TWIN_DECIMALS = 10   # every twin has 10 decimals, like a Daml Decimal (apps/twin/README.md, "Amounts")
 TWIN_LIMIT = 10**27  # in units of 10^-10: 10^17 whole units, the most a Decimal of the twin holds
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",), "send": ("demo", "operator")}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",), "send": ("demo", "operator"), "redeem": ("demo", "operator")}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 WAIT_SECONDS = 600   # the longest that a command waits for Canton to follow Ostia (a lock's mint, a release's burn)
@@ -61,6 +67,8 @@ MAX_ANSWER = 1_000_000   # the most that a registry's answer may be: it is read 
 AMOUNT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 MAX_AMOUNT_TEXT = 80
 TRANSFER_COMPLETED = "TransferInstructionResult_Completed"
+REDEEM_REQUEST = canton.CHAIN + "RedeemRequest"
+RELEASE_GAS = 600_000   # the vault's release: an approval and the gateway's pay, a token's transferFrom in it
 DISCLOSED_KEYS = ("templateId", "contractId", "createdEventBlob", "synchronizerId")
 
 
@@ -409,6 +417,45 @@ def send(net: canton.Network, sender: str, receiver: str, address: str, amount: 
             "inputs": inputs, "result": tag}
 
 
+def redeem(net: canton.Network, holder: str, address: str, amount: str, recipient: str, ref: str, vault: str = None) -> dict:
+    """u or v redeems twin for the ERC-20: the holder signs a RedeemRequest (the holdings that cover the amount, the amount, the EVM recipient and the ref), then key U calls the vault's
+    release(ref, token, recipient, amount), which the chain's release leg matches to the request by the release id and burns the twin against. What can be seen to fail
+    afterwards (the id used already, the vault short of the token) is looked at first, so no request is made that the vault cannot pay."""
+    if holder not in ("u", "v"):
+        raise SystemExit(f"the holder must be u or v, not {holder!r}")
+    token, to = canton.evm_address(address), canton.evm_address(recipient)
+    if not ref:
+        raise SystemExit("the ref must not be empty")
+    decimals = erc20_decimals("0x" + token)
+    base = base_units(amount, decimals)
+    units = twin_units(base, decimals, f"the amount {amount}")
+    paying = choose_vault(registered_vaults(net), vault)
+    chain, admin = canton.chain_record(net), net.party(ADMIN)
+    if chain["gateway"] != admin:
+        raise canton.Fail(f"the chain's gateway party is {chain['gateway']}, not the twin's admin {admin}")
+    inputs = pick_holdings(holdings_of(net, holder, token), units, holder)
+    rid, gateway = release_id(paying, ref), evm.gateway_address()
+    if evm.read_word(gateway, evm.call_data("used(bytes32)", [bytes.fromhex(rid)]), "latest"):
+        raise canton.Fail(f"the release id {rid} of this ref in vault 0x{paying} is used already: use another ref")
+    held = evm.read_word("0x" + token, evm.SELECTOR_BALANCE_OF + evm.pad32(paying), "latest")
+    if held < base:
+        raise canton.Fail(f"the vault 0x{paying} holds {held} base units of 0x{token}, less than the {base} to release")
+    owner = net.party(holder)
+    request = {"holder": owner, "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"], "chainId": str(chain["chainId"]),
+               "token": token, "holdings": inputs, "amount": amount_text(units), "recipient": to, "ref": ref}   # an Int goes as text in the JSON Ledger API
+    open_requests = lambda: [e for e in net.template("users", holder, REDEEM_REQUEST) if e["createArgument"]["holder"] == owner and e["createArgument"]["ref"] == ref]
+    net.submit("users", [holder], {"CreateCommand": {"templateId": REDEEM_REQUEST, "createArguments": request}})
+    cid = net.wait_for("the redeem request", open_requests)[0]["contractId"]
+    try:
+        released = send_checked("u", evm.address_of("0x" + paying, "the vault"), "release(string,address,address,uint256)",
+                                [ref, evm.address_of("0x" + token, "the token"), evm.address_of("0x" + to, "the recipient"), base], RELEASE_GAS, "the release")
+    except canton.Fail as e:
+        raise canton.Fail(f"{e}; the redeem request {cid} is still open") from None
+    net.wait_for("the release to burn the twin", lambda: cid not in [e["contractId"] for e in open_requests()] or None, WAIT_SECONDS)
+    return {"tx": released["tx"], "block": released["block"], "releaseId": rid, "vault": "0x" + paying, "recipient": "0x" + to, "amount": request["amount"], "baseUnits": str(base),
+            "request": cid, "requestArchived": True}
+
+
 def split_options(argv: list, names: tuple) -> tuple:
     """The arguments without the options `--name value` of `names`, and the options' values. An option twice, with no value, or one that is not named stops the command."""
     rest, found, i = [], {}, 0
@@ -446,6 +493,10 @@ def main(argv: list) -> dict:
             args, options = split_options(argv[1:], ("--registry-url",))
             if len(args) == 4 and "--registry-url" in options:
                 return send(net, args[0], args[1], args[2], args[3], options["--registry-url"])
+        if cmd == ["redeem"]:
+            args, options = split_options(argv[1:], ("--vault",))
+            if len(args) == 5:
+                return redeem(net, args[0], args[1], args[2], args[3], args[4], options.get("--vault"))
     raise SystemExit(__doc__)
 
 

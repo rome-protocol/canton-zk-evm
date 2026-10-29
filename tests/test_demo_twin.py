@@ -338,13 +338,17 @@ class BalancesTests(TwinTestCase):
 class FakeEvm:
     """Ostia for the commands that send: the transactions that U's and V's keys sent (the nth has the hash 0x...n), their receipts, and the token's reads."""
     def __init__(self, token):
-        self.token, self.sent, self.failing = token, [], set()
+        self.token, self.sent, self.failing, self.used, self.after_send = token, [], set(), set(), None   # `used`: the ids that the gateway has used; `after_send`: called with each sent transaction
 
     def send(self, folder, who, to, data, gas, *rest):
         self.sent.append({"who": who, "to": to, "data": data, "gas": gas})
+        if self.after_send:
+            self.after_send(self.sent[-1])
         return f"0x{len(self.sent):064x}"
 
     def rpc(self, method, params):
+        if method == "eth_call" and params[0]["data"].startswith("0x" + evm.keccak(text="used(bytes32)")[:4].hex()):
+            return f"0x{int(params[0]['data'][10:] in self.used):064x}"
         if method == "eth_getTransactionReceipt":
             n = int(params[0], 16)
             return {"blockNumber": hex(100 + n), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(50_000), "status": hex(0 if n in self.failing else 1)}
@@ -719,6 +723,143 @@ class SendTests(ChainTestCase):
         self.assertEqual(twin.main(["send", "u", "v", "0x" + TOKEN, "1", "--registry-url", self.URL])["updateId"], "upd-9")
         for argv in (["send", "u", "v", TOKEN, "1"], ["send", "u", "v", TOKEN, "--registry-url", self.URL], ["send", "u", "v", TOKEN, "1", "2", "--registry-url", self.URL],
                      ["send", "u", "v", TOKEN, "1", "--vault", VAULT_A, "--registry-url", self.URL]):
+            with self.assertRaises(SystemExit, msg=argv):
+                twin.main(argv)
+
+
+class RedeemTests(ChainTestCase):
+    TOKEN_ADDRESS = evm.address_of("0x" + TOKEN, "t")
+    RECIPIENT = "0x" + "77" * 20
+
+    def setUp(self):
+        super().setUp()
+        FakeLedger.contracts[(U, twin.TWIN_HOLDING)] = [holding(U, "1.5"), holding(U, "2.0"), holding(U, "0.25"), holding(V, "9.0"), holding(U, "5.0", token="cd" * 20)]
+        self.token.balances = {VAULT_A: 10**9, VAULT_B: 0}
+        self.evm.after_send = self.on_send
+        self.burn = True
+
+    def on_send(self, tx):
+        """The release leg that the block records burns the twin and archives the request, as soon as the vault's release is sent."""
+        if self.burn and tx["to"] == evm.address_of("0x" + VAULT_A, "v"):
+            FakeLedger.created = [e for e in FakeLedger.created if e["templateId"] != twin.REDEEM_REQUEST]
+
+    @staticmethod
+    def requests_made():
+        """The createArguments of the RedeemRequests that were submitted (the fake ledger drops them again when the release is sent)."""
+        return [b["commands"][0]["CreateCommand"]["createArguments"] for _, b in FakeLedger.submitted if b["commands"][0].get("CreateCommand", {}).get("templateId") == twin.REDEEM_REQUEST]
+
+    def redeem(self, *args, **kw):
+        return twin.redeem(self.net, *(args or ("u", TOKEN, "1.75", self.RECIPIENT, "r-1")), **kw)
+
+    def test_the_holder_signs_the_request_and_u_releases_from_the_vault(self):
+        got = self.redeem()
+        [request] = self.requests_made()
+        self.assertEqual(request, {"holder": U, "operator": "op::1", "confirmer": "co::1", "gateway": GW, "builder": "bu::1", "chainId": "770101", "token": TOKEN, "holdings": ["h-u::1-2.0"],
+                                   "amount": "1.75", "recipient": "77" * 20, "ref": "r-1"})
+        [(node, body)] = [(n, b) for n, b in FakeLedger.submitted if "CreateCommand" in b["commands"][0]]
+        self.assertEqual((node, body["actAs"], body["userId"]), ("users", [U], "demo"))
+        [release] = self.evm.sent
+        self.assertEqual((release["who"], release["to"], release["gas"]), ("u", evm.address_of("0x" + VAULT_A, "v"), twin.RELEASE_GAS))
+        self.assertEqual(release["data"], evm.call_data("release(string,address,address,uint256)", ["r-1", self.TOKEN_ADDRESS, evm.address_of(self.RECIPIENT, "r"), 1_750_000]))
+        self.assertEqual(got, {"tx": f"0x{1:064x}", "block": 101, "releaseId": twin.release_id(VAULT_A, "r-1"), "vault": "0x" + VAULT_A, "recipient": self.RECIPIENT, "amount": "1.75",
+                               "baseUnits": "1750000", "request": "cid-1", "requestArchived": True})
+
+    def test_the_holdings_are_the_holders_own_and_cover_the_amount(self):
+        self.redeem("u", TOKEN, "3.5", self.RECIPIENT, "r-1")
+        self.assertEqual(self.requests_made()[0]["holdings"], ["h-u::1-2.0", "h-u::1-1.5"])
+
+    def test_short_is_refused_before_anything_is_made(self):
+        with self.assertRaisesRegex(canton.Fail, "u holds 3.75 of the twin, less than 3.8"):
+            self.redeem("u", TOKEN, "3.8", self.RECIPIENT, "r-1")
+        with self.assertRaisesRegex(canton.Fail, "holds 0.0 of the twin"):
+            self.redeem("v", TOKEN, "1", self.RECIPIENT, "r-1")   # V has no holdings on U's participant read
+        self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+
+    def test_the_vault_is_the_first_registered_or_a_registered_one(self):
+        self.token.balances[VAULT_B] = 10**9
+        self.burn = False
+        FakeLedger.created = []
+        self.evm.after_send = lambda tx: setattr(FakeLedger, "created", [])
+        self.assertEqual(self.redeem(vault="0x" + VAULT_B.upper())["vault"], "0x" + VAULT_B)
+        self.assertEqual(self.evm.sent[0]["to"], evm.address_of("0x" + VAULT_B, "v"))
+        for vault in (OTHER_VAULT, "0x12"):
+            with self.assertRaises((canton.Fail, SystemExit)):
+                self.redeem(vault=vault)
+        self.assertEqual(len(self.evm.sent), 1)
+
+    def test_the_release_id_is_the_hash_of_the_vault_and_the_ref(self):
+        self.assertEqual(self.redeem()["releaseId"], twin.release_id(VAULT_A, "r-1"))
+        self.assertEqual(twin.release_id(VAULT_A, "r-1"), hashlib.sha256(f"vault-release,{VAULT_A},r-1".encode()).hexdigest())
+
+    def test_a_release_id_that_is_used_is_refused_before_the_request(self):
+        self.evm.used = {twin.release_id(VAULT_A, "r-1")}
+        with self.assertRaisesRegex(canton.Fail, "used already"):
+            self.redeem()
+        self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+        self.assertEqual(self.redeem("u", TOKEN, "1", self.RECIPIENT, "r-2")["releaseId"], twin.release_id(VAULT_A, "r-2"))
+
+    def test_a_vault_that_holds_less_is_refused_before_the_request(self):
+        self.token.balances[VAULT_A] = 1_749_999
+        with self.assertRaisesRegex(canton.Fail, "holds 1749999 base units .* less than the 1750000"):
+            self.redeem()
+        self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+        self.token.balances[VAULT_A] = 1_750_000
+        self.assertEqual(self.redeem()["baseUnits"], "1750000")
+
+    def test_an_amount_that_does_not_convert_makes_nothing(self):
+        for amount in ("0", "0.0000001", "x", "1e1"):
+            with self.assertRaises((canton.Fail, SystemExit)):
+                self.redeem("u", TOKEN, amount, self.RECIPIENT, "r-1")
+        self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+
+    def test_bad_arguments_make_nothing(self):
+        for args in (("w", TOKEN, "1", self.RECIPIENT, "r"), ("u", "0x12", "1", self.RECIPIENT, "r"), ("u", TOKEN, "1", "0x12", "r"), ("u", TOKEN, "1", self.RECIPIENT, "")):
+            with self.assertRaises(SystemExit):
+                self.redeem(*args)
+        self.assertEqual((FakeLedger.submitted, self.evm.sent), ([], []))
+
+    def test_the_twins_admin_must_be_the_chains_gateway(self):
+        FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"]["gateway"] = "other::1"
+        with self.assertRaisesRegex(canton.Fail, "not the twin's admin"):
+            self.redeem()
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_a_reverted_release_says_that_the_request_is_open(self):
+        self.evm.failing = {1}
+        with self.assertRaisesRegex(canton.Fail, "the release .* reverted.*redeem request cid-1 is still open"):
+            self.redeem()
+
+    def test_it_waits_for_the_burn_and_gives_up_after_the_time(self):
+        self.burn = False
+        with mock.patch.object(twin, "WAIT_SECONDS", 0), self.assertRaisesRegex(canton.Fail, "timed out waiting for the release to burn the twin"):
+            self.redeem()
+        FakeLedger.created, self.evm.sent[:] = [], []
+        asked = []
+        real = canton.Network.template
+
+        def template(net, node, party, name, blob=False):
+            found = real(net, node, party, name, blob)
+            if name == twin.REDEEM_REQUEST and self.evm.sent:   # after the release is sent, the request is there for three looks
+                asked.append(1)
+                if len(asked) == 3:
+                    FakeLedger.created = []
+            return found
+        with mock.patch.object(canton.Network, "template", template):
+            self.assertTrue(self.redeem()["requestArchived"])
+        self.assertEqual(len(asked), 4)   # the fourth look finds it archived
+
+    def test_another_request_of_the_holder_is_not_this_one(self):
+        FakeLedger.contracts[(U, twin.REDEEM_REQUEST)] = [{"contractId": "other", "offset": 1, "createArgument": {"holder": U, "ref": "r-0"}}]
+        self.assertEqual(self.redeem()["request"], "cid-1")   # `other` stays open; only this ref's request is waited for
+
+    def test_main_takes_five_arguments_and_the_vault_option(self):
+        self.assertEqual(twin.main(["redeem", "u", "0x" + TOKEN, "1", self.RECIPIENT, "r-9"])["vault"], "0x" + VAULT_A)
+        self.token.balances[VAULT_B] = 10**9
+        self.burn = False
+        self.evm.after_send = lambda tx: setattr(FakeLedger, "created", [])
+        self.assertEqual(twin.main(["redeem", "u", "0x" + TOKEN, "1", self.RECIPIENT, "r-8", "--vault", VAULT_B])["vault"], "0x" + VAULT_B)
+        for argv in (["redeem", "u", TOKEN, "1", self.RECIPIENT], ["redeem", "u", TOKEN, "1", self.RECIPIENT, "r", "x"], ["redeem", "u", TOKEN, "1", self.RECIPIENT, "r", "--registry-url", "http://x"],
+                     ["redeem", "u", TOKEN, "1", self.RECIPIENT, "r", "--vault"]):
             with self.assertRaises(SystemExit, msg=argv):
                 twin.main(argv)
 
