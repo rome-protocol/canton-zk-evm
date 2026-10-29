@@ -241,6 +241,23 @@ class Contexts(tb.LegCase):
         self.registry(s, TOKEN_ADMIN, answer={"choiceContextData": VALUES, "disclosedContracts": [same]})
         self.assert_left_out(s, t, "token registry", "differently")
 
+    def test_a_venues_allocation_the_registry_names_with_the_same_blob_is_one_contract(self):
+        for name, copy in (("no synchronizerId", {**{k: v for k, v in tb.DISCLOSED_ALLOCATION.items() if k != "synchronizerId"}, "templateId": "#some-token:Some.Token:Allocation"}),
+                           ("the template id by package id", {**tb.DISCLOSED_ALLOCATION, "templateId": "ab" * 32 + ":Some.Token:Allocation"})):
+            with self.subTest(name):
+                s = self.setup({ALICE: []})
+                s.ledger.trades, s.ledger.tokens = [TRADE], [TOKEN]
+                s.cfg.venues = ("venue::1",)
+                s.ledger.allocations = []
+                s.reth.pool[ALICE] = [self.leg_tx(s, TRADE_PAY)]
+                self.registry(s, TOKEN_ADMIN, answer={"choiceContextData": VALUES, "disclosedContracts": [copy, ROUND]})
+                result = self.build(s)
+                self.assertEqual(result["leftOut"], [])
+                self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1", "choiceContext": VALUES})
+                sent = [d for d in self.disclosed(s) if d["contractId"] == tb.ALLOCATION_ID]
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0].get("synchronizerId"), "sync::1")
+
     def test_the_contracts_a_blocks_registries_name_are_bounded_in_bytes(self):
         s = self.two()
         big = lambda cid: {**ROUND, "contractId": cid, "createdEventBlob": "QUJD" * 300}

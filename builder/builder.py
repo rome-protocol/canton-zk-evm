@@ -1653,7 +1653,7 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
     token = next(g for g in canton.tokens if g["contractId"] == trade["gatewayToken"])
     with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, trade["allocation"]))
     shown = disclosed_allocation(trade)
-    if shown and any(o != shown for o in canton.leg_disclosed.get(leg_key(leg_out), ()) if o["contractId"] == shown.get("contractId")):
+    if shown and any(not same_contract(o, shown) for o in canton.leg_disclosed.get(leg_key(leg_out), ()) if o["contractId"] == shown.get("contractId")):
         forget_leg(canton, leg_out)   # a leg that is left out holds no bytes and no contracts of the block's
         raise NoCantonSide("the token registry names the venue's allocation differently than the trade carries it")
     if claimed is not None:
@@ -1669,7 +1669,7 @@ def venue_disclosed(legs: list, canton: Canton) -> list:
     for leg in legs:
         shown = canton.disclosed.get(leg["value"]["tradeCid"]) if leg["tag"] == "TradeLeg" else None
         if shown:
-            found[shown.get("contractId")] = shown
+            found[shown.get("contractId")] = better_copy(found.get(shown.get("contractId")), shown)
         for named in canton.leg_disclosed.get(leg_key(leg), ()):   # what the registry's choice context for the leg names
             found[named["contractId"]] = better_copy(found.get(named["contractId"]), named)
     return list(found.values())
