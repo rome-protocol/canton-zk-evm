@@ -6,6 +6,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "demo"))
 import canton, evm, twin
+sys.path.insert(0, str(ROOT / "demo" / "tests"))
+from test_canton import FakeLedger, LedgerTestCase
 
 RUNTIME = twin.VAULT_CODE.read_text().strip()
 VAULT = "0x" + "5a" * 20
@@ -101,6 +103,87 @@ class DeployVaultTests(unittest.TestCase):
     def test_a_runtime_file_that_is_not_hex_fails(self):
         with mock.patch.object(twin, "VAULT_CODE", ROOT / "README.md"), self.assertRaisesRegex(canton.Fail, "cannot read the vault's runtime code"):
             twin.main(["deploy-vault"])
+
+
+TOKEN = "ab" * 20
+
+
+class FakeToken:
+    """An ERC-20 on Ostia: what name(), symbol() and decimals() give at the finalized block. `decimals` None is an address with no code."""
+    def __init__(self, name="Tether USD", symbol="USDT", decimals=6):
+        self.name, self.symbol, self.decimals, self.reads = name, symbol, decimals, []
+
+    def read_text(self, token, signature, tag):
+        self.reads.append((token, signature, tag))
+        return None if self.decimals is None else {"name()": self.name, "symbol()": self.symbol}[signature]
+
+    def rpc(self, method, params):
+        assert method == "eth_call" and params[0]["data"] == "0x313ce567", (method, params)
+        self.reads.append((params[0]["to"], "decimals()", params[1]))
+        return "0x" if self.decimals is None else f"0x{self.decimals:064x}"
+
+
+class TwinTestCase(LedgerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.token = FakeToken()
+        for patcher in (mock.patch.object(evm, "read_text", self.token.read_text), mock.patch.object(evm, "rpc", self.token.rpc)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.net = canton.Network()
+
+
+class RulesTests(TwinTestCase):
+    def test_the_gateway_party_makes_the_rules_from_what_the_token_says(self):
+        got = twin.rules(self.net, "0x" + TOKEN.upper())
+        [made] = self.made(twin.TWIN_RULES)
+        self.assertEqual(made, {"admin": "gw::1", "token": TOKEN, "name": "Tether USD", "symbol": "USDT", "decimals": "6"})
+        [(node, body)] = FakeLedger.submitted
+        self.assertEqual((node, body["actAs"], body["userId"]), ("operator", ["gw::1"], "operator"))
+        self.assertEqual(got, {"created": True, "contractId": "cid-1", "admin": "gw::1", "token": TOKEN, "name": "Tether USD", "symbol": "USDT", "decimals": 6,
+                               "instrument": "erc20:" + TOKEN})
+        self.assertEqual({tag for _, _, tag in self.token.reads}, {"finalized"})
+
+    def test_a_second_run_changes_nothing_and_prints_the_existing_rules(self):
+        first = twin.rules(self.net, TOKEN)
+        self.token.name = "Another name"   # not read again
+        second = twin.rules(self.net, "0x" + TOKEN)
+        self.assertEqual(len(FakeLedger.submitted), 1)
+        self.assertEqual(second, {**first, "created": False})
+
+    def test_rules_of_another_admin_or_token_are_not_the_ones(self):
+        mine = {"admin": "gw::1", "token": "cd" * 20, "name": "n", "symbol": "s", "decimals": "18"}
+        FakeLedger.contracts[("gw::1", twin.TWIN_RULES)] = [{"contractId": "other-token", "offset": 1, "createArgument": mine},
+                                                            {"contractId": "other-admin", "offset": 2, "createArgument": {**mine, "admin": "x::1", "token": TOKEN}}]
+        self.assertEqual(twin.rules(self.net, TOKEN)["contractId"], "cid-1")
+        self.assertEqual(len(FakeLedger.submitted), 1)
+
+    def test_a_token_that_is_not_there_makes_nothing(self):
+        self.token.decimals = None
+        with self.assertRaisesRegex(canton.Fail, "no name"):
+            twin.rules(self.net, TOKEN)
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_a_token_with_no_decimals_or_too_many_makes_nothing(self):
+        self.token.decimals = 37
+        with self.assertRaisesRegex(canton.Fail, "37 decimals"):
+            twin.rules(self.net, TOKEN)
+        self.token.name = ""
+        with self.assertRaisesRegex(canton.Fail, "empty"):
+            twin.rules(self.net, TOKEN)
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_two_rules_for_one_token_are_refused(self):
+        row = {"admin": "gw::1", "token": TOKEN, "name": "n", "symbol": "s", "decimals": "6"}
+        FakeLedger.contracts[("gw::1", twin.TWIN_RULES)] = [{"contractId": f"r{i}", "offset": i, "createArgument": row} for i in (1, 2)]
+        with self.assertRaisesRegex(canton.Fail, "2 TwinRules"):
+            twin.rules(self.net, TOKEN)
+
+    def test_main_takes_one_address(self):
+        self.assertEqual(twin.main(["rules", TOKEN])["contractId"], "cid-1")
+        for argv in (["rules"], ["rules", TOKEN, "x"], ["rules", "nope"]):
+            with self.assertRaises(SystemExit):
+                twin.main(argv)
 
 
 if __name__ == "__main__":

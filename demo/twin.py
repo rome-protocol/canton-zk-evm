@@ -4,8 +4,10 @@
   twin.py deploy-vault                  U creates a vault on Ostia: the creation code is a short fixed prefix that copies gateway/Vault.bin-runtime into memory and returns it,
                                         followed by those bytes. Waits for the receipt, and stops unless the code at the new address is exactly Vault.bin-runtime. Prints the
                                         address, the block, the gas used and the code hash. It does not register the vault: that is network/external/setup.py --contract-step
+  twin.py rules <token>                 the gateway party (the twin's admin) creates the TwinRules of the ERC-20 at <token>, with the name, symbol and decimals that the token gives on Ostia
+                                        (finalized block), unless the admin has them already: a second run changes nothing and prints the existing ones. Prints the contract id and the fields
 
-All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U). Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
+All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
 import json, os, sys, time
 from pathlib import Path
@@ -21,6 +23,12 @@ PREFIX_BYTES = 12
 MAX_CODE_BYTES = 0xFFFF   # what PUSH2 can say; a contract is never larger than 24,576
 VAULT_GAS = 800_000       # 53,000 + 200 per byte of code is about 360,000 for the vault, and the transaction's own data on top
 RECEIPT_SECONDS = 600
+TWIN = "#ostia-twin:Twin.Twin:"
+TWIN_RULES = TWIN + "TwinRules"
+ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
+COMMAND_ROLES = {"rules": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+SELECTOR_DECIMALS = "313ce567"
+READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 
 
 def runtime_code(path: Path = None) -> bytes:
@@ -65,9 +73,56 @@ def deploy_vault() -> dict:
     return {"address": address, "tx": tx, "block": receipt["block"], "gasUsed": receipt["gasUsed"], "codeHash": "0x" + evm.keccak(there).hex()}
 
 
+def erc20_decimals(token: str) -> int:
+    """The token's decimals() on Ostia, 0 to 36 (the range TwinRules takes)."""
+    answer = evm.rpc("eth_call", [{"to": token, "data": "0x" + SELECTOR_DECIMALS}, READ_AT])
+    if answer == "0x":
+        raise canton.Fail(f"no decimals() at {token} on the {READ_AT} block: is there a token there?")
+    decimals = int(answer, 16)
+    if decimals > 36:
+        raise canton.Fail(f"{token} says it has {decimals} decimals: a twin takes 0 to 36")
+    return decimals
+
+
+def erc20_text(token: str, signature: str) -> str:
+    text = evm.read_text(token, signature, READ_AT)
+    if not text:
+        raise canton.Fail(f"no {signature} at {token} on the {READ_AT} block" if text is None else f"{signature} at {token} is empty: a twin needs a name and a symbol")
+    return text
+
+
+def rules_of(net: canton.Network, token: str, blob: bool = False) -> list:
+    """The TwinRules of this admin for the token (40 lowercase hex digits), as the admin sees them."""
+    admin = net.party(ADMIN)
+    return [e for e in net.template("operator", ADMIN, TWIN_RULES, blob=blob) if e["createArgument"]["admin"] == admin and e["createArgument"]["token"] == token]
+
+
+def rules(net: canton.Network, address: str) -> dict:
+    token = canton.evm_address(address)
+    found = rules_of(net, token)
+    created = not found
+    if created:
+        fields = {"admin": net.party(ADMIN), "token": token, "name": erc20_text("0x" + token, "name()"), "symbol": erc20_text("0x" + token, "symbol()"),
+                  "decimals": str(erc20_decimals("0x" + token))}   # an Int goes as text in the JSON Ledger API
+        net.submit("operator", [ADMIN], {"CreateCommand": {"templateId": TWIN_RULES, "createArguments": fields}}, user="operator")
+        found = net.wait_for("the twin's rules", lambda: rules_of(net, token))
+    if len(found) != 1:
+        raise canton.Fail(f"the admin has {len(found)} TwinRules for {token}: there must be one")
+    fields = found[0]["createArgument"]
+    return {"created": created, "contractId": found[0]["contractId"], "admin": fields["admin"], "token": fields["token"], "name": fields["name"],
+            "symbol": fields["symbol"], "decimals": int(fields["decimals"]), "instrument": "erc20:" + fields["token"]}
+
+
 def main(argv: list) -> dict:
+    n, cmd = len(argv), argv[:1]
     if argv == ["deploy-vault"]:
         return deploy_vault()
+    if cmd and cmd[0] in COMMAND_ROLES:
+        net = canton.Network()
+        if net.external:
+            net.check_roles(COMMAND_ROLES[cmd[0]])
+        if cmd == ["rules"] and n == 2:
+            return rules(net, argv[1])
     raise SystemExit(__doc__)
 
 
