@@ -131,7 +131,7 @@ curl -X POST -H 'content-type: application/json' $R/twin/v1/lock-parts \
 printf 'lock,%s,%s' "$RECEIVER" my-first-lock | shasum -a 256   # the same lockId
 ```
 
-Check the id yourself, as the last line does (it is the SHA-256, in lowercase hex, of `lock,<receiver>,<ref>`), and take the vault from a source you trust, because the service is only a hint to the payer. The chain record, which names the registered vaults, is a Canton contract that only Rome's gateway party can read, so an outside user compares the vault in the table above with the one `curl $R/healthz` lists under `vaults`; the builder reads the chain record itself (`apps/twin/registry/README.md` has the steps).
+Check the id yourself, as the last line does (it is the SHA-256, in lowercase hex, of `lock,<receiver>,<ref>`), and take the vault from a source you trust, because the service is only a hint to the payer. The chain record, which names the registered vaults, is a Canton contract that only Rome's parties can read, so today there is no source outside Rome for which vault is registered: the table above and `curl $R/healthz` (under `vaults`) are both Rome's. What anyone can check is that the vault at that address is the reviewed build: `cast keccak $(cast code 0x69f13a94f986021f1a7650eb611bf9b717aa495a --rpc-url $RPC)` must equal `cast keccak 0x$(cat gateway/Vault.bin-runtime)`, which is `0x2fbcf33083dd26a360690a0d8d24cd333997b3c7000d950aa5e564e01460d4da` (the vault has no owner, no key and no upgrade).
 
 What ran on 29 October 2026 (the blocks and Canton updates are in [DESIGN.md](DESIGN.md)):
 
