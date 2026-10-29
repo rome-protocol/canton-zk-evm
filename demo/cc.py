@@ -251,18 +251,100 @@ def balances(net: canton.Network, scan: Scan, who: list) -> dict:
             "gatewayCustody": {"party": gateway, **balance_of(holdings(net, "operator", "operator", gateway, dso))}, "wrapped": wrapped_supply(net, {"admin": dso, "id": AMULET})}
 
 
+def fund(net: canton.Network, scan: Scan, who: str, amount: str) -> dict:
+    """The validator's party sends `amount` Canton Coin to u, v or a party: the scan proxy's transfer factory, then TransferFactory_Transfer as the validator's party with the token of
+    --sender-token-file (role "sender"), the factory's context and its disclosed contracts. A completed transfer is done; a pending one (an offer) is accepted by u or v, as the demo user,
+    with the scan proxy's choice context for "accept"."""
+    if not canton.CANTON_AMOUNT.fullmatch(amount) or not twin.ledger_units(amount):
+        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
+    amount = amount if "." in amount else amount + ".0"
+    if who not in ("u", "v") and not PARTY_ID.fullmatch(who):
+        raise SystemExit(f"a party is u, v or a party id (name::fingerprint), not {who!r}")
+    receiver = net.party(who) if who in ("u", "v") else who
+    dso, validator = scan.dso_party(), scan.validator_party()
+    if receiver == validator:
+        raise SystemExit("the validator's party is the sender: name another party")
+    held = sorted((h for h in holdings(net, "users", SENDER_ROLE, validator, dso) if not h[2]), key=lambda h: -h[1])
+    if sum(a for _, a, _ in held) < twin.ledger_units(amount):
+        raise canton.Fail(f"the validator's party holds {twin.amount_text(sum(a for _, a, _ in held))} Canton Coin, less than {amount}")
+    before = party_balance(net, who, dso, SENDER_ROLE)
+    # All of the (up to 50) largest unlocked holdings go in: Canton Coin takes its transfer fee from the inputs, so the ones that cover the amount alone may not cover the fee; the change comes back.
+    transfer = transfer_of(validator, receiver, amount, dso, [cid for cid, _, _ in held[:MAX_INPUTS]])
+    asked = scan.factory(transfer, dso)
+    if asked["kind"] == "offer" and who not in ("u", "v"):
+        raise canton.Fail(f"the registry makes this transfer an offer, and only u and v accept offers here: {receiver[:30]} has to accept it itself")
+    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_FACTORY, "contractId": asked["factory"], "choice": "TransferFactory_Transfer",
+                                   "choiceArgument": {"expectedAdmin": dso, "transfer": transfer, "extraArgs": {"context": asked["data"], "meta": {"values": {}}}}}}
+    tx = twin.submit_for_transaction(net, None, command, asked["disclosed"], role=SENDER_ROLE, party=validator, user=False)
+    output = twin.exercise_output(tx, asked["factory"], "TransferFactory_Transfer") or {}
+    tag, accepted, instruction = output.get("tag"), None, None
+    if tag == TRANSFER_PENDING:
+        value = output.get("value")
+        instruction = value.get("transferInstructionCid") if isinstance(value, dict) else None
+        if not isinstance(instruction, str) or not CONTRACT_ID.fullmatch(instruction):
+            raise canton.Fail(f"the transfer in update {tx['updateId']} is pending, and the result names no transfer instruction")
+        if who not in ("u", "v"):
+            raise canton.Fail(f"the transfer in update {tx['updateId']} is pending as instruction {instruction}: only u and v accept offers here, {receiver[:30]} has to accept it itself")
+        context = scan.accept_context(instruction)
+        accept = {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": instruction, "choice": "TransferInstruction_Accept",
+                                      "choiceArgument": {"extraArgs": {"context": context["data"], "meta": {"values": {}}}}}}
+        accepted = twin.submit_for_transaction(net, who, accept, context["disclosed"])
+        if (twin.exercise_output(accepted, instruction, "TransferInstruction_Accept") or {}).get("tag") != twin.TRANSFER_COMPLETED:
+            raise canton.Fail(f"{who}'s acceptance in update {accepted['updateId']} did not complete the transfer")
+    elif tag != twin.TRANSFER_COMPLETED:
+        raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {twin.TRANSFER_COMPLETED} or {TRANSFER_PENDING}")
+    want = twin.ledger_units(before["unlocked"]) + twin.ledger_units(amount)
+
+    def arrived():
+        now = party_balance(net, who, dso, SENDER_ROLE)
+        return now if twin.ledger_units(now["unlocked"]) >= want else None
+    after = net.wait_for("the receiver to hold the Canton Coin", arrived)
+    return {"transferUpdateId": tx["updateId"], "acceptUpdateId": accepted["updateId"] if accepted else None, "from": validator, "to": receiver, "amount": amount, "kind": asked["kind"],
+            "result": tag, "instruction": instruction, "balance": {"unlocked": after["unlocked"], "locked": after["locked"]}}
+
+
+def secret_files(options: dict) -> set:
+    """The token files that this run may read: the environment's and the options'."""
+    named = {v for k, v in os.environ.items() if k.startswith(TOKEN_FILE_VARIABLE) or k == SCAN_TOKEN_FILE}
+    return named | {v for k, v in options.items() if k.endswith("token-file")}
+
+
+def scrubbed(message: str, files: set) -> str:
+    """The message without any of the tokens in these files: a server's error text may echo a header."""
+    for path in files:
+        try:
+            token = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if len(token) >= 8:
+            message = message.replace(token, "<token>")
+    return message
+
+
 def scan_of(options: dict) -> Scan:
     return Scan(options["--scan-proxy"] if "--scan-proxy" in options else os.environ.get(SCAN_PROXY_URL),
                 options["--scan-token-file"] if "--scan-token-file" in options else os.environ.get(SCAN_TOKEN_FILE))
 
 
 def main(argv: list) -> dict:
-    n, cmd = len(argv), argv[:1]
+    options = {}
+    try:
+        return run(argv, options)
+    except canton.Fail as e:
+        raise canton.Fail(scrubbed(str(e), secret_files(options))) from None
+
+
+def run(argv: list, options: dict) -> dict:
+    cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
         names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",)}.get(cmd[0], ())
-        args, options = twin.split_options(argv[1:], names, __doc__)
+        args, found = twin.split_options(argv[1:], names, __doc__)
+        options.update(found)
+        shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options}[cmd[0]]
+        if not shape:
+            raise SystemExit(__doc__)
         net = canton.Network()
-        if cmd == ["register"] and not args:
+        if cmd == ["register"]:
             if net.external:
                 net.check_roles(COMMAND_ROLES["register"])
             return register(net, scan_of(options))
@@ -272,6 +354,11 @@ def main(argv: list) -> dict:
             if net.external:
                 net.check_roles(COMMAND_ROLES["balances"] + ((OTHER_ROLE,) if any(a not in ("u", "v") for a in args) else ()))
             return balances(net, scan_of(options), args)
+        if cmd == ["fund"]:
+            os.environ[TOKEN_FILE_VARIABLE + SENDER_ROLE.upper()] = options["--sender-token-file"]   # the role that acts as the validator's party
+            if net.external:
+                net.check_roles(COMMAND_ROLES["fund"])
+            return fund(net, scan_of(options), args[0], args[1])
     raise SystemExit(__doc__)
 
 

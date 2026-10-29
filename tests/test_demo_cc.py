@@ -512,5 +512,205 @@ class BalancesTests(CcCase):
         self.assertEqual(done.stdout.count("\n"), 1)
 
 
+class FundCase(CcCase):
+    """The validator's party holds Canton Coin; the transfer's result is `mode`: completed, pending (an offer to accept) or failed."""
+    INSTRUCTION = "00" + "1c" * 34
+
+    def setUp(self):
+        super().setUp()
+        FakeLedger.holdings = {VALIDATOR: [held("00x1", "40.0"), held("00x2", "100.5"), held("00x3", "9.0", locked=True), held("00x4", "500.0", instrument={"admin": DSO, "id": "TKB"})],
+                               U: [held("00u1", "1.0")], V: [], OTHER: []}
+        self.mode, self.kind, self.counter = "completed", None, 0
+        patcher = mock.patch.object(FakeLedger, "transaction", staticmethod(self.transaction))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.accept_answer = {"choiceContextData": {"values": {"round": {"tag": "AV_ContractId", "value": "r1"}}}, "disclosedContracts": [dict(DISCLOSED[0]), dict(DISCLOSED[1])]}
+        FakeScan.answers[FACTORY_PATH] = lambda body: factory_answer(self.kind or ("self" if body["choiceArguments"]["transfer"]["sender"] == body["choiceArguments"]["transfer"]["receiver"]
+                                                                                    else ("offer" if self.mode == "pending" else "direct")))
+        FakeScan.answers[ACCEPT % self.INSTRUCTION] = lambda body: self.accept_answer
+
+    def transaction(self, body):
+        command = body["commands"]["commands"][0]["ExerciseCommand"]
+        self.counter += 1
+        if command["choice"] == "TransferFactory_Transfer":
+            transfer = command["choiceArgument"]["transfer"]
+            gone = set(transfer["inputHoldingCids"])
+            FakeLedger.holdings[VALIDATOR] = [h for h in FakeLedger.holdings[VALIDATOR] if h["cid"] not in gone]
+            self.offer = transfer
+            if self.mode == "completed":
+                FakeLedger.holdings.setdefault(transfer["receiver"], []).append(held("00new", transfer["amount"]))
+                output = {"tag": twin.TRANSFER_COMPLETED, "value": {"receiverHoldingCids": ["00new"]}}
+            elif self.mode == "pending":
+                output = {"tag": cc.TRANSFER_PENDING, "value": {"transferInstructionCid": self.INSTRUCTION}}
+            else:
+                output = {"tag": "TransferInstructionResult_Failed", "value": {}}
+            return {"transaction": {"updateId": "update-transfer", "events": [{"ExercisedEvent": {"contractId": command["contractId"], "choice": command["choice"], "exerciseResult": {"output": output}}}]}}
+        assert command["choice"] == "TransferInstruction_Accept"
+        FakeLedger.holdings.setdefault(self.offer["receiver"], []).append(held("00acc", self.offer["amount"]))
+        return {"transaction": {"updateId": "update-accept", "events": [{"ExercisedEvent": {"contractId": command["contractId"], "choice": command["choice"],
+                                                                                         "exerciseResult": {"output": {"tag": twin.TRANSFER_COMPLETED, "value": {}}}}}]}}
+
+    def fund(self, who="u", amount="2.5", *more):
+        return self.run_cc("fund", who, amount, "--sender-token-file", self.files["SENDER"], *more)
+
+    def commands(self):
+        return [(c["commands"]["commands"][0]["ExerciseCommand"], c) for c in FakeLedger.commands]
+
+
+class FundTests(FundCase):
+    def test_a_completed_transfer_is_asked_of_the_scan_proxy_and_exercised_as_the_validators_party_with_its_token(self):
+        got = self.fund()
+        [asked] = [b for m, p, _, b in FakeScan.seen if p == FACTORY_PATH]
+        transfer = asked["choiceArguments"]["transfer"]
+        self.assertEqual((asked["choiceArguments"]["expectedAdmin"], transfer["sender"], transfer["receiver"], transfer["amount"], transfer["instrumentId"], transfer["meta"]),
+                         (DSO, VALIDATOR, U, "2.5", {"admin": DSO, "id": "Amulet"}, {"values": {}}))
+        self.assertEqual(transfer["inputHoldingCids"], ["00x2", "00x1"])   # the unlocked Canton Coin only, the largest first
+        [(command, request)] = self.commands()
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_FACTORY, FACTORY, "TransferFactory_Transfer"))
+        self.assertEqual(command["choiceArgument"]["transfer"]["inputHoldingCids"], ["00x2", "00x1"])
+        self.assertEqual(command["choiceArgument"]["extraArgs"], {"context": factory_answer()["choiceContext"]["choiceContextData"], "meta": {"values": {}}})
+        self.assertEqual(command["choiceArgument"]["expectedAdmin"], DSO)
+        self.assertEqual(request["commands"]["actAs"], [VALIDATOR])
+        self.assertNotIn("userId", request["commands"])   # the ledger takes the user from the token
+        self.assertEqual(request["commands"]["disclosedContracts"], DISCLOSED)   # all four, with the four fields only
+        self.assertEqual([a for p, a, b in FakeLedger.requests if p == "/v2/commands/submit-and-wait-for-transaction"], ["Bearer " + TOKENS["SENDER"]])
+        self.assertEqual(got, {"transferUpdateId": "update-transfer", "acceptUpdateId": None, "from": VALIDATOR, "to": U, "amount": "2.5", "kind": "direct", "result": twin.TRANSFER_COMPLETED,
+                               "instruction": None, "balance": {"unlocked": "3.5", "locked": "0.0"}})
+
+    def test_a_pending_transfer_is_accepted_by_the_receiver_as_the_demo_user_with_the_scan_proxys_accept_context(self):
+        self.mode = "pending"
+        got = self.fund("v", "7")
+        [(_, first), (command, second)] = self.commands()
+        self.assertEqual(first["commands"]["actAs"], [VALIDATOR])
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_INSTRUCTION, self.INSTRUCTION, "TransferInstruction_Accept"))
+        self.assertEqual(command["choiceArgument"], {"extraArgs": {"context": self.accept_answer["choiceContextData"], "meta": {"values": {}}}})
+        self.assertEqual((second["commands"]["actAs"], second["commands"]["userId"]), ([V], "demo"))
+        self.assertEqual(second["commands"]["disclosedContracts"], DISCLOSED[:2])
+        [asked] = [(m, b) for m, p, _, b in FakeScan.seen if p == ACCEPT % self.INSTRUCTION]
+        self.assertEqual(asked[0], "POST")
+        tokens = [a for p, a, b in FakeLedger.requests if p == "/v2/commands/submit-and-wait-for-transaction"]
+        self.assertEqual(tokens, ["Bearer " + TOKENS["SENDER"], "Bearer " + TOKENS["DEMO"]])
+        self.assertEqual((got["kind"], got["result"], got["transferUpdateId"], got["acceptUpdateId"], got["instruction"]), ("offer", cc.TRANSFER_PENDING, "update-transfer", "update-accept", self.INSTRUCTION))
+        self.assertEqual(got["balance"], {"unlocked": "7.0", "locked": "0.0"})
+
+    def test_it_waits_for_the_receiver_to_hold_the_coin(self):
+        real = FakeLedger.transaction
+        def late(body):
+            out = real(body)
+            self.late = FakeLedger.holdings[U].pop()   # the receiver's participant shows it a moment later
+            return out
+        looks = []
+        def sleep(seconds):
+            looks.append(seconds)
+            if len(looks) == 2:
+                FakeLedger.holdings[U].append(self.late)
+        with mock.patch.object(FakeLedger, "transaction", staticmethod(late)), mock.patch.object(canton.time, "sleep", sleep):
+            self.assertEqual(self.fund()["balance"]["unlocked"], "3.5")
+        self.assertEqual(len(looks), 2)
+
+    def test_a_party_id_receives_directly_and_is_read_with_the_senders_token(self):
+        got = self.fund(OTHER, "0.0000000001")
+        self.assertEqual((got["to"], got["balance"]["unlocked"]), (OTHER, "0.0000000001"))
+        self.assertIn(("Bearer " + TOKENS["SENDER"]), [a for p, a, b in FakeLedger.requests if b and OTHER in json.dumps(b)])
+
+    def test_an_offer_to_a_party_that_is_not_u_or_v_is_refused_before_anything_is_sent(self):
+        self.mode = "pending"
+        with self.assertRaisesRegex(canton.Fail, "only u and v accept"):
+            self.fund(OTHER)
+        self.assertEqual(FakeLedger.commands, [])
+        self.mode = "completed"
+        self.kind = "direct"   # the scan proxy says direct, the ledger says pending: the offer is there and only the receiver can accept it
+        self.mode = "pending"
+        with self.assertRaisesRegex(canton.Fail, self.INSTRUCTION):
+            self.fund(OTHER)
+        self.assertEqual(len(FakeLedger.commands), 1)
+
+    def test_a_result_that_is_not_completed_or_pending_stops_the_command(self):
+        self.mode = "failed"
+        with self.assertRaisesRegex(canton.Fail, "did not complete: its result is TransferInstructionResult_Failed"):
+            self.fund()
+        self.assertEqual(len(FakeLedger.commands), 1)
+
+    def test_a_missing_exercise_result_stops_the_command(self):
+        with mock.patch.object(FakeLedger, "transaction", staticmethod(lambda body: {"transaction": {"updateId": "u-1", "events": []}})):
+            with self.assertRaisesRegex(canton.Fail, "its result is not there"):
+                self.fund()
+
+    def test_the_validator_must_hold_enough_unlocked_canton_coin_of_the_instrument(self):
+        for amount in ("140.51", "1000"):   # 40.0 + 100.5 unlocked; the locked 9.0 and the TKB do not count
+            with self.assertRaisesRegex(canton.Fail, "holds 140.5 Canton Coin, less than"):
+                self.fund("u", amount)
+        self.assertEqual((FakeLedger.commands, [p for _, p, _, _ in FakeScan.seen if p == FACTORY_PATH]), ([], []))
+        self.assertEqual(self.fund("u", "140.5")["balance"]["unlocked"], "141.5")
+
+    def test_the_inputs_are_at_most_fifty_of_the_largest(self):
+        FakeLedger.holdings[VALIDATOR] = [held(f"00y{i:02d}", f"{i + 1}.0") for i in range(60)]
+        self.fund("u", "1")
+        [asked] = [b for m, p, _, b in FakeScan.seen if p == FACTORY_PATH]
+        inputs = asked["choiceArguments"]["transfer"]["inputHoldingCids"]
+        self.assertEqual((len(inputs), inputs[0], inputs[-1]), (50, "00y59", "00y10"))
+
+    def test_an_amount_that_is_not_more_than_zero_with_at_most_ten_decimals_is_refused_before_anything_is_asked(self):
+        for bad in ("0", "0.0", "1.00000000001", "-1", "abc", "1e3", "", " 1", "1.", ".5"):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.fund("u", bad)
+        for bad in ("w", "gateway", "x::"):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.fund(bad)
+        self.assertEqual((FakeScan.seen, FakeLedger.requests, FakeLedger.commands), ([], [], []))
+        with self.assertRaisesRegex(SystemExit, "is the sender"):
+            self.fund(VALIDATOR)
+        self.assertEqual(FakeLedger.commands, [])
+
+    def test_a_malformed_factory_answer_stops_before_the_command_is_sent(self):
+        for change in (lambda a: a.update(factoryId="00" + "77" * 34), lambda a: a.update(transferKind="self"), lambda a: a["choiceContext"]["disclosedContracts"][3].pop("createdEventBlob")):
+            def answer(body, change=change):
+                a = factory_answer("direct")
+                change(a)
+                return a
+            FakeScan.answers[FACTORY_PATH] = answer
+            with self.assertRaises(canton.Fail):
+                self.fund()
+        self.assertEqual(FakeLedger.commands, [])
+
+    def test_a_malformed_accept_context_or_instruction_stops_the_receivers_command(self):
+        self.mode = "pending"
+        for bad in ({"choiceContextData": {"values": {}}, "disclosedContracts": []}, {"choiceContextData": {"values": {}}, "disclosedContracts": [{"contractId": "x"}]}, {}):
+            self.accept_answer = bad
+            FakeLedger.holdings[VALIDATOR] = [held("00x1", "40.0")]
+            with self.assertRaises(canton.Fail):
+                self.fund("u")
+            self.assertEqual(len(FakeLedger.commands), 1)   # the transfer is made; only its acceptance is refused
+            FakeLedger.commands.clear()
+        with self.assertRaisesRegex(canton.Fail, "not a contract id"):
+            cc.Scan(self.scan_url, self.files["SCAN"]).accept_context("../x")
+
+    def test_the_senders_token_file_is_needed_and_checked_before_any_request(self):
+        with self.assertRaises(SystemExit) as why:
+            self.run_cc("fund", "u", "1")
+        self.assertIn("cc.py fund", str(why.exception))
+        os.chmod(self.files["SENDER"], 0o644)
+        with self.assertRaises(SystemExit) as why:
+            self.fund()
+        self.assertIn("chmod 600", str(why.exception))
+        self.assertNoSecrets(str(why.exception))
+        self.assertEqual((FakeScan.seen, FakeLedger.requests), ([], []))
+
+    def test_no_token_is_printed_and_a_server_that_echoes_one_is_scrubbed(self):
+        result, out, err = self.run_printed("fund", "u", "1", "--sender-token-file", self.files["SENDER"])
+        self.assertNoSecrets(out, err, json.dumps(result))
+        FakeLedger.holdings[VALIDATOR] = [held("00x1", "40.0")]
+        real = canton.Network.post
+
+        def refuse(net, node, path, body, role, content_type="application/json"):
+            if path == "/v2/commands/submit-and-wait-for-transaction":
+                raise canton.Refused(f"{path}: 401 Bearer {net.token(role)}")
+            return real(net, node, path, body, role, content_type)
+        with mock.patch.object(canton.Network, "post", refuse), self.assertRaises(canton.Fail) as why:
+            self.fund("u", "1")
+        self.assertIn("Bearer <token>", str(why.exception))
+        self.assertNoSecrets(str(why.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
