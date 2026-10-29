@@ -280,6 +280,8 @@ There is no removal. Accept no `Gateway` entry before the builder is on 0.5.0 (i
 
 **The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
 
+**The block producer's party lookup.** A payment into a registered vault is a lock, and the builder asks the participant whether the lock's receiver is a Canton party (`GET /v2/parties/<party>`). With a login on the Ledger API that call needs a participant admin or an identity provider admin: the builder's own user gets HTTP 403, and every lock is left out of the block. Give the builder `--party-token-file` (or `CZE_PARTY_TOKEN_FILE`), a 0600 file with the token of a user that may read party details (`ostia-admin` does); it is used for that lookup only and read again for each one. See builder/README.md.
+
 **The demo's helpers on this participant.** `demo/canton.py` and `demo/evm.py` run against it, and `demo/live.sh` runs the deposit, the payment (in WtROME) and the withdrawal on the running chain. They need the demo's parties and user as well: run `network/external/setup.py --demo` once more, with no chain arguments (it adds `u`, `v`, `registry` and the user `ostia-demo`, and changes nothing else). Then:
 
 ```sh
