@@ -186,5 +186,48 @@ class RulesTests(TwinTestCase):
                 twin.main(argv)
 
 
+class DisclosedTests(TwinTestCase):
+    def test_the_file_is_one_disclosed_contract_as_setup_reads_it(self):
+        made = twin.rules(self.net, TOKEN)
+        out = self.state / "rules.json"
+        got = twin.main(["disclosed", "0x" + TOKEN, str(out)])
+        self.assertEqual(json.loads(out.read_text()), {"templateId": twin.TWIN_RULES, "contractId": made["contractId"], "createdEventBlob": "blob-1", "synchronizerId": "sync::1"})
+        self.assertEqual(out.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(got["contractId"], made["contractId"])
+
+    def test_the_blob_is_asked_for(self):
+        twin.rules(self.net, TOKEN)
+        with mock.patch.object(canton.Network, "template", autospec=True, side_effect=canton.Network.template) as template:
+            twin.disclosed(self.net, TOKEN, str(self.state / "rules.json"))
+        template.assert_called_once_with(self.net, "operator", "gateway", twin.TWIN_RULES, blob=True)
+
+    def test_it_is_what_setup_py_accepts(self):
+        sys.path.insert(0, str(ROOT / "network" / "external"))
+        import setup
+        made = twin.rules(self.net, TOKEN)
+        out = self.state / "rules.json"
+        twin.disclosed(self.net, TOKEN, str(out))
+        self.assertEqual(setup.read_rules_disclosed(str(out), made["contractId"])["contractId"], made["contractId"])
+
+    def test_a_file_that_is_there_is_replaced_and_opened_up(self):
+        twin.rules(self.net, TOKEN)
+        out = self.state / "rules.json"
+        out.write_text("old")
+        out.chmod(0o600)
+        twin.disclosed(self.net, TOKEN, str(out))
+        self.assertEqual(out.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(json.loads(out.read_text())["contractId"], "cid-1")
+
+    def test_no_rules_or_no_blob_writes_nothing(self):
+        out = self.state / "rules.json"
+        with self.assertRaisesRegex(canton.Fail, "found 0"):
+            twin.disclosed(self.net, TOKEN, str(out))
+        FakeLedger.contracts[("gw::1", twin.TWIN_RULES)] = [{"contractId": "r1", "offset": 1, "templateId": twin.TWIN_RULES,
+                                                            "createArgument": {"admin": "gw::1", "token": TOKEN, "name": "n", "symbol": "s", "decimals": "6"}}]
+        with self.assertRaisesRegex(canton.Fail, "without createdEventBlob"):
+            twin.disclosed(self.net, TOKEN, str(out))
+        self.assertFalse(out.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

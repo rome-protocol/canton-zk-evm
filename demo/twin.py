@@ -6,6 +6,8 @@
                                         address, the block, the gas used and the code hash. It does not register the vault: that is network/external/setup.py --contract-step
   twin.py rules <token>                 the gateway party (the twin's admin) creates the TwinRules of the ERC-20 at <token>, with the name, symbol and decimals that the token gives on Ostia
                                         (finalized block), unless the admin has them already: a second run changes nothing and prints the existing ones. Prints the contract id and the fields
+  twin.py disclosed <token> <file>      writes the TwinRules of that token as one disclosed contract, {templateId, contractId, createdEventBlob, synchronizerId}, read as the gateway
+                                        party with the created-event blob, to <file> (mode 0644): the file that network/external/setup.py --twin-rules-disclosed reads
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
@@ -26,7 +28,7 @@ RECEIPT_SECONDS = 600
 TWIN = "#ostia-twin:Twin.Twin:"
 TWIN_RULES = TWIN + "TwinRules"
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 
@@ -113,6 +115,23 @@ def rules(net: canton.Network, address: str) -> dict:
             "symbol": fields["symbol"], "decimals": int(fields["decimals"]), "instrument": "erc20:" + fields["token"]}
 
 
+def disclosed(net: canton.Network, address: str, out: str) -> dict:
+    """The token's TwinRules as a disclosed contract, in the file shape of setup.py's read_rules_disclosed (one object)."""
+    token = canton.evm_address(address)
+    found = rules_of(net, token, blob=True)
+    if len(found) != 1:
+        raise canton.Fail(f"expected one TwinRules of the admin for {token}, found {len(found)}" + (" (twin.py rules makes it)" if not found else ""))
+    event = found[0]
+    contract = {"templateId": event["templateId"], "contractId": event["contractId"], "createdEventBlob": event.get("createdEventBlob"), "synchronizerId": event.get("synchronizerId")}
+    missing = [k for k, v in contract.items() if not isinstance(v, str) or not v]
+    if missing:
+        raise canton.Fail(f"the ledger gave the rules without {', '.join(missing)}")
+    path = Path(out)
+    path.write_text(json.dumps(contract))
+    path.chmod(0o644)
+    return {"file": str(path), "contractId": contract["contractId"], "templateId": contract["templateId"], "synchronizerId": contract["synchronizerId"]}
+
+
 def main(argv: list) -> dict:
     n, cmd = len(argv), argv[:1]
     if argv == ["deploy-vault"]:
@@ -123,6 +142,8 @@ def main(argv: list) -> dict:
             net.check_roles(COMMAND_ROLES[cmd[0]])
         if cmd == ["rules"] and n == 2:
             return rules(net, argv[1])
+        if cmd == ["disclosed"] and n == 3:
+            return disclosed(net, argv[1], argv[2])
     raise SystemExit(__doc__)
 
 
