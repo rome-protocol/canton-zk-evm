@@ -52,7 +52,6 @@ MAX_INPUTS = 50   # the holdings that a transfer takes as inputs, the largest fi
 TRANSFER_KINDS = ("self", "direct", "offer")
 TRANSFER_PENDING = "TransferInstructionResult_Pending"
 COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "withdraw": ("demo", "operator")}
-ALLOCATION_FACTORY_TEMPLATE = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):Splice\.[A-Za-z.]*:[A-Za-z]*Amulet[A-Za-z]*")   # the registry's own contract: AmuletRules or the like, of the Splice packages
 ALLOCATION_COMPLETED = "AllocationInstructionResult_Completed"
 WITHDRAW_WAIT_SECONDS = 600   # the longest that withdraw waits for the builder's Receive leg to reach U
 SENDER_ROLE = "sender"   # the role whose token file is --sender-token-file
@@ -110,7 +109,7 @@ class Scan:
         return {"factory": factory, "kind": kind, "data": data, "disclosed": disclosed}
 
     def allocation_factory(self, allocation: dict, requested_at: str, inputs: list, expected_admin: str) -> dict:
-        """The allocation factory for this allocation, as the token standard's registry API gives it, checked: a contract id that is disclosed, whose template is the registry's own."""
+        """The allocation factory for this allocation, as the token standard's registry API gives it, checked: a contract id that is disclosed, whose template is ExternalPartyAmuletRules, the same contract as the transfer factory."""
         arguments = {"expectedAdmin": expected_admin, "allocation": allocation, "requestedAt": requested_at, "inputHoldingCids": inputs, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
         answer = self.call(twin.post_json, self.url + "/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": arguments, "excludeDebugFields": True})
         factory = answer.get("factoryId")
@@ -120,8 +119,8 @@ class Scan:
         named = [d for d in disclosed if d["contractId"] == factory]
         if len(named) != 1:
             raise canton.Fail("the scan proxy did not disclose the factory it named")
-        if not ALLOCATION_FACTORY_TEMPLATE.fullmatch(named[0]["templateId"]):
-            raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not one of the Splice amulet contracts")
+        if not FACTORY_TEMPLATE.fullmatch(named[0]["templateId"]):
+            raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
         return {"factory": factory, "data": data, "disclosed": disclosed}
 
     def accept_context(self, instruction: str) -> dict:

@@ -49,9 +49,12 @@ class FakeScan(http.server.BaseHTTPRequestHandler):
         pass
 
     def respond(self, body):
-        status, answer = body if isinstance(body, tuple) else (200, body)
+        status, answer, *more = body if isinstance(body, tuple) else (200, body)
         data = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
-        self.send_response(status); self.send_header("content-length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.send_response(status)
+        for name, value in (more[0] if more else {}).items():
+            self.send_header(name, value)
+        self.send_header("content-length", str(len(data))); self.end_headers(); self.wfile.write(data)
 
     def handle_any(self, method):
         length = int(self.headers.get("content-length") or 0)
@@ -339,6 +342,21 @@ class ScanAnswerTests(RegisterCase):
             self.refuses("DSO party", **{BASE + "/scan-proxy/dso-party-id": bad})
         FakeScan.answers[BASE + "/scan-proxy/dso-party-id"] = {"dso_party_id": DSO}
         self.refuses("validator's party", **{BASE + "/validator-user": {"party_id": ["x"]}})
+
+    def test_a_redirect_is_not_followed_and_the_token_goes_nowhere_else(self):
+        class Other(http.server.BaseHTTPRequestHandler):
+            seen: list = []
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                Other.seen.append(dict(self.headers))
+                data = json.dumps({"dso_party_id": DSO}).encode()
+                self.send_response(200); self.send_header("content-length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        other = serve(Other, "other", self)
+        for status in (301, 302, 303, 307):
+            with self.subTest(status):
+                self.refuses("redirect", **{BASE + "/scan-proxy/dso-party-id": lambda body: (status, b"", {"location": other + "/anywhere"})})
+                self.assertEqual(Other.seen, [])   # nothing reached the other server, so no token either
 
     def test_an_answer_that_is_not_a_json_object_or_is_an_error_is_refused(self):
         self.refuses("did not answer with JSON", **{FACTORY_PATH: b"<html>"})
@@ -745,7 +763,7 @@ class Clock:
 def allocation_answer():
     answer = factory_answer("direct")
     answer["factoryId"] = ALLOCATION_FACTORY
-    answer["choiceContext"]["disclosedContracts"] = [dict(DISCLOSED[0]), dict(DISCLOSED[1]), {**contract("allocfactory", PKG + ":Splice.AmuletRules:AmuletRules"), "contractId": ALLOCATION_FACTORY}]
+    answer["choiceContext"]["disclosedContracts"] = [dict(DISCLOSED[0]), dict(DISCLOSED[1]), {**contract("allocfactory", PKG + ":Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules"), "contractId": ALLOCATION_FACTORY}]
     del answer["transferKind"]
     return answer
 
@@ -879,7 +897,8 @@ class DepositTests(DepositCase):
             self.assertIn(why, str(got.exception))
         refused("factoryId", lambda a: a.update(factoryId="x"))
         refused("did not disclose", lambda a: a.update(factoryId="00" + "ee" * 34))
-        refused("not one of the Splice amulet", lambda a: a["choiceContext"]["disclosedContracts"][2].update(templateId=PKG + ":Evil.Rules:Rules"))
+        refused("not an ExternalPartyAmuletRules", lambda a: a["choiceContext"]["disclosedContracts"][2].update(templateId=PKG + ":Evil.Rules:Rules"))
+        refused("not an ExternalPartyAmuletRules", lambda a: a["choiceContext"]["disclosedContracts"][2].update(templateId=PKG + ":Splice.AmuletRules:AmuletRules"))
         refused("choice context", lambda a: a.update(choiceContext={}))
         self.assertEqual((self.exercised, FakeLedger.commands), ([], []))
 

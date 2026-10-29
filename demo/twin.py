@@ -284,14 +284,25 @@ def registry_url_of(text: str) -> str:
     return text.rstrip("/")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is not followed: it would carry the request's headers (a token) to wherever the server points, in the clear or to another host."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def fetch_json(request: urllib.request.Request) -> dict:
     """What a service answers to a JSON request, for a server that is not trusted: bounded in size, and an object or nothing."""
     url = request.full_url
     try:
-        with urllib.request.urlopen(request, timeout=60) as r:
+        with _OPENER.open(request, timeout=60) as r:
             data = r.read(MAX_ANSWER + 1)
     except urllib.error.HTTPError as e:
         with e:
+            if 300 <= e.code < 400:
+                raise canton.Fail(f"{url} answered with a redirect ({e.code}), which is not followed") from None
             raise canton.Fail(f"{url}: {e.code} {e.read(500).decode(errors='replace')}") from None
     except (urllib.error.URLError, OSError) as e:
         raise canton.Fail(f"{url}: {e}") from None
