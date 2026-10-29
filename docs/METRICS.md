@@ -1,18 +1,20 @@
 # What was measured, and on what
 
-This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the notes of the 2026-10-25, 2026-10-26 and 2026-10-27 runs (their logs are not in this repository), from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
+This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the notes of the 2026-10-25, 2026-10-26, 2026-10-27 and 2026-10-28 runs and the 29 October 2026 measurements (their logs are not in this repository), from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
 
-Five sets of measurements are reported:
+Seven sets of measurements are reported:
 
 - **The prover benchmark** (2026-10-03). ZisK 1.3.1-alpha proving blocks of three sizes. It used the unmodified reth guest that ships with zisk-eth-client v0.13.1, not this repository's guest, which adds a check of the chain's rules. Its raw logs are not in this repository.
 - **The largest block the prover was given** (2026-10-25). Blocks of plain transfers up to 62,500 transfers, on a temporary benchmark machine, with this repository's guest at v0.1.0. None of these blocks was committed to Canton. The raw logs are not in this repository.
 - **DevNet throughput** (2026-10-25). Plain-transfer and mixed load on Ostia DevNet, before and after Daml package 0.2.0 and the change to how the builder fills a block, with one block in flight and one prover. The raw logs and driver output are not in this repository; the figures come from the notes of those runs.
 - **DevNet throughput** (2026-10-26 and 27). Plain-transfer bursts and sustained load on Ostia DevNet with pipelining depth 3 on two GPU provers, at the 30,000,000 and 60,000,000 gas caps.
+- **DevNet peak test and commit cost** (2026-10-28). Plain transfers at 150 and 200 transactions a second offered, on two GPU provers at the 60,000,000 gas cap after Osaka, and the cost of a Canton commit fitted over 7,919 blocks. DevNet has run one GPU prover since 28 October 19:27 UTC.
+- **DevNet, 29 October 2026.** The time to prove and commit a block over 1,286 blocks on one prover, and the mining round of Canton Coin.
 - **The runs on this chain** (2026-10-05). This repository's own guest, on the local Canton network, with the gateway: a smoke test, a setup block and five runs, from the files in [`demo/results/`](../demo/results/). The one-transfer proof of 2026-10-04 is in [`prover/fixtures/session.txt`](../prover/fixtures/session.txt).
 
 ## The machine
 
-The 2026-10-03 benchmark and the 2026-10-05 runs used one NVIDIA RTX PRO 6000 GPU (the benchmark's machine is described below; for the runs only the GPU and driver were recorded); the 2026-10-25 benchmark machine has its own section, the DevNet runs of 2026-10-25 used one prover on one RTX PRO 6000, and those of 2026-10-26 and 27 used two spot GPU provers (see "DevNet throughput, 2026-10-26 and 27").
+The 2026-10-03 benchmark and the 2026-10-05 runs used one NVIDIA RTX PRO 6000 GPU (the benchmark's machine is described below; for the runs only the GPU and driver were recorded); the 2026-10-25 benchmark machine has its own section, the DevNet runs of 2026-10-25 used one prover on one RTX PRO 6000, and those of 2026-10-26 and 27 used two spot GPU provers (see "DevNet throughput, 2026-10-26 and 27"). The 2026-10-28 peak test used the same two provers. Since 28 October 2026 at 19:27 UTC DevNet runs one GPU prover, on the GPU of the machine that runs the builder, with `--max-in-flight 2`; the second prover machine was stopped.
 
 | | Prover benchmark, 2026-10-03 | Runs on this chain, 2026-10-05 |
 |---|---|---|
@@ -169,6 +171,52 @@ What these numbers do not show: plain transfers are the cheapest transaction the
 - Rome keeps a standing background load on DevNet that follows the number of live provers: 70 tx/s with two provers (about 75% of the 93 tx/s fee-stable rate) and 45 with one, at 60,000,000 gas. These are rates that were set from 12:05 UTC on 2026-10-27, not measured; at 30,000,000 gas the load ran at 57 and 37.
 - Each figure is one run or one ramp, so there is no spread.
 - As on 2026-10-25, plain transfers are the cheapest transaction there is, so these are not figures for contract-heavy traffic, and they say nothing about more confirmers or builders. DevNet still has one confirmer.
+
+## DevNet peak test and commit cost, 2026-10-28
+
+**The peak test.** Rome ran plain transfers at two offered rates on Ostia DevNet on 28 October 2026 from 12:08 to 12:40 UTC, after the move to Osaka at 12:00 UTC. The gas cap was 60,000,000 and two GPU provers were working, with the builder at depth 3. Each rate ran for 15 minutes. The figures come from the notes of the run; the raw logs are not in this repository.
+
+| Offered | Carried end to end | Blocks | Base fee over 15 minutes | Proof / commit per block | Block cut to final, p50 | Refused |
+|---|---|---|---|---|---|---|
+| 150 tx/s | 150.4 tx/s (135,000 sent) | 2,178 transfers on average (76% full) | 297 to 553 wei (a slow rise) | 19.6 s / 6.2 s | 30.7 s | 0 |
+| 200 tx/s | 187.7 tx/s (176,600 sent; 4,000 to 6,000 still waiting) | 2,857, every block full | 84,925 to 245,105 wei (threefold in 2 minutes) | 19.4 s / 5.8 s | 30.9 s | 0 |
+
+- The plain-transfer ceiling on that day was about 188 tx/s, on full blocks with the base fee climbing. That is a peak, not a sustained rate. 150 tx/s held for 15 minutes with a slowly rising fee.
+- What bound the rate was the block cadence: one full block about every 14.6 s (55 blocks in 805 s). A full block's proof took about 19.4 s (about 12 s for the lighter blocks of that week), the pre-check about 7 s and the commit about 5.8 s. With three blocks in flight the measured proof, pre-check and commit times suggest one block about every 11 s, against the 14.6 s seen; the remaining delay has not been measured. The pre-check and the input generation are candidates.
+- Canton was not the limit. The commit stayed near 6 s in both runs.
+- Canton traffic ran at about 32,000 bytes a second (188 tx/s at about 170 bytes). Canton meters what a participant sends to the network in bytes of traffic, and each participant's traffic balance is topped up at a fixed rate. The top-up rate of the participant that hosts Ostia's parties, which sends every block's Canton transaction, is 40,000 bytes a second. At about 170 bytes a transaction that allows about 235 tx/s (about 160 tx/s at 250 bytes), so the top-up is the next limit after the block cadence.
+- Each rate was run once, so there is no spread. These are plain transfers, the cheapest transaction there is.
+
+**The cost of a commit.** From the builder's journal of 7,919 committed blocks, 27 October 2026 09:00 UTC to 28 October about 10:10 UTC, a block's commit costs 4.34 s plus 1.06 ms for each transaction in it.
+
+| Transactions in the block | Commit p50 |
+|---|---|
+| fewer than 300 | 4.2 s |
+| 700 to 1,200 | 5.1 s |
+| 2,000 to 3,000 | 6.1 s |
+
+- The fixed 4.34 s a block is now the larger part of a commit. The per-transaction cost of 1.06 ms is about half of the 1.9 to 2.9 ms the design had assumed.
+- Commits run one at a time. By arithmetic from the fit, Canton alone would allow about 390 tx/s on full blocks of 2,857 plain transfers at 60,000,000 gas (one block about every 7.4 s) and about 550 tx/s on full blocks at 120,000,000 gas. Neither was run; the 188 tx/s above is what was measured.
+- Canton traffic is about 170 to 250 bytes a transaction, with an `Advance` argument of about 240 to 290 bytes. The design had assumed about 105 bytes.
+- The top-up rate of the participant that hosts Ostia's parties is 40,000 bytes a second, and that of a second participant is 20,000. At 170 to 250 bytes a transaction, the first caps the chain near 160 to 235 tx/s. At 400 tx/s and 250 bytes the rate would have to reach about 100,000 bytes a second, paid in DevNet Canton Coin. The price of a megabyte of traffic has not been read yet.
+- DevNet's flat-fee rate of about 93 tx/s (previous section) is therefore not Canton's commit limit.
+
+**One prover since 28 October, 19:27 UTC.** The builder moved to its one GPU prover with `--max-in-flight 2` and the second prover machine was stopped. The peak test above ran before that, on two provers. It has not been repeated on one.
+
+## DevNet, 29 October 2026
+
+These are measurements taken on 29 October 2026 at 11:00 UTC, on one prover with a light load. The twin and Canton Coin blocks of that day are in [DESIGN.md](DESIGN.md); they are records of what committed, not metrics.
+
+| What | Value | Over |
+|---|---|---|
+| Prove plus commit, one block, p50 | 12.3 s | the last 1,286 blocks |
+| Prove plus commit, one block, p95 | 14.8 s | the same blocks |
+| Prove plus commit, one block, maximum | 24.2 s | the same blocks |
+| Canton Coin mining round: tick of the DSO | 600 s (10 minutes) | the `tickDuration` of `AmuletRules` |
+| Canton Coin mining round: open time | 20 minutes, from `opensAt` to `targetClosesAt` | three rounds open at once (rounds 67445 to 67447) |
+
+- A block's choice context for Canton Coin names the open round. A round stays open 1,200 s and the slowest of the 1,286 blocks took 24.2 s to prove and commit, so the margin is about 50 times on a light load. A prover backlog of about 10 minutes would be needed before a context went stale.
+- These blocks were light, so the times are not a figure for full blocks (a full block's proof took 19.4 s on 28 October).
 
 ## The runs on this chain
 
@@ -349,6 +397,7 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 - **Building the witness from the chain.** The benchmark's "input to proof" starts from a witness file that already exists. On this chain, building the witness on a warm machine has not been timed on its own.
 - **The sidecar's proof check run natively.** Native verification latency has not been measured. The WebAssembly build took 8 to 32 ms in Node on CI runners for verifying the proof and rejecting a mismatched header. That is not a successful full-block check or a browser measurement; see [explorer/verify/README.md](../explorer/verify/README.md).
 - **Canton's commit of a block with contract-heavy traffic at its largest.** The demo's commits are for an empty block and blocks of one to three transactions, with at most one leg. On DevNet the largest commits measured are blocks of 1,428 plain transfers, in the section "DevNet throughput, 2026-10-25", and, since the cap went to 60,000,000, blocks of about 2,857 plain transfers, in "DevNet throughput, 2026-10-26 and 27".
+- **The peak test on one prover, and the serial step in the block cadence.** The 28 October peak test ran on two provers; DevNet has run one since 19:27 UTC that day. The step that holds the cadence at about 14.6 s a block, against about 11 s from the proof, pre-check and commit times, is not identified.
 - **Repeat runs on this chain.** Each run was done once, on one machine, with one operator and one builder. There is no spread to report.
 - **The rest of the runs' machine.** Its CPU model, RAM, operating system and Node version were not recorded; only the GPU and driver were.
 - **ZisK's hints build.** The build did not complete, so no performance measurements are available. The cause has not been established.
