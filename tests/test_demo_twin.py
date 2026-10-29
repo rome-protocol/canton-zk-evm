@@ -570,6 +570,159 @@ class LockTests(ChainTestCase):
         self.assertEqual(twin.registry_url_of("https://r.example/base/"), "https://r.example/base")
 
 
+class HoldingsTests(unittest.TestCase):
+    def test_the_fewest_largest_holdings_that_cover_the_amount(self):
+        held = [("a", 10), ("b", 50), ("c", 30), ("d", 5)]
+        self.assertEqual(twin.pick_holdings(held, 50, "u"), ["b"])
+        self.assertEqual(twin.pick_holdings(held, 51, "u"), ["b", "c"])
+        self.assertEqual(twin.pick_holdings(held, 95, "u"), ["b", "c", "a", "d"])
+        self.assertEqual(twin.pick_holdings(held, 1, "u"), ["b"])
+
+    def test_short_is_refused_and_says_how_much_there_is(self):
+        with self.assertRaisesRegex(canton.Fail, "u holds 0.0000000095 of the twin, less than 0.0000000096"):
+            twin.pick_holdings([("a", 10), ("b", 50), ("c", 30), ("d", 5)], 96, "u")
+        with self.assertRaisesRegex(canton.Fail, "holds 0.0 of the twin"):
+            twin.pick_holdings([], 1, "v")
+
+
+class SendTests(ChainTestCase):
+    URL = "http://registry.example:8080"
+    DISCLOSED = {"templateId": twin.TWIN_RULES, "contractId": "rules-1", "createdEventBlob": "blob", "synchronizerId": "sync::1"}
+
+    def setUp(self):
+        super().setUp()
+        self.posts, self.exercises, self.reply = [], [], None
+        self.answer = {"factoryId": "rules-1", "transferKind": "direct", "choiceContext": {"choiceContextData": {"values": {"k": {"tag": "AV_Bool", "value": True}}},
+                                                                                       "disclosedContracts": [self.DISCLOSED]}}
+        self.result = {"output": {"tag": twin.TRANSFER_COMPLETED, "value": {"receiverHoldingCids": ["new-1"]}}, "senderChangeCids": [], "meta": {"values": {}}}
+        FakeLedger.contracts[(U, twin.TWIN_HOLDING)] = [holding(U, "1.5"), holding(U, "2.0"), holding(U, "0.25"), holding(V, "9.0"), holding(U, "5.0", token="cd" * 20),
+                                                        holding(U, "7.0", admin="other::1")]
+        FakeLedger.contracts[(GW, twin.TWIN_RULES)] = [{"contractId": "rules-1", "offset": 1, "templateId": twin.TWIN_RULES,
+                                                        "createArgument": {"admin": GW, "token": TOKEN, "name": "n", "symbol": "s", "decimals": "6"}}]
+        real = canton.Network.post
+
+        def post(net, node, path, body, role, content_type="application/json"):
+            if path != "/v2/commands/submit-and-wait-for-transaction":
+                return real(net, node, path, body, role, content_type)
+            self.exercises.append((node, body, role))
+            if self.reply:
+                return self.reply()
+            return {"transaction": {"updateId": "upd-9", "events": [{"ExercisedEvent": {"contractId": "rules-1", "choice": "TransferFactory_Transfer", "exerciseResult": self.result}},
+                                                                    {"CreatedEvent": {"contractId": "new-1"}}]}}
+        for patcher in (mock.patch.object(canton.Network, "post", post), mock.patch.object(twin, "post_json", self.post)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, url, body):
+        self.posts.append((url, body))
+        return self.answer
+
+    def send(self, *args):
+        return twin.send(self.net, *(args or ("u", "v", TOKEN, "1.75")), self.URL)
+
+    def test_the_transfer_is_asked_of_the_registry_and_exercised_as_the_sender(self):
+        got = self.send()
+        [(url, body)] = self.posts
+        args = body["choiceArguments"]
+        self.assertEqual(url, self.URL + "/registry/transfer-instruction/v1/transfer-factory")
+        self.assertEqual(args["expectedAdmin"], GW)
+        t = args["transfer"]
+        self.assertEqual((t["sender"], t["receiver"], t["amount"], t["instrumentId"], t["meta"]), (U, V, "1.75", {"admin": GW, "id": "erc20:" + TOKEN}, {"values": {}}))
+        self.assertEqual(t["inputHoldingCids"], ["h-u::1-2.0"])
+        self.assertLess(t["requestedAt"], t["executeBefore"])
+        [(node, request, role)] = self.exercises
+        command = request["commands"]["commands"][0]["ExerciseCommand"]
+        self.assertEqual((node, role, request["commands"]["actAs"], request["commands"]["userId"]), ("users", "demo", [U], "demo"))
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_FACTORY, "rules-1", "TransferFactory_Transfer"))
+        self.assertEqual(command["choiceArgument"]["extraArgs"], {"context": self.answer["choiceContext"]["choiceContextData"], "meta": {"values": {}}})
+        self.assertEqual({k: v for k, v in command["choiceArgument"].items() if k != "extraArgs"}, {"expectedAdmin": GW, "transfer": t})
+        self.assertEqual(request["commands"]["disclosedContracts"], [self.DISCLOSED])
+        self.assertEqual(request["transactionFormat"]["transactionShape"], "TRANSACTION_SHAPE_LEDGER_EFFECTS")
+        self.assertEqual(got["updateId"], "upd-9")
+        self.assertEqual((got["from"], got["to"], got["amount"], got["result"]), ("u", V, "1.75", twin.TRANSFER_COMPLETED))
+
+    def test_the_inputs_are_the_senders_own_holdings_of_this_twin_that_cover_the_amount(self):
+        self.send("u", V, TOKEN, "3.5")   # 2.0 and 1.5; not V's 9.0, not another token's, not another admin's
+        self.assertEqual(self.posts[0][1]["choiceArguments"]["transfer"]["inputHoldingCids"], ["h-u::1-2.0", "h-u::1-1.5"])
+        self.assertEqual(self.send("u", "v", TOKEN, "3.75")["inputs"], ["h-u::1-2.0", "h-u::1-1.5", "h-u::1-0.25"])
+
+    def test_short_is_refused_before_the_registry_is_asked(self):
+        with self.assertRaisesRegex(canton.Fail, "u holds 3.75 of the twin, less than 3.8"):
+            self.send("u", "v", TOKEN, "3.8")
+        self.assertEqual((self.posts, self.exercises), ([], []))
+
+    def test_the_receiver_may_be_a_party_id_and_the_sender_is_u_or_v(self):
+        self.send("u", "x::1220ab", TOKEN, "1")
+        self.assertEqual(self.posts[0][1]["choiceArguments"]["transfer"]["receiver"], "x::1220ab")
+        FakeLedger.contracts[(V, twin.TWIN_HOLDING)] = [holding(V, "9.0")]
+        self.assertEqual(self.send("v", "u", TOKEN, "9")["from"], "v")
+        for args in (("gw", V, TOKEN, "1"), ("u", "x", TOKEN, "1"), ("U", V, TOKEN, "1")):
+            with self.assertRaises(SystemExit):
+                self.send(*args)
+
+    def test_an_amount_that_does_not_convert_asks_nothing(self):
+        for amount in ("0", "0.0000001", "1e1", "-1"):
+            with self.assertRaises((canton.Fail, SystemExit)):
+                self.send("u", "v", TOKEN, amount)
+        self.assertEqual((self.posts, self.exercises), ([], []))
+
+    def test_a_factory_that_is_not_the_ledgers_rules_is_refused_and_nothing_is_submitted(self):
+        for factory in ("rules-2", None, 7):
+            self.answer = {**self.answer, "factoryId": factory}
+            with self.assertRaisesRegex(canton.Fail, "factory|factoryId"):
+                self.send()
+        FakeLedger.contracts[(GW, twin.TWIN_RULES)] = []
+        self.answer["factoryId"] = "rules-1"
+        with self.assertRaisesRegex(canton.Fail, "not a TwinRules"):
+            self.send()
+        self.assertEqual(self.exercises, [])
+
+    def test_an_answer_without_the_disclosure_or_with_a_broken_one_is_refused(self):
+        context = self.answer["choiceContext"]
+        for bad in ({**context, "disclosedContracts": []}, {**context, "disclosedContracts": [{**self.DISCLOSED, "contractId": "rules-9"}]},
+                    {**context, "disclosedContracts": [{**self.DISCLOSED, "createdEventBlob": ""}]}, {**context, "disclosedContracts": [{**self.DISCLOSED, "synchronizerId": None}]},
+                    {**context, "disclosedContracts": ["x"]}, {**context, "disclosedContracts": None}, {**context, "choiceContextData": None}, None, "x"):
+            self.answer = {**self.answer, "choiceContext": bad}
+            with self.assertRaises(canton.Fail):
+                self.send()
+        self.assertEqual(self.exercises, [])
+
+    def test_only_the_four_disclosure_fields_are_passed_on(self):
+        self.answer["choiceContext"]["disclosedContracts"] = [{**self.DISCLOSED, "extra": "x"}]
+        self.send()
+        self.assertEqual(self.exercises[0][1]["commands"]["disclosedContracts"], [self.DISCLOSED])
+
+    def test_a_result_that_is_not_completed_is_refused(self):
+        for result in ({"output": {"tag": "TransferInstructionResult_Pending", "value": {}}}, {"output": {"tag": "TransferInstructionResult_Failed", "value": {}}},
+                       {"output": None}, {}, None, "Completed"):
+            self.result = result
+            with self.assertRaisesRegex(canton.Fail, "upd-9 did not complete"):
+                self.send()
+
+    def test_no_exercised_event_of_the_factory_is_refused(self):
+        self.reply = lambda: {"transaction": {"updateId": "upd-9", "events": []}}
+        with self.assertRaisesRegex(canton.Fail, "did not complete: its result is not there"):
+            self.send()
+        self.reply = lambda: {}
+        with self.assertRaisesRegex(canton.Fail, "no transaction"):
+            self.send()
+
+    def test_the_ledger_refusing_the_command_stops_it(self):
+        def refuse():
+            raise canton.Refused("/v2/commands: 400 nope")
+        self.reply = refuse
+        with self.assertRaisesRegex(canton.Fail, "nope"):
+            self.send()
+        self.assertEqual(len(self.posts), 1)
+
+    def test_main_takes_four_arguments_and_the_registry_url(self):
+        self.assertEqual(twin.main(["send", "u", "v", "0x" + TOKEN, "1", "--registry-url", self.URL])["updateId"], "upd-9")
+        for argv in (["send", "u", "v", TOKEN, "1"], ["send", "u", "v", TOKEN, "--registry-url", self.URL], ["send", "u", "v", TOKEN, "1", "2", "--registry-url", self.URL],
+                     ["send", "u", "v", TOKEN, "1", "--vault", VAULT_A, "--registry-url", self.URL]):
+            with self.assertRaises(SystemExit, msg=argv):
+                twin.main(argv)
+
+
 class PostJsonTests(unittest.TestCase):
     def serve(self, status, body):
         import http.server, threading

@@ -22,10 +22,16 @@
                                         of vaults is a hint and is not read. Then it approves the gateway and calls pay(lockId, token, vault, amount) with that key, waits for the
                                         receipt, and waits (up to 10 minutes) until the receiver holds the TwinHolding that the lock's leg minted. Prints the pay transaction, its
                                         block, the lock id, the vault and the holding's contract id
+  twin.py send <from: u|v> <to: u, v or a party id> <token> <amount> --registry-url URL
+                                        sends twin through the token standard: the registry service's transfer factory for the transfer (expectedAdmin is the gateway party, the sender's own
+                                        TwinHolding cids that cover the amount, empty meta), checked to be a TwinRules of the gateway party on the ledger with its disclosure, then
+                                        TransferFactory_Transfer as the sender with the answer's choice context and disclosed contracts. Stops unless the result is
+                                        TransferInstructionResult_Completed. Prints the update id
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
-import hashlib, json, os, re, sys, time, urllib.error, urllib.request
+import hashlib, json, os, re, sys, time, urllib.error, urllib.request, uuid
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -45,7 +51,7 @@ TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION = TWIN + "TwinRules", TWIN + "TwinHold
 TWIN_DECIMALS = 10   # every twin has 10 decimals, like a Daml Decimal (apps/twin/README.md, "Amounts")
 TWIN_LIMIT = 10**27  # in units of 10^-10: 10^17 whole units, the most a Decimal of the twin holds
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",), "send": ("demo", "operator")}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 WAIT_SECONDS = 600   # the longest that a command waits for Canton to follow Ostia (a lock's mint, a release's burn)
@@ -54,6 +60,8 @@ REGISTRY_URL = re.compile(r"https?://[^/\s?#]+(/[^\s?#]*)?")
 MAX_ANSWER = 1_000_000   # the most that a registry's answer may be: it is read from a server that this command does not trust
 AMOUNT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 MAX_AMOUNT_TEXT = 80
+TRANSFER_COMPLETED = "TransferInstructionResult_Completed"
+DISCLOSED_KEYS = ("templateId", "contractId", "createdEventBlob", "synchronizerId")
 
 
 def runtime_code(path: Path = None) -> bytes:
@@ -322,6 +330,85 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
             "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
 
 
+def holdings_of(net: canton.Network, who: str, token: str) -> list:
+    """The TwinHoldings of the twin (the gateway party's, of this token) that u or v owns, as (contract id, units of 10^-10), as the owner's participant shows them."""
+    admin, owner = net.party(ADMIN), net.party(who)
+    return [(e["contractId"], ledger_units(e["createArgument"]["amount"])) for e in net.template("users", who, TWIN_HOLDING)
+            if e["createArgument"]["admin"] == admin and e["createArgument"]["token"] == token and e["createArgument"]["owner"] == owner]
+
+
+def pick_holdings(held: list, units: int, who: str) -> list:
+    """The contract ids of the fewest holdings (the largest first) that add up to at least `units`; a stop if all of them together are less."""
+    chosen, total = [], 0
+    for cid, amount in sorted(held, key=lambda h: -h[1]):
+        if total >= units:
+            break
+        chosen.append(cid)
+        total += amount
+    if total < units:
+        raise canton.Fail(f"{who} holds {amount_text(sum(a for _, a in held))} of the twin, less than {amount_text(units)}")
+    return chosen
+
+
+def factory_answer(answer: dict, rules: list) -> tuple:
+    """The factory, the choice context and the disclosed contracts of a registry's answer to a transfer factory request, from a server that is not trusted: the factory
+    must be a TwinRules of the gateway party that the ledger shows and must come with its disclosure, so a registry cannot point the sender at another contract."""
+    factory, context = answer.get("factoryId"), answer.get("choiceContext")
+    data, disclosed = (context.get("choiceContextData"), context.get("disclosedContracts")) if isinstance(context, dict) else (None, None)
+    if not isinstance(factory, str) or not isinstance(data, dict) or not isinstance(disclosed, list):
+        raise canton.Fail("the registry's answer has no factoryId and choiceContext with choiceContextData and disclosedContracts")
+    if factory not in rules:
+        raise canton.Fail(f"the registry named the factory {factory[:16]}, which is not a TwinRules of the gateway party for this token on the ledger")
+    contracts = []
+    for d in disclosed:
+        if not isinstance(d, dict) or any(not isinstance(d.get(k), str) or not d[k] for k in DISCLOSED_KEYS):
+            raise canton.Fail(f"the registry gave a disclosed contract without {', '.join(DISCLOSED_KEYS)}")
+        contracts.append({k: d[k] for k in DISCLOSED_KEYS})
+    if factory not in [d["contractId"] for d in contracts]:
+        raise canton.Fail("the registry did not disclose the factory it named")
+    return factory, data, contracts
+
+
+def submit_for_transaction(net: canton.Network, acting: str, command: dict, disclosed: list) -> dict:
+    """The command of u or v, submitted and waited for, with the transaction's effects (submit-and-wait only gives the update id, and the result of a choice is in the exercised event)."""
+    party = net.party(acting)
+    everything = {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}
+    body = {"commands": {"commands": [command], "commandId": str(uuid.uuid4()), "userId": net.user(canton.USER), "actAs": [party], "disclosedContracts": disclosed},
+            "transactionFormat": {"eventFormat": {"filtersByParty": {party: everything}, "verbose": False}, "transactionShape": "TRANSACTION_SHAPE_LEDGER_EFFECTS"}}
+    tx = net.post("users", "/v2/commands/submit-and-wait-for-transaction", body, canton.USER).get("transaction")
+    if not isinstance(tx, dict) or not tx.get("updateId"):
+        raise canton.Fail("the ledger gave no transaction for the command")
+    return tx
+
+
+def send(net: canton.Network, sender: str, receiver: str, address: str, amount: str, registry_url: str) -> dict:
+    """u or v sends twin to a party through the token standard: the transfer factory of the registry service, then TransferFactory_Transfer as the sender with the factory's context and
+    disclosed contracts. The twin completes a transfer at once, so the result must be TransferInstructionResult_Completed."""
+    if sender not in ("u", "v"):
+        raise SystemExit(f"the sender must be u or v, not {sender!r}")
+    token = canton.evm_address(address)
+    decimals = erc20_decimals("0x" + token)
+    units = twin_units(base_units(amount, decimals), decimals, f"the amount {amount}")
+    to, admin = party_of(net, receiver), net.party(ADMIN)
+    inputs = pick_holdings(holdings_of(net, sender, token), units, sender)
+    transfer = {"sender": net.party(sender), "receiver": to, "amount": amount_text(units), "instrumentId": {"admin": admin, "id": "erc20:" + token},
+                "requestedAt": canton.utc(timedelta(minutes=-1)), "executeBefore": canton.utc(timedelta(hours=1)), "inputHoldingCids": inputs, "meta": {"values": {}}}
+    arguments = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
+    answer = post_json(registry_url_of(registry_url) + "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": arguments})
+    factory, data, disclosed = factory_answer(answer, [e["contractId"] for e in rules_of(net, token)])
+    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer",
+                                   "choiceArgument": {**arguments, "extraArgs": {"context": data, "meta": {"values": {}}}}}}
+    tx = submit_for_transaction(net, sender, command, disclosed)
+    exercised = [e["ExercisedEvent"] for e in tx.get("events", []) if "ExercisedEvent" in e and e["ExercisedEvent"].get("choice") == "TransferFactory_Transfer"
+                 and e["ExercisedEvent"].get("contractId") == factory]
+    result = exercised[0].get("exerciseResult") if len(exercised) == 1 else None
+    tag = ((result or {}).get("output") or {}).get("tag") if isinstance(result, dict) else None
+    if tag != TRANSFER_COMPLETED:
+        raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {TRANSFER_COMPLETED}")
+    return {"updateId": tx["updateId"], "from": sender, "to": to, "amount": transfer["amount"], "instrument": "erc20:" + token, "factory": factory,
+            "inputs": inputs, "result": tag}
+
+
 def split_options(argv: list, names: tuple) -> tuple:
     """The arguments without the options `--name value` of `names`, and the options' values. An option twice, with no value, or one that is not named stops the command."""
     rest, found, i = [], {}, 0
@@ -355,6 +442,10 @@ def main(argv: list) -> dict:
             args, options = split_options(argv[1:], ("--registry-url", "--vault"))
             if len(args) == 5 and "--registry-url" in options:
                 return lock(net, args[0], args[1], args[2], args[3], args[4], options["--registry-url"], options.get("--vault"))
+        if cmd == ["send"]:
+            args, options = split_options(argv[1:], ("--registry-url",))
+            if len(args) == 4 and "--registry-url" in options:
+                return send(net, args[0], args[1], args[2], args[3], options["--registry-url"])
     raise SystemExit(__doc__)
 
 
