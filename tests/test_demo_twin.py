@@ -1,5 +1,5 @@
 """Tests for demo/twin.py with small fakes of Ostia (demo/evm.py's rpc and send) and the Ledger API. Run: python3 -m unittest tests/test_demo_twin.py"""
-import json, os, sys, unittest
+import hashlib, json, os, sys, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -333,6 +333,271 @@ class BalancesTests(TwinTestCase):
                 twin.balances(self.net, TOKEN, who)
         with self.assertRaises(SystemExit):
             twin.main(["balances"])
+
+
+class FakeEvm:
+    """Ostia for the commands that send: the transactions that U's and V's keys sent (the nth has the hash 0x...n), their receipts, and the token's reads."""
+    def __init__(self, token):
+        self.token, self.sent, self.failing = token, [], set()
+
+    def send(self, folder, who, to, data, gas, *rest):
+        self.sent.append({"who": who, "to": to, "data": data, "gas": gas})
+        return f"0x{len(self.sent):064x}"
+
+    def rpc(self, method, params):
+        if method == "eth_getTransactionReceipt":
+            n = int(params[0], 16)
+            return {"blockNumber": hex(100 + n), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(50_000), "status": hex(0 if n in self.failing else 1)}
+        return self.token.rpc(method, params)
+
+
+GATEWAY = evm.gateway_address()
+OTHER_VAULT = "c3" * 20
+LOCK_ID_U = "3de42055cb6f3293c0ccfe04c71cf10d9ba24f0eb32b2ab404a8b553571d4a75"   # sha256 of the text lock,u::1,ref-1, worked out with shasum -a 256
+LOCK_ID_UNICODE = "99d7e1661ca9e404504536505979a0fa093863ea1a4f89edeef1810637075e33"   # sha256 of the UTF-8 text lock,v::1220aa,\u00f6 ref
+RELEASE_ID_A = "24b577158cdf638accf4c25056d4bc663fd56dc5cab917c656833dccc4fb764f"   # sha256 of the text vault-release,5a5a...5a,r-1 (the vault's 40 digits)
+RELEASE_ID_B = "47c7cac8006bb2cfbc7ae7e3ae8182f40e20ab48e45fc6f55c5a382de5a96acd"   # sha256 of the text vault-release,a1a1...a1,0x0001
+
+
+class ChainTestCase(TwinTestCase):
+    """A twin of a 6-decimal token, a chain that has registered the vaults A and B, and Ostia that takes what is sent."""
+    def setUp(self):
+        super().setUp()
+        self.evm = FakeEvm(self.token)
+        for patcher in (mock.patch.object(evm, "rpc", self.evm.rpc), mock.patch.object(evm, "send", self.evm.send)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        chain = FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]
+        chain["createArgument"] = {**chain["createArgument"], "contracts": [{"contractAddress": a, "contractCodeHash": "00" * 32, "contractKind": "Vault"} for a in (VAULT_A, VAULT_B)]}
+
+
+def minted(owner, amount, reference, token=TOKEN, admin=GW, cid="minted-1"):
+    """A TwinHolding as Mint makes it: the reference of the vault payment is in its metadata."""
+    return {"contractId": cid, "offset": 1, "createArgument": {"admin": admin, "owner": owner, "token": token, "amount": amount,
+                                                              "meta": {"values": {twin.MINT_REFERENCE: reference}}}}
+
+
+class IdTests(unittest.TestCase):
+    def test_lock_and_release_ids_match_vectors_worked_out_independently(self):
+        self.assertEqual(twin.lock_id("u::1", "ref-1"), LOCK_ID_U)
+        self.assertEqual(twin.lock_id("v::1220aa", "\u00f6 ref"), LOCK_ID_UNICODE)
+        self.assertEqual(twin.release_id("5a" * 20, "r-1"), RELEASE_ID_A)
+        self.assertEqual(twin.release_id(VAULT_A, "0x0001"), RELEASE_ID_B)
+
+    def test_the_ids_are_of_different_domains(self):
+        self.assertNotEqual(twin.lock_id("a", "b"), twin.release_id("a", "b"))
+        self.assertEqual(len(LOCK_ID_U), 64)
+
+
+class AmountTests(unittest.TestCase):
+    def test_exact_conversions(self):
+        for text, decimals, want in (("2.5", 6, 2_500_000), ("2.500000", 6, 2_500_000), ("2.50000000000", 6, 2_500_000), ("0.000001", 6, 1), ("7", 0, 7),
+                                     ("1", 18, 10**18), ("0.0000000001", 18, 10**8), ("12", 10, 12 * 10**10), ("99999999999999999.999999", 6, 10**23 - 1)):
+            self.assertEqual(twin.base_units(text, decimals), want, text)
+
+    def test_a_fraction_of_a_base_unit_is_refused(self):
+        for text, decimals in (("0.0000001", 6), ("1.5", 0), ("2.5000001", 6)):
+            with self.assertRaisesRegex(canton.Fail, "not a whole number of base units"):
+                twin.base_units(text, decimals)
+
+    def test_zero_is_refused(self):
+        for text in ("0", "0.0", "0.000000"):
+            with self.assertRaisesRegex(canton.Fail, "more than zero"):
+                twin.base_units(text, 6)
+
+    def test_an_amount_that_is_not_a_twin_amount_is_refused(self):
+        with self.assertRaisesRegex(canton.Fail, "finer than a twin amount"):
+            twin.base_units("0.000000000000000001", 18)   # one base unit of 18 decimals
+        with self.assertRaisesRegex(canton.Fail, "above 10"):
+            twin.base_units("100000000000000000", 6)   # 10^17 whole units
+
+    def test_what_is_not_a_decimal_number_is_refused(self):
+        for text in ("", "-1", "+1", "1e3", "1,5", ".5", "5.", " 1", "1 ", "0x10", "1" * 81, "1.5.2", "\u0661"):
+            with self.assertRaises(SystemExit, msg=text):
+                twin.base_units(text, 6)
+
+
+class LockTests(ChainTestCase):
+    URL = "http://registry.example:8080"
+
+    def setUp(self):
+        super().setUp()
+        self.posts, self.answer = [], {}
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = []
+        patcher = mock.patch.object(twin, "post_json", self.post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, url, body):
+        self.posts.append((url, body))
+        return {"lockId": twin.lock_id(body["receiver"], body["ref"]), "receiver": body["receiver"], "ref": body["ref"], "vaults": ["0x" + OTHER_VAULT], **self.answer}
+
+    def lock(self, *args, **kw):
+        return twin.lock(self.net, *(args or ("u", TOKEN, "2.5", "v", "ref-1")), self.URL, **kw)
+
+    def holds(self, owner="v::1", amount="2.5", ref=None):
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [minted(owner, amount, ref or twin.lock_id("v::1", "ref-1"))]
+
+    def test_it_pays_the_lock_id_into_the_first_registered_vault_and_gives_the_holding(self):
+        self.holds()
+        got = self.lock()
+        self.assertEqual(self.posts, [(self.URL + "/twin/v1/lock-parts", {"receiver": V, "ref": "ref-1", "token": TOKEN})])
+        approve, pay = self.evm.sent
+        self.assertEqual((approve["who"], approve["to"], approve["data"]), ("u", evm.address_of("0x" + TOKEN, "t"), evm.call_data("approve(address,uint256)", [GATEWAY, 2_500_000])))
+        self.assertEqual((pay["who"], pay["to"]), ("u", GATEWAY))
+        self.assertEqual(pay["data"], evm.call_data("pay(bytes32,address,address,uint256)", [bytes.fromhex(twin.lock_id(V, "ref-1")), evm.address_of("0x" + TOKEN, "t"), evm.address_of("0x" + VAULT_A, "v"), 2_500_000]))
+        self.assertEqual(got, {"tx": f"0x{2:064x}", "block": 102, "approveTx": f"0x{1:064x}", "lockId": twin.lock_id(V, "ref-1"), "vault": "0x" + VAULT_A, "receiver": V,
+                               "holding": "minted-1", "amount": "2.5"})
+
+    def test_the_registrys_vaults_are_a_hint_and_the_ledgers_are_the_truth(self):
+        self.holds()
+        self.assertEqual(self.lock()["vault"], "0x" + VAULT_A)   # the registry's hint names OTHER_VAULT; it is not on the ledger
+        self.assertNotIn(OTHER_VAULT, self.evm.sent[1]["data"])
+
+    def test_a_vault_that_is_registered_can_be_named(self):
+        self.holds()
+        self.assertEqual(self.lock(vault="0x" + VAULT_B.upper())["vault"], "0x" + VAULT_B)
+        self.assertIn(VAULT_B, self.evm.sent[1]["data"])
+
+    def test_a_vault_that_is_not_registered_is_refused_and_nothing_is_sent_or_asked(self):
+        for vault in (OTHER_VAULT, VAULT_A[:-2] + "00"):
+            with self.assertRaisesRegex(canton.Fail, "not a Vault of the chain's registry"):
+                self.lock(vault=vault)
+        self.assertEqual((self.evm.sent, self.posts), ([], []))
+
+    def test_only_vaults_count_and_there_must_be_one(self):
+        chain = FakeLedger.contracts[("op::1", canton.CHAIN + "ZkChain")][0]["createArgument"]
+        chain["contracts"] = [{**c, "contractKind": "Token"} for c in chain["contracts"]]
+        with self.assertRaisesRegex(canton.Fail, "no Vault"):
+            self.lock()
+        with self.assertRaisesRegex(canton.Fail, "no Vault"):
+            self.lock(vault="0x" + VAULT_A)
+        chain["contracts"] = None
+        with self.assertRaisesRegex(canton.Fail, "no Vault"):
+            self.lock()
+        self.assertEqual(self.evm.sent, [])
+
+    def test_a_lock_id_that_is_not_the_hash_of_the_parts_is_refused_and_nothing_is_sent(self):
+        for wrong in ("00" * 32, twin.lock_id(U, "ref-1"), twin.lock_id(V, "ref-2"), twin.lock_id(V, "ref-1").upper(), None, 5):
+            self.answer = {"lockId": wrong}
+            with self.assertRaisesRegex(canton.Fail, "nothing was sent"):
+                self.lock()
+        self.assertEqual(self.evm.sent, [])
+
+    def test_the_receiver_is_u_v_or_a_party_id(self):
+        self.holds("x::1220ab", ref=twin.lock_id("x::1220ab", "ref-1"))
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)][0]["createArgument"]["owner"] = "x::1220ab"
+        self.assertEqual(self.lock("v", TOKEN, "2.5", "x::1220ab", "ref-1")["receiver"], "x::1220ab")
+        self.assertEqual(self.posts[0][1]["receiver"], "x::1220ab")
+        for receiver in ("x", "U", ""):
+            with self.assertRaises(SystemExit):
+                self.lock("u", TOKEN, "2.5", receiver, "ref-1")
+        self.assertEqual(len(self.evm.sent), 2)   # only the one lock above
+
+    def test_an_amount_that_does_not_convert_sends_and_asks_nothing(self):
+        for amount in ("0.0000001", "0", "x", "2,5"):
+            with self.assertRaises((canton.Fail, SystemExit)):
+                self.lock("u", TOKEN, amount, "v", "ref-1")
+        self.assertEqual((self.evm.sent, self.posts), ([], []))
+
+    def test_a_token_with_no_code_or_an_empty_ref_or_another_sender_sends_nothing(self):
+        self.token.decimals = None
+        with self.assertRaisesRegex(canton.Fail, "no decimals"):
+            self.lock()
+        self.token.decimals = 6
+        for args in (("u", TOKEN, "1", "v", ""), ("w", TOKEN, "1", "v", "r"), ("u", "0x12", "1", "v", "r")):
+            with self.assertRaises(SystemExit):
+                self.lock(*args)
+        self.assertEqual((self.evm.sent, self.posts), ([], []))
+
+    def test_a_reverted_approval_or_payment_stops_it(self):
+        self.evm.failing = {1}
+        with self.assertRaisesRegex(canton.Fail, "approval .* reverted"):
+            self.lock()
+        self.assertEqual(len(self.evm.sent), 1)   # no payment after a failed approval
+        self.evm.sent.clear()
+        self.evm.failing = {2}
+        with self.assertRaisesRegex(canton.Fail, "lock payment .* reverted"):
+            self.lock()
+
+    def test_it_waits_for_the_receipt_before_it_goes_on(self):
+        late = iter([None, None])   # the approval's receipt is not there for two reads
+        real = self.evm.rpc
+        reads = []
+
+        def rpc(method, params):
+            if method == "eth_getTransactionReceipt" and params[0] == f"0x{1:064x}":
+                reads.append(params[0])
+                if next(late, 1) is None:
+                    return None
+            return real(method, params)
+        self.holds()
+        with mock.patch.object(evm, "rpc", rpc), mock.patch.dict(os.environ, {"CZE_POLL_SECONDS": "0"}):
+            got = self.lock()
+        self.assertEqual((len(reads), got["approveTx"], len(self.evm.sent)), (4, f"0x{1:064x}", 2))
+
+    def test_it_waits_for_the_mint_and_takes_only_the_holding_of_this_lock(self):
+        for wrong in (minted("v::1", "2.5", twin.lock_id("v::1", "ref-2")), minted("u::1", "2.5", twin.lock_id("v::1", "ref-1")),
+                      minted("v::1", "2.5", twin.lock_id("v::1", "ref-1"), token="cd" * 20), minted("v::1", "2.5", twin.lock_id("v::1", "ref-1"), admin="other::1"),
+                      {**minted("v::1", "2.5", ""), "contractId": "plain"}):
+            FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [wrong]
+            with mock.patch.object(twin, "WAIT_SECONDS", 0), self.assertRaisesRegex(canton.Fail, "timed out waiting for the twin to be minted"):
+                self.lock()
+        FakeLedger.contracts[(GW, twin.TWIN_HOLDING)] = [minted("v::1", "1.0", "x"), minted("v::1", "2.5", twin.lock_id("v::1", "ref-1"), cid="right")]
+        self.assertEqual(self.lock()["holding"], "right")
+
+    def test_the_mint_is_read_as_the_gateway_party(self):
+        self.holds()
+        FakeLedger.asked.clear()
+        self.lock()
+        self.assertIn(("operator", GW, twin.TWIN_HOLDING), FakeLedger.asked)
+
+    def test_main_takes_the_options_and_the_registry_url_is_required(self):
+        self.holds()
+        got = twin.main(["lock", "u", "0x" + TOKEN, "2.5", "v", "ref-1", "--registry-url", self.URL + "/", "--vault", VAULT_B])
+        self.assertEqual((got["vault"], self.posts[0][0]), ("0x" + VAULT_B, self.URL + "/twin/v1/lock-parts"))
+        self.holds()
+        for argv in (["lock", "u", TOKEN, "2.5", "v", "ref-1"], ["lock", "u", TOKEN, "2.5", "v", "--registry-url", self.URL],
+                     ["lock", "u", TOKEN, "2.5", "v", "ref-1", "--registry-url"], ["lock", "u", TOKEN, "2.5", "v", "ref-1", "--registry-url", self.URL, "--registry-url", self.URL],
+                     ["lock", "u", TOKEN, "2.5", "v", "ref-1", "--registry-url", self.URL, "--other", "x"]):
+            with self.assertRaises(SystemExit, msg=argv):
+                twin.main(argv)
+
+    def test_the_registry_url_is_http_or_https(self):
+        for url in ("file:///etc/passwd", "ftp://x", "registry:80", "", "http://", "http://a b"):
+            with self.assertRaises(SystemExit, msg=url):
+                twin.registry_url_of(url)
+        self.assertEqual(twin.registry_url_of("https://r.example/base/"), "https://r.example/base")
+
+
+class PostJsonTests(unittest.TestCase):
+    def serve(self, status, body):
+        import http.server, threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers["content-length"]))
+                self.send_response(status); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/x"
+
+    def test_an_object_comes_back(self):
+        self.assertEqual(twin.post_json(self.serve(200, b'{"a": 1}'), {}), {"a": 1})
+
+    def test_an_error_status_a_non_object_and_a_big_answer_stop_it(self):
+        with self.assertRaisesRegex(canton.Fail, "404 .*no twin"):
+            twin.post_json(self.serve(404, b'{"error": "no twin"}'), {})
+        for body in (b"[1]", b"not json", b'"x"'):
+            with self.assertRaises(canton.Fail):
+                twin.post_json(self.serve(200, body), {})
+        with mock.patch.object(twin, "MAX_ANSWER", 10), self.assertRaisesRegex(canton.Fail, "more than 10 bytes"):
+            twin.post_json(self.serve(200, b'{"a": "' + b"x" * 20 + b'"}'), {})
+        with self.assertRaises(canton.Fail):
+            twin.post_json("http://127.0.0.1:1/x", {})
 
 
 if __name__ == "__main__":

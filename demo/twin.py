@@ -14,10 +14,18 @@
                                         on Ostia for each Vault of the chain's registry (the active ZkChain's `contracts`, read from the ledger), as a twin amount; and
                                         supplyMatches, whether the supply is the sum of the vaults' balances. An amount that a twin cannot hold exactly (finer than 10 decimals,
                                         or above 10^17 whole units) stops the command: nothing is rounded
+  twin.py lock <u|v> <token> <amount> <receiver: u, v or a party id> <ref> --registry-url URL [--vault ADDRESS]
+                                        an EVM holder locks <amount> of the ERC-20 in a vault, for a Canton receiver, and the twin is minted to the receiver. The amount is a decimal
+                                        string, exact in the token's base units and a twin amount. It asks the twin registry service (apps/twin/registry) for the parts of the lock,
+                                        then does the payer's own checks and sends nothing if one fails: the lock id must be sha256("lock,<receiver>,<ref>") worked out here, and the
+                                        vault must be a Vault of the active ZkChain's registry on the ledger (the first one, or --vault, which must be registered); the registry's list
+                                        of vaults is a hint and is not read. Then it approves the gateway and calls pay(lockId, token, vault, amount) with that key, waits for the
+                                        receipt, and waits (up to 10 minutes) until the receiver holds the TwinHolding that the lock's leg minted. Prints the pay transaction, its
+                                        block, the lock id, the vault and the holding's contract id
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
-import json, os, sys, time
+import hashlib, json, os, re, sys, time, urllib.error, urllib.request
 from decimal import Decimal
 from pathlib import Path
 
@@ -37,9 +45,15 @@ TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION = TWIN + "TwinRules", TWIN + "TwinHold
 TWIN_DECIMALS = 10   # every twin has 10 decimals, like a Daml Decimal (apps/twin/README.md, "Amounts")
 TWIN_LIMIT = 10**27  # in units of 10^-10: 10^17 whole units, the most a Decimal of the twin holds
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",)}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
+WAIT_SECONDS = 600   # the longest that a command waits for Canton to follow Ostia (a lock's mint, a release's burn)
+MINT_REFERENCE = "romeprotocol.com/mint-reference"   # the key under which a minted TwinHolding keeps the reference that Mint was given (apps/twin Twin.daml, metaKey)
+REGISTRY_URL = re.compile(r"https?://[^/\s?#]+(/[^\s?#]*)?")
+MAX_ANSWER = 1_000_000   # the most that a registry's answer may be: it is read from a server that this command does not trust
+AMOUNT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+MAX_AMOUNT_TEXT = 80
 
 
 def runtime_code(path: Path = None) -> bytes:
@@ -199,6 +213,130 @@ def balances(net: canton.Network, address: str, who: list) -> dict:
             "lockedInAllocations": amount_text(in_allocations), "vaults": vaults, "vaultsTotal": amount_text(total), "supplyMatches": supply == total}
 
 
+def lock_id(receiver: str, ref: str) -> str:
+    """The id of the EVM payment that locks an ERC-20 for `receiver` under `ref`: the SHA-256, in lowercase hex, of "lock,<receiver party id>,<ref>" (Chain.daml's lockId)."""
+    return hashlib.sha256(f"lock,{receiver},{ref}".encode()).hexdigest()
+
+
+def release_id(vault: str, ref: str) -> str:
+    """The id of the EVM payment that the vault's release(ref, ...) makes: the SHA-256, in lowercase hex, of "vault-release,<vault, 40 lowercase hex digits>,<ref>"
+    (Chain.daml's releaseId, Vault.releaseId)."""
+    return hashlib.sha256(f"vault-release,{vault},{ref}".encode()).hexdigest()
+
+
+def base_units(text: str, decimals: int) -> int:
+    """An amount as a decimal string ("12.5") in the token's base units, exactly: it stops on an amount that is not a whole number of base units, is zero, or that a twin
+    cannot hold (finer than 10 decimals, above 10^17 whole units). Integer arithmetic only: no rounding anywhere."""
+    if len(text) > MAX_AMOUNT_TEXT or not AMOUNT.fullmatch(text):
+        raise SystemExit(f"the amount must be a decimal number such as 12 or 12.5, not {text[:MAX_AMOUNT_TEXT]!r}")
+    whole, _, fraction = text.partition(".")
+    fraction = fraction.rstrip("0")
+    if len(fraction) > decimals:
+        raise canton.Fail(f"the amount {text} is not a whole number of base units of a {decimals}-decimal token")
+    units = int(whole) * 10**decimals + int(fraction.ljust(decimals, "0") or "0")
+    if units == 0:
+        raise canton.Fail("the amount must be more than zero")
+    twin_units(units, decimals, f"the amount {text}")
+    return units
+
+
+def registered_vaults(net: canton.Network) -> list:
+    """The Vault entries of the active ZkChain's registry, as 40 lowercase hex digits, in the order they were registered: the vaults that Daml trusts."""
+    return [e["contractAddress"].lower().removeprefix("0x") for e in canton.chain_record(net).get("contracts") or [] if e["contractKind"] == "Vault"]
+
+
+def choose_vault(vaults: list, wanted: str = None) -> str:
+    """The vault to pay into or to release from: the one asked for, which must be registered, or the first registered one."""
+    if not vaults:
+        raise canton.Fail("the chain's registry has no Vault: nothing to lock into or release from (network/external/setup.py --contract-step registers one)")
+    if wanted is None:
+        return vaults[0]
+    vault = canton.evm_address(wanted)
+    if vault not in vaults:
+        raise canton.Fail(f"0x{vault} is not a Vault of the chain's registry ({', '.join('0x' + v for v in vaults)})")
+    return vault
+
+
+def registry_url_of(text: str) -> str:
+    if not text or not REGISTRY_URL.fullmatch(text):
+        raise SystemExit(f"--registry-url must be an http or https URL, not {text!r}")
+    return text.rstrip("/")
+
+
+def post_json(url: str, body: dict) -> dict:
+    """What a registry service answers to a JSON POST, for a server that is not trusted: bounded in size, and an object or nothing."""
+    request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as r:
+            data = r.read(MAX_ANSWER + 1)
+    except urllib.error.HTTPError as e:
+        with e:
+            raise canton.Fail(f"{url}: {e.code} {e.read(500).decode(errors='replace')}") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise canton.Fail(f"{url}: {e}") from None
+    if len(data) > MAX_ANSWER:
+        raise canton.Fail(f"{url} answered with more than {MAX_ANSWER} bytes")
+    try:
+        answer = json.loads(data)
+    except ValueError:
+        raise canton.Fail(f"{url} did not answer with JSON") from None
+    if not isinstance(answer, dict):
+        raise canton.Fail(f"{url} did not answer with a JSON object")
+    return answer
+
+
+def send_checked(who: str, to: str, signature: str, values: list, gas: int, what: str) -> dict:
+    """A transaction of U's or V's key, waited for in a block: the receipt, with the transaction's hash, and a stop if it did not succeed."""
+    tx = evm.send(evm.state_dir(), who, to, evm.call_data(signature, values), gas)
+    receipt = wait_receipt(tx)
+    if receipt["status"] != 1:
+        raise canton.Fail(f"{what} {tx} reverted in block {receipt['block']}")
+    return {"tx": tx, **receipt}
+
+
+def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str, ref: str, registry_url: str, vault: str = None) -> dict:
+    """An EVM holder locks `amount` of an ERC-20 in a registered vault for a Canton receiver: the payer's own checks (apps/twin/registry/README.md, "What a payer
+    checks") come first and nothing is sent unless they pass; then approve and pay(lockId, token, vault, amount) through the gateway; then wait for the mint."""
+    who, token = evm.who_sends(who), canton.evm_address(address)
+    if not ref:
+        raise SystemExit("the ref must not be empty")
+    base = base_units(amount, erc20_decimals("0x" + token))
+    party = party_of(net, receiver)
+    expected = lock_id(party, ref)
+    paid = choose_vault(registered_vaults(net), vault)   # from the ledger: the registry's list is a hint only
+    answer = post_json(registry_url_of(registry_url) + "/twin/v1/lock-parts", {"receiver": party, "ref": ref, "token": token})
+    if answer.get("lockId") != expected:
+        raise canton.Fail(f"the registry gave the lock id {answer.get('lockId')!r}, not the {expected} that lock,{party},{ref} makes: nothing was sent")
+    gateway, erc20 = evm.gateway_address(), evm.address_of("0x" + token, "the token")
+    approved = send_checked(who, erc20, "approve(address,uint256)", [gateway, base], evm.APPROVE_GAS, "the approval")
+    paid_tx = send_checked(who, gateway, "pay(bytes32,address,address,uint256)", [evm.id_of(expected), erc20, evm.address_of("0x" + paid, "the vault"), base], evm.PAY_GAS, "the lock payment")
+    admin = net.party(ADMIN)
+
+    def minted():
+        for e in net.template("operator", ADMIN, TWIN_HOLDING):
+            a = e["createArgument"]
+            if a["admin"] == admin and a["token"] == token and a["owner"] == party and (a.get("meta") or {}).get("values", {}).get(MINT_REFERENCE) == expected:
+                return e
+    holding = net.wait_for("the twin to be minted", minted, WAIT_SECONDS)
+    return {"tx": paid_tx["tx"], "block": paid_tx["block"], "approveTx": approved["tx"], "lockId": expected, "vault": "0x" + paid, "receiver": party,
+            "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
+
+
+def split_options(argv: list, names: tuple) -> tuple:
+    """The arguments without the options `--name value` of `names`, and the options' values. An option twice, with no value, or one that is not named stops the command."""
+    rest, found, i = [], {}, 0
+    while i < len(argv):
+        if argv[i].startswith("--"):
+            if argv[i] not in names or argv[i] in found or i + 1 >= len(argv):
+                raise SystemExit(__doc__)
+            found[argv[i]] = argv[i + 1]
+            i += 2
+        else:
+            rest.append(argv[i])
+            i += 1
+    return rest, found
+
+
 def main(argv: list) -> dict:
     n, cmd = len(argv), argv[:1]
     if argv == ["deploy-vault"]:
@@ -213,6 +351,10 @@ def main(argv: list) -> dict:
             return disclosed(net, argv[1], argv[2])
         if cmd == ["balances"] and n >= 2:
             return balances(net, argv[1], argv[2:])
+        if cmd == ["lock"]:
+            args, options = split_options(argv[1:], ("--registry-url", "--vault"))
+            if len(args) == 5 and "--registry-url" in options:
+                return lock(net, args[0], args[1], args[2], args[3], args[4], options["--registry-url"], options.get("--vault"))
     raise SystemExit(__doc__)
 
 
