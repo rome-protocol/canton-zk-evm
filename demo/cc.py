@@ -186,6 +186,71 @@ def register(net: canton.Network, scan: Scan) -> dict:
             "factoryIsScanProxys": True, "registerTx": tx}
 
 
+def amount_of(text) -> int:
+    """A Canton Coin amount as the ledger writes it, in units of 10^-10 (Canton Coin has 10 decimals, as the wrapped token): anything else stops the command."""
+    if not isinstance(text, str):
+        raise canton.Fail(f"the ledger gave the amount {text!r}: not a Canton Coin amount")
+    return twin.ledger_units(text)
+
+
+def holdings(net: canton.Network, node: str, role: str, party: str, dso: str) -> list:
+    """The Canton Coin holdings that `party` owns, as the token standard's Holding views of the active contracts that `party` sees on `node` (read with `role`'s token): a list of
+    (contract id, units of 10^-10, locked). Holdings of other instruments, other owners and contracts with no Holding view are not counted."""
+    offset = net.get(node, "/v2/state/ledger-end", role)["offset"]
+    view = {"InterfaceFilter": {"value": {"interfaceId": HOLDING_INTERFACE, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
+    body = {"eventFormat": {"filtersByParty": {party: {"cumulative": [{"identifierFilter": view}]}}, "verbose": False}, "activeAtOffset": offset}
+    found = []
+    for entry in net.post(node, "/v2/state/active-contracts", body, role):
+        active = entry["contractEntry"].get("JsActiveContract")
+        for v in (active["createdEvent"].get("interfaceViews") or []) if active else []:
+            if not str(v.get("interfaceId", "")).endswith(HOLDING_VIEW):
+                continue
+            value = v.get("viewValue")
+            if not isinstance(value, dict) or not isinstance(value.get("instrumentId"), dict):
+                raise canton.Fail(f"{active['createdEvent'].get('contractId')} has a Holding view that is not a holding")
+            if value.get("owner") == party and value["instrumentId"].get("admin") == dso and value["instrumentId"].get("id") == AMULET:
+                found.append((active["createdEvent"]["contractId"], amount_of(value.get("amount")), value.get("lock") is not None))
+    return found
+
+
+def balance_of(held: list) -> dict:
+    return {"unlocked": twin.amount_text(sum(a for _, a, locked in held if not locked)), "locked": twin.amount_text(sum(a for _, a, locked in held if locked))}
+
+
+def party_balance(net: canton.Network, name: str, dso: str, other_role: str = OTHER_ROLE) -> dict:
+    if name in ("u", "v"):
+        party, node, role = net.party(name), "users", "demo"
+    elif PARTY_ID.fullmatch(name):
+        party, node, role = name, "users", other_role
+    else:
+        raise SystemExit(f"a party is u, v or a party id (name::fingerprint), not {name!r}")
+    return {"party": party, **balance_of(holdings(net, node, role, party, dso))}
+
+
+def wrapped_supply(net: canton.Network, instrument: dict) -> dict:
+    """The wrapped token of Canton Coin (the operator's GatewayToken for the instrument) and its total supply at the finalized block, read by that block's number."""
+    made = gateway_tokens(net, "GatewayToken", instrument)
+    if len(made) > 1:
+        raise canton.Fail(f"the operator sees {len(made)} GatewayTokens for Canton Coin: there must be one")
+    if not made:
+        return {"registered": False}
+    token = made[0]["createArgument"]["evmToken"]
+    block = int(evm.rpc("eth_getBlockByNumber", ["finalized", False])["number"], 16)
+    supply = evm.read_word("0x" + token, evm.SELECTOR_TOTAL_SUPPLY, hex(block))
+    return {"registered": True, "evmToken": "0x" + token, "totalSupply": evm.wrapped_text(supply), "block": block}
+
+
+def balances(net: canton.Network, scan: Scan, who: list) -> dict:
+    dso = scan.dso_party()
+    names = who or ["u", "v"]
+    for name in names:   # a name that is no party stops the command before anything is read
+        if name not in ("u", "v") and not PARTY_ID.fullmatch(name):
+            raise SystemExit(f"a party is u, v or a party id (name::fingerprint), not {name!r}")
+    gateway = net.party("gateway")
+    return {"instrument": {"admin": dso, "id": AMULET}, "parties": {name: party_balance(net, name, dso) for name in names},
+            "gatewayCustody": {"party": gateway, **balance_of(holdings(net, "operator", "operator", gateway, dso))}, "wrapped": wrapped_supply(net, {"admin": dso, "id": AMULET})}
+
+
 def scan_of(options: dict) -> Scan:
     return Scan(options["--scan-proxy"] if "--scan-proxy" in options else os.environ.get(SCAN_PROXY_URL),
                 options["--scan-token-file"] if "--scan-token-file" in options else os.environ.get(SCAN_TOKEN_FILE))
@@ -201,6 +266,12 @@ def main(argv: list) -> dict:
             if net.external:
                 net.check_roles(COMMAND_ROLES["register"])
             return register(net, scan_of(options))
+        if cmd == ["balances"]:
+            if "--token-file" in options:
+                os.environ[TOKEN_FILE_VARIABLE + OTHER_ROLE.upper()] = options["--token-file"]   # the role that reads a party that is not u or v
+            if net.external:
+                net.check_roles(COMMAND_ROLES["balances"] + ((OTHER_ROLE,) if any(a not in ("u", "v") for a in args) else ()))
+            return balances(net, scan_of(options), args)
     raise SystemExit(__doc__)
 
 

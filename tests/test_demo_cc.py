@@ -428,5 +428,89 @@ class TokenTests(RegisterCase):
         self.assertEqual((FakeScan.seen, self.ostia.sent), ([], []))
 
 
+def held(cid, amount, locked=False, **more):
+    return {"cid": cid, "amount": amount, "lock": {"holders": [OP], "expiresAt": None, "context": "x"} if locked else None, **more}
+
+
+class BalancesTests(CcCase):
+    def setUp(self):
+        super().setUp()
+        FakeLedger.holdings = {U: [held("00u1", "5.0"), held("00u2", "2.5"), held("00u3", "1.25", locked=True), held("00u4", "100.0", instrument={"admin": DSO, "id": "TKB"}),
+                                   held("00u5", "7.0", instrument={"admin": OTHER, "id": "Amulet"})],
+                               V: [], GW: [held("00g1", "10.0"), held("00g2", "3.0000000001", locked=True)], VALIDATOR: [held("00x1", "4000.5")], OTHER: [held("00o1", "0.0000000001")]}
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = [{"contractId": "gt-1", "createArgument": {"evmToken": WRAPPED, "instrumentId": {"admin": DSO, "id": "Amulet"}, "factory": FACTORY}}]
+        self.ostia.supply[WRAPPED] = 115 * 10**9
+
+    def read_as(self):
+        """(authorization header, party) of each look at the active contracts."""
+        out = []
+        for path, auth, body in FakeLedger.requests:
+            if path == "/v2/state/active-contracts" and "InterfaceFilter" in json.dumps(body):
+                out.append((auth, next(iter(body["eventFormat"]["filtersByParty"]))))
+        return out
+
+    def test_each_partys_unlocked_and_locked_canton_coin_only_of_the_instrument_amulet_of_the_dso(self):
+        got = self.run_cc("balances")
+        self.assertEqual(got["instrument"], {"admin": DSO, "id": "Amulet"})
+        self.assertEqual(got["parties"], {"u": {"party": U, "unlocked": "7.5", "locked": "1.25"}, "v": {"party": V, "unlocked": "0.0", "locked": "0.0"}})
+        self.assertEqual(got["gatewayCustody"], {"party": GW, "unlocked": "10.0", "locked": "3.0000000001"})
+
+    def test_the_wrapped_tokens_supply_is_read_at_the_finalized_block(self):
+        got = self.run_cc("balances")
+        self.assertEqual(got["wrapped"], {"registered": True, "evmToken": "0x" + WRAPPED, "totalSupply": "11.5", "block": 12})
+        [(_, params)] = [(m, p) for m, p in self.ostia.calls if m == "eth_call"]
+        self.assertEqual((params[0], params[1]), ({"to": "0x" + WRAPPED, "data": "0x" + evm.SELECTOR_TOTAL_SUPPLY}, hex(12)))   # the finalized block's number, not "latest"
+
+    def test_no_gateway_token_means_no_wrapped_token_to_read(self):
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = []
+        self.assertEqual(self.run_cc("balances")["wrapped"], {"registered": False})
+        self.assertEqual([m for m, _ in self.ostia.calls if m == "eth_call"], [])
+
+    def test_a_named_party_is_u_v_or_a_party_id_and_others_are_read_with_the_admin_token(self):
+        got = self.run_cc("balances", "v", OTHER, VALIDATOR)
+        self.assertEqual(list(got["parties"]), ["v", OTHER, VALIDATOR])
+        self.assertEqual((got["parties"][OTHER]["unlocked"], got["parties"][VALIDATOR]["unlocked"]), ("0.0000000001", "4000.5"))
+        reads = self.read_as()
+        self.assertEqual(reads, [("Bearer " + TOKENS["DEMO"], V), ("Bearer " + TOKENS["ADMIN"], OTHER), ("Bearer " + TOKENS["ADMIN"], VALIDATOR), ("Bearer " + TOKENS["OPERATOR"], GW)])
+
+    def test_the_token_file_option_reads_the_other_parties_with_that_token(self):
+        self.run_cc("balances", OTHER, "--token-file", self.files["SENDER"])
+        self.assertEqual(self.read_as()[0], ("Bearer " + TOKENS["SENDER"], OTHER))
+
+    def test_a_name_that_is_not_a_party_is_refused_before_anything_is_read(self):
+        for bad in ("gateway", "w", "u::", "x::1220", ""):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.run_cc("balances", bad)
+        self.assertEqual(FakeLedger.requests, [])
+
+    def test_an_amount_that_is_not_a_canton_decimal_stops_the_command(self):
+        for bad in ("1.00000000001", "-1.0", "abc", "", 5, None):
+            FakeLedger.holdings[V] = [held("00v1", bad)]
+            with self.assertRaises(canton.Fail, msg=bad):
+                self.run_cc("balances")
+
+    def test_a_holding_without_the_view_of_the_standard_is_not_counted_and_a_broken_view_stops_the_command(self):
+        real = holding_event
+        with mock.patch.object(sys.modules[__name__], "holding_event", lambda owner, h: {**real(owner, h), "interfaceViews": []}):
+            self.assertEqual(self.run_cc("balances")["parties"]["u"]["unlocked"], "0.0")
+        with mock.patch.object(sys.modules[__name__], "holding_event", lambda owner, h: {**real(owner, h), "interfaceViews": [{"interfaceId": "x:Other:Iface", "viewValue": {}}]}):
+            self.assertEqual(self.run_cc("balances")["parties"]["u"]["unlocked"], "0.0")
+        with mock.patch.object(sys.modules[__name__], "holding_event", lambda owner, h: {**real(owner, h), "interfaceViews": [{"interfaceId": PKG + cc.HOLDING_VIEW, "viewValue": "x"}]}):
+            with self.assertRaisesRegex(canton.Fail, "Holding view"):
+                self.run_cc("balances")
+
+    def test_no_token_is_printed(self):
+        result, out, err = self.run_printed("balances", OTHER)
+        self.assertNoSecrets(out, err, json.dumps(result))
+
+    def test_the_main_program_prints_one_json_line(self):
+        import subprocess
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = []   # no wrapped token: nothing is asked of Ostia, which the other process has no fake of
+        done = subprocess.run([sys.executable, str(ROOT / "demo" / "cc.py"), "balances"], capture_output=True, text=True, env=os.environ, timeout=60)
+        self.assertEqual((done.returncode, done.stderr.count("\n")), (0, 0), done.stderr)
+        self.assertEqual(json.loads(done.stdout)["parties"]["u"]["unlocked"], "7.5")
+        self.assertEqual(done.stdout.count("\n"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
