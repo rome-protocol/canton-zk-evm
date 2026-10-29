@@ -411,6 +411,8 @@ class FakeLedger:
         self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
         self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
         self.known_parties = None     # the parties GET /v2/parties/<party> knows; None: every one
+        self.party_token = None       # a participant with login: GET /v2/parties/<party> wants this bearer token (else HTTP 403); None: the builder's own token is enough
+        self.party_auths: list = []   # the authorization header of each GET /v2/parties/<party>
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
         self.commit = True   # a test can set it False: then a dropped Advance leaves the head alone
@@ -565,6 +567,8 @@ class FakeLedger:
                 return json.loads(self.rfile.read(int(self.headers["content-length"])))
 
             def _auth(self):
+                if ledger.party_token is not None and self.path.startswith("/v2/parties/"):
+                    return   # this lookup has a token of its own
                 if self.headers.get("authorization") != f"Bearer {LEDGER_TOKEN}":
                     ledger.bad_auth += 1
 
@@ -578,6 +582,9 @@ class FakeLedger:
                     if self.path.startswith(prefix):
                         return self._reply(code, {})
                 if self.path.startswith("/v2/parties/"):
+                    ledger.party_auths.append(self.headers.get("authorization"))
+                    if ledger.party_token is not None and self.headers.get("authorization") != f"Bearer {ledger.party_token}":
+                        return self._reply(403, {"code": "PERMISSION_DENIED"})
                     party = urllib.parse.unquote(self.path[len("/v2/parties/"):])
                     if ledger.known_parties is not None and party not in ledger.known_parties:
                         return self._reply(404, {"code": "PARTY_NOT_FOUND"})

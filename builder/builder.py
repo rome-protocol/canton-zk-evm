@@ -103,6 +103,7 @@ class Config:
     twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
     registries: dict = field(default_factory=dict)   # --registry ADMIN=URL (CZE_TOKEN_REGISTRIES): the token registry of each instrument admin whose legs get a choice context
     registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the file with the bearer token that registry wants, read again for each request
+    party_token_file: str = ""        # --party-token-file (CZE_PARTY_TOKEN_FILE): a file with the bearer token of a user that may read party details; used only for GET /v2/parties/<party>, read again for each lookup; empty: the builder's own token
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -978,7 +979,9 @@ class Ledger:
     def party_known(self, party: str) -> bool:
         """Whether the participant knows the party (`GET /v2/parties/<party>`): a party it does not know cannot be a stakeholder of a contract in the
         Advance. An error other than "no such party" is raised."""
-        request = urllib.request.Request(f"{self.cfg.ledger_url}/v2/parties/{urllib.parse.quote(party, safe='')}", headers=self.auth)
+        own = not self.cfg.party_token_file   # the party lookup may want a token of its own: on a participant with login it needs a participant admin or identity provider admin
+        headers = self.auth if own else {"authorization": "Bearer " + party_token(self.cfg.party_token_file)}
+        request = urllib.request.Request(f"{self.cfg.ledger_url}/v2/parties/{urllib.parse.quote(party, safe='')}", headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=60) as r:
                 body = json.load(r)
@@ -986,6 +989,8 @@ class Ledger:
             e.close()
             if e.code == 404:
                 return False
+            if own and e.code in (401, 403):
+                raise OSError(f"HTTP {e.code}; give the builder --party-token-file, a token that may read party details") from e
             raise
         details = body.get("partyDetails") if isinstance(body, dict) else None
         return isinstance(details, list) and any(isinstance(d, dict) and d.get("party") == party for d in details)
@@ -2865,6 +2870,18 @@ def registry_token(path: str) -> str:
     return token
 
 
+def party_token(path: str) -> str:
+    """The bearer token in the party token file, read now (a token that is renewed in its file needs no restart). A file that cannot be read or does not
+    hold one token is a ValueError, which leaves the lock out for this block. The token is never printed."""
+    try:
+        token = Path(path).read_text().strip()
+    except (OSError, ValueError) as e:
+        raise ValueError("the party token file cannot be read") from e
+    if not token or any(c in token for c in "\r\n\0"):
+        raise ValueError("the party token file does not hold one token")
+    return token
+
+
 def read_registry_tokens(items, registries: dict) -> dict:
     """{admin: token file} from `ADMIN=FILE` items, each for an admin that has a registry that is https or on this machine (a token is not sent in the
     clear); the file is checked to hold one token now, and read again for each request. The token is never printed."""
@@ -4160,6 +4177,8 @@ def parser() -> argparse.ArgumentParser:
                     help="the token registry (the root of its CIP-0056 off-ledger API; for Canton Coin the validator's scan proxy) of the instruments of the party ADMIN (repeatable, also CZE_TOKEN_REGISTRIES, comma separated): a deposit, withdrawal, payment or trade leg of such an instrument gets the registry's choice context, and the contracts it names are disclosed with the Advance. An instrument with no registry here gets none")
     ap.add_argument("--registry-token-file", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
                     help="a file with the bearer token that the registry of ADMIN wants (repeatable, also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated); sent to that registry only")
+    ap.add_argument("--party-token-file", metavar="FILE", default=os.environ.get("CZE_PARTY_TOKEN_FILE", ""),
+                    help="a file with the bearer token of a user that may read party details (also CZE_PARTY_TOKEN_FILE); used only to ask the participant whether a lock's receiver is a Canton party (GET /v2/parties/<party>), read again for each lookup. On a participant with login that lookup needs a participant admin or identity provider admin; default: the builder's own token")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -4255,6 +4274,12 @@ def main() -> int:
         if cfg.registries and args.unlabelled_deposits:
             raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
         cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
+        if args.party_token_file:
+            try:
+                party_token(args.party_token_file)
+            except ValueError as e:
+                raise BuilderError(f"the party token file {args.party_token_file} must hold one token that can be read") from e
+            cfg.party_token_file = args.party_token_file
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
