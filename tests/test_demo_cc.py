@@ -78,6 +78,7 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
     holdings: dict = {}      # party -> [{cid, amount, lock}] of Canton Coin (instrument Amulet of the DSO)
     requests: list = []
     commands: list = []
+    on_submit = None         # called with the body of each submit-and-wait: what the command makes on the ledger
 
     def log_message(self, *args):
         pass
@@ -105,6 +106,8 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
                 self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": holding_event(party, h), "synchronizerId": SYNC}}} for h in FakeLedger.holdings.get(party, [])])
         elif self.path == "/v2/commands/submit-and-wait":
             FakeLedger.commands.append(body)
+            if FakeLedger.on_submit:
+                FakeLedger.on_submit(body)
             self.reply({"updateId": "update-x"})
         elif self.path == "/v2/commands/submit-and-wait-for-transaction":
             FakeLedger.commands.append(body)
@@ -134,9 +137,12 @@ class FakeOstia:
     """reth and the gateway: a token made by register(), `wrapped` (the tokens the gateway shows as its own), the transactions sent, and the supply of the wrapped token."""
     def __init__(self):
         self.sent, self.wrapped, self.supply, self.calls = [], set(), {}, []
+        self.balances, self.on_send, self.status = {}, None, 1   # the wrapped token's balance of each holder (lowercase address), a hook for each send, the receipt's status
 
     def send(self, folder, who, to, data, gas, *rest):
         self.sent.append({"who": who, "to": to, "data": data, "gas": gas})
+        if self.on_send:
+            self.on_send(data)
         self.wrapped.add(WRAPPED)
         return "0x" + "cd" * 32
 
@@ -148,10 +154,12 @@ class FakeOstia:
                 return "0x" + "00" * 12 + WRAPPED
             if call["to"].lower() == GATEWAY.lower():   # wrapped(address)
                 return "0x" + "0" * 63 + ("1" if call["data"][-40:] in self.wrapped else "0")
+            if call["data"].startswith("0x" + evm.SELECTOR_BALANCE_OF):
+                return hex(self.balances.get("0x" + call["data"][-40:], 0))
             if call["data"] == "0x" + evm.SELECTOR_TOTAL_SUPPLY:
                 return hex(self.supply.get(call["to"].lower().removeprefix("0x"), 0))
         if method == "eth_getTransactionReceipt":
-            return {"blockNumber": hex(9), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(1234), "status": hex(1), "contractAddress": None}
+            return {"blockNumber": hex(9), "blockHash": "0x" + "bb" * 32, "gasUsed": hex(1234), "status": hex(self.status), "contractAddress": None}
         if method == "eth_getBlockByNumber":
             return {"number": hex(12), "hash": "0x" + "bb" * 32, "gasUsed": hex(0)} if params[0] == "finalized" else {"number": params[0], "hash": "0x" + "bb" * 32, "gasUsed": hex(0)}
         if method == "eth_getTransactionCount":
@@ -177,7 +185,7 @@ class CcCase(unittest.TestCase):
             self.files[role] = str(path)
         FakeScan.seen, FakeScan.answers = [], {
             BASE + "/scan-proxy/dso-party-id": {"dso_party_id": DSO}, BASE + "/validator-user": {"party_id": VALIDATOR}, FACTORY_PATH: lambda body: factory_answer("self" if body["choiceArguments"]["transfer"]["sender"] == body["choiceArguments"]["transfer"]["receiver"] else "direct")}
-        FakeLedger.events, FakeLedger.holdings, FakeLedger.requests, FakeLedger.commands = {}, {}, [], []
+        FakeLedger.events, FakeLedger.holdings, FakeLedger.requests, FakeLedger.commands, FakeLedger.on_submit = {}, {}, [], [], None
         self.scan_url = serve(FakeScan, "scan", self) + BASE + "/scan-proxy"
         ledger = serve(FakeLedger, "ledger", self)
         environment = {"CZE_STATE_DIR": str(self.state), "CZE_CANTON": "external", "CZE_LEDGER_URL": ledger, "CZE_POLL_SECONDS": "0",
@@ -710,6 +718,272 @@ class FundTests(FundCase):
             self.fund("u", "1")
         self.assertIn("Bearer <token>", str(why.exception))
         self.assertNoSecrets(str(why.exception))
+
+
+ALLOCATION_FACTORY = "00" + "af" * 34
+ALLOCATION_FACTORY_PATH = BASE + "/scan-proxy/registry/allocation-instruction/v1/allocation-factory"
+ALLOCATION = "00" + "a1" * 34
+LABEL = "cc-demo-1"
+LABEL_ID = "b2382284fe21d9061096a175dfe757ab2f81b2a6fc940c6a4ad121190906ea4a"   # sha256 of "deposit,<U>,cc-demo-1", computed outside this code
+RECIPIENT = "0x" + "9c" * 20
+CHAIN = {"chainId": 770101, "operator": OP, "confirmer": CO, "gateway": GW, "builder": PARTIES["BUILDER"]}
+
+
+class Clock:
+    """Time that only the sleeps move: each sleep is `step` seconds, so a wait that never ends is over in a few looks."""
+    def __init__(self, step):
+        self.now, self.step, self.sleeps = 0, step, 0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += self.step
+        self.sleeps += 1
+
+
+def allocation_answer():
+    answer = factory_answer("direct")
+    answer["factoryId"] = ALLOCATION_FACTORY
+    answer["choiceContext"]["disclosedContracts"] = [dict(DISCLOSED[0]), dict(DISCLOSED[1]), {**contract("allocfactory", PKG + ":Splice.AmuletRules:AmuletRules"), "contractId": ALLOCATION_FACTORY}]
+    del answer["transferKind"]
+    return answer
+
+
+class DepositCase(CcCase):
+    """U holds Canton Coin, the chain and the Canton Coin token are on the operator's participant, and the scan proxy has an allocation factory."""
+    def setUp(self):
+        super().setUp()
+        FakeLedger.holdings = {U: [held("00u1", "5.0"), held("00u2", "2.5"), held("00u3", "9.0", locked=True), held("00u4", "100.0", instrument={"admin": DSO, "id": "TKB"})]}
+        FakeLedger.events[canton.CHAIN + "ZkChain"] = [{"contractId": "chain-1", "createArgument": dict(CHAIN)}]
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = [{"contractId": "gt-1", "createArgument": {"evmToken": WRAPPED, "instrumentId": {"admin": DSO, "id": "Amulet"}, "factory": FACTORY}}]
+        FakeLedger.events[canton.DEPOSIT_REQUEST] = []
+        self.mode, self.exercised = "completed", []
+        FakeScan.answers[ALLOCATION_FACTORY_PATH] = lambda body: self.answer
+        self.answer = allocation_answer()
+        for patcher in (mock.patch.object(FakeLedger, "transaction", staticmethod(self.transaction)),):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        FakeLedger.on_submit = self.submitted
+
+    def transaction(self, body):
+        command = body["commands"]["commands"][0]["ExerciseCommand"]
+        assert command["choice"] == "AllocationFactory_Allocate"
+        self.exercised.append(body)
+        output = {"tag": canton_allocation_completed(), "value": {"allocationCid": ALLOCATION, "senderChangeCids": [], "meta": {"values": {}}}} if self.mode == "completed" \
+            else {"tag": "AllocationInstructionResult_Pending", "value": {"allocationInstructionCid": "00" + "b9" * 34}}
+        return {"transaction": {"updateId": "update-alloc", "events": [{"ExercisedEvent": {"contractId": command["contractId"], "choice": command["choice"], "exerciseResult": {"output": output}}}]}}
+
+    def submitted(self, body):
+        [command] = body["commands"]
+        create = command["CreateCommand"]
+        assert create["templateId"] == canton.DEPOSIT_REQUEST
+        FakeLedger.events[canton.DEPOSIT_REQUEST].append({"contractId": "request-1", "createArgument": create["createArguments"]})
+
+    def deposit(self, label=LABEL, address=RECIPIENT, amount="2.5"):
+        return self.run_cc("deposit", label, address, amount)
+
+    def created(self):
+        """The commands that made a contract (submit-and-wait; the allocation goes by submit-and-wait-for-transaction, whose commands are wrapped in an object)."""
+        return [c for c in FakeLedger.commands if isinstance(c["commands"], list)]
+
+    def allocation_requests(self):
+        return [r for r in FakeScan.seen if r[1] == ALLOCATION_FACTORY_PATH]
+
+
+def canton_allocation_completed():
+    return cc.ALLOCATION_COMPLETED
+
+
+class DepositTests(DepositCase):
+    def test_u_allocates_to_the_gateway_through_the_scan_proxys_allocation_factory_with_the_operator_as_executor(self):
+        self.deposit()
+        [(method, path, headers, body)] = self.allocation_requests()
+        self.assertEqual(method, "POST")
+        self.assertEqual(headers["User-Agent"], "Rome Protocol rome@romeprotocol.com")
+        self.assertEqual(headers["Authorization"], "Bearer " + TOKENS["SCAN"])
+        arguments = body["choiceArguments"]
+        self.assertEqual(body["excludeDebugFields"], True)
+        self.assertEqual(arguments["expectedAdmin"], DSO)
+        self.assertEqual(arguments["extraArgs"], {"context": {"values": {}}, "meta": {"values": {}}})
+        self.assertEqual(arguments["inputHoldingCids"], ["00u1", "00u2"])   # unlocked Canton Coin of U only, the largest first
+        spec = arguments["allocation"]
+        self.assertEqual(spec["settlement"]["executor"], OP)
+        self.assertEqual(spec["settlement"]["settlementRef"], {"id": LABEL, "cid": None})
+        self.assertEqual(spec["settlement"]["meta"], {"values": {}})
+        self.assertEqual(spec["transferLegId"], "leg-" + LABEL)
+        self.assertEqual(spec["transferLeg"], {"sender": U, "receiver": GW, "amount": "2.5", "instrumentId": {"admin": DSO, "id": "Amulet"}, "meta": {"values": {}}})
+        self.assertEqual(arguments["requestedAt"], spec["settlement"]["requestedAt"])
+        self.assertLess(spec["settlement"]["requestedAt"], spec["settlement"]["allocateBefore"])
+        self.assertLess(spec["settlement"]["allocateBefore"], spec["settlement"]["settleBefore"])
+
+    def test_the_allocation_is_exercised_as_u_with_the_factorys_context_and_only_the_four_fields_of_each_disclosed_contract(self):
+        self.deposit(amount="3")
+        [body] = self.exercised
+        [command] = body["commands"]["commands"]
+        exercise = command["ExerciseCommand"]
+        self.assertEqual((exercise["templateId"], exercise["contractId"], exercise["choice"]), (canton.ALLOCATION_FACTORY, ALLOCATION_FACTORY, "AllocationFactory_Allocate"))
+        argument = exercise["choiceArgument"]
+        self.assertEqual(argument["extraArgs"]["context"], self.answer["choiceContext"]["choiceContextData"])
+        self.assertEqual(argument["expectedAdmin"], DSO)
+        self.assertEqual(argument["allocation"]["transferLeg"]["amount"], "3.0")   # a whole amount is written as a Decimal
+        self.assertEqual(body["commands"]["actAs"], [U])
+        self.assertEqual(sorted(d["contractId"] for d in body["commands"]["disclosedContracts"]), sorted([DISCLOSED[0]["contractId"], DISCLOSED[1]["contractId"], ALLOCATION_FACTORY]))
+        self.assertTrue(all(set(d) == set(twin.DISCLOSED_KEYS) for d in body["commands"]["disclosedContracts"]))
+        auth = [a for path, a, b in FakeLedger.requests if path == "/v2/commands/submit-and-wait-for-transaction"]
+        self.assertEqual(auth, ["Bearer " + TOKENS["DEMO"]])
+
+    def test_the_request_is_signed_with_the_label_and_the_id_derived_from_u_and_the_label(self):
+        result = self.deposit()
+        self.assertEqual(result["depositId"], LABEL_ID)
+        self.assertEqual(canton.deposit_id_of(U, LABEL), LABEL_ID)
+        [made] = self.created()
+        self.assertEqual(made["commands"][0]["CreateCommand"]["createArguments"], {**CHAIN, "depositor": U, "depositId": LABEL_ID, "recipient": "9c" * 20, "allocation": ALLOCATION, "label": LABEL})
+        self.assertEqual(made["actAs"], [U])
+        self.assertEqual(made["userId"], "demo")
+        self.assertEqual(result, {"label": LABEL, "depositId": LABEL_ID, "recipient": RECIPIENT, "amount": "2.5", "evmToken": "0x" + WRAPPED, "allocationUpdateId": "update-alloc",
+                                  "allocation": ALLOCATION, "request": "request-1", "claim": f"evm.py claim <u or v> {LABEL_ID} 0x{WRAPPED} 2.5"})
+
+    def test_another_label_makes_another_id_and_a_label_that_is_open_is_refused(self):
+        self.assertNotEqual(self.deposit("cc-demo-2")["depositId"], LABEL_ID)
+        self.deposit()
+        with self.assertRaises(SystemExit) as why:
+            self.deposit()
+        self.assertIn("already has an open deposit request", str(why.exception))
+
+    def test_nothing_is_sent_before_the_amount_the_address_the_label_the_token_and_the_holdings_are_right(self):
+        for args, text in ((("", RECIPIENT, "1"), "label"), ((LABEL, "0x12", "1"), "not an EVM address"), ((LABEL, RECIPIENT, "0"), "more than zero"), ((LABEL, RECIPIENT, "1.00000000001"), "10 decimals"),
+                           ((LABEL, RECIPIENT, "-1"), "10 decimals"), ((LABEL, RECIPIENT, "7.6"), "less than 7.6")):
+            with self.subTest(args), self.assertRaises((SystemExit, canton.Fail)) as why:
+                self.deposit(*args)
+            self.assertIn(text, str(why.exception))
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = []
+        with self.assertRaises(canton.Fail) as why:
+            self.deposit()
+        self.assertIn("cc.py register", str(why.exception))
+        self.assertEqual((self.allocation_requests(), FakeLedger.commands, self.exercised), ([], [], []))
+
+    def test_a_result_that_is_not_a_completed_allocation_stops_before_the_request(self):
+        self.mode = "pending"
+        with self.assertRaises(canton.Fail) as why:
+            self.deposit()
+        self.assertIn("AllocationInstructionResult_Pending", str(why.exception))
+        self.assertEqual(self.created(), [])
+
+    def test_the_factory_must_be_a_disclosed_contract_of_the_splice_amulet_packages(self):
+        def refused(why, change):
+            self.answer = allocation_answer()
+            change(self.answer)
+            with self.assertRaises(canton.Fail) as got:
+                self.deposit()
+            self.assertIn(why, str(got.exception))
+        refused("factoryId", lambda a: a.update(factoryId="x"))
+        refused("did not disclose", lambda a: a.update(factoryId="00" + "ee" * 34))
+        refused("not one of the Splice amulet", lambda a: a["choiceContext"]["disclosedContracts"][2].update(templateId=PKG + ":Evil.Rules:Rules"))
+        refused("choice context", lambda a: a.update(choiceContext={}))
+        self.assertEqual((self.exercised, FakeLedger.commands), ([], []))
+
+    def test_the_request_is_waited_for_at_most_a_minute(self):
+        FakeLedger.on_submit = None   # the ledger never shows the request
+        clock = Clock(25)
+        with mock.patch.object(canton.time, "time", clock.time), mock.patch.object(canton.time, "sleep", clock.sleep), self.assertRaises(canton.Fail) as why:
+            self.deposit()
+        self.assertIn("timed out waiting for the deposit request", str(why.exception))
+        self.assertTrue(60 <= clock.now <= 120, clock.now)
+
+    def test_a_bad_command_line_prints_the_usage_and_no_token_is_printed(self):
+        for argv in (("deposit",), ("deposit", LABEL, RECIPIENT), ("deposit", LABEL, RECIPIENT, "1", "2"), ("withdraw",), ("withdraw", "1", "2")):
+            with self.subTest(argv), self.assertRaises(SystemExit) as why:
+                self.run_cc(*argv)
+            self.assertIn("cc.py deposit <label> <evm address> <amount>", str(why.exception))
+            self.assertIn("evm.py claim", str(why.exception))
+        result, out, err = self.run_printed("deposit", LABEL, RECIPIENT, "1")
+        self.assertNoSecrets(out, err, json.dumps(result))
+
+
+class WithdrawCase(CcCase):
+    ADDRESS = None
+
+    def setUp(self):
+        super().setUp()
+        FakeLedger.holdings = {U: [held("00u1", "5.0")]}
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = [{"contractId": "gt-1", "createArgument": {"evmToken": WRAPPED, "instrumentId": {"admin": DSO, "id": "Amulet"}, "factory": FACTORY}}]
+        FakeLedger.events[canton.ACCEPTANCE] = [{"contractId": "acc-1", "createArgument": {"party": U}}, {"contractId": "acc-2", "createArgument": {"party": V}}]
+        self.address = evm.make_keys(self.state)["u"]
+        self.ostia.balances[self.address.lower()] = 40 * 10**10
+        self.arrives = lambda data: FakeLedger.holdings[U].append(held("00new", "1.5"))
+        self.ostia.on_send = self.burn
+
+    def burn(self, data):
+        self.ostia.balances[self.address.lower()] -= 15 * 10**9
+        self.arrives(data)
+
+    def withdraw(self, amount="1.5"):
+        return self.run_cc("withdraw", amount)
+
+
+class WithdrawTests(WithdrawCase):
+    def test_u_burns_the_wrapped_coin_through_the_gateway_for_its_party_and_both_sides_are_printed(self):
+        result = self.withdraw()
+        [sent] = self.ostia.sent
+        self.assertEqual((sent["who"], sent["to"].lower(), sent["data"]), ("u", GATEWAY.lower(), evm.call_data("withdraw(address,uint256,string)", ["0x" + WRAPPED, 15 * 10**9, U])))
+        self.assertEqual(result, {"amount": "1.5", "ostia": {"tx": "0x" + "cd" * 32, "block": 9, "address": self.address, "wrapped": {"before": "40.0", "after": "38.5"}},
+                                  "canton": {"party": U, "before": {"unlocked": "5.0", "locked": "0.0"}, "after": {"unlocked": "6.5", "locked": "0.0"}}})
+
+    def test_without_a_withdrawal_acceptance_nothing_is_sent(self):
+        FakeLedger.events[canton.ACCEPTANCE] = [{"contractId": "acc-2", "createArgument": {"party": V}}]   # only V accepted
+        with self.assertRaises(canton.Fail) as why:
+            self.withdraw()
+        self.assertIn("no WithdrawalAcceptance", str(why.exception))
+        self.assertIn("canton.py accept u", str(why.exception))
+        self.assertEqual(self.ostia.sent, [])
+
+    def test_without_the_wrapped_coin_or_the_token_or_a_good_amount_nothing_is_sent(self):
+        self.ostia.balances[self.address.lower()] = 10**10
+        with self.assertRaises(canton.Fail) as why:
+            self.withdraw()
+        self.assertIn("less than 1.5", str(why.exception))
+        for amount, text in (("0", "more than zero"), ("1.00000000001", "10 decimals"), ("-1", "10 decimals"), ("x", "10 decimals")):
+            with self.subTest(amount), self.assertRaises(SystemExit) as why:
+                self.withdraw(amount)
+            self.assertIn(text, str(why.exception))
+        FakeLedger.events[canton.CHAIN + "GatewayToken"] = []
+        with self.assertRaises(canton.Fail) as why:
+            self.withdraw("1")
+        self.assertIn("cc.py register", str(why.exception))
+        self.assertEqual(self.ostia.sent, [])
+
+    def test_a_withdrawal_that_fails_on_ostia_is_not_waited_for(self):
+        self.ostia.status = 0
+        clock = Clock(1000)
+        with mock.patch.object(canton.time, "time", clock.time), mock.patch.object(canton.time, "sleep", clock.sleep), self.assertRaises(canton.Fail) as why:
+            self.withdraw()
+        self.assertIn("failed on Ostia", str(why.exception))
+        self.assertEqual(clock.sleeps, 0)
+
+    def test_it_waits_for_the_coin_to_reach_u(self):
+        self.arrives = lambda data: None
+        looks = []
+
+        def sleep(seconds):
+            looks.append(seconds)
+            if len(looks) == 3:
+                FakeLedger.holdings[U].append(held("00new", "1.5"))
+        with mock.patch.object(canton.time, "sleep", sleep):
+            self.assertEqual(self.withdraw()["canton"]["after"]["unlocked"], "6.5")
+        self.assertEqual(len(looks), 3)
+
+    def test_less_than_the_amount_is_not_enough_and_the_wait_ends_after_ten_minutes(self):
+        self.arrives = lambda data: FakeLedger.holdings[U].append(held("00part", "1.4999999999"))
+        clock = Clock(100)
+        with mock.patch.object(canton.time, "time", clock.time), mock.patch.object(canton.time, "sleep", clock.sleep), self.assertRaises(canton.Fail) as why:
+            self.withdraw()
+        self.assertIn("timed out waiting for U to hold the Canton Coin", str(why.exception))
+        self.assertTrue(600 <= clock.now <= 700, clock.now)
+
+    def test_no_token_is_printed(self):
+        result, out, err = self.run_printed("withdraw", "1.5")
+        self.assertNoSecrets(out, err, json.dumps(result))
 
 
 if __name__ == "__main__":

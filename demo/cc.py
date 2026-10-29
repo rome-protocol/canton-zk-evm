@@ -14,6 +14,15 @@
                                         submitted with the token in FILE: a Ledger API user that may act as the validator's party (on DevNet the participant admin's). If the result is pending
                                         (an offer, not a completed transfer) the receiver, u or v, accepts it with the scan proxy's choice context for "accept", as the demo user. Prints the
                                         update ids and the receiver's new balance
+  cc.py deposit <label> <evm address> <amount>
+                                        U deposits <amount> Canton Coin (at most 10 decimals) for the EVM address: it allocates the coin to the gateway through the Amulet allocation factory (the scan
+                                        proxy's allocation-factory, with its choice context and disclosed contracts; the settlement and transfer leg as `canton.py deposit` builds them for TKB: the
+                                        operator is the executor, the gateway the receiver), then signs the DepositRequest with the label, whose deposit id is the one derived from U and the label.
+                                        Prints the deposit id, the allocation and the request's contract id. The claim on Ostia stays `evm.py claim u <deposit id> <evm token> <amount>`; the builder
+                                        attaches the deposit leg's choice context when it runs with --registry <DSO party>=<scan proxy>
+  cc.py withdraw <amount>               U's EVM address burns <amount> wrapped Canton Coin through the gateway for U (as `evm.py withdraw` does), after checking that U has a WithdrawalAcceptance
+                                        (`canton.py accept u` makes one) and the wrapped coin to burn. Then it waits, at most 10 minutes, until U's Canton Coin has grown by <amount> (the builder's
+                                        Receive leg) and prints both sides: the burn on Ostia and U's Canton Coin before and after
 
 Every scan proxy call takes --scan-proxy URL (the validator's <validator>/api/validator/v0/scan-proxy; also CZE_SCAN_PROXY_URL) and --scan-token-file FILE (a file, mode 0600, with the bearer token
 that the validator API wants; also CZE_SCAN_TOKEN_FILE). Tokens are read from their files at every call and are never printed. Requests carry the User-Agent "Rome Protocol rome@romeprotocol.com".
@@ -42,7 +51,10 @@ MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_BLOB = 16, 64, 500_000
 MAX_INPUTS = 50   # the holdings that a transfer takes as inputs, the largest first (Canton Coin allows 100)
 TRANSFER_KINDS = ("self", "direct", "offer")
 TRANSFER_PENDING = "TransferInstructionResult_Pending"
-COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender")}
+COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "withdraw": ("demo", "operator")}
+ALLOCATION_FACTORY_TEMPLATE = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):Splice\.[A-Za-z.]*:[A-Za-z]*Amulet[A-Za-z]*")   # the registry's own contract: AmuletRules or the like, of the Splice packages
+ALLOCATION_COMPLETED = "AllocationInstructionResult_Completed"
+WITHDRAW_WAIT_SECONDS = 600   # the longest that withdraw waits for the builder's Receive leg to reach U
 SENDER_ROLE = "sender"   # the role whose token file is --sender-token-file
 OTHER_ROLE = "admin"     # the role that reads the holdings of a party that is not u or v
 TOKEN_FILE_VARIABLE = "CZE_TOKEN_FILE_"
@@ -96,6 +108,21 @@ class Scan:
         if not FACTORY_TEMPLATE.fullmatch(named[0]["templateId"]):
             raise canton.Fail(f"the scan proxy's factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
         return {"factory": factory, "kind": kind, "data": data, "disclosed": disclosed}
+
+    def allocation_factory(self, allocation: dict, requested_at: str, inputs: list, expected_admin: str) -> dict:
+        """The allocation factory for this allocation, as the token standard's registry API gives it, checked: a contract id that is disclosed, whose template is the registry's own."""
+        arguments = {"expectedAdmin": expected_admin, "allocation": allocation, "requestedAt": requested_at, "inputHoldingCids": inputs, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
+        answer = self.call(twin.post_json, self.url + "/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": arguments, "excludeDebugFields": True})
+        factory = answer.get("factoryId")
+        if not isinstance(factory, str) or not CONTRACT_ID.fullmatch(factory):
+            raise canton.Fail("the scan proxy's answer has no factoryId that is a contract id")
+        data, disclosed = checked_context(answer.get("choiceContext"))
+        named = [d for d in disclosed if d["contractId"] == factory]
+        if len(named) != 1:
+            raise canton.Fail("the scan proxy did not disclose the factory it named")
+        if not ALLOCATION_FACTORY_TEMPLATE.fullmatch(named[0]["templateId"]):
+            raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not one of the Splice amulet contracts")
+        return {"factory": factory, "data": data, "disclosed": disclosed}
 
     def accept_context(self, instruction: str) -> dict:
         """The choice context for the receiver's TransferInstruction_Accept of this instruction, checked."""
@@ -303,6 +330,85 @@ def fund(net: canton.Network, scan: Scan, who: str, amount: str) -> dict:
             "result": tag, "instruction": instruction, "balance": {"unlocked": after["unlocked"], "locked": after["locked"]}}
 
 
+def canton_coin_token(net: canton.Network, instrument: dict) -> str:
+    """The wrapped token of Canton Coin (40 hex digits): the operator's one GatewayToken for the instrument. Without one, `cc.py register` has not run."""
+    made = gateway_tokens(net, "GatewayToken", instrument)
+    if len(made) != 1:
+        raise canton.Fail(f"the operator sees {len(made)} GatewayTokens for Canton Coin: there must be one (`cc.py register` makes it)")
+    return made[0]["createArgument"]["evmToken"]
+
+
+def deposit(net: canton.Network, scan: Scan, label: str, recipient: str, amount: str) -> dict:
+    """U allocates `amount` Canton Coin to the gateway through the scan proxy's allocation factory (the allocation exactly as canton.allocate builds it for TKB: the operator the executor,
+    the gateway the receiver) and signs the DepositRequest, whose id is canton.deposit_id_of(U, label). The claim on Ostia is evm.py claim."""
+    canton.read_label(label)
+    if not canton.CANTON_AMOUNT.fullmatch(amount) or not twin.ledger_units(amount):
+        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
+    amount = amount if "." in amount else amount + ".0"
+    address = canton.evm_address(recipient)
+    dso = scan.dso_party()
+    instrument = {"admin": dso, "id": AMULET}
+    token = canton_coin_token(net, instrument)
+    chain, u = canton.chain_record(net), net.party("u")
+    deposit_id = canton.deposit_id_of(u, label)
+    if any(e["createArgument"]["depositId"] == deposit_id for e in net.template("operator", "operator", canton.DEPOSIT_REQUEST)):
+        raise SystemExit(f"U already has an open deposit request with the label {label!r}: each label makes one deposit id, so use a label that has not been used")
+    held = sorted((h for h in holdings(net, "users", "demo", u, dso) if not h[2]), key=lambda h: -h[1])
+    if sum(a for _, a, _ in held) < twin.ledger_units(amount):
+        raise canton.Fail(f"U holds {twin.amount_text(sum(a for _, a, _ in held))} Canton Coin, less than {amount} (`cc.py fund u <amount>` gives it some)")
+    requested = canton.utc(timedelta(minutes=-1))
+    spec = {"settlement": {"executor": net.party("operator"), "settlementRef": {"id": label, "cid": None}, "requestedAt": requested,
+                           "allocateBefore": canton.utc(timedelta(hours=1)), "settleBefore": canton.utc(timedelta(hours=2)), "meta": {"values": {}}},
+            "transferLegId": "leg-" + label,
+            "transferLeg": {"sender": u, "receiver": chain["gateway"], "amount": amount, "instrumentId": instrument, "meta": {"values": {}}}}
+    inputs = [cid for cid, _, _ in held[:MAX_INPUTS]]   # as in fund: the fee may come out of more than the amount's own holdings
+    asked = scan.allocation_factory(spec, requested, inputs, dso)
+    command = {"ExerciseCommand": {"templateId": canton.ALLOCATION_FACTORY, "contractId": asked["factory"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
+        "expectedAdmin": dso, "allocation": spec, "requestedAt": requested, "inputHoldingCids": inputs, "extraArgs": {"context": asked["data"], "meta": {"values": {}}}}}}
+    tx = twin.submit_for_transaction(net, "u", command, asked["disclosed"])
+    output = twin.exercise_output(tx, asked["factory"], "AllocationFactory_Allocate") or {}
+    value = output.get("value")
+    allocation = value.get("allocationCid") if isinstance(value, dict) else None
+    if output.get("tag") != ALLOCATION_COMPLETED or not isinstance(allocation, str) or not CONTRACT_ID.fullmatch(allocation):
+        raise canton.Fail(f"the allocation in update {tx['updateId']} did not complete: its result is {output.get('tag') or 'not there'}, not {ALLOCATION_COMPLETED} with an allocation")
+    arguments = {"operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"], "chainId": chain["chainId"],
+                 "depositor": u, "depositId": deposit_id, "recipient": address, "allocation": allocation, "label": label}
+    net.submit("users", ["u"], {"CreateCommand": {"templateId": canton.DEPOSIT_REQUEST, "createArguments": arguments}})
+    [request] = net.wait_for("the deposit request", lambda: [e for e in net.template("operator", "operator", canton.DEPOSIT_REQUEST) if e["createArgument"]["depositId"] == deposit_id])
+    return {"label": label, "depositId": deposit_id, "recipient": "0x" + address, "amount": amount, "evmToken": "0x" + token, "allocationUpdateId": tx["updateId"], "allocation": allocation,
+            "request": request["contractId"], "claim": f"evm.py claim <u or v> {deposit_id} 0x{token} {amount}"}
+
+
+def withdraw(net: canton.Network, scan: Scan, amount: str) -> dict:
+    """U's EVM address burns `amount` wrapped Canton Coin through the gateway for U's party, which has to have a WithdrawalAcceptance: the builder's Receive leg then sends the coin from the
+    gateway's custody to U through the scan proxy's factory. Waits (at most WITHDRAW_WAIT_SECONDS) until U's unlocked Canton Coin has grown by the amount."""
+    if not canton.CANTON_AMOUNT.fullmatch(amount):
+        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
+    units = evm.wrapped_units(amount)   # refuses zero
+    dso = scan.dso_party()
+    token = canton_coin_token(net, {"admin": dso, "id": AMULET})
+    if not canton.acceptances_of(net, "u"):
+        raise canton.Fail("U has no WithdrawalAcceptance: `canton.py accept u` makes one, and without it the gateway cannot send Canton Coin to U")
+    u = net.party("u")
+    address = evm.make_keys(evm.state_dir())["u"]
+    wrapped = lambda tag: evm.read_word("0x" + token, evm.SELECTOR_BALANCE_OF + evm.pad32(address), tag)
+    held = wrapped("latest")
+    if held < units:
+        raise canton.Fail(f"U's address {address} holds {evm.wrapped_text(held)} wrapped Canton Coin, less than {evm.wrapped_text(units)} (`evm.py claim` makes it from a deposit)")
+    before = party_balance(net, "u", dso)
+    sent = evm.main(["withdraw", "u", "0x" + token, amount, u])
+    receipt = evm.wait_finalized(sent["tx"], evm.WAIT_SECONDS)
+    if receipt["status"] != 1:
+        raise canton.Fail(f"the withdrawal {sent['tx']} failed on Ostia (status {receipt['status']}, block {receipt['block']})")
+    want = twin.ledger_units(before["unlocked"]) + units
+
+    def arrived():
+        now = party_balance(net, "u", dso)
+        return now if twin.ledger_units(now["unlocked"]) >= want else None
+    after = net.wait_for("U to hold the Canton Coin from the gateway", arrived, WITHDRAW_WAIT_SECONDS)
+    return {"amount": evm.wrapped_text(units), "ostia": {"tx": sent["tx"], "block": receipt["block"], "address": address, "wrapped": {"before": evm.wrapped_text(held), "after": evm.wrapped_text(wrapped("finalized"))}}, "canton": {"party": u, "before": {"unlocked": before["unlocked"], "locked": before["locked"]}, "after": {"unlocked": after["unlocked"], "locked": after["locked"]}}}
+
+
 def secret_files(options: dict) -> set:
     """The token files that this run may read: the environment's and the options'."""
     named = {v for k, v in os.environ.items() if k.startswith(TOKEN_FILE_VARIABLE) or k == SCAN_TOKEN_FILE}
@@ -340,7 +446,8 @@ def run(argv: list, options: dict) -> dict:
         names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",)}.get(cmd[0], ())
         args, found = twin.split_options(argv[1:], names, __doc__)
         options.update(found)
-        shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options}[cmd[0]]
+        shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options,
+                 "deposit": len(args) == 3, "withdraw": len(args) == 1}[cmd[0]]
         if not shape:
             raise SystemExit(__doc__)
         net = canton.Network()
@@ -359,6 +466,12 @@ def run(argv: list, options: dict) -> dict:
             if net.external:
                 net.check_roles(COMMAND_ROLES["fund"])
             return fund(net, scan_of(options), args[0], args[1])
+        if net.external:
+            net.check_roles(COMMAND_ROLES[cmd[0]])
+        if cmd == ["deposit"]:
+            return deposit(net, scan_of(options), *args)
+        if cmd == ["withdraw"]:
+            return withdraw(net, scan_of(options), args[0])
     raise SystemExit(__doc__)
 
 
