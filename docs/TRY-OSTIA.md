@@ -96,7 +96,7 @@ The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14
 
 Since 29 October 2026 an ERC-20 on Ostia can stand on Canton as a twin, and Canton Coin can move onto Ostia and back. The code on DevNet is commit 4b4f63c, deployed at 10:33 UTC, under Daml package 0.5.0.
 
-What a user can do:
+How these flows work on DevNet (outside users cannot complete the Canton steps yet):
 
 - **Lock an ERC-20 for a Canton party.** You pay the ERC-20 into the vault, and the Canton party you named holds the same amount of its twin, a CIP-0056 token with the instrument id `erc20:<token address>`. The twin moves on Canton like any CIP-0056 token. After each lock and redeem the twin's supply equals what the vault holds, and the explorer's token page compares the two.
 - **Redeem it.** The holder of the twin signs a redeem request on Canton, `Vault.release` pays the ERC-20 to the EVM address in the request, and the twin is burnt.
@@ -121,7 +121,17 @@ curl $R/registry/metadata/v1/instruments/erc20:f4b69022b3e6501101600743f17fbe065
 curl $R/twin/v1/twins                            # token, instrument id, rules contract, vaults
 ```
 
-`/registry/...` is the token standard's registry API (metadata, and the transfer and allocation factories with their choice contexts), so a wallet can send twins. `POST /twin/v1/lock-parts` takes `{"receiver": <Canton party id>, "ref": <text>}` before a lock and answers with the lock id and the registered vaults. Check the id yourself (it is the SHA-256, in lowercase hex, of `lock,<receiver>,<ref>`) and take the vault from the chain record, as `apps/twin/registry/README.md` says, because the service is only a hint to the payer.
+`/registry/...` is the token standard's registry API (metadata, and the transfer and allocation factories with their choice contexts), so a wallet can send twins. `POST /twin/v1/lock-parts` takes `{"receiver": <Canton party id>, "ref": <text>}` before a lock and answers with the lock id and the registered vaults. The party id is a name, `::`, then `1220` and 64 lowercase hex digits. For example:
+
+```sh
+RECEIVER=alice::1220abababababababababababababababababababababababababababababababab
+curl -X POST -H 'content-type: application/json' $R/twin/v1/lock-parts \
+  -d "{\"receiver\":\"$RECEIVER\",\"ref\":\"my-first-lock\"}"
+# {"lockId": "2317463a...01fd", "receiver": "alice::1220ab...", "ref": "my-first-lock", "vaults": ["69f13a94f986021f1a7650eb611bf9b717aa495a"]}
+printf 'lock,%s,%s' "$RECEIVER" my-first-lock | shasum -a 256   # the same lockId
+```
+
+Check the id yourself, as the last line does (it is the SHA-256, in lowercase hex, of `lock,<receiver>,<ref>`), and take the vault from a source you trust, because the service is only a hint to the payer. The chain record, which names the registered vaults, is a Canton contract that only Rome's gateway party can read, so an outside user compares the vault in the table above with the one `curl $R/healthz` lists under `vaults`; the builder reads the chain record itself (`apps/twin/registry/README.md` has the steps).
 
 What ran on 29 October 2026 (the blocks and Canton updates are in [DESIGN.md](DESIGN.md)):
 
@@ -129,7 +139,7 @@ What ran on 29 October 2026 (the blocks and Canton updates are in [DESIGN.md](DE
 - A lock of a token with no twin was refused before anything was sent, and a payment into the vault with no announced parts was left out of block 28395.
 - 5 Canton Coin went in through block 28473, so that the party held 15, the gateway held 5 and the wCC supply was 5. The withdrawal in block 28474 put all three back: 20, 0 and 0. DevNet charged no fee on these transfers.
 
-A lock today is only for a party whose participant has vetted the twin package. A lock for any other party is expected to be refused on Canton (this has not been tried on DevNet yet). The block does not commit and the builder leaves the lock out, so the ERC-20 stays with the payer, no twin is minted, and the payer's later transactions wait behind it. On DevNet those are the parties on Rome's two participants. Redeeming, and every Canton Coin step, needs a signature of a Canton party as well, and self-serve Canton accounts are not built, so an outside user cannot yet run the full cycle. [DESIGN.md](DESIGN.md#ostia-on-devnet) lists the other known limits of the twins.
+A lock today is only for a party whose participant has vetted the twin package; on DevNet those are the parties on Rome's two participants. A lock for another party has not been tried on DevNet. The expected outcome is that Canton refuses the block, the builder leaves the lock out, the ERC-20 stays with the payer, no twin is minted, and the payer's later transactions wait behind it. Redeeming, and every Canton Coin step, needs a signature of a Canton party as well, and self-serve Canton accounts are not built, so an outside user cannot yet run the full cycle. [DESIGN.md](DESIGN.md#ostia-on-devnet) lists the other known limits of the twins.
 
 `demo/twin.py` shows each step of the twins (`deploy-vault`, `rules`, `lock`, `send`, `redeem`, `balances`), and `demo/cc.py` shows each step of Canton Coin (`register`, `fund`, `deposit`, `withdraw`, `balances`). Both print one JSON object per command and are described in [demo/README.md](../demo/README.md).
 
