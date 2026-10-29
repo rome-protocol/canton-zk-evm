@@ -394,20 +394,22 @@ def allocate(net: Network, label: str, receiver: str, amount: str, spec: dict = 
     return allocation
 
 
-def propose_arguments(net: Network, token: str) -> list:
-    """The command line of `propose.py token` that registers the wrapped token at this EVM address for TKB, whose transfer factory is the rules."""
+def propose_arguments(net: Network, token: str, instrument: dict = None, factory: str = None) -> list:
+    """The command line of `propose.py token` that registers the wrapped token at this EVM address for TKB, whose transfer factory is the rules. demo/cc.py registers the
+    token of another instrument ({admin, id}) with the factory that instrument's registry names."""
     rpc = ["--reth-url", os.environ["CZE_RPC_URL"]] if os.environ.get("CZE_RPC_URL") else []   # the chain's RPC, if it is not on this machine's reth port
-    return ["token", "--evm-token", evm_address(token), "--instrument-admin", net.party("registry"), "--instrument-id", INSTRUMENT,
-            "--factory", read_disclosed(net)[0]["contractId"], *rpc]
+    instrument = instrument or {"admin": net.party("registry"), "id": INSTRUMENT}
+    return ["token", "--evm-token", evm_address(token), "--instrument-admin", instrument["admin"], "--instrument-id", instrument["id"],
+            "--factory", factory or read_disclosed(net)[0]["contractId"], *rpc]
 
 
-def accept_left_proposal(net: Network, address: str) -> dict:
+def accept_left_proposal(net: Network, address: str, instrument: dict = None, factory: str = None) -> dict:
     """A run that stopped between propose.py's two steps left the operator's proposal for this token, not yet accepted by the confirmer: accept it,
     but only if it is the proposal this command would make (the same instrument and factory), as setup.py does for the chain's."""
     [left] = token_contracts(net, address, "GatewayTokenProposal")
-    want = {"admin": net.party("registry"), "id": INSTRUMENT}
-    if left["createArgument"]["instrumentId"] != want or left["createArgument"]["factory"] != read_disclosed(net)[0]["contractId"]:
-        raise Fail(f"a proposal for {address} is there already and is not for TKB with these token rules: it cannot be withdrawn from here")
+    want = instrument or {"admin": net.party("registry"), "id": INSTRUMENT}
+    if left["createArgument"]["instrumentId"] != want or left["createArgument"]["factory"] != (factory or read_disclosed(net)[0]["contractId"]):
+        raise Fail(f"a proposal for {address} is there already and is not for {want['id']} with this factory: it cannot be withdrawn from here")
     rpc_url = os.environ.get("CZE_RPC_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}"
     gateway = chain_record(net)["gatewayAddress"]
     if not propose.gateway_made(rpc_url, gateway, address):   # as propose.py token checks, before it makes the proposal
@@ -421,11 +423,11 @@ def accept_left_proposal(net: Network, address: str) -> dict:
     return {"contractId": made["contractId"], "evmToken": made["createArgument"]["evmToken"], "instrumentId": made["createArgument"]["instrumentId"]}
 
 
-def register_token(net: Network, token: str) -> dict:
+def register_token(net: Network, token: str, instrument: dict = None, factory: str = None) -> dict:
     address = evm_address(token)
     if not token_contracts(net, address, "GatewayToken") and token_contracts(net, address, "GatewayTokenProposal"):
-        return accept_left_proposal(net, address)
-    arguments = propose_arguments(net, token)
+        return accept_left_proposal(net, address, instrument, factory)
+    arguments = propose_arguments(net, token, instrument, factory)
     # On one participant both of propose.py's Ledger APIs are that participant's; its user prefix and token files come from the environment as they are.
     env = {**os.environ, "CZE_CONFIRMER_LEDGER_URL": net.urls["confirmer"]} if net.external else None
     done = subprocess.run([sys.executable, str(PROPOSE), *arguments], capture_output=True, text=True, timeout=600, env=env)

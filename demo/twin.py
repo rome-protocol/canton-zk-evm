@@ -284,14 +284,25 @@ def registry_url_of(text: str) -> str:
     return text.rstrip("/")
 
 
-def post_json(url: str, body: dict) -> dict:
-    """What a registry service answers to a JSON POST, for a server that is not trusted: bounded in size, and an object or nothing."""
-    request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json"})
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is not followed: it would carry the request's headers (a token) to wherever the server points, in the clear or to another host."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def fetch_json(request: urllib.request.Request) -> dict:
+    """What a service answers to a JSON request, for a server that is not trusted: bounded in size, and an object or nothing."""
+    url = request.full_url
     try:
-        with urllib.request.urlopen(request, timeout=60) as r:
+        with _OPENER.open(request, timeout=60) as r:
             data = r.read(MAX_ANSWER + 1)
     except urllib.error.HTTPError as e:
         with e:
+            if 300 <= e.code < 400:
+                raise canton.Fail(f"{url} answered with a redirect ({e.code}), which is not followed") from None
             raise canton.Fail(f"{url}: {e.code} {e.read(500).decode(errors='replace')}") from None
     except (urllib.error.URLError, OSError) as e:
         raise canton.Fail(f"{url}: {e}") from None
@@ -304,6 +315,16 @@ def post_json(url: str, body: dict) -> dict:
     if not isinstance(answer, dict):
         raise canton.Fail(f"{url} did not answer with a JSON object")
     return answer
+
+
+def post_json(url: str, body: dict, headers: dict = None) -> dict:
+    """A registry service's answer to a JSON POST (see fetch_json); `headers` go with the request (demo/cc.py's User-Agent and token)."""
+    return fetch_json(urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **(headers or {})}))
+
+
+def get_json(url: str, headers: dict = None) -> dict:
+    """A service's answer to a JSON GET (see fetch_json)."""
+    return fetch_json(urllib.request.Request(url, headers=headers or {}))
 
 
 def send_checked(who: str, to: str, signature: str, values: list, gas: int, what: str) -> dict:
@@ -388,16 +409,25 @@ def factory_answer(answer: dict, rules: list) -> tuple:
     return factory, data, contracts
 
 
-def submit_for_transaction(net: canton.Network, acting: str, command: dict, disclosed: list) -> dict:
-    """The command of u or v, submitted and waited for, with the transaction's effects (submit-and-wait only gives the update id, and the result of a choice is in the exercised event)."""
-    party = net.party(acting)
+def submit_for_transaction(net: canton.Network, acting: str, command: dict, disclosed: list, role: str = canton.USER, party: str = None, user: bool = True) -> dict:
+    """The command of u or v, submitted and waited for, with the transaction's effects (submit-and-wait only gives the update id, and the result of a choice is in the exercised event).
+    demo/cc.py submits as another party (`party`) with another role's token (`role`) and without a user id (`user` False: the ledger takes it from the token)."""
+    party = party or net.party(acting)
     everything = {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}
-    body = {"commands": {"commands": [command], "commandId": str(uuid.uuid4()), "userId": net.user(canton.USER), "actAs": [party], "disclosedContracts": disclosed},
+    body = {"commands": {"commands": [command], "commandId": str(uuid.uuid4()), **({"userId": net.user(canton.USER)} if user else {}), "actAs": [party], "disclosedContracts": disclosed},
             "transactionFormat": {"eventFormat": {"filtersByParty": {party: everything}, "verbose": False}, "transactionShape": "TRANSACTION_SHAPE_LEDGER_EFFECTS"}}
-    tx = net.post("users", "/v2/commands/submit-and-wait-for-transaction", body, canton.USER).get("transaction")
+    tx = net.post("users", "/v2/commands/submit-and-wait-for-transaction", body, role).get("transaction")
     if not isinstance(tx, dict) or not tx.get("updateId"):
         raise canton.Fail("the ledger gave no transaction for the command")
     return tx
+
+
+def exercise_output(tx: dict, contract: str, choice: str):
+    """The `output` of the TransferInstructionResult that this choice of this contract gave in the transaction ({tag, value}), or None unless it was exercised exactly once and gave one."""
+    exercised = [e["ExercisedEvent"] for e in tx.get("events", []) if "ExercisedEvent" in e and e["ExercisedEvent"].get("choice") == choice and e["ExercisedEvent"].get("contractId") == contract]
+    result = exercised[0].get("exerciseResult") if len(exercised) == 1 else None
+    output = result.get("output") if isinstance(result, dict) else None
+    return output if isinstance(output, dict) else None
 
 
 def send(net: canton.Network, sender: str, receiver: str, address: str, amount: str, registry_url: str) -> dict:
@@ -418,10 +448,7 @@ def send(net: canton.Network, sender: str, receiver: str, address: str, amount: 
     command = {"ExerciseCommand": {"templateId": canton.TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer",
                                    "choiceArgument": {**arguments, "extraArgs": {"context": data, "meta": {"values": {}}}}}}
     tx = submit_for_transaction(net, sender, command, disclosed)
-    exercised = [e["ExercisedEvent"] for e in tx.get("events", []) if "ExercisedEvent" in e and e["ExercisedEvent"].get("choice") == "TransferFactory_Transfer"
-                 and e["ExercisedEvent"].get("contractId") == factory]
-    result = exercised[0].get("exerciseResult") if len(exercised) == 1 else None
-    tag = ((result or {}).get("output") or {}).get("tag") if isinstance(result, dict) else None
+    tag = (exercise_output(tx, factory, "TransferFactory_Transfer") or {}).get("tag")
     if tag != TRANSFER_COMPLETED:
         raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {TRANSFER_COMPLETED}")
     # The sender's participant has committed; the twin's balances are read on the gateway's, which spends the input holdings a moment later.
@@ -477,13 +504,14 @@ def redeem(net: canton.Network, holder: str, address: str, amount: str, recipien
             "request": cid, "requestArchived": True}
 
 
-def split_options(argv: list, names: tuple) -> tuple:
-    """The arguments without the options `--name value` of `names`, and the options' values. An option twice, with no value, or one that is not named stops the command."""
+def split_options(argv: list, names: tuple, usage: str = None) -> tuple:
+    """The arguments without the options `--name value` of `names`, and the options' values. An option twice, with no value, or one that is not named stops the command
+    (with `usage`, or this module's text)."""
     rest, found, i = [], {}, 0
     while i < len(argv):
         if argv[i].startswith("--"):
             if argv[i] not in names or argv[i] in found or i + 1 >= len(argv):
-                raise SystemExit(__doc__)
+                raise SystemExit(usage or __doc__)
             found[argv[i]] = argv[i + 1]
             i += 2
         else:
