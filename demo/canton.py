@@ -86,6 +86,9 @@ DEFAULT_ROLES = ("demo", "operator", "reader")
 LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?)(/.*)?$")
 # The seconds to wait before each repeat of a submit that got no answer: 4 tries over about a minute.
 SUBMIT_RETRY_WAITS = (5, 15, 30)
+COMPLETION_LIMIT = 500    # completions one read takes at most; a full page is followed by the next
+COMPLETION_IDLE_MS = 1000   # how long the completions stream waits for another completion before it ends
+COMPLETION_READS = 20     # pages one look for a command's completion reads at most
 INSTRUMENT = "TKB"
 HOLDING_AMOUNT = "100.0"
 ALLOCATED_AMOUNT = "10.0"
@@ -196,15 +199,49 @@ class Network:
             err.code = None
         return err
 
+    def committed(self, node: str, user: str, body: dict, begin) -> bool:
+        """True when the completions after ledger offset `begin` hold a successful completion of this command id. A command that consumed contracts
+        is never answered DUPLICATE_COMMAND on a repeat (it fails in interpretation first, e.g. CONTRACT_NOT_FOUND), so the completion is the proof.
+        No completion, a failed one, or a read that fails all give False."""
+        if begin is None:
+            return False
+        try:
+            for _ in range(COMPLETION_READS):
+                ask = {"userId": body["userId"], "parties": body["actAs"], "beginExclusive": begin}
+                items = self.post(node, f"/v2/commands/completions?limit={COMPLETION_LIMIT}&stream_idle_timeout_ms={COMPLETION_IDLE_MS}", ask, user)
+                last = None
+                for item in items:
+                    response = item.get("completionResponse") or {}
+                    for kind in ("Completion", "OffsetCheckpoint"):
+                        value = (response.get(kind) or {}).get("value") or {}
+                        if type(value.get("offset")) is int:
+                            last = value["offset"] if last is None else max(last, value["offset"])
+                    done = (response.get("Completion") or {}).get("value") or {}
+                    if done.get("commandId") == body["commandId"]:
+                        return ((done.get("status") or {}).get("code") or 0) == 0
+                if len(items) < COMPLETION_LIMIT or last is None or last <= begin:
+                    return False
+                begin = last   # a full page without the command: read on from where it ended
+        except (Refused, OSError, ValueError, AttributeError, TypeError) as e:
+            print(f"submit: the completions of {node} cannot be read: {e}", file=sys.stderr)
+        return False
+
     def submit(self, node: str, acting: list, command: dict, disclosed: list = (), user: str = USER):
         """Sends one command and waits for its commit. The command id is made once, so a try that ends with no answer (HTTP 503 "not able to produce a
         timely response", or a read timeout of the request) is sent again with the same body and the same id, SUBMIT_RETRY_WAITS apart, as often as that
         tuple has entries. The participant may have committed the first try; it knows the id, so the repeat is answered DUPLICATE_COMMAND (HTTP 409,
         on the code, not the text): that counts as committed, and the answer is {"duplicate": True}, as a duplicate carries no events. A repeat that finds
-        the first try still running (SUBMISSION_ALREADY_IN_FLIGHT) waits and asks again. Every other error is raised at once."""
+        the first try still running (SUBMISSION_ALREADY_IN_FLIGHT) waits and asks again. A command that consumed contracts never gets DUPLICATE_COMMAND
+        (the repeat fails in interpretation first, CONTRACT_NOT_FOUND): so when a repeat is refused with any other error, or the tries run out, the
+        command's completion is read from the ledger end noted before the first try; a successful one counts as committed, anything else raises the
+        error. The first try's own refusal (not 503) is raised at once."""
         body = {"commands": [command], "commandId": str(uuid.uuid4()), "userId": self.user(user), "actAs": [self.party(p) for p in acting]}
         if disclosed:
             body["disclosedContracts"] = list(disclosed)
+        try:
+            begin = self.get(node, "/v2/state/ledger-end", user)["offset"]
+        except (Refused, OSError, ValueError, KeyError, TypeError):
+            begin = None   # no completion can be looked up then; the retry still works on the duplicate answer
         for attempt, wait in enumerate(SUBMIT_RETRY_WAITS + (None,)):
             try:
                 return self.post(node, "/v2/commands/submit-and-wait", body, user)
@@ -212,11 +249,22 @@ class Network:
                 if e.code == "DUPLICATE_COMMAND" and attempt:
                     print(f"submit: the command id of try {attempt} is known to the participant: it committed", file=sys.stderr)
                     return {"duplicate": True}
-                if wait is None or not (e.status == 503 or (attempt and e.code == "SUBMISSION_ALREADY_IN_FLIGHT")):
+                again = e.status == 503 or (attempt and e.code == "SUBMISSION_ALREADY_IN_FLIGHT")
+                if attempt and (wait is None or not again):
+                    if self.committed(node, user, body, begin):
+                        print(f"submit: try {attempt + 1} was refused ({e.status} {e.code or ''}), but the completion of its command id says it committed", file=sys.stderr)
+                        return {"duplicate": True}
+                    raise
+                if not again:
                     raise
                 why = f"{e.status} {e.code or ''}".strip()
             except (TimeoutError, urllib.error.URLError) as e:
-                if wait is None or not (isinstance(e, TimeoutError) or isinstance(e.reason, TimeoutError)):
+                if not (isinstance(e, TimeoutError) or isinstance(e.reason, TimeoutError)):
+                    raise
+                if wait is None:
+                    if self.committed(node, user, body, begin):
+                        print("submit: the last try timed out, but the completion of its command id says it committed", file=sys.stderr)
+                        return {"duplicate": True}
                     raise
                 why = "read timeout"
             print(f"submit: try {attempt + 1} of {len(SUBMIT_RETRY_WAITS) + 1} on {node} got {why}; sending it again with the same command id in {wait} s", file=sys.stderr)
