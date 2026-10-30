@@ -24,10 +24,12 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(q, String(match)).toBeDefined();
     const c = await pool.connect();
     try {
-      await c.query("set enable_seqscan = off");
-      await c.query("set enable_bitmapscan = off");
+      // set local inside a transaction that is rolled back: no pooled client keeps the settings
+      await c.query("begin");
+      await c.query("set local enable_seqscan = off");
+      await c.query("set local enable_bitmapscan = off");
       return (await c.query(`explain ${q!.sql}`, q!.values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
-    } finally { c.release(); }
+    } finally { await c.query("rollback").catch(() => undefined); c.release(); }
   }
   const addr = "0x" + "ab".repeat(20);
 
@@ -305,24 +307,27 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
 
   it("the newest lock and release legs read at most the limit of rows, however many payment legs the history holds and however old the locks are", async () => {
     const token = Buffer.alloc(20, 0xd1), vault = Buffer.alloc(20, 0xee);
-    // several thousand payment legs that are no lock or release, and three locks below all of them
+    // several thousand payment legs that are no lock or release, and below all of them two thousand older locks and releases (the newest three at blocks 1998 to 2000), so the
+    // backward walk of twin_legs' key is the planner's own choice with its default settings
     await pool.query(
       `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
-       select 10 + n, 0, 0, 0, 3, decode(lpad(to_hex(n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 6000) n`,
+       select 10000 + n, 0, 0, 0, 3, decode(lpad(to_hex(n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 6000) n`,
       [token, vault],
     );
     await pool.query(
       `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
-       select n, 0, 0, 0, 3, decode(lpad(to_hex(100000 + n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 3) n`,
+       select n, 0, 0, 0, 3, decode(lpad(to_hex(1000000 + n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 2000) n`,
       [token, vault],
     );
-    await pool.query("insert into twin_legs (block_number, leg_index, is_release) select n, 0, n = 3 from generate_series(1, 3) n");
+    await pool.query("insert into twin_legs (block_number, leg_index, is_release) select n, 0, n = 2000 from generate_series(1, 2000) n");
     await pool.query("analyze gateway_legs");
     await pool.query("analyze twin_legs");
     try {
       const rest = createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows);
       // the rows come back newest first, a release told from a lock by what was written
-      expect((await rest.legs(20)).map((l) => [l.block, l.twin])).toEqual([[3, "release"], [2, "lock"], [1, "lock"]]);
+      const newest = await rest.legs(20);
+      expect(newest).toHaveLength(20);
+      expect(newest.slice(0, 3).map((l) => [l.block, l.twin])).toEqual([[2000, "release"], [1999, "lock"], [1998, "lock"]]);
       for (const limit of [2, 20]) {
         await rest.legs(limit);
         const q = seen.filter((s) => /from \(select \* from twin_legs/.test(s.sql)).at(-1)!;
