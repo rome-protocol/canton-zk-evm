@@ -138,7 +138,7 @@ export const REST_FIELDS = {
   /** The Canton twin of an ERC-20 a registered vault holds: what the twin has in issue (locks less releases) next to what the vaults hold, both in the token's base units. */
   twinSupply: ["supply", "vaultBalance", "locks", "releases", "through"],
   /** The twins page: the chain record's vaults and pinned twins, the Canton tokens with their custody, and the newest lock and release legs. `through` is the block the twins' sums are counted to. */
-  twins: ["through", "vaults", "twins", "canton", "legs"],
+  twins: ["through", "registryService", "vaults", "twins", "canton", "legs"],
   twinVault: ["address", "codeHash"],
   twinLine: ["token", "symbol", "name", "decimals", "supply", "vaultBalance", "matched", "locks", "releases", "through"],
   twinCanton: ["token", "symbol", "name", "decimals", "instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "matched", "ledgerOffset", "readAt"],

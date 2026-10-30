@@ -41,6 +41,13 @@ describe("settings", () => {
     expect(load({ NETWORK_NAME: "  " }).networkName).toBeNull();
   });
 
+  it("names no twin registry service until TWIN_REGISTRY_URL gives its address", () => {
+    expect(load().twinRegistryUrl).toBeNull();
+    expect(load({ TWIN_REGISTRY_URL: "  " }).twinRegistryUrl).toBeNull();
+    expect(load({ TWIN_REGISTRY_URL: "https://twins.example.org/" }).twinRegistryUrl).toBe("https://twins.example.org");
+    expect(() => load({ TWIN_REGISTRY_URL: "twins.example.org" })).toThrow(/TWIN_REGISTRY_URL must be an http or https address/);
+  });
+
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
     expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null });
     expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });

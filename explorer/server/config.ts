@@ -47,6 +47,8 @@ export interface Config {
   chainName: string;
   /** Which Canton network the chain runs on, as the header names it ("DevNet"); null when not set, and then no network is named. */
   networkName: string | null;
+  /** The public address of the twin registry service, when this deployment has one (TWIN_REGISTRY_URL); null when not set, and then the twins page names no such service. */
+  twinRegistryUrl: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -261,6 +263,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     chainId: whole(env, "CHAIN_ID", 770101, 1),
     chainName: env.CHAIN_NAME || "Ostia",
     networkName: env.NETWORK_NAME?.trim() || null,
+    twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),

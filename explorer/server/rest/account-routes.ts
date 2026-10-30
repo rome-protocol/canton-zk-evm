@@ -38,10 +38,12 @@ export interface AccountRouteDeps {
   reth: Pick<Reth, "balanceAt">;
   /** The search as it stood before names: a block, a hash, an address or a Canton update id. Its answer for a text that is none of them is the 404. */
   search: (q: string) => Promise<Answer>;
+  /** The public address of the twin registry service when the deployment names one; null (the default) when not. The twins answer carries it for the page's "registry service" line. */
+  twinRegistryUrl?: string | null;
 }
 
 /** The routes of accounts, contracts, tokens and legs: a router for a request's path, with the list of the paths it serves. */
-export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
+export function accountRoutes({ accounts, reth, search, twinRegistryUrl = null }: AccountRouteDeps) {
   /** A page of rows in the fields of an allowlist. `derived` is the pages' own word on stage 2, and is always given: these lists are all derived. */
   const page = <T extends object, K extends keyof T>(rows: T[], limit: number, key: (r: T) => string, fields: readonly K[], derived: boolean) => {
     const p = pageOf(rows, limit, key);
@@ -313,7 +315,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   async function twinsPage(): Promise<Answer> {
     const t = await accounts.twins();
     return cached(ok(pick({
-      ...t, vaults: t.vaults.map((v) => pick(v, F.twinVault)), twins: t.twins.map((x) => pick(x, F.twinLine)), canton: t.canton.map((c) => pick(c, F.twinCanton)), legs: t.legs.map((l) => pick(l, F.twinLeg)),
+      ...t, registryService: twinRegistryUrl, vaults: t.vaults.map((v) => pick(v, F.twinVault)), twins: t.twins.map((x) => pick(x, F.twinLine)), canton: t.canton.map((c) => pick(c, F.twinCanton)), legs: t.legs.map((l) => pick(l, F.twinLeg)),
     }, F.twins)), "composite");
   }
 

@@ -305,7 +305,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
 
   const etherscanDoor = etherscanRest && etherscan({ rest: etherscanRest, reth, chainId: config.chainId, ...(rpc ? { rpc } : {}), ...(verify ? { verify } : {}) });
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
-  const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
+  const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search, twinRegistryUrl: config.twinRegistryUrl });
   const statsRestRoutes = stats && statsRoutes({ stats, now });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };

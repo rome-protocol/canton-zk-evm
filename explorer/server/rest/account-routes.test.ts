@@ -433,7 +433,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
   it("serves the twins page from the kept registry, sums and custody read, with every object held to its allowlist; empty with no registry", async () => {
     const empty = body(await get("/api/twins"));
     same(empty, F.twins);
-    expect(empty).toEqual({ through: null, vaults: [], twins: [], canton: [], legs: [] });
+    expect(empty).toEqual({ through: null, registryService: null, vaults: [], twins: [], canton: [], legs: [] });
     await sql("insert into canton_registry (address, kind, code_hash, admin, ledger_offset) values ($1, 'vault', $2, 'gw::1220ab', 5)", [who(0xc1), Buffer.alloc(32, 1)]);
     await sql("insert into canton_twins (token, decimals, ledger_offset) values ($1, 6, 5)", [who(0xb1)]);
     await sql("insert into twin_totals (token, locked, released, locks, releases, vault_balance) values ($1, 900, 400, 3, 1, 500)", [who(0xb1)]);
