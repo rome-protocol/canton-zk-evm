@@ -202,7 +202,8 @@ class Network:
     def committed(self, node: str, user: str, body: dict, begin) -> bool:
         """True when the completions after ledger offset `begin` hold a successful completion of this command id. A command that consumed contracts
         is never answered DUPLICATE_COMMAND on a repeat (it fails in interpretation first, e.g. CONTRACT_NOT_FOUND), so the completion is the proof.
-        No completion, a failed one, or a read that fails all give False."""
+        Every try sends the same id, so more than one completion can carry it: one successful completion is enough, failed ones are read past.
+        No successful completion, or a read that fails, gives False."""
         if begin is None:
             return False
         try:
@@ -217,8 +218,8 @@ class Network:
                         if type(value.get("offset")) is int:
                             last = value["offset"] if last is None else max(last, value["offset"])
                     done = (response.get("Completion") or {}).get("value") or {}
-                    if done.get("commandId") == body["commandId"]:
-                        return ((done.get("status") or {}).get("code") or 0) == 0
+                    if done.get("commandId") == body["commandId"] and ((done.get("status") or {}).get("code") or 0) == 0:
+                        return True   # a failed completion of this id (an earlier try) is passed over: a later try may have committed
                 if len(items) < COMPLETION_LIMIT or last is None or last <= begin:
                     return False
                 begin = last   # a full page without the command: read on from where it ended

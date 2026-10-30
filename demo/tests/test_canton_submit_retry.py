@@ -131,6 +131,16 @@ class SubmitRetryTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "CONTRACT_NOT_FOUND")
         self.assertEqual(len(FakeParticipant.reads), 1)
 
+    def test_a_failed_completion_before_a_successful_one_counts_as_committed(self):
+        failed = {"commandId": None, "offset": 6, "status": {"code": 4, "message": "timeout"}}
+        def completions(begin):
+            first = dict(failed, commandId=self.ids()[0])
+            second = {"commandId": self.ids()[0], "offset": 8, "updateId": "u1"}
+            return [{"completionResponse": {"Completion": {"value": v}}} for v in (first, second)]
+        FakeParticipant.completions = completions
+        self.assertEqual(self.submit([(503, TIMEOUT_503), (503, TIMEOUT_503), (404, NOT_FOUND)]), {"duplicate": True})
+        self.assertEqual(len(FakeParticipant.bodies), 3)
+
     def test_a_failed_completion_raises_the_error(self):
         FakeParticipant.answers = [(503, TIMEOUT_503), (404, NOT_FOUND)]
         FakeParticipant.completions = lambda begin: self.completed({"code": 5, "message": "contract not found"})
