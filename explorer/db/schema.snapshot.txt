@@ -853,6 +853,13 @@ table transactions partition by RANGE (block_number)
   CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
   CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)
 
+table twin_legs
+  column block_number bigint not null
+  column leg_index integer not null
+  column is_release boolean not null
+  constraint twin_legs_pkey PRIMARY KEY (block_number, leg_index)
+  CREATE UNIQUE INDEX twin_legs_pkey ON public.twin_legs USING btree (block_number, leg_index)
+
 table twin_totals
   column token bytea not null
   column locked numeric not null default 0

@@ -1,9 +1,9 @@
 /**
  * The reads behind `GET /api/twins`: the chain record's registry (its vaults and pinned twins) with, for each twin, the numbers the token page's twin card has, the Canton tokens
  * with their custody read (the token page's custody card), and the newest lock and release legs. Everything is read from what the indexer already keeps (`canton_registry`,
- * `canton_twins`, `twin_totals`, `gateway_tokens`, the legs): no chain or ledger is read here. Nothing here writes.
+ * `canton_twins`, `twin_totals`, `gateway_tokens`, `twin_legs`, the legs): no chain or ledger is read here. Nothing here writes.
  */
-import { twinOf, TWIN_FLAGS, TWIN_FROM } from "../indexer/leg-canton.ts";
+import { twinOf } from "../indexer/leg-canton.ts";
 import { CUSTODY_DECIMALS, hex, hexOrNull } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -94,19 +94,19 @@ export function createTwinsRest(query: Query) {
   }
 
   /**
-   * The newest lock and release legs: the payment legs of a pinned twin token that paid into a registered vault (a lock) or came out of one (a release), told by the same join as the legs list.
-   * The read walks the payment legs backwards on the primary key (block, leg index) and stops once it has `limit` lock or release legs: the inner select carries no limit and no other index
-   * for the planner to choose, so the twin joins (and the logs read behind a release) run only on the legs the walk has reached. The pinned tokens are a filter on the walk: `token || ''` keeps
-   * the planner off the token index, which would have to be sorted again by leg index.
+   * The newest lock and release legs, read from `twin_legs`: the indexer writes each lock and release there in the same pass and transaction that counts it into `twin_totals`, so the list runs to the same
+   * block as the twin cards' `through`. The read walks that table backwards on its primary key (block, leg index) and stops at `limit` rows: it costs its own rows, however many payment legs the
+   * history holds and however rare the locks are. The leg, its transaction, its block and its token are then read by key for those rows only.
    */
   async function legs(limit = TWIN_LEGS_MAX): Promise<TwinLeg[]> {
     const rows = await query(
-      `select g.block_number, g.leg_index, g.leg_id, g.token, g.amount::text as amount, t.hash, b.update_id, tk.symbol, ${TWIN_FLAGS}
-       from (select * from gateway_legs where kind = 3 and token || ''::bytea = any (array(select token from canton_twins)) order by block_number desc, leg_index desc) g
+      `select g.block_number, g.leg_index, g.leg_id, g.token, g.amount::text as amount, t.hash, b.update_id, tk.symbol, w.is_release, not w.is_release as is_lock
+       from (select * from twin_legs order by block_number desc, leg_index desc limit $1) w
+         join gateway_legs g on g.block_number = w.block_number and g.leg_index = w.leg_index
          left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index
          left join blocks b on b.number = g.block_number
-         left join tokens tk on tk.address = g.token ${TWIN_FROM}
-       where rv.address is not null or rl.one is not null order by g.block_number desc, g.leg_index desc limit $1`,
+         left join tokens tk on tk.address = g.token
+       order by w.block_number desc, w.leg_index desc`,
       [limit],
     );
     return rows.map((r): TwinLeg => ({

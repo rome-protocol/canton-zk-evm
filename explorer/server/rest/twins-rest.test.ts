@@ -43,7 +43,7 @@ describe("the twins overview, from the rows the indexer keeps", () => {
     if (sql.includes("from gateway_tokens")) {
       return [{ evm_token: b(0xd1), instrument_admin: "registry::1220ff", instrument_id: "TKB", custody: "1230000000000", holdings: 3, supply: "123000000", supply_block: "7", ledger_offset: "77", read_at: "2026-10-25T10:00:00Z", symbol: "wTKB", name: "Wrapped TKB", decimals: 6 }];
     }
-    if (sql.includes("from (select * from gateway_legs")) {
+    if (sql.includes("from (select * from twin_legs")) {
       expect(values).toEqual([TWIN_LEGS_MAX]);
       return [
         { block_number: "9", leg_index: 0, leg_id: b(0xe1, 32), token: b(0xb1), amount: "100", hash: b(0xf1, 32), update_id: "1220aa", symbol: "TKA", is_lock: true, is_release: false },

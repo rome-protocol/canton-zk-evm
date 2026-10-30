@@ -7,7 +7,7 @@ import { SELECTORS, tryCall } from "./tokens.ts";
 export const TWIN_BATCH_BLOCKS = 5000;
 
 /**
- * Counts the twin legs into `twin_totals`, once per leg: for each pinned twin token, the sum and the number of the legs that locked it into a registered vault and of those a registered vault released.
+ * Counts the twin legs into `twin_totals`, once per leg (and writes each lock and release to `twin_legs`, which the list of the newest ones reads by its key): for each pinned twin token, the sum and the number of the legs that locked it into a registered vault and of those a registered vault released.
  * A pass counts the blocks after `meta.twin_totals_block` up to the newest block whose legs are all indexed (the newest indexed block, or the progress of the slowest registered gateway, whichever is
  * less), at most `batch` blocks, in one transaction with the cursor, so a pass that stops anywhere is run again from the cursor. A token page then reads one row, however many legs the token has.
  * With no vault or no pinned twin registered nothing is counted. The sums are forgotten (`resetTwinTotals`) when a vault, a pin or a gateway is added or removed and when a block is indexed again, and counted again from the first block.
@@ -41,11 +41,17 @@ export async function twinTotalsOnce(pool: Pick<Pool, "connect" | "query">, read
   const c = await pool.connect();
   try {
     await c.query("begin");
+    // One read of the legs, sorted once into locks and releases: it is written as the legs (`twin_legs`) and counted into the sums, in this one statement.
     await c.query(
-      `insert into twin_totals (token, locked, released, locks, releases)
+      `with x as materialized (
+         select g.block_number, g.leg_index, g.token, g.amount, ${TWIN_FLAGS}
+           from (select * from gateway_legs where kind = 3 and block_number > $1 and block_number <= $2) g ${TWIN_FROM}
+       ), legs as (
+         insert into twin_legs (block_number, leg_index, is_release) select block_number, leg_index, is_release from x where is_lock or is_release
+       )
+       insert into twin_totals (token, locked, released, locks, releases)
        select token, coalesce(sum(amount) filter (where is_lock), 0), coalesce(sum(amount) filter (where is_release), 0), count(*) filter (where is_lock), count(*) filter (where is_release)
-         from (select g.token, g.amount, ${TWIN_FLAGS} from (select * from gateway_legs where kind = 3 and block_number > $1 and block_number <= $2) g ${TWIN_FROM}) x
-        where is_lock or is_release group by token
+         from x where is_lock or is_release group by token
        on conflict (token) do update set locked = twin_totals.locked + excluded.locked, released = twin_totals.released + excluded.released,
          locks = twin_totals.locks + excluded.locks, releases = twin_totals.releases + excluded.releases`,
       [from, to],

@@ -14,7 +14,7 @@ const TABLES = [
   "canton_parties", "canton_registry", "canton_synchronizers", "canton_templates", "canton_twins", "canton_updates", "canton_venue_cursor", "canton_venue_trades", "coin_balance_history", "contracts", "cursors",
   "faucet_batches", "faucet_daily_counts", "faucet_refusals", "faucet_refusals_since", "faucet_requests", "gateway_holdings", "gateway_legs", "gateway_tokens", "health_checks", "internal_calls", "logs", "meta", "nft_owners", "pool_samples",
   "producer_runs", "proofs", "proxies", "schema_migrations", "stats_day", "stats_dirty", "stats_hour", "stats_minute", "token_balances",
-  "token_transfers", "tokens", "tracked_transactions", "transactions", "twin_totals", "tx_hashes", "tx_lifecycle", "tx_traces", "verification_jobs",
+  "token_transfers", "tokens", "tracked_transactions", "transactions", "twin_legs", "twin_totals", "tx_hashes", "tx_lifecycle", "tx_traces", "verification_jobs",
   "verified_sources",
 ];
 

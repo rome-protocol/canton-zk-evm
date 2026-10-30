@@ -287,11 +287,56 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     }
   });
 
-  it("the newest lock and release legs walk the legs backwards on the primary key, with no sort, and stop at the limit", async () => {
+  it("the newest lock and release legs read twin_legs through its primary key backwards, directly under the limit, and take the rest by key in nested loops", async () => {
     await createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows).legs(20);
-    const p = await plan(/from \(select \* from gateway_legs where kind = 3/);
-    expect(p).toMatch(/Index Scan Backward using gateway_legs_pkey on gateway_legs/);
-    expect(p).not.toMatch(/Sort Key|Seq Scan on gateway_legs/);
-    expect(p).toMatch(/^Limit/);
+    const p = await plan(/from \(select \* from twin_legs/);
+    const lines = p.split("\n");
+    // the node under the Limit (the Limit may sit under a Sort of the twenty rows) is the walk of twin_legs on its key
+    const at = lines.findIndex((l) => /^\s*(->\s*)?Limit/.test(l));
+    expect(at, p).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1], p).toMatch(/Index Scan Backward using twin_legs_pkey on twin_legs/);
+    // the leg, its transaction, its block and its token are index lookups, each in a nested loop
+    expect(p).toMatch(/Nested Loop/);
+    expect(p).not.toMatch(/Hash Join|Merge Join|Materialize|Seq Scan|Bitmap/);
+    expect(p).toMatch(/Index Scan using gateway_legs_pkey on gateway_legs/);
+    expect(p).toMatch(/using blocks_pkey on blocks/);
+    expect(p).toMatch(/using tokens_pkey on tokens/);
+  });
+
+  it("the newest lock and release legs read at most the limit of rows, however many payment legs the history holds and however old the locks are", async () => {
+    const token = Buffer.alloc(20, 0xd1), vault = Buffer.alloc(20, 0xee);
+    // several thousand payment legs that are no lock or release, and three locks below all of them
+    await pool.query(
+      `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
+       select 10 + n, 0, 0, 0, 3, decode(lpad(to_hex(n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 6000) n`,
+      [token, vault],
+    );
+    await pool.query(
+      `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
+       select n, 0, 0, 0, 3, decode(lpad(to_hex(100000 + n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 3) n`,
+      [token, vault],
+    );
+    await pool.query("insert into twin_legs (block_number, leg_index, is_release) select n, 0, n = 3 from generate_series(1, 3) n");
+    await pool.query("analyze gateway_legs");
+    await pool.query("analyze twin_legs");
+    try {
+      const rest = createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows);
+      // the rows come back newest first, a release told from a lock by what was written
+      expect((await rest.legs(20)).map((l) => [l.block, l.twin])).toEqual([[3, "release"], [2, "lock"], [1, "lock"]]);
+      for (const limit of [2, 20]) {
+        await rest.legs(limit);
+        const q = seen.filter((s) => /from \(select \* from twin_legs/.test(s.sql)).at(-1)!;
+        const out = (await pool.query(`explain (analyze, format json) ${q.sql}`, q.values)).rows[0]["QUERY PLAN"][0].Plan;
+        // every node's rows over all its loops: the legs' table is read for the rows of twin_legs only
+        const walk = (n: any, f: (n: any) => void) => { f(n); for (const c of n.Plans ?? []) walk(c, f); }; // eslint-disable-line @typescript-eslint/no-explicit-any
+        const read: Record<string, number> = {};
+        walk(out, (n) => { if (n["Relation Name"]) read[n["Relation Name"]] = (read[n["Relation Name"]] ?? 0) + n["Actual Rows"] * n["Actual Loops"]; });
+        expect(read["twin_legs"], JSON.stringify(read)).toBeLessThanOrEqual(limit);
+        expect(read["gateway_legs"], JSON.stringify(read)).toBeLessThanOrEqual(limit);
+      }
+    } finally {
+      await pool.query("delete from twin_legs");
+      await pool.query("delete from gateway_legs");
+    }
   });
 });
