@@ -4,6 +4,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createAccountRest } from "./account-rest.ts";
 import { ensurePartitions } from "../db/partitions.ts";
 import { createChainRest } from "./chain-rest.ts";
+import { createTwinsRest } from "./twins-rest.ts";
 
 /**
  * A keyset page must cost its own rows, not the table: the comparison on the key is an index condition. The queries are the real ones, recorded as the
@@ -23,10 +24,12 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(q, String(match)).toBeDefined();
     const c = await pool.connect();
     try {
-      await c.query("set enable_seqscan = off");
-      await c.query("set enable_bitmapscan = off");
+      // set local inside a transaction that is rolled back: no pooled client keeps the settings
+      await c.query("begin");
+      await c.query("set local enable_seqscan = off");
+      await c.query("set local enable_bitmapscan = off");
       return (await c.query(`explain ${q!.sql}`, q!.values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
-    } finally { c.release(); }
+    } finally { await c.query("rollback").catch(() => undefined); c.release(); }
   }
   const addr = "0x" + "ab".repeat(20);
 
@@ -283,6 +286,62 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
       expect(p, filter).toMatch(/Index Scan (Backward )?using transactions_p\d+_(block_number_tx_index_idx\d*|pkey)/);
       expect(p, filter).toMatch(/Index Cond: \(ROW\(block_number, tx_index\) >/);
       expect(p, filter).not.toMatch(/Sort Key|Seq Scan|^\s*Filter: \(?(status|method_id)/m);
+    }
+  });
+
+  it("the newest lock and release legs read twin_legs through its primary key backwards, directly under the limit, and take the rest by key in nested loops", async () => {
+    await createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows).legs(20);
+    const p = await plan(/from \(select \* from twin_legs/);
+    const lines = p.split("\n");
+    // the node under the Limit (the Limit may sit under a Sort of the twenty rows) is the walk of twin_legs on its key
+    const at = lines.findIndex((l) => /^\s*(->\s*)?Limit/.test(l));
+    expect(at, p).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1], p).toMatch(/Index Scan Backward using twin_legs_pkey on twin_legs/);
+    // the leg, its transaction, its block and its token are index lookups, each in a nested loop
+    expect(p).toMatch(/Nested Loop/);
+    expect(p).not.toMatch(/Hash Join|Merge Join|Materialize|Seq Scan|Bitmap/);
+    expect(p).toMatch(/Index Scan using gateway_legs_pkey on gateway_legs/);
+    expect(p).toMatch(/using blocks_pkey on blocks/);
+    expect(p).toMatch(/using tokens_pkey on tokens/);
+  });
+
+  it("the newest lock and release legs read at most the limit of rows, however many payment legs the history holds and however old the locks are", async () => {
+    const token = Buffer.alloc(20, 0xd1), vault = Buffer.alloc(20, 0xee);
+    // several thousand payment legs that are no lock or release, and below all of them two thousand older locks and releases (the newest three at blocks 1998 to 2000), so the
+    // backward walk of twin_legs' key is the planner's own choice with its default settings
+    await pool.query(
+      `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
+       select 10000 + n, 0, 0, 0, 3, decode(lpad(to_hex(n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 6000) n`,
+      [token, vault],
+    );
+    await pool.query(
+      `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount)
+       select n, 0, 0, 0, 3, decode(lpad(to_hex(1000000 + n), 64, '0'), 'hex'), $1, $2, 1 from generate_series(1, 2000) n`,
+      [token, vault],
+    );
+    await pool.query("insert into twin_legs (block_number, leg_index, is_release) select n, 0, n = 2000 from generate_series(1, 2000) n");
+    await pool.query("analyze gateway_legs");
+    await pool.query("analyze twin_legs");
+    try {
+      const rest = createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows);
+      // the rows come back newest first, a release told from a lock by what was written
+      const newest = await rest.legs(20);
+      expect(newest).toHaveLength(20);
+      expect(newest.slice(0, 3).map((l) => [l.block, l.twin])).toEqual([[2000, "release"], [1999, "lock"], [1998, "lock"]]);
+      for (const limit of [2, 20]) {
+        await rest.legs(limit);
+        const q = seen.filter((s) => /from \(select \* from twin_legs/.test(s.sql)).at(-1)!;
+        const out = (await pool.query(`explain (analyze, format json) ${q.sql}`, q.values)).rows[0]["QUERY PLAN"][0].Plan;
+        // every node's rows over all its loops: the legs' table is read for the rows of twin_legs only
+        const walk = (n: any, f: (n: any) => void) => { f(n); for (const c of n.Plans ?? []) walk(c, f); }; // eslint-disable-line @typescript-eslint/no-explicit-any
+        const read: Record<string, number> = {};
+        walk(out, (n) => { if (n["Relation Name"]) read[n["Relation Name"]] = (read[n["Relation Name"]] ?? 0) + n["Actual Rows"] * n["Actual Loops"]; });
+        expect(read["twin_legs"], JSON.stringify(read)).toBeLessThanOrEqual(limit);
+        expect(read["gateway_legs"], JSON.stringify(read)).toBeLessThanOrEqual(limit);
+      }
+    } finally {
+      await pool.query("delete from twin_legs");
+      await pool.query("delete from gateway_legs");
     }
   });
 });

@@ -7,12 +7,11 @@
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { gatewayOf, legKindOf, twinOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
-import { addressOfKey, bytes, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
+import { createTwinsRest } from "./twins-rest.ts";
+import { addressOfKey, bytes, CUSTODY_DECIMALS, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
-/** A Canton amount's own scale (Daml Numeric 10): the unit of `canton.custody`. */
-const CUSTODY_DECIMALS = 10;
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 
 /**
@@ -627,7 +626,9 @@ export function createAccountRest(pool: Pool) {
     return matches;
   }
 
+  const { overview: twins } = createTwinsRest(query);
+
   return {
-    derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contractsMadeBy, contractCounts, eventCountOf, contract, source, tokens, token, holders, tokenTransfers, legs, leg, swaps, swap, byName, labels,
+    twins, derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contractsMadeBy, contractCounts, eventCountOf, contract, source, tokens, token, holders, tokenTransfers, legs, leg, swaps, swap, byName, labels,
   };
 }

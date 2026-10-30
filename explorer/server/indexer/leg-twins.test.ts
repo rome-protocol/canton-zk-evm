@@ -159,6 +159,7 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect(await bal()).toEqual([{ token: "d1".repeat(20), v: "7" }, { token: "d2".repeat(20), v: null }]);
       chain.reads.calls.call = 0;
       await pool.query("delete from twin_totals");
+      await pool.query("delete from twin_legs");
       await pool.query("delete from meta where key = 'twin_totals_block'");
       expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
       expect(await bal()).toEqual([{ token: "d1".repeat(20), v: null }, { token: "d2".repeat(20), v: null }]);
@@ -170,6 +171,7 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
   });
 
   const totals = async (pool: Pool) => (await pool.query("select encode(token, 'hex') as token, locked::text, released::text, locks::int, releases::int from twin_totals order by token")).rows;
+  const twinLegs = async (pool: Pool) => (await pool.query("select block_number::int as b, leg_index as i, is_release as r from twin_legs order by block_number, leg_index")).rows.map((r) => [r.b, r.i, r.r]);
   const done = async (pool: Pool) => (await pool.query("select value from meta where key = 'twin_totals_block'")).rows[0]?.value ?? null;
   const threeBlocks = (): BlockShape[] => [
     { txs: 1, extra: [pay(ID1, TOKEN, VAULT, 5n * 10n ** 18n), pay(ID4, SIX, VAULT, 2_500_000n)] },
@@ -186,16 +188,24 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
         { token: "d2".repeat(20), locked: "2500000", released: "0", locks: 1, releases: 0 },
       ]);
       expect(await done(pool)).toBe("3");
+      // each lock and release is written once, with the sums and by the same pass: block 1's two locks, block 2's release, block 3's lock
+      const allLegs = [[1, 0, false], [1, 1, false], [2, 0, true], [3, 0, false]];
+      expect(await twinLegs(pool)).toEqual(allLegs);
       expect(await twinTotalsOnce(pool, chain.reads)).toEqual({ blocks: 0 });
       await pool.query("delete from twin_totals");
+      await pool.query("delete from twin_legs");
       await pool.query("delete from meta where key = 'twin_totals_block'");
       expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
       expect((await totals(pool)).map((t) => [t.token.slice(0, 2), t.locks, t.releases])).toEqual([["d1", 1, 0], ["d2", 1, 0]]);
+      expect(await twinLegs(pool)).toEqual(allLegs.slice(0, 2));
       expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
+      expect(await twinLegs(pool)).toEqual(allLegs.slice(0, 3));
       expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
       expect(await totals(pool)).toEqual(all);
+      expect(await twinLegs(pool)).toEqual(allLegs);
       // a registered gateway that has not caught up holds the count back: its legs are not all in yet
       await pool.query("delete from twin_totals");
+      await pool.query("delete from twin_legs");
       await pool.query("insert into meta (key, value) values ('twin_totals_block', '0') on conflict (key) do update set value = '0'");
       await pool.query("update canton_registry set legs_cursor = 1 where kind = 'gateway'");
       expect(await twinTotalsOnce(pool, chain.reads)).toEqual({ blocks: 1 });
@@ -219,9 +229,11 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       // another vault: what was counted is forgotten and counted again by the next pass
       await again([pin(TOKEN, 18), pin(SIX, 6)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
       expect(await totals(pool)).toEqual([]);
+      expect(await twinLegs(pool)).toEqual([]);
       expect(await done(pool)).toBeNull();
       await twinTotalsOnce(pool, chain.reads);
       expect(await totals(pool)).toEqual(before);
+      expect(await twinLegs(pool)).toHaveLength(4);
       // a pin that is new: the same
       await again([pin(TOKEN, 18), pin(SIX, 6), pin(OTHER, 8)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
       expect(await totals(pool)).toEqual([]);
@@ -258,9 +270,11 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       // the registered gateway's legs are not lost (its cursor is past these blocks, so they would never be read again)
       expect(await legs()).toEqual(before);
       expect(await totals(pool)).toEqual([]);
+      expect(await twinLegs(pool)).toEqual([]);
       expect(await done(pool)).toBeNull();
       await twinTotalsOnce(pool, chain.reads);
       expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
+      expect(await twinLegs(pool)).toHaveLength(4);
     });
   });
 });

@@ -280,6 +280,7 @@ export interface OpenApiDoc {
   paths?: Record<string, Partial<Record<"get" | "post", { summary?: string; "x-modules"?: Record<string, string[]> }>>>;
 }
 export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
+export const getTwins = async () => (await call("/api/twins", [200])).body as TwinsOverview;
 export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
 export const getStatsSeries = async (metric: StatsMetric, window: StatsWindow, step?: StatsSeries["step"]) =>
   (await call(`/api/stats/series?metric=${metric}&window=${window}${step ? `&step=${step}` : ""}`, [200])).body as StatsSeries;
@@ -418,6 +419,14 @@ export type TokenSort = "holders" | "transfers" | "newest";
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 /** The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (locks less releases), `vaultBalance` what the vaults held at the same block, `through`, both in the token's base units (null where it was not read there); `through` is the block the sums are counted to (null before the first count). */
 export interface TwinSupply { supply: string; vaultBalance: string | null; locks: number; releases: number; through: number | null }
+/** A pinned twin on the twins page: the token, its decimals, what the twin has in issue next to what the registered vaults held at the block `through` (null where reth did not give it), and the legs. `matched` is true only when both numbers are known and equal. */
+export interface TwinLine { token: string; symbol: string | null; name: string | null; decimals: number; supply: string; vaultBalance: string | null; matched: boolean; locks: number; releases: number; through: number | null }
+/** A token the gateway wrapped from Canton, as the twins page lists it: the custody on Canton (in `custodyDecimals`) against the wrapped supply, both read at `supplyBlock`; `matched` is null where the supply or the decimals are not known. */
+export interface TwinCanton { token: string; symbol: string | null; name: string | null; decimals: number | null; instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; matched: boolean | null; ledgerOffset: number; readAt: string }
+/** A lock or release leg: its block, transaction (null where the explorer has not stored it), the leg id, the token and amount in base units, and the Canton update of the block (null until read). */
+export interface TwinLeg { block: number; txHash: string | null; legId: string; twin: "lock" | "release"; token: string; symbol: string | null; amount: string; updateId: string | null }
+/** The answer of `/api/twins`: the registry's vaults (with their code hash) and pinned twins, the Canton tokens with their custody, the newest lock and release legs, and the twin registry service's public address when the deployment names one. */
+export interface TwinsOverview { through: number | null; registryService: string | null; vaults: { address: string; codeHash: string }[]; twins: TwinLine[]; canton: TwinCanton[]; legs: TwinLeg[] }
 export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;

@@ -21,6 +21,7 @@ import { ApiDocs } from "./pages/ApiDocs.tsx";
 import { Stats } from "./pages/Stats.tsx";
 import { Token } from "./pages/Token.tsx";
 import { Tokens } from "./pages/Tokens.tsx";
+import { Twins } from "./pages/Twins.tsx";
 import { Tx } from "./pages/Tx.tsx";
 import { Txs } from "./pages/Txs.tsx";
 
@@ -45,6 +46,7 @@ export function App() {
           <Route path="/address/:addr" element={<Address />} />
           <Route path="/tokens" element={<Tokens />} />
           <Route path="/token/:addr" element={<Token />} />
+          <Route path="/twins" element={<Twins />} />
           <Route path="/legs" element={<Legs />} />
           <Route path="/leg/:id" element={<Leg />} />
           <Route path="/txs" element={<Txs />} />

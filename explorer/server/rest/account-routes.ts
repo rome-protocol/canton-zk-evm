@@ -38,10 +38,12 @@ export interface AccountRouteDeps {
   reth: Pick<Reth, "balanceAt">;
   /** The search as it stood before names: a block, a hash, an address or a Canton update id. Its answer for a text that is none of them is the 404. */
   search: (q: string) => Promise<Answer>;
+  /** The public address of the twin registry service when the deployment names one; null (the default) when not. The twins answer carries it for the page's "registry service" line. */
+  twinRegistryUrl?: string | null;
 }
 
 /** The routes of accounts, contracts, tokens and legs: a router for a request's path, with the list of the paths it serves. */
-export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
+export function accountRoutes({ accounts, reth, search, twinRegistryUrl = null }: AccountRouteDeps) {
   /** A page of rows in the fields of an allowlist. `derived` is the pages' own word on stage 2, and is always given: these lists are all derived. */
   const page = <T extends object, K extends keyof T>(rows: T[], limit: number, key: (r: T) => string, fields: readonly K[], derived: boolean) => {
     const p = pageOf(rows, limit, key);
@@ -309,6 +311,14 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return l ? cached(ok(pick(l, F.legItem)), "composite") : fail(404, NO_LEG);
   }
 
+  // The twins page is made of what the indexer keeps (the chain record, the per-token sums, the custody read, the legs): no chain or ledger is read for a request.
+  async function twinsPage(): Promise<Answer> {
+    const t = await accounts.twins();
+    return cached(ok(pick({
+      ...t, registryService: twinRegistryUrl, vaults: t.vaults.map((v) => pick(v, F.twinVault)), twins: t.twins.map((x) => pick(x, F.twinLine)), canton: t.canton.map((c) => pick(c, F.twinCanton)), legs: t.legs.map((l) => pick(l, F.twinLeg)),
+    }, F.twins)), "composite");
+  }
+
   // The swaps are stage 1 facts too: a trade, its payment and its claim are read without stage 2.
   async function swapList(q: URLSearchParams): Promise<Answer> {
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
@@ -364,6 +374,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/labels", (_, q) => labelList(q)],
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
+    ["/api/twins", () => twinsPage()],
     ["/api/swaps", (_, q) => swapList(q)],
     ["/api/swaps/{payId}", (id) => oneSwap(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],

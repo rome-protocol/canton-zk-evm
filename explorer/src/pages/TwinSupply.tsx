@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { TokenDetail, TwinSupply as Twin } from "../api.ts";
 import { CardHead } from "../components/Cards.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
@@ -13,15 +14,18 @@ export function compareTwin(tw: Pick<Twin, "supply" | "vaultBalance">): { state:
   return vault > supply ? { state: "vault-higher", diff: (vault - supply).toString() } : { state: "twin-higher", diff: (supply - vault).toString() };
 }
 
-/** The Canton twin of an ERC-20 a registered vault holds: the twin's supply (locks less releases, from the sums the indexer keeps) next to what the vaults held of the token at the same block. */
-export function TwinSupply({ t, twin: tw }: { t: TokenDetail; twin: Twin }) {
+/**
+ * The Canton twin of an ERC-20 a registered vault holds: the twin's supply (locks less releases, from the sums the indexer keeps) next to what the vaults held of the token at the same block.
+ * Only the token's decimals and symbol are read from `t`. The twins page uses the card once per twin, naming it (`name`) and linking its token page (`action`).
+ */
+export function TwinSupply({ t, twin: tw, name = "Canton twin", action }: { t: Pick<TokenDetail, "decimals" | "symbol">; twin: Twin; name?: string; action?: ReactNode }) {
   const { state, diff } = compareTwin(tw);
   const d = t.decimals;
   const amount = (v: string) => d === null ? <span className="num">{count(v)}</span>
     : <><span className="num" title={exact(v, d)}>{units(v, d)}</span>{t.symbol ? ` ${t.symbol}` : ""}</>;
   return (
-    <section className="card" aria-label="Canton twin">
-      <CardHead as="h2" title="Canton twin" sub="the twin's supply against what the vaults hold" />
+    <section className="card" aria-label={name}>
+      <CardHead as="h2" title={name} sub="the twin's supply against what the vaults hold" action={action} />
       <Kv>
         <Item label="Twin supply">{amount(tw.supply)}</Item>
         <Item label="Held in vaults">{tw.vaultBalance === null ? <span className="muted">not read at this block</span> : amount(tw.vaultBalance)}</Item>
