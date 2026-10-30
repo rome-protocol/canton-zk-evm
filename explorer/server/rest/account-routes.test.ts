@@ -430,6 +430,39 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(body(await get(`/api/tokens/${T1}`)).twin).toBeNull();
   });
 
+  it("serves the twins page from the kept registry, sums and custody read, with every object held to its allowlist; empty with no registry", async () => {
+    const empty = body(await get("/api/twins"));
+    same(empty, F.twins);
+    expect(empty).toEqual({ through: null, vaults: [], twins: [], canton: [], legs: [] });
+    await sql("insert into canton_registry (address, kind, code_hash, admin, ledger_offset) values ($1, 'vault', $2, 'gw::1220ab', 5)", [who(0xc1), Buffer.alloc(32, 1)]);
+    await sql("insert into canton_twins (token, decimals, ledger_offset) values ($1, 6, 5)", [who(0xb1)]);
+    await sql("insert into twin_totals (token, locked, released, locks, releases, vault_balance) values ($1, 900, 400, 3, 1, 500)", [who(0xb1)]);
+    await sql("insert into meta (key, value) values ('twin_totals_block', '3') on conflict (key) do update set value = excluded.value");
+    await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 1230000000000, 3, 123000000, 7, 77, '2026-10-25T10:00:00Z')", [who(0xb2)]);
+    try {
+      const t = body(await get("/api/twins"));
+      same(t, F.twins);
+      expect(t.through).toBe(3);
+      expect(t.vaults).toEqual([{ address: h(0xc1), codeHash: "0x" + "01".repeat(32) }]);
+      same(t.vaults[0], F.twinVault);
+      expect(t.twins).toHaveLength(1);
+      same(t.twins[0], F.twinLine);
+      expect(t.twins[0]).toMatchObject({ token: T1, decimals: 6, supply: "500", vaultBalance: "500", matched: true, locks: 3, releases: 1, through: 3 });
+      expect(t.canton).toHaveLength(1);
+      same(t.canton[0], F.twinCanton);
+      expect(t.canton[0]).toMatchObject({ token: T2, instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, supply: "123000000", supplyBlock: 7, ledgerOffset: 77 });
+      expect(t.legs.length).toBeLessThanOrEqual(20);
+      for (const l of t.legs) { same(l, F.twinLeg); expect(["lock", "release"]).toContain(l.twin); }
+      expect((await get("/api/twins")).headers?.["cache-control"]).toBe(CACHE_CONTROL.composite);
+    } finally {
+      await sql("delete from gateway_tokens where evm_token = $1", [who(0xb2)]);
+      await sql("delete from twin_totals where token = $1", [who(0xb1)]);
+      await sql("delete from canton_twins where token = $1", [who(0xb1)]);
+      await sql("delete from canton_registry where address = $1", [who(0xc1)]);
+      await sql("delete from meta where key = 'twin_totals_block'");
+    }
+  });
+
   it("caches a list for a second and what can still change for a few seconds with a tag, and a miss for nothing", async () => {
     const lists = ["/api/addresses", "/api/addresses?sort=txs", `/api/addresses/${A}/txs`, `/api/addresses/${A}/internal`, `/api/addresses/${A}/token-transfers`, `/api/addresses/${A}/coin-history`, "/api/contracts", "/api/tokens",
       `/api/tokens/${T1}/holders`, `/api/tokens/${T1}/transfers`, "/api/legs", `/api/search?q=${A}`];

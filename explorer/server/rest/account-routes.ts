@@ -309,6 +309,14 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return l ? cached(ok(pick(l, F.legItem)), "composite") : fail(404, NO_LEG);
   }
 
+  // The twins page is made of what the indexer keeps (the chain record, the per-token sums, the custody read, the legs): no chain or ledger is read for a request.
+  async function twinsPage(): Promise<Answer> {
+    const t = await accounts.twins();
+    return cached(ok(pick({
+      ...t, vaults: t.vaults.map((v) => pick(v, F.twinVault)), twins: t.twins.map((x) => pick(x, F.twinLine)), canton: t.canton.map((c) => pick(c, F.twinCanton)), legs: t.legs.map((l) => pick(l, F.twinLeg)),
+    }, F.twins)), "composite");
+  }
+
   // The swaps are stage 1 facts too: a trade, its payment and its claim are read without stage 2.
   async function swapList(q: URLSearchParams): Promise<Answer> {
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
@@ -364,6 +372,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/labels", (_, q) => labelList(q)],
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
+    ["/api/twins", () => twinsPage()],
     ["/api/swaps", (_, q) => swapList(q)],
     ["/api/swaps/{payId}", (id) => oneSwap(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],
