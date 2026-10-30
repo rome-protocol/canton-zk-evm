@@ -24,6 +24,7 @@ describe("the twin numbers", () => {
     expect(custodyMatched("5", "5000000000000000000", 18)).toBe(false);
     expect(custodyMatched("12300000000000", "123000000000000000000", 18)).toBe(false);
     expect(custodyMatched("10000000000", "1000000000000000000", 18)).toBe(true);
+    expect(custodyMatched("1230000000001", "123000000", 6)).toBe(false);
     expect(custodyMatched("10000000000", null, 6)).toBeNull();
     expect(custodyMatched("10000000000", "1000000", null)).toBeNull();
   });

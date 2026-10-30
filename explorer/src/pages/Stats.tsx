@@ -7,6 +7,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Info } from "../components/Info.tsx";
 import { compactCount, count, nb, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
+import { CantonAssets } from "./StatsTwins.tsx";
 
 const DEFAULT_WINDOW: StatsWindow = "7d";
 const BUTTONS: [StatsWindow, string][] = [["1h", "Last hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]];
@@ -195,6 +196,7 @@ export function Stats() {
             <PerBlock s={s} />
             <BusyCard s={s} />
           </div>
+          <CantonAssets />
           <FaucetCard s={s} faucetOn={!!st?.faucet.on} coin={st?.coin} />
         </>
       )}

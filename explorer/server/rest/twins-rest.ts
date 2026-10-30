@@ -45,14 +45,15 @@ export const twinSupplyOf = (locked: string, released: string): string => (BigIn
 export const twinMatched = (supply: string, vaultBalance: string | null): boolean => vaultBalance !== null && BigInt(vaultBalance) === BigInt(supply);
 
 /**
- * A Canton token's custody is held in Canton's 10 decimals and its wrapped supply in the token's own: they match when the custody, cut to the token's decimals, is the supply.
+ * A Canton token's custody is held in Canton's 10 decimals and its wrapped supply in the token's own: they match when the two are equal at the finer of the two scales (a custody finer than the token's decimals does not match).
  * Null when the supply or the decimals are not known.
  */
 export function custodyMatched(custody: string, supply: string | null, decimals: number | null): boolean | null {
   if (supply === null || decimals === null) return null;
   const c = BigInt(custody);
-  const scaled = decimals >= CUSTODY_DECIMALS ? c * 10n ** BigInt(decimals - CUSTODY_DECIMALS) : c / 10n ** BigInt(CUSTODY_DECIMALS - decimals);
-  return scaled === BigInt(supply);
+  if (decimals >= CUSTODY_DECIMALS) return c * 10n ** BigInt(decimals - CUSTODY_DECIMALS) === BigInt(supply);
+  const step = 10n ** BigInt(CUSTODY_DECIMALS - decimals);
+  return c % step === 0n && c / step === BigInt(supply); // a custody finer than the token's decimals is not cut to match
 }
 
 export function createTwinsRest(query: Query) {
