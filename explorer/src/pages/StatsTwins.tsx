@@ -4,7 +4,7 @@ import { Icon } from "../components/Icon.tsx";
 import { plural, short, units } from "../format.ts";
 import { cantonMark, Mark, twinMark, Tok, useTwins } from "./TwinParts.tsx";
 
-const WHAT = "A twin is a Canton token issued for an ERC-20 locked in Ostia's vaults. Its supply is locks less releases and should equal the vaults' ERC-20 balance at the same block. A Canton token is wrapped on Ostia: its wrapped supply should equal what the gateway holds on Canton. Each pair is read at the same block. Supply is a twin's supply or a Canton token's wrapped supply. Held is what the vaults hold for a twin, or what the gateway holds on Canton for a Canton token. Activity counts a twin's locks and releases, or a Canton token's holdings.";
+const WHAT = "A twin is a Canton token issued for an ERC-20 locked in Ostia's vaults. Its supply is locks less releases and should equal the vaults' ERC-20 balance at the same block. A Canton token is wrapped on Ostia: its wrapped supply should equal what the gateway holds on Canton. Each pair is read at the same block. Supply is a twin's supply or a Canton token's wrapped supply. Held is what the vaults hold for a twin, or what the gateway holds on Canton for a Canton token. Count is a twin's locks and releases, or how many holdings the gateway keeps on Canton for a Canton token.";
 
 /** The Stats page's "Canton assets" card: one row per pinned twin and per Canton token, each linking its token page, and a link to the twins page. Nothing until the twins answer is read. */
 export function CantonAssets() {
@@ -17,7 +17,7 @@ export function CantonAssets() {
       {none ? <p className="muted small chart-msg">No twins are pinned and no Canton tokens are on Ostia yet.</p> : (
         <>
           <div className="scroll"><table className="tbl" aria-label="Canton assets">
-            <thead><tr><th>Token</th><th className="r">Supply</th><th className="r">Held</th><th>Check</th><th>Activity</th></tr></thead>
+            <thead><tr><th>Token</th><th className="r">Supply</th><th className="r">Held</th><th>Check</th><th>Count</th></tr></thead>
             <tbody>
               {d.twins.map((t) => (
                 <tr key={`twin-${t.token}`}>

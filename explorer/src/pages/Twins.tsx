@@ -13,13 +13,13 @@ import { cantonMark, Mark, Tok, useTwins } from "./TwinParts.tsx";
 import { TwinSupply } from "./TwinSupply.tsx";
 import "./twins.css";
 
-const ABOUT = "Each lock adds to the twin's supply; each release subtracts from it. This page compares that supply with the ERC-20 held in the vaults at the same block. For Canton tokens wrapped on Ostia, it compares wrapped supply with the gateway's Canton holdings. Only instrument IDs and totals are shown, not individual Canton holdings, owners or contracts.";
+const ABOUT = "A twin is a Canton token issued for an ERC-20 locked in Ostia's vaults. Each lock adds to the twin's supply; each release subtracts from it. This page compares that supply with the ERC-20 held in the vaults at the same block. For Canton tokens wrapped on Ostia, it compares wrapped supply with the gateway's Canton holdings. Only instrument IDs and totals are shown, not individual Canton holdings, owners or contracts.";
 
-/** The registered vaults and twins: the vaults (with their code hash) and the twins it pins (with their decimals). */
+/** The registered vaults and twins: the vaults (with their code hash) and the twins the chain record on Canton pins (with their decimals). */
 function Registry({ d }: { d: TwinsOverview }) {
   return (
     <section className="card" aria-label="Registered vaults and twins">
-      <CardHead as="h2" title="Registered vaults and twins" sub="the vault addresses and twin tokens recorded on Ostia" info="The vaults that hold the locked tokens are listed with their code hash, and each twin token with its decimals." />
+      <CardHead as="h2" title="Registered vaults and twins" sub="the vault addresses and twin tokens named in Ostia's chain record on Canton" info="The vaults that hold the locked tokens are listed with their code hash, and each twin token with its decimals." />
       <Kv>
         <Item label="Vaults">
           {d.vaults.length === 0 ? <span className="muted">No vaults are registered yet.</span>
