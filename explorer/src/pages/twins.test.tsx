@@ -42,9 +42,9 @@ describe("the Canton assets card on Stats", () => {
     const card = await screen.findByRole("region", { name: "Canton assets" });
     const table = within(card).getByRole("table", { name: "Canton assets" });
     const twin = rowOf(table, "TKA");
-    expect(twin).toHaveTextContent("500"); expect(twin).toHaveTextContent("in vaults"); expect(twin).toHaveTextContent("matched"); expect(twin).toHaveTextContent("3 locks · 1 release");
+    expect(card).toHaveTextContent("2 tokens · twins on Canton and tokens wrapped on Ostia"); expect(twin).toHaveTextContent("500"); expect(twin).toHaveTextContent("twin supply"); expect(twin).toHaveTextContent("in vaults"); expect(twin).toHaveTextContent("matched"); expect(twin).toHaveTextContent("3 locks · 1 release");
     const wrapped = rowOf(table, "wTKB");
-    expect(wrapped).toHaveTextContent("123"); expect(wrapped).toHaveTextContent("123 TKB on Canton"); expect(wrapped).toHaveTextContent("matched"); expect(wrapped).toHaveTextContent("3 holdings");
+    expect(wrapped).toHaveTextContent("123"); expect(wrapped).toHaveTextContent("wrapped supply"); expect(wrapped).toHaveTextContent("123 TKB on Canton"); expect(wrapped).toHaveTextContent("matched"); expect(wrapped).toHaveTextContent("3 holdings");
   });
 
   it("links each row to its token page and the card to the twins page", async () => {
@@ -91,19 +91,19 @@ describe("the Canton assets card on Stats", () => {
 describe("the twins page", () => {
   it("lists the registry: each vault with its code hash and each pinned twin with its decimals", async () => {
     await twins();
-    const reg = await screen.findByRole("region", { name: "Registry" });
+    const reg = await screen.findByRole("region", { name: "Registered vaults and twins" });
     expect(within(reg).getByRole("link", { name: /^0xc1c1/ })).toHaveAttribute("href", `/address/${addr(0xc1)}`);
     expect(reg).toHaveTextContent("code hash"); expect(reg.querySelector(`[title="${hash(0x0c)}"]`)).not.toBeNull();
     expect(within(reg).getByRole("link", { name: "TKA" })).toHaveAttribute("href", `/token/${addr(0xb1)}`);
     expect(reg).toHaveTextContent("6 decimals");
-    expect(screen.getByRole("heading", { name: "Twins" }).parentElement).toHaveTextContent("counted to block 21");
+    expect(screen.getByRole("heading", { name: "Twins" }).parentElement).toHaveTextContent("through block 21");
   });
 
   it("has a card for each twin: the supply against the vaults, the check and the legs", async () => {
     await twins({ twins: [twinLine(), twinLine({ token: addr(0xb2), symbol: "TKC", supply: "7000000", vaultBalance: "9000000", matched: false, locks: 2, releases: 0 })] });
     const a = await screen.findByRole("region", { name: "TKA twin" });
     expect(a).toHaveTextContent("Equal: the vaults hold exactly what the twin has in issue."); expect(a).toHaveTextContent("3 locks · 1 release"); expect(a).toHaveTextContent("counted to block 21");
-    expect(within(a).getByRole("link", { name: /Token/ })).toHaveAttribute("href", `/token/${addr(0xb1)}`);
+    expect(within(a).getByRole("link", { name: /View token/ })).toHaveAttribute("href", `/token/${addr(0xb1)}`);
     const c = screen.getByRole("region", { name: "TKC twin" });
     expect(c).toHaveTextContent("The vaults hold 2 TKC more than the twin has in issue.");
   });
@@ -156,7 +156,7 @@ describe("the twins page", () => {
 
   it("names no registry service when none is set", async () => {
     await twins();
-    await screen.findByRole("region", { name: "Registry" });
+    await screen.findByRole("region", { name: "Registered vaults and twins" });
     expect(screen.queryByText(/Registry service/)).not.toBeInTheDocument();
   });
 

@@ -13,13 +13,13 @@ import { cantonMark, Mark, Tok, useTwins } from "./TwinParts.tsx";
 import { TwinSupply } from "./TwinSupply.tsx";
 import "./twins.css";
 
-const ABOUT = "A twin is an ERC-20 locked in the chain's vaults and issued on Canton. Its supply is the locks less the releases, set against what the vaults hold at the same block. A Canton token is wrapped on Ostia and backed by what the gateway holds on Canton. Only the instrument and totals are public: no holding, owner or contract of the Daml side.";
+const ABOUT = "Each lock adds to the twin's supply; each release subtracts from it. This page compares that supply with the ERC-20 held in the vaults at the same block. For Canton tokens wrapped on Ostia, it compares wrapped supply with the gateway's Canton holdings. Only instrument IDs and totals are shown, not individual Canton holdings, owners or contracts.";
 
-/** The chain record: its vaults (with their code hash) and the twins it pins (with their decimals). */
+/** The registered vaults and twins: the vaults (with their code hash) and the twins it pins (with their decimals). */
 function Registry({ d }: { d: TwinsOverview }) {
   return (
-    <section className="card" aria-label="Registry">
-      <CardHead as="h2" title="Registry" sub="the vaults and twins the chain record names" info="The chain record lists the vaults that hold the locked tokens, each named by its code hash, and pins each twin token with its decimals." />
+    <section className="card" aria-label="Registered vaults and twins">
+      <CardHead as="h2" title="Registered vaults and twins" sub="the vault addresses and twin tokens recorded on Ostia" info="The vaults that hold the locked tokens are listed with their code hash, and each twin token with its decimals." />
       <Kv>
         <Item label="Vaults">
           {d.vaults.length === 0 ? <span className="muted">No vaults are registered yet.</span>
@@ -39,7 +39,7 @@ function Custody({ rows }: { rows: TwinCanton[] }) {
   const now = useNow();
   return (
     <section className="card" aria-label="Canton tokens">
-      <CardHead as="h2" title="Canton tokens" sub="what the gateway holds on Canton against the wrapped supply" info="Both numbers are read at the same block, the custody at the ledger offset of that block's record, so a difference is a difference at that block." />
+      <CardHead as="h2" title="Canton tokens" sub="what the gateway holds on Canton against the wrapped supply" info="Both totals come from the same block. The Canton holding is read when Canton records that block, so a difference shown here is a difference at that block." />
       {rows.length === 0 ? <p className="muted small chart-msg">No Canton tokens are on Ostia yet.</p> : (
         <div className="scroll"><table className="tbl" aria-label="Canton token custody">
           <thead><tr><th>Token</th><th className="r">Held on Canton</th><th className="r">Wrapped supply</th><th>Check</th><th>Read</th></tr></thead>
@@ -65,7 +65,7 @@ function Custody({ rows }: { rows: TwinCanton[] }) {
 function Legs({ legs, d }: { legs: TwinLeg[]; d: TwinsOverview }) {
   return (
     <section className="card" aria-label="Locks and releases">
-      <CardHead as="h2" title="Locks and releases" sub="the newest legs" info="A payment of a pinned token into a registered vault is a lock; one a vault paid out is a release. The update is the Canton record of the leg's block." />
+      <CardHead as="h2" title="Locks and releases" sub="newest first" info="A lock pays a registered token into a vault; a release pays it out. The Canton update records the block containing that lock or release." />
       {legs.length === 0 ? <p className="muted small chart-msg">No locks or releases yet.</p> : (
         <div className="scroll"><table className="tbl" aria-label="Lock and release legs">
           <thead><tr><th>Leg</th><th>Kind</th><th>Transaction</th><th>Block</th><th className="r">Amount</th><th>Canton update</th></tr></thead>
@@ -92,7 +92,7 @@ export function Twins() {
   return (
     <>
       <div className="list-h">
-        <div><h1>Twins</h1> <span className="muted stats-sub">{d?.through != null ? `counted to block ${count(d.through)}` : ""}</span><Info about="the twins">{ABOUT}</Info></div>
+        <div><h1>Twins</h1> <span className="muted stats-sub">{d?.through != null ? `through block ${count(d.through)}` : ""}</span><Info about="the twins">{ABOUT}</Info></div>
       </div>
       {d?.registryService && <p className="small muted twins-service">Registry service: <a href={`${d.registryService}/healthz`} target="_blank" rel="noreferrer">{`${d.registryService}/healthz`}</a></p>}
       {q.isError && !d ? <ErrorCard message={(q.error as Error).message} retrying /> : !d ? <LoadingCard>Reading the twins…</LoadingCard> : (
@@ -100,7 +100,7 @@ export function Twins() {
           <Registry d={d} />
           {d.twins.length > 0 && (
             <div className="cols">{d.twins.map((t) => (
-              <TwinSupply key={t.token} t={t} twin={t} name={`${t.symbol ?? short(t.token, 8, 4)} twin`} action={<Link className="csv" to={`/token/${t.token}`}>Token <Icon name="next" /></Link>} />
+              <TwinSupply key={t.token} t={t} twin={t} name={`${t.symbol ?? short(t.token, 8, 4)} twin`} action={<Link className="csv" to={`/token/${t.token}`}>View token <Icon name="next" /></Link>} />
             ))}</div>
           )}
           <Custody rows={d.canton} />
