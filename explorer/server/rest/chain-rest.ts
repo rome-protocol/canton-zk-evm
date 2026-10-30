@@ -8,6 +8,8 @@ import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+/** A Canton amount's own scale (Daml Numeric 10): the unit of a Canton token's custody, on the token page and on the twins page. */
+export const CUSTODY_DECIMALS = 10;
 export const hex = (b: Buffer): string => "0x" + b.toString("hex");
 export const hexOrNull = (b: Buffer | null): string | null => (b === null ? null : hex(b));
 export const bytes = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");

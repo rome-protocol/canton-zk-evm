@@ -4,6 +4,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createAccountRest } from "./account-rest.ts";
 import { ensurePartitions } from "../db/partitions.ts";
 import { createChainRest } from "./chain-rest.ts";
+import { createTwinsRest } from "./twins-rest.ts";
 
 /**
  * A keyset page must cost its own rows, not the table: the comparison on the key is an index condition. The queries are the real ones, recorded as the
@@ -284,5 +285,13 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
       expect(p, filter).toMatch(/Index Cond: \(ROW\(block_number, tx_index\) >/);
       expect(p, filter).not.toMatch(/Sort Key|Seq Scan|^\s*Filter: \(?(status|method_id)/m);
     }
+  });
+
+  it("the newest lock and release legs walk the legs backwards on the primary key, with no sort, and stop at the limit", async () => {
+    await createTwinsRest(async (sql, values) => (await recording().query(sql, values as unknown[])).rows).legs(20);
+    const p = await plan(/from \(select \* from gateway_legs where kind = 3/);
+    expect(p).toMatch(/Index Scan Backward using gateway_legs_pkey on gateway_legs/);
+    expect(p).not.toMatch(/Sort Key|Seq Scan on gateway_legs/);
+    expect(p).toMatch(/^Limit/);
   });
 });

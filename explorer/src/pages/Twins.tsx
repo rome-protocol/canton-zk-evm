@@ -13,7 +13,7 @@ import { cantonMark, Mark, Tok, useTwins } from "./TwinParts.tsx";
 import { TwinSupply } from "./TwinSupply.tsx";
 import "./twins.css";
 
-const ABOUT = "A twin is an ERC-20 locked in the chain's vaults and issued on Canton. Its supply is the locks less the releases, set against what the vaults hold at the same block. A Canton token is wrapped on Ostia and backed by what the gateway holds on Canton. Only totals are public: no Canton party, holding or contract.";
+const ABOUT = "A twin is an ERC-20 locked in the chain's vaults and issued on Canton. Its supply is the locks less the releases, set against what the vaults hold at the same block. A Canton token is wrapped on Ostia and backed by what the gateway holds on Canton. Only the instrument and totals are public: no holding, owner or contract of the Daml side.";
 
 /** The chain record: its vaults (with their code hash) and the twins it pins (with their decimals). */
 function Registry({ d }: { d: TwinsOverview }) {
@@ -69,8 +69,8 @@ function Legs({ legs, d }: { legs: TwinLeg[]; d: TwinsOverview }) {
       {legs.length === 0 ? <p className="muted small chart-msg">No locks or releases yet.</p> : (
         <div className="scroll"><table className="tbl" aria-label="Lock and release legs">
           <thead><tr><th>Leg</th><th>Kind</th><th>Transaction</th><th>Block</th><th className="r">Amount</th><th>Canton update</th></tr></thead>
-          <tbody>{legs.map((l) => (
-            <tr key={l.legId}>
+          <tbody>{legs.map((l, i) => (
+            <tr key={`${l.block}-${l.legId}-${i}`}>
               <td><HashLink value={l.legId} to={`/leg/${l.legId}`} /></td>
               <td><span className="tag">{l.twin === "lock" ? "Lock" : "Release"}</span></td>
               <td>{l.txHash ? <HashLink value={l.txHash} to={`/tx/${l.txHash}`} /> : <span className="muted" title="The explorer has not stored this transaction">—</span>}</td>
