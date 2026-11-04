@@ -340,6 +340,8 @@ async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<Rollup
   const today = Math.floor(now / DAY) * DAY;
   let did = false;
   for (const d of [...days].sort((x, y) => x - y)) {
+    // A stopped run pays only the days it has rebuilt to their end: the day it stopped in has no row yet, or half of one, and the next run goes through it again.
+    if (stoppedAt !== null && d + DAY > stoppedAt) continue;
     if (d >= today && now - extrasAt < (o.extrasEveryMs ?? 5 * MINUTE)) continue;
     if (d < today && d <= closedDay && (repairedFrom === null || d + DAY <= repairedFrom)) continue;
     await dayExtras(pool, d);
