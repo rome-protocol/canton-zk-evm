@@ -6,14 +6,14 @@ import { Shell } from "./components/Shell.tsx";
 import { Home } from "./pages/Home.tsx";
 
 const loads: (() => Promise<unknown>)[] = [];
-/** A page that is fetched when its route is first visited, so a page's script is not carried by the pages that do not use it. One loaded ahead of its first draw (see `loadPages`) is drawn at once, with no gap. */
+/** A page that is fetched when its route is first visited, so a page's script is not carried by the pages that do not use it. One loaded ahead of its first draw (see `loadPages`) is drawn at once, with no gap. A fetch that failed is forgotten, and the next visit asks again. */
 function page(load: () => Promise<Record<string, unknown>>, name: string): ComponentType {
   let drawn: ComponentType | undefined, loading: Promise<ComponentType> | undefined;
-  const get = () => (loading ??= load().then((m) => (drawn = m[name] as ComponentType)));
-  const Fetched = lazy(() => get().then((component) => ({ default: component })));
+  const get = () => (loading ??= load().then((m) => (drawn = m[name] as ComponentType), (e: unknown) => { loading = undefined; throw e; }));
   loads.push(get);
   return function Page() {
     const [Ready] = useState(() => drawn);
+    const [Fetched] = useState(() => lazy(() => get().then((component) => ({ default: component }))));
     return Ready ? <Ready /> : <Fetched />;
   };
 }

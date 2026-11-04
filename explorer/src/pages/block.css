@@ -1,6 +1,4 @@
 /* The block page, to the approved screen. Colours come from the tokens in styles.css. */
-.crumbs { font-size: 13px; color: var(--muted); margin: 6px 0 2px; }
-.crumbs a { color: var(--muted); }
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .tile { background: var(--surface); border: 1px solid var(--line-2); border-radius: 20px; box-shadow: var(--shadow); padding: 14px 18px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile-k { font-size: 13px; color: var(--muted); }

@@ -304,17 +304,21 @@ async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<Rollup
   // Minute rows older than the retention are gone, so an hour in that range can only be rebuilt from its minutes if all of them are computed again: start at its first minute.
   if (start < Math.floor(now / DAY) * DAY - KEPT_MINUTE_DAYS * DAY) start = Math.floor(start / HOUR) * HOUR;
   let extrasAt: number = cur?.detail?.extrasAt ?? 0;
+  // A repair that an earlier run was stopped before it could finish is still owed: it is kept in the cursor until a run reaches the end.
+  const owed = !fresh && Number.isFinite(cur?.detail?.repairedFrom) ? Number(cur.detail.repairedFrom) : null;
+  if (owed !== null) repairedFrom = repairedFrom === null ? owed : Math.min(repairedFrom, owed);
   // The last past day whose extras were computed after the day ended: the lookback after midnight rebuilds yesterday's row on every run, and its extras (a count over the whole day) are not asked for again then, unless a late fact repaired that day or the whole history is rebuilt.
   let closedDay: number = fresh ? -Infinity : Number.isFinite(cur?.detail?.closedDay) ? cur.detail.closedDay : -Infinity;
-  const setCursor = (db: Pool | PoolClient, position: number, ex: number) =>
+  const setCursor = (db: Pool | PoolClient, position: number, ex: number, owes: number | null = repairedFrom) =>
     db.query(
       `insert into cursors (stream, position, detail, updated_at) values ($1, $2, $3, $4)
        on conflict (stream) do update set position = excluded.position, detail = excluded.detail, updated_at = excluded.updated_at`,
-      [CURSOR, position, JSON.stringify({ extrasAt: ex, closedDay: Number.isFinite(closedDay) ? closedDay : null }), new Date(now)]);
+      [CURSOR, position, JSON.stringify({ extrasAt: ex, closedDay: Number.isFinite(closedDay) ? closedDay : null, repairedFrom: owes }), new Date(now)]);
   // The cursor is "recompute from here": it moves back with the first chunk and forward with each, so a run that stops half way is finished by the next.
   const days = new Set<number>();
+  let stoppedAt: number | null = null;
   for (let a = start; a < end; a += chunk) {
-    if (o.stopped?.()) return { from: start, to: a, minutes: Math.round((a - start) / MINUTE) };
+    if (o.stopped?.()) { stoppedAt = a; break; }
     const b = Math.min(a + chunk, end);
     const db = await pool.connect();
     try {
@@ -343,7 +347,12 @@ async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<Rollup
     else closedDay = Math.max(closedDay, d);
   }
   if (did) extrasAt = now;
-  await setCursor(pool, openStart, extrasAt);
+  // A stopped run has paid the extras of the days it rebuilt and says where the next one goes on; the repair it was not able to reach stays owed.
+  if (stoppedAt !== null) {
+    await setCursor(pool, Math.min(stoppedAt, openStart), extrasAt);
+    return { from: start, to: stoppedAt, minutes: Math.round((stoppedAt - start) / MINUTE) };
+  }
+  await setCursor(pool, openStart, extrasAt, null);
   // Minute rows are kept 30 days, cut at a day's start so that no hour is left half built.
   await pool.query("delete from stats_minute where bucket < $1", [new Date(today - KEPT_MINUTE_DAYS * DAY)]);
   return { from: start, to: end, minutes: Math.round((end - start) / MINUTE) };

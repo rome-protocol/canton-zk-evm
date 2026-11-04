@@ -166,6 +166,41 @@ describe.skipIf(!TEST_URL)("the stats rollups", { timeout: DATABASE_TEST_TIMEOUT
     expect(+(await pool.query("select count(*) from stats_hour")).rows[0].count).toBe(3);
   }));
 
+  it("a run stopped after the first day and then resumed leaves the very rows of a rebuild, the extras of both days included", () => inDb(async (pool) => {
+    await block(pool, 1, 60, { txs: 1 });
+    await tx(pool, 1, 0, 0xa1, 1);
+    await ins(pool, "addresses", { address: hex(0xa1), first_seen_block: 1, last_active_block: 1 });
+    await block(pool, 2, 24 * 3600 + 60, { txs: 1 });
+    await tx(pool, 2, 0, 0xb2, 1);
+    await ins(pool, "addresses", { address: hex(0xb2), first_seen_block: 2, last_active_block: 2 });
+    const now = () => T0 + 25 * HOUR;
+    let asked = 0;
+    await rollupStats(pool, { now, stopped: () => ++asked > 13 }); // 13 hours: the whole first day, and the first hour of the second
+    await rollupStats(pool, { now });
+    const resumed = await dump(pool);
+    expect((await pool.query("select new_addresses, active_addresses from stats_day order by bucket")).rows).toEqual([{ new_addresses: 1, active_addresses: 1 }, { new_addresses: 1, active_addresses: 1 }]);
+    await rebuildStats(pool, { now });
+    expect(await dump(pool)).toBe(resumed);
+  }));
+
+  it("a run stopped before its first chunk still owes the repair of a late fact on a closed day, and the next run pays it", () => inDb(async (pool) => {
+    const midnight = T0 + 12 * HOUR;
+    await block(pool, 1, 100);
+    await block(pool, 2, 43_000);
+    await ins(pool, "addresses", { address: hex(0xa1), first_seen_block: 1, last_active_block: 1 });
+    await rollupStats(pool, { now: () => midnight - 30_000 });
+    await ins(pool, "addresses", { address: hex(0xa2), first_seen_block: 2, last_active_block: 2 });
+    await rollupStats(pool, { now: () => midnight + 10_000 }); // closes the day
+    await ins(pool, "addresses", { address: hex(0xa3), first_seen_block: 2, last_active_block: 2 });
+    await block(pool, 3, 200); // a late block of that day
+    await rollupStats(pool, { now: () => midnight + 60_000, stopped: () => true });
+    await rollupStats(pool, { now: () => midnight + 70_000 });
+    expect((await pool.query("select new_addresses from stats_day where bucket = $1", [new Date(Math.floor(T0 / DAY) * DAY)])).rows[0].new_addresses).toBe(3);
+    const resumed = await dump(pool);
+    await rebuildStats(pool, { now: () => midnight + 70_000 });
+    expect(await dump(pool)).toBe(resumed);
+  }));
+
   it("a block at 59.999 s and one at 00.000 s fall in different minutes, and the same at the hour and the day edge", () => inDb(async (pool) => {
     const edges = [59.999, 60, 3599.999, 3600, 43199.999, 43200]; // 12:00:59.999, 12:01:00, 12:59:59.999, 13:00:00, 23:59:59.999, 00:00:00 next day
     for (const [i, s] of edges.entries()) await block(pool, i + 1, s);
