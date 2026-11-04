@@ -626,8 +626,9 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop(), custodyLoop()]);
-    return async () => { stopRequested = true; running = false; await finished; };
+    const names = ["stage1", ...(inline ? [] : ["stage2"]), "checks", "balances", "journal", "audits", "stats", "custody"];
+    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop(), custodyLoop()].map((p, i) => p.then(() => console.log(`TIMING loop ${names[i]} ended ${Date.now() % 100000}`))));
+    return async () => { console.log(`TIMING stop asked ${Date.now() % 100000}`); stopRequested = true; running = false; await finished; };
   }
 
   /**
