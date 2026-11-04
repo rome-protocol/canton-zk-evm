@@ -35,6 +35,8 @@ Before paying, the buyer reads the gateway's public `used(claimId)` once the ven
 
 The swap ran end to end on Ostia's DevNet on 2026-10-27 at 15:55 UTC, with package `otc-venue` 0.1.0: TKB, a CIP-0056 token on Canton, for TKA (`0xf4b69022b3e6501101600743f17fbe0659dd1af8`), an ERC-20 on the EVM. The buyer's payment in block 16816 committed in one Canton update, `1220ad687926fde1ca580721ea5ab457935b054b82be35435ff52056d3d5adb98a74`, in which the seller's allocation was executed. The buyer's claim was in block 16823 (update `1220f08d8e2cfeca915416a678735f0d236f1cef0a6ab695d79594ac459642f7ff14`). A payment below the trade's amount was left out of block 16834 and moved nothing. Rome ran this swap with its own parties, participant and builder. The commands in [demo/README.md](../../demo/README.md) ("The OTC swap") are for a local network or an operator's own run, and not a walkthrough that an outside user can follow on DevNet today.
 
+DevNet's live cycle (`demo/live.sh cycle`) runs one swap an hour: with `CZE_LIVE_SWAP_EVERY=6` at the 10-minute cycle, every sixth cycle offers 1 TKB for 1 WtROME, settles and claims it, closes the finished trade, and returns everything (the buyer withdraws the 1 wTKB it claimed, the TKB goes back to the seller, and the seller sends the WtROME back to the buyer), so the swap path and the claim-id guards run all the time and every balance is where it was before. The cycle's result line carries the swap's label and its payment, claim and withdrawal blocks. A swap that fails stops the lane with its trade left open, because its payment may still be in flight. See "the cycle" in [demo/README.md](../../demo/README.md).
+
 ## Build and test
 
 ```
