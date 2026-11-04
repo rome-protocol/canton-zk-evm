@@ -42,12 +42,12 @@ EXPLORER_RUST_IMAGE_ID=sha256:3611cb0cae75965ac77adad12783922a7ae75a480ab7bf45dd
 # playwright-core 1.64.1 (mcr.microsoft.com/playwright:v1.64.1-noble, pinned by digest, the multi-arch index).
 EXPLORER_BROWSER_IMAGE=mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
 EXPLORER_BROWSER_IMAGE_ID=sha256:9cfdc77dc3be5a94cd5da6bbfae76431a80fd05ed3e49f3f6c04407efb270d71
-# Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.6.3
-# (GitHub release digital-asset/canton v3.6.3, 2026-10-20, the version the Canton Network's DevNet runs) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
+# Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.7.1
+# (GitHub release digital-asset/canton v3.7.1, 2026-10-30, the version the Canton Network's DevNet runs from Splice 0.10) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
 # from Digital Asset's public registry. DPM_REGISTRY is where the SDK and the compiler are; dpm 1.0.22 is the released one.
 # network/canton/fetch.sh checks every SHA-256 below. The Canton jar comes from the release tarball (one file for every
 # platform) and is checked by the tarball's SHA-256 and by its own. The SDK manifest lists the exact version of each
-# component; its own Canton (3.6.1) is not the one that runs: the network runs the 3.6.3 jar. The registry also has a Daml SDK 3.6.2
+# component; its own Canton (3.6.1) is not the one that runs: the network runs the 3.7.1 jar. The registry also has a Daml SDK 3.6.2
 # (2026-10-20) whose compiler is the same damlc 3.6.2, pinned by content below; moving the SDK pin would change nothing the network uses, so the SDK and compiler pins stay.
 DPM_REGISTRY=europe-docker.pkg.dev/da-images/public
 DPM_VERSION=1.0.22
@@ -59,10 +59,10 @@ DAMLC_VERSION=3.6.2
 # SHA-256 of the registry's manifest for that damlc (Linux x86-64): it lists every file of the compiler by digest, so a
 # tag that was pushed again with other contents is refused (network/canton/check-damlc.sh).
 DAMLC_LINUX_AMD64_MANIFEST_SHA256=87bfc536992de2a79a229cbf432e0de688964f4dfe3170e406b5cd6f39edcedb
-CANTON_VERSION=3.6.3
-CANTON_TARBALL_URL=https://github.com/digital-asset/canton/releases/download/v3.6.3/canton-open-source-3.6.3.tar.gz
-CANTON_TARBALL_SHA256=d18701d8100caef6d86d55f5caf868e8788b44fa8220601da9f6a75d4d6f184d
-CANTON_JAR_SHA256=a8cfabd7ad06595ac66093a40c3e6094c81cd511395fac871ff40aa93234a5a2
+CANTON_VERSION=3.7.1
+CANTON_TARBALL_URL=https://github.com/digital-asset/canton/releases/download/v3.7.1/canton-open-source-3.7.1.tar.gz
+CANTON_TARBALL_SHA256=18ea244ed77a83c7a93a4edb0d1db04ef04123871300be09f9a208cf79260a32
+CANTON_JAR_SHA256=f1ea0439f5fb26f39ec8719e120228e49be2f1395ab8e48fa17cd8bdf3e4024a
 # LF 2.4 is the first Daml-LF version with the external call; the Daml 3.6 compiler writes it with --target=2.4.
 DAML_TARGET=2.4
 JAVA_MAJOR=21
