@@ -44,7 +44,7 @@ advance() { python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" "$@"; }
 
 # First start: a new network in the databases.
 CZE_CANTON_WAIT=300 "$ROOT/network/canton/run.sh" bootstrap
-grep -q "SYNCHRONIZER PROTOCOL VERSION $CANTON_PROTOCOL_VERSION" "$CZE_STATE_DIR/net/logs/canton.log" || fail "the synchronizer is not on protocol version $CANTON_PROTOCOL_VERSION"
+grep -qxF "SYNCHRONIZER PROTOCOL VERSION $CANTON_PROTOCOL_VERSION" "$CZE_STATE_DIR/net/logs/canton.log" || fail "the synchronizer is not on protocol version $CANTON_PROTOCOL_VERSION"
 python3 "$ROOT/network/canton/propose.py" --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
   --rules-hash "$(printf '12%.0s' $(seq 32))" --gateway-address "$GW" >/dev/null
 [ "$(advance accepted)" = 1 ] || fail "a good block did not move the head to 1"
