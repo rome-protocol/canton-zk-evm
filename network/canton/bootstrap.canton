@@ -11,10 +11,11 @@ val darPath = sys.env.getOrElse("CZE_DAR", sys.error("set CZE_DAR to the built c
 nodes.local.start()
 bootstrap.synchronizer_local()
 
-// The Canton Network runs protocol version 36 with Canton 3.6. The synchronizer takes the jar's default; refuse to go on
-// if a later jar's default is another version, so the network is never quietly on a different protocol.
+// The synchronizer runs the protocol version PINS names (CANTON_PROTOCOL_VERSION); refuse to go on if it is another
+// version, so the network is never quietly on a different protocol.
+val expectedProtocolVersion = sys.env.getOrElse("CANTON_PROTOCOL_VERSION", sys.error("set CANTON_PROTOCOL_VERSION (PINS has it)")).toInt
 val protocolVersion = sequencer1.synchronizer_parameters.static.get().protocolVersion.toProtoPrimitive
-if (protocolVersion != 36) sys.error(s"the synchronizer runs protocol version $protocolVersion, not 36")
+if (protocolVersion != expectedProtocolVersion) sys.error(s"the synchronizer runs protocol version $protocolVersion, not $expectedProtocolVersion")
 println(s"SYNCHRONIZER PROTOCOL VERSION $protocolVersion")
 
 Seq(operator, confirmer, users).foreach { p =>

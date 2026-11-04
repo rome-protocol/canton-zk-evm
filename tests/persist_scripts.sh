@@ -25,7 +25,7 @@ export FAKE_DOCKER_LOG=$WORK/docker.log
 fresh() {   # a copy of the scripts and a state folder of a persistent chain made with a database called mypg and reth called myreth
   rm -rf "$WORK/repo" "$WORK/state"; mkdir -p "$WORK/repo" "$WORK/state"
   cp -R "$ROOT/network" "$ROOT/PINS" "$WORK/repo/"
-  printf 'CZE_PERSIST=1\nCANTON_VERSION=x\nCHAIN_ID=1\nCZE_PG_CONTAINER=mypg\nCZE_PG_PORT=5999\nCZE_EXPLORER_DB_CONTAINER=myexp\nCZE_EXPLORER_DB_PORT=5998\nRETH_CONTAINER=myreth\nRETH_HTTP_PORT=18545\nRETH_WS_PORT=18546\nRETH_ENGINE_PORT=18551\n' > "$WORK/state/persist.env"
+  printf 'CZE_PERSIST=1\nCANTON_VERSION=x\nCANTON_PROTOCOL_VERSION=x\nCHAIN_ID=1\nCZE_PG_CONTAINER=mypg\nCZE_PG_PORT=5999\nCZE_EXPLORER_DB_CONTAINER=myexp\nCZE_EXPLORER_DB_PORT=5998\nRETH_CONTAINER=myreth\nRETH_HTTP_PORT=18545\nRETH_WS_PORT=18546\nRETH_ENGINE_PORT=18551\n' > "$WORK/state/persist.env"
   : > "$FAKE_DOCKER_LOG"
 }
 record() {   # the builder's in-doubt command and kept transactions, and a file of the builder's that is not theirs
@@ -118,7 +118,7 @@ for k in CZE_PG_CONTAINER CZE_PG_PORT RETH_CONTAINER RETH_HTTP_PORT RETH_WS_PORT
 done
 # 6. The chain does not depend on the explorer's database: when it cannot start, restart.sh warns and goes on to reth (the next step).
 fresh
-sed -i.bak "s/^CHAIN_ID=.*/CHAIN_ID=$(sed -n 's/^CHAIN_ID=//p' "$ROOT/PINS")/; s/^CANTON_VERSION=.*/CANTON_VERSION=$(sed -n 's/^CANTON_VERSION=//p' "$ROOT/PINS")/" "$WORK/state/persist.env"
+sed -i.bak "s/^CHAIN_ID=.*/CHAIN_ID=$(sed -n 's/^CHAIN_ID=//p' "$ROOT/PINS")/; s/^CANTON_VERSION=.*/CANTON_VERSION=$(sed -n 's/^CANTON_VERSION=//p' "$ROOT/PINS")/; s/^CANTON_PROTOCOL_VERSION=.*/CANTON_PROTOCOL_VERSION=$(sed -n 's/^export CANTON_PROTOCOL_VERSION=//p' "$ROOT/PINS")/" "$WORK/state/persist.env"
 for f in postgres.env jwt.hex genesis.json; do echo x > "$WORK/state/$f"; done
 mkdir -p "$WORK/state/canton" "$WORK/state/net" "$WORK/state/reth-data" "$WORK/repo/prover"
 echo x > "$WORK/state/canton/parties.env"; echo x > "$WORK/state/net/chain.json"; echo x > "$WORK/state/net/guest.txt"; echo x > "$WORK/state/net/dar.txt"; echo x > "$WORK/state/reth-data/f"

@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 for k in CHAIN_ID GAS_CAP RETH_VERSION RETH_IMAGE BUSYBOX_IMAGE \
          ZISK_VERSION ZISK_COMMIT ZISK_ETH_CLIENT_VERSION ZISK_ETH_CLIENT_COMMIT \
-         CANTON_VERSION CANTON_TARBALL_URL CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DAML_SDK_TAG DAML_SDK_VERSION DAML_SDK_MANIFEST_SHA256 DAMLC_VERSION \
+         CANTON_VERSION CANTON_PROTOCOL_VERSION CANTON_TARBALL_URL CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DAML_SDK_TAG DAML_SDK_VERSION DAML_SDK_MANIFEST_SHA256 DAMLC_VERSION \
          DAMLC_LINUX_AMD64_MANIFEST_SHA256 DPM_VERSION DPM_LINUX_AMD64_SHA256 DPM_REGISTRY DAML_TARGET JAVA_MAJOR GATEWAY_ADDRESS SOLC_VERSION SOLC_IMAGE SOLC_SANDBOX_IMAGE; do
   [ -n "${!k:-}" ] || fail "PINS is missing $k"
 done
@@ -32,8 +32,9 @@ done
 for k in CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DPM_LINUX_AMD64_SHA256 DAML_SDK_MANIFEST_SHA256 DAMLC_LINUX_AMD64_MANIFEST_SHA256; do
   [[ ${!k} =~ ^[0-9a-f]{64}$ ]] || fail "$k is not a SHA-256"
 done
-[[ $CANTON_VERSION == 3.6.* ]] || fail "CANTON_VERSION is not a 3.6 build (the external call is in 3.6)"
-[[ $CANTON_VERSION =~ ^3\.6\.[0-9]+$ ]] || fail "CANTON_VERSION is not a released 3.6 version"
+[[ $CANTON_PROTOCOL_VERSION =~ ^[0-9]+$ ]] || fail "CANTON_PROTOCOL_VERSION is not a number"
+[[ $CANTON_VERSION == 3.[67].* ]] || fail "CANTON_VERSION is not a 3.6 or 3.7 build (the external call is in 3.6 and later)"
+[[ $CANTON_VERSION =~ ^3\.[67]\.[0-9]+$ ]] || fail "CANTON_VERSION is not a released 3.6 or 3.7 version"
 [ "$CANTON_TARBALL_URL" = "https://github.com/digital-asset/canton/releases/download/v$CANTON_VERSION/canton-open-source-$CANTON_VERSION.tar.gz" ] || fail "CANTON_TARBALL_URL is not the release tarball of CANTON_VERSION"
 [[ $DAML_SDK_TAG =~ ^3\.6\.[0-9]+$ && $DAML_SDK_VERSION == "$DAML_SDK_TAG" ]] || fail "DAML_SDK_TAG and DAML_SDK_VERSION are not one released 3.6 SDK"
 [[ $DAMLC_VERSION =~ ^3\.6\.[0-9]+$ && $DPM_VERSION =~ ^[0-9.]+$ ]] || fail "DAMLC_VERSION or DPM_VERSION is not a release (no snapshot)"

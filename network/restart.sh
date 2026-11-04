@@ -52,6 +52,9 @@ load_persist_settings "$STATE" || exit 1
 # (An external chain has no local databases: the participant belongs to its validator and has its own upgrades.)
 [ "$CANTON_MODE" = external ] || [ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \
   || fail "the databases were made by Canton $(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env"), and PINS now says $CANTON_VERSION"
+# The same for the protocol version: the synchronizer was made on one, and a restart must not quietly resume on another.
+[ "$CANTON_MODE" = external ] || [ "$(sed -n 's/^CANTON_PROTOCOL_VERSION=//p' "$STATE/persist.env")" = "$CANTON_PROTOCOL_VERSION" ] \
+  || fail "the synchronizer was made on protocol version $(sed -n 's/^CANTON_PROTOCOL_VERSION=//p' "$STATE/persist.env"), and PINS now says $CANTON_PROTOCOL_VERSION"
 umask 077
 mkdir -p "$NET/logs"
 # Nothing of this chain may be running: a pid file left by a reboot is stale, one that points at a live process is an error.

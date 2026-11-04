@@ -39,7 +39,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release the benchmark and the 2026-10-25, 2026-10-26 and 2026-10-27 runs used; `PINS` now pins 1.3.2-alpha, commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`, and DevNet has proved under it since block 15573 on 2026-10-27 at 12:02 UTC; the benchmark itself was not run again on it) | `PINS` at the time |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
-| Canton | 3.6.3, the open-source release of 2026-10-20, as pinned for the local network and CI (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f). DevNet's validator runs Splice 0.9.4 with Canton 3.6.4 | `PINS`; DevNet |
+| Canton | 3.7.1, the open-source release of 2026-10-30, as pinned for the local network and CI (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f). DevNet moves to Splice 0.10 with Canton 3.7.1 | `PINS`; DevNet |
 | Daml SDK | 3.6.0, the release of 2026-10-08 (the recorded runs used 3.5.13-snapshot.20261001.145.0.v852bdd82) | `PINS` |
 | Daml compiler | 3.6.2, building to Daml-LF 2.4 (the recorded runs used 3.6.0-snapshot.20260915.14804.0.v53478765) | `PINS` |
 | Daml SDK (Daml Script tests) | 3.5.12, building the stub form to Daml-LF 2.1 | `daml/daml.yaml`; `.github/workflows/daml.yml` |

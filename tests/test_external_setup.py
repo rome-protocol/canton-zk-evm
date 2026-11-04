@@ -138,7 +138,7 @@ class FakeParticipant:
         m = re.fullmatch(r"/v2/parties/([^/?]+)", path)
         if method == "GET" and m:
             # One party by id (url-encoded): the participant knows the remote ones too, with isLocal false. A party it has never heard of is 200 with an empty
-            # list on the pinned Canton 3.6.3 (measured by tests/canton_external.sh); a participant may answer 404 instead.
+            # list on the pinned Canton (measured by tests/canton_external.sh); a participant may answer 404 instead.
             party = urllib.parse.unquote(m[1])
             if party in self.parties or party in self.remote:
                 return {"partyDetails": [{"party": party, "isLocal": party in self.parties}]}
