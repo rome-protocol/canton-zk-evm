@@ -54,8 +54,8 @@ java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" --bo
 pids+=($!)
 for _ in $(seq 1 300); do grep -q "BOOTSTRAP DONE" "$WORK/canton.log" && break; kill -0 "${pids[-1]}" 2>/dev/null || fail "Canton stopped"; sleep 1; done
 grep -q "BOOTSTRAP DONE" "$WORK/canton.log" || fail "the bootstrap did not finish"
-# The synchronizer runs protocol version 36, the one the Canton Network adopts with Canton 3.6 (bootstrap.canton refuses another).
-grep -q "SYNCHRONIZER PROTOCOL VERSION 36" "$WORK/canton.log" || fail "the synchronizer is not on protocol version 36"
+# The synchronizer runs the protocol version PINS names (bootstrap.canton refuses another).
+grep -q "SYNCHRONIZER PROTOCOL VERSION $CANTON_PROTOCOL_VERSION" "$WORK/canton.log" || fail "the synchronizer is not on protocol version $CANTON_PROTOCOL_VERSION"
 
 # The package id that dar-id.sh reads from the DAR is a package the operator participant holds (what smoke.sh checks
 # before it records the id).

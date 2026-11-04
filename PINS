@@ -63,8 +63,9 @@ CANTON_VERSION=3.7.1
 CANTON_TARBALL_URL=https://github.com/digital-asset/canton/releases/download/v3.7.1/canton-open-source-3.7.1.tar.gz
 CANTON_TARBALL_SHA256=18ea244ed77a83c7a93a4edb0d1db04ef04123871300be09f9a208cf79260a32
 CANTON_JAR_SHA256=f1ea0439f5fb26f39ec8719e120228e49be2f1395ab8e48fa17cd8bdf3e4024a
-# Canton 3.7 refuses to make a synchronizer on a CI machine unless the protocol version is named; the network runs 36 (network/canton/bootstrap.canton refuses another).
-export CANTON_PROTOCOL_VERSION=36
+# Canton 3.7 refuses to make a synchronizer on a CI machine unless the protocol version is named. The network runs this one: 37 is the version Canton 3.7 introduces and the one the Canton Network moves to
+# (network/canton/bootstrap.canton refuses another, and the tests check the log says so). 36 ran the same checks on Canton 3.7.1 (PR 147, commit 471abb4).
+export CANTON_PROTOCOL_VERSION=37
 # LF 2.4 is the first Daml-LF version with the external call; the Daml 3.6 compiler writes it with --target=2.4.
 DAML_TARGET=2.4
 JAVA_MAJOR=21
