@@ -28,7 +28,7 @@ describe("a page that is fetched when its route is visited", () => {
     unmount();
   });
 
-  it("says in the page's own place that it could not be drawn when its script cannot be fetched, and asks again on the next visit", async () => {
+  it("says in the page's own place that it could not be drawn when its script cannot be fetched, and the app does not cache the failure: the next visit imports the page again", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let broken = true;
     vi.doMock("./pages/About.tsx", () => {

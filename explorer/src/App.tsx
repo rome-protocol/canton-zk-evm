@@ -6,7 +6,7 @@ import { Shell } from "./components/Shell.tsx";
 import { Home } from "./pages/Home.tsx";
 
 const loads: (() => Promise<unknown>)[] = [];
-/** A page that is fetched when its route is first visited, so a page's script is not carried by the pages that do not use it. One loaded ahead of its first draw (see `loadPages`) is drawn at once, with no gap. A fetch that failed is forgotten, and the next visit asks again. */
+/** A page that is fetched when its route is first visited, so a page's script is not carried by the pages that do not use it. One loaded ahead of its first draw (see `loadPages`) is drawn at once, with no gap. The app does not keep a failed fetch, so a later visit asks again; a browser may still fail the same address on its own, and the error card's "Reload it" is the way out then. */
 function page(load: () => Promise<Record<string, unknown>>, name: string): ComponentType {
   let drawn: ComponentType | undefined, loading: Promise<ComponentType> | undefined;
   const get = () => (loading ??= load().then((m) => (drawn = m[name] as ComponentType), (e: unknown) => { loading = undefined; throw e; }));
