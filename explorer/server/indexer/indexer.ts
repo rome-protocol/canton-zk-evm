@@ -413,7 +413,7 @@ export function createIndexer(o: IndexerOptions) {
   };
 
   /** The stats rollups, up to the open minute (design section 8). Safe to run again. */
-  const rollupStatsOnce = (): Promise<RollupResult> => rollupStats(o.pool, { now });
+  const rollupStatsOnce = (): Promise<RollupResult> => rollupStats(o.pool, { now, stopped: () => stopRequested });
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
@@ -626,9 +626,8 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
       }
     };
-    const names = ["stage1", ...(inline ? [] : ["stage2"]), "checks", "balances", "journal", "audits", "stats", "custody"];
-    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop(), custodyLoop()].map((p, i) => p.then(() => console.log(`TIMING loop ${names[i]} ended ${Date.now() % 100000}`))));
-    return async () => { console.log(`TIMING stop asked ${Date.now() % 100000}`); stopRequested = true; running = false; await finished; };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop(), custodyLoop()]);
+    return async () => { stopRequested = true; running = false; await finished; };
   }
 
   /**

@@ -155,6 +155,17 @@ describe.skipIf(!TEST_URL)("the stats rollups", { timeout: DATABASE_TEST_TIMEOUT
     expect(await dump(pool)).toBe(before);
   }));
 
+  it("a run told to stop leaves the chunks it has not reached, and the next run builds them", () => inDb(async (pool) => {
+    for (const [i, s] of [0, 3600, 7200].entries()) await block(pool, i + 1, s);
+    const now = () => T0 + 3 * HOUR;
+    let asked = 0;
+    const part = await rollupStats(pool, { now, stopped: () => ++asked > 1 });
+    expect(part.minutes).toBe(60);
+    expect(+(await pool.query("select count(*) from stats_hour")).rows[0].count).toBe(1);
+    await rollupStats(pool, { now });
+    expect(+(await pool.query("select count(*) from stats_hour")).rows[0].count).toBe(3);
+  }));
+
   it("a block at 59.999 s and one at 00.000 s fall in different minutes, and the same at the hour and the day edge", () => inDb(async (pool) => {
     const edges = [59.999, 60, 3599.999, 3600, 43199.999, 43200]; // 12:00:59.999, 12:01:00, 12:59:59.999, 13:00:00, 23:59:59.999, 00:00:00 next day
     for (const [i, s] of edges.entries()) await block(pool, i + 1, s);

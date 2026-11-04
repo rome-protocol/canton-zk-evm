@@ -252,6 +252,8 @@ export interface RollupOptions {
   chunkMs?: number;
   /** The current day's extras are recomputed at most this often. Default 5 minutes. */
   extrasEveryMs?: number;
+  /** Asked before each chunk: a run that is told to stop leaves the chunks it has not reached to the next run, which goes on from the cursor. */
+  stopped?: () => boolean;
 }
 export interface RollupResult { from: number | null; to: number; minutes: number }
 
@@ -312,6 +314,7 @@ async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<Rollup
   // The cursor is "recompute from here": it moves back with the first chunk and forward with each, so a run that stops half way is finished by the next.
   const days = new Set<number>();
   for (let a = start; a < end; a += chunk) {
+    if (o.stopped?.()) return { from: start, to: a, minutes: Math.round((a - start) / MINUTE) };
     const b = Math.min(a + chunk, end);
     const db = await pool.connect();
     try {
