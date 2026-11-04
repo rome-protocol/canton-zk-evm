@@ -258,8 +258,11 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
   });
 
   it("is read again by the running indexer on its own, and not at all without a custody ledger", async () => {
+    const t0 = Date.now(), lap = (w: string) => console.log(`TIMING ${w} ${Date.now() - t0} ms`);
     await inDb(async (pool) => {
+      lap("db ready");
       await migrate(pool);
+      lap("migrated");
       const chain = makeChain([{ txs: 1 }]);
       const { fake, ledger } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "3")]);
       const make = (custody?: { ledger: typeof ledger; ms: number }) => {
@@ -269,23 +272,30 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       };
       const plain = make();
       await plain.open();
+      lap("plain open");
       let halt = plain.start();
       await new Promise((ok) => setTimeout(ok, 300));
       await halt();
+      lap("plain halted");
       await opened.splice(opened.indexOf(plain), 1)[0]!.close();   // gives back the lock, so that the second indexer can take it
+      lap("plain closed");
       expect(fake.requests).toHaveLength(0);
       expect(await rows(pool)).toEqual([]);
       const reading = make({ ledger, ms: 50 });
       await reading.open();
+      lap("reading open");
       halt = reading.start();
       try {
         for (let i = 0; i < 100 && (await rows(pool)).length === 0; i++) await new Promise((ok) => setTimeout(ok, 50));
+        lap("rows seen");
         expect(await rows(pool)).toMatchObject([{ evm: "d1".repeat(20), custody: "30000000000", holdings: 1 }]);
         const reads = fake.requests.filter((r) => r.path === "/v2/state/active-contracts").length;
         for (let i = 0; i < 100 && fake.requests.filter((r) => r.path === "/v2/state/active-contracts").length === reads; i++) await new Promise((ok) => setTimeout(ok, 50));
+        lap("second read seen");
         expect(fake.requests.filter((r) => r.path === "/v2/state/active-contracts").length).toBeGreaterThan(reads);
       } finally {
         await halt();
+        lap("halted");
       }
     });
   });
