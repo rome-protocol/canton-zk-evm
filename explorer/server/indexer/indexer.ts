@@ -413,7 +413,7 @@ export function createIndexer(o: IndexerOptions) {
   };
 
   /** The stats rollups, up to the open minute (design section 8). Safe to run again. */
-  const rollupStatsOnce = (): Promise<RollupResult> => rollupStats(o.pool, { now });
+  const rollupStatsOnce = (stopped?: () => boolean): Promise<RollupResult> => rollupStats(o.pool, { now, stopped });
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
@@ -568,7 +568,7 @@ export function createIndexer(o: IndexerOptions) {
     const statsLoop = async () => {
       while (running) {
         try {
-          await rollupStatsOnce();
+          await rollupStatsOnce(() => stopRequested);
         } catch (e) {
           log(`indexer (stats): ${(e as Error).message}`);
         }

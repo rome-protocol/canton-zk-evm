@@ -3,8 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { App } from "./App.tsx";
+import { App, loadPages } from "./App.tsx";
 import type { SwapItem, BlockLeg, CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+
+// The app fetches a page when its route is first visited; the tests have every page ready, so a route is drawn at once.
+await loadPages();
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
