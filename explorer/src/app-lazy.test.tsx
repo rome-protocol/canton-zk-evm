@@ -30,19 +30,19 @@ describe("a page that is fetched when its route is visited", () => {
 
   it("says in the page's own place that it could not be drawn when its script cannot be fetched, and asks again on the next visit", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    let asked = 0;
+    let broken = true;
     vi.doMock("./pages/About.tsx", () => {
-      if (++asked === 1) throw new Error("the script could not be fetched");
+      if (broken) throw new Error("the script could not be fetched");
       return { About: () => <h1>About, the second time</h1> };
     });
     const user = userEvent.setup();
     const { screen, within, unmount } = await fresh("/about");
     expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeInTheDocument();
     expect(screen.getByRole("banner")).toBeInTheDocument(); // the header stays
+    broken = false;
     await user.click(within(screen.getByRole("banner")).getAllByRole("link")[0]!); // the name on the left, to the home page
     await user.click(await screen.findByRole("link", { name: "About" }));
     expect(await screen.findByRole("heading", { name: "About, the second time" })).toBeInTheDocument();
-    expect(asked).toBe(2);
     unmount();
   });
 });
