@@ -1,7 +1,7 @@
 """The twin legs (Daml 0.5.0): a payment into a registered vault is a LockLeg, with the parts of the lock's id from the twin registry service; a payment
 whose id is the release id of a redeem request is a ReleaseLeg. Both name the twin pinned for the token in `ZkChain.twins`. Against the same fakes as
 test_builder.py, and a fake registry service."""
-import hashlib, http.client, json, sys, tempfile, threading, time, unittest
+import hashlib, http.client, json, sys, threading, time, unittest
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -12,7 +12,7 @@ sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
 from test_legs_limits import at, quota
-from fakes import LEDGER_TOKEN, PAYMENT, Leg, tx
+from fakes import PAYMENT, Leg, tx
 
 ALICE, TKA, PAYEE, named = tb.ALICE, tb.TKA, tb.PAYEE, tb.named
 VAULT, OTHER_VAULT = "ca" * 20, "cb" * 20
@@ -36,6 +36,7 @@ REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": RECEIVER, "token": TK
 
 TWIN = {"admin": "gw", "id": "erc20:" + TKA}
 HOLDING = tb.holding("th-1", "2.5", instrument=TWIN, owner=RECEIVER)
+ACCEPTANCE = ("acceptance-1", {"party": RECEIVER, "admin": "gw"})
 RULES_ARGS = (RULES, {"admin": "gw", "token": TKA, "decimals": str(USDC_DECIMALS), "name": "USD Coin", "symbol": "USDC"})
 REF2 = "order-8"
 RELEASE2 = Leg(PAYMENT, sha(f"vault-release,{VAULT},{REF2}"), TKA, PAYEE, 2_500_000)
@@ -107,12 +108,13 @@ class Twins(tb.LegCase):
         super().setUp()
         b.REGISTRY_DOWN.clear()
 
-    def setup_twin(self, leg, parts=True, pins=(PIN,), vaults=(VAULT_ENTRY,), redeems=(), registry=True, holdings=(HOLDING,), rules=(RULES_ARGS,), quota=None, **k):
+    def setup_twin(self, leg, parts=True, pins=(PIN,), vaults=(VAULT_ENTRY,), redeems=(), registry=True, holdings=(HOLDING,), rules=(RULES_ARGS,), quota=None, acceptances=(ACCEPTANCE,), **k):
         s = self.setup({ALICE: []}, **k)
         s.ledger.chain_extra = {"contracts": list(vaults), "twins": list(pins) if pins is not None else None, **(quota or {})}
         s.ledger.redeems = list(redeems)
         s.ledger.holdings = list(holdings)
         s.ledger.twin_rules = list(rules)
+        s.ledger.twin_acceptances = list(acceptances)
         t = self.leg_tx(s, leg)
         s.reth.pool[ALICE] = [t]
         if registry:
@@ -174,79 +176,25 @@ class Twins(tb.LegCase):
             s, t = self.setup_twin(LOCK, parts={LOCK_ID: {"receiver": bad, "ref": REF}})
             self.assert_left_out(s, t, "not the parts")
 
-    def test_a_receiver_the_participant_does_not_know_is_left_out(self):
-        s, t = self.setup_twin(LOCK)
-        s.ledger.known_parties = set()
-        self.assert_left_out(s, t, "not a known Canton party")
+    def test_a_receiver_with_no_acceptance_is_left_out(self):
+        s, t = self.setup_twin(LOCK, acceptances=())
+        self.assert_left_out(s, t, "the receiver has not accepted twins")
 
-    def test_a_known_receiver_is_attached_and_asked_once_a_block(self):
+    def test_an_acceptance_of_another_party_or_another_admin_does_not_count(self):
+        for other in (("acceptance-2", {"party": "bob::1220" + "cd" * 32, "admin": "gw"}), ("acceptance-3", {"party": RECEIVER, "admin": "someone-else"})):
+            s, t = self.setup_twin(LOCK, acceptances=(other,))
+            self.assert_left_out(s, t, "the receiver has not accepted twins")
+
+    def test_an_accepting_receiver_is_attached_and_acceptances_are_read_once_a_block(self):
         s, t = self.setup_twin(LOCK)
-        s.ledger.known_parties = {RECEIVER}
         self.build(s)
         self.assertEqual(self.attached(s, "LockLeg")["lockReceiver"], RECEIVER)
-        self.assertEqual([g for g in s.ledger.gets if g.startswith("/v2/parties/")], ["/v2/parties/" + RECEIVER.replace(":", "%3A")])
+        self.assertEqual(sum(1 for q in s.ledger.queries if "TwinAcceptance" in json.dumps(q)), 1)
+        self.assertEqual([g for g in s.ledger.gets if g.startswith("/v2/parties/")], [])   # no party lookup, so no admin-level token
 
-    def test_the_party_lookup_uses_the_party_token_when_one_is_given_and_reads_it_again(self):
-        s, t = self.setup_twin(LOCK)
-        s.ledger.party_token = "party-secret-1"
-        token = Path(self.enterContext(tempfile.TemporaryDirectory())) / "party.token"
-        token.write_text("party-secret-1\n")
-        s.cfg.party_token_file = str(token)
-        self.build(s)
-        self.assertEqual(self.attached(s, "LockLeg")["lockReceiver"], RECEIVER)
-        self.assertEqual(s.ledger.party_auths, ["Bearer party-secret-1"])
-        token.write_text("party-secret-2\n")   # renewed in its file: the next block reads it again
-        s.ledger.party_token = "party-secret-2"
-        s.ledger.party_auths.clear()
-        self.assertTrue(b.Ledger(s.cfg).party_known(RECEIVER))
-        self.assertEqual(s.ledger.party_auths, ["Bearer party-secret-2"])
-
-    def test_the_party_lookup_uses_the_builders_token_without_a_party_token(self):
-        s, t = self.setup_twin(LOCK)
-        self.build(s)
-        self.assertEqual(s.ledger.party_auths, ["Bearer " + LEDGER_TOKEN])
-
-    def test_a_refused_party_lookup_without_a_party_token_says_to_give_one(self):
-        for code in (401, 403):
-            s, t = self.setup_twin(LOCK)
-            s.ledger.get_failures = {"/v2/parties/": code}
-            result = self.assert_left_out(s, t, f"HTTP {code}; give the builder --party-token-file, a token that may read party details")
-            self.assertNotIn(LEDGER_TOKEN, json.dumps(result))
-
-    def test_a_participant_that_wants_a_party_token_leaves_the_lock_out_with_that_reason(self):
-        s, t = self.setup_twin(LOCK)
-        s.ledger.party_token = "party-secret-1"
-        self.assert_left_out(s, t, "403; give the builder --party-token-file")
-
-    def test_a_wrong_party_token_is_refused_without_the_advice_and_is_never_shown(self):
-        s, t = self.setup_twin(LOCK)
-        s.ledger.party_token = "party-secret-1"
-        token = Path(self.enterContext(tempfile.TemporaryDirectory())) / "party.token"
-        token.write_text("not-the-one-secret\n")
-        s.cfg.party_token_file = str(token)
-        result = self.assert_left_out(s, t, "HTTP Error 403")
-        self.assertNotIn("--party-token-file", result["leftOut"][0]["reason"])
-        self.assertNotIn("not-the-one-secret", json.dumps(result))
-        self.assertNotIn("party-secret-1", json.dumps(result))
-
-    def test_a_party_token_file_that_cannot_be_read_leaves_the_lock_out(self):
-        s, t = self.setup_twin(LOCK)
-        s.cfg.party_token_file = "/nonexistent/party.token"
-        self.assert_left_out(s, t, "the party token file cannot be read")
-
-    def test_the_party_token_is_checked_when_the_option_is_given(self):
-        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        (d / "two").write_text("a\nb\n")
-        for bad in (d / "two", d / "missing"):
-            with self.assertRaises(ValueError):
-                b.party_token(str(bad))
-        (d / "ok").write_text(" tok \n")
-        self.assertEqual(b.party_token(str(d / "ok")), "tok")
-
-    def test_a_participant_that_cannot_answer_for_the_receiver_leaves_the_lock_out(self):
-        s, t = self.setup_twin(LOCK)
-        s.ledger.get_failures = {"/v2/parties/": 500}
-        self.assert_left_out(s, t, "cannot say whether")
+    def test_a_participant_that_has_not_uploaded_the_acceptance_template_leaves_the_lock_out(self):
+        s, t = self.setup_twin(LOCK, no_040=True)
+        self.assert_left_out(s, t, "the receiver has not accepted twins")
 
     def test_a_twin_answer_that_raises_anything_leaves_the_lock_out(self):
         class Odd(Exception):
@@ -523,6 +471,15 @@ class Twins(tb.LegCase):
         for bad in ({"twinToken": "xx"}, {**PIN, "twinDecimals": "37"}, {**PIN, "twinRules": ""}):
             with self.assertRaises(b.BuilderError):
                 b.pinned_twins({"twins": [bad]})
+
+
+class CommandLine(tb.Case):
+    run_main = tb.CommandLine.run_main
+
+    def test_the_party_token_file_option_is_still_accepted_and_is_not_read(self):
+        s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+        code, out = self.run_main(s, "--party-token-file", "/nonexistent/party.token")
+        self.assertEqual((code, out["committed"]), (0, True))
 
 
 if __name__ == "__main__":

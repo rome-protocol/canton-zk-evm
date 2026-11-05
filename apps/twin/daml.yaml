@@ -2,7 +2,7 @@
 # standard packages, which are in ../../daml/dars; it does not depend on the canton-zk-evm package. Build it with build.sh.
 sdk-version: 3.5.12
 name: ostia-twin
-version: 0.1.0
+version: 0.2.0
 source: src
 dependencies:
   - daml-prim

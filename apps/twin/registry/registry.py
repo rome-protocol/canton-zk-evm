@@ -13,6 +13,7 @@ from decimal import ROUND_DOWN, Decimal, localcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RULES = "#ostia-twin:Twin.Twin:TwinRules"
+ACCEPTANCE = "#ostia-twin:Twin.Twin:TwinAcceptance"
 CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
 APIS = {f"splice-api-token-{n}-v1": 1 for n in ("metadata", "holding", "transfer-instruction", "allocation", "allocation-instruction")}
 TWIN_DECIMALS = 10
@@ -158,7 +159,7 @@ class LockParts:
 class Registry:
     def __init__(self, ledger: Ledger, ostia: Ostia, admin: str, parts: LockParts, chain_id, ttl: float = 5.0, supply_ttl: float = 10.0):
         self.ledger, self.ostia, self.admin, self.parts, self.chain_id, self.ttl, self.supply_ttl = ledger, ostia, admin, parts, str(chain_id), ttl, supply_ttl
-        self.lock, self.cache, self.supply_cache = threading.Lock(), None, {}
+        self.lock, self.cache, self.supply_cache, self.accepted_cache = threading.Lock(), None, {}, None
 
     def _read(self):
         """(rules by token, problems, vaults), from the one chain record of `chain_id` whose gateway is the admin. The twins are the ones the chain
@@ -185,6 +186,14 @@ class Registry:
             problems = {"pinnedWithoutRules": sorted(missing), "unpinnedRules": sorted(active)}   # the second is a cross-check only
             self.cache = (time.monotonic(), (rules, problems, vaults))
             return self.cache[1]
+
+    def accepted(self, party: str) -> bool:
+        """Whether `party` has an active TwinAcceptance of this admin, as the admin sees it. The parties are cached for `ttl` seconds."""
+        with self.lock:
+            if not (self.accepted_cache and time.monotonic() - self.accepted_cache[0] < self.ttl):
+                found = {c["createArgument"].get("party") for c, _ in self.ledger.active(ACCEPTANCE, self.admin) if c["createArgument"].get("admin") == self.admin}
+                self.accepted_cache = (time.monotonic(), found)
+            return party in self.accepted_cache[1]
 
     def twin(self, instrument_id: str) -> dict:
         """The pinned rules of the twin whose instrument id is `erc20:<token>`."""
@@ -311,7 +320,8 @@ class Registry:
         return out
 
     def announce(self, body) -> dict:
-        """A payer hands the receiver and the ref of a lock it is about to pay; it gets the id to pay against and the vaults that take the lock."""
+        """A payer hands the receiver and the ref of a lock it is about to pay; it gets the id to pay against and the vaults that take the lock. A receiver that has not
+        accepted twins (no active TwinAcceptance) is refused with 409: a lock for it would be refused by Canton."""
         receiver, ref = (body.get("receiver"), body.get("ref")) if isinstance(body, dict) else (None, None)
         for name, value in (("receiver", receiver), ("ref", ref)):
             try:
@@ -328,6 +338,8 @@ class Registry:
                 raise HttpError(400, "token is 40 lowercase hex digits")
             if token not in self._read()[0]:
                 raise HttpError(404, f"no twin erc20:{token}")
+        if not self.accepted(receiver):
+            raise HttpError(409, "the receiver has not accepted twins: its party must sign a TwinAcceptance first")
         vaults = self.vaults()
         return {"lockId": self.parts.add(receiver, ref), "receiver": receiver, "ref": ref, "vaults": vaults}
 

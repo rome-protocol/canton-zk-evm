@@ -199,6 +199,13 @@ for _ in $(seq 1 30); do curl -sf "$REGISTRY_URL/healthz" | jq -e '.ok == true a
 curl -sf "$REGISTRY_URL/healthz" | jq -e '.ok == true and .twins == 1' >/dev/null || fail "the registry service does not show one twin: $(curl -s "$REGISTRY_URL/healthz")"
 alive
 
+step "U and V accept twins (a TwinAcceptance each, signed by the party); the registry service refuses a lock for a party that has not"
+twin accept u | jq -c .
+twin accept v | jq -c .
+NOBODY="nobody::1220$(printf 'ab%.0s' $(seq 1 32))"
+is "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data "$(jq -nc --arg r "$NOBODY" '{receiver: $r, ref: "no-acceptance"}')" "$REGISTRY_URL/twin/v1/lock-parts")" 409 "the registry service's answer for a receiver with no acceptance"
+alive
+
 step "(a) U locks 5 TKA for itself: the twin of 5 is minted to U"
 tka_u_before=$(tka_of "$TOKEN" "$U_ADDR"); tka_v_before=$(tka_of "$TOKEN" "$V_ADDR")
 locked=$(twin lock u "$TOKEN" 5 u lock-1 --registry-url "$REGISTRY_URL"); echo "$locked" | jq -c .

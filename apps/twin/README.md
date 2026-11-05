@@ -2,7 +2,7 @@
 
 The Canton twin of an ERC-20 token that an Ostia vault holds: a CIP-0056 token (token standard V1) with the instrument id `erc20:<token address>` (40 lowercase hex digits, no `0x`) and 10 decimals, administered by the twin's admin party. On DevNet the admin is the gateway party. This is the Canton side of moving an ERC-20 to Canton: the vault and the chain's legs for it are separate.
 
-The package is `ostia-twin` 0.1.0 and depends only on the Canton token standard packages in [`../../daml/dars`](../../daml/dars), as [`apps/otc`](../otc) does. It does not depend on the `canton-zk-evm` package.
+The package is `ostia-twin` 0.2.0 and depends only on the Canton token standard packages in [`../../daml/dars`](../../daml/dars), as [`apps/otc`](../otc) does. It does not depend on the `canton-zk-evm` package.
 
 ## One-to-one with an ERC-20
 
@@ -18,6 +18,7 @@ The package is `ostia-twin` 0.1.0 and depends only on the Canton token standard 
 |---|---|---|
 | `TwinHolding` | the admin (the owner observes) | an amount of the twin owned by a party |
 | `TwinAllocation` | the admin (sender, receiver and executor observe) | the sender's amount held for a settlement; also a locked `Holding` of the sender. Executing it makes the receiver's holding; withdraw and cancel give the sender's back |
+| `TwinAcceptance` | the party (the admin observes) | "I accept twins": a party signs it once, when its account is opened. It exists only on a participant that has vetted this package, so it shows that a twin minted to the party will not be refused. The builder and the registry service check it before they take a lock for the party. `Withdraw` (or the archive every signatory has) takes it back |
 | `TwinRules` | the admin | one per ERC-20 (its address, name, symbol and decimals): the transfer factory, the allocation factory, `Mint` and `Burn`. Wallets get it by explicit disclosure |
 
 ## Mint and burn (what the chain's `Advance` calls)
@@ -28,6 +29,10 @@ Both are non-consuming choices on `TwinRules` with the admin as the only control
 - `Burn with owner : Party; holdingCids : [ContractId Holding]; amount : Decimal; reference : Text` archives the owner's holdings of this twin (at least one; each is fetched as a `TwinHolding` of this admin and token, so an allocation, a locked amount or a contract of any other template that reports the instrument is refused; all the owner's), and returns the change (the total less `amount`) as one new holding, or `None` when nothing is left. It is refused when the holdings are worth less than `amount`.
 
 Replays are not guarded here: a second `Mint` with the same `reference` mints again. The chain's own record of the payment (the legs it consumes once) is the guard.
+
+## Accepting twins
+
+A lock mints a twin to a receiver party, and Canton refuses that mint when the receiver's participant has not vetted this package. So before a lock the receiver signs a `TwinAcceptance` naming the twins' admin (0.2.0 adds the template and nothing else; 0.1.0 contracts carry over). The admin is its only observer, so whoever reads as the admin (the builder, with `--read-as <gateway>`, and the registry service) sees every acceptance. A lock for a party with no active acceptance is refused by the registry service (409) and left out of the block by the builder.
 
 ## Amounts
 

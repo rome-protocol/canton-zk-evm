@@ -191,6 +191,22 @@ class RulesTests(TwinTestCase):
                 twin.main(argv)
 
 
+class AcceptTests(TwinTestCase):
+    def test_u_signs_an_acceptance_for_the_gateway_party_once(self):
+        got = twin.accept(self.net, "u")
+        self.assertEqual(self.made(twin.TWIN_ACCEPTANCE), [{"party": "u::1", "admin": "gw::1"}])
+        [(node, body)] = FakeLedger.submitted
+        self.assertEqual((node, body["actAs"], body["userId"]), ("users", ["u::1"], "demo"))
+        self.assertEqual(got, {"created": True, "party": "u::1", "contractId": "cid-1"})
+        self.assertEqual(twin.accept(self.net, "u"), {**got, "created": False})   # a second run makes nothing
+        self.assertEqual(len(FakeLedger.submitted), 1)
+
+    def test_only_u_or_v_accepts(self):
+        with self.assertRaises(SystemExit):
+            twin.accept(self.net, "someone::1220" + "ab" * 32)
+        self.assertEqual(FakeLedger.submitted, [])
+
+
 class DisclosedTests(TwinTestCase):
     def test_the_file_is_one_disclosed_contract_as_setup_reads_it(self):
         made = twin.rules(self.net, TOKEN)

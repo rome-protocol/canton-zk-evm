@@ -17,12 +17,17 @@ def rules_event(token=TOKEN, cid="rules-1", decimals=6, name="Test USD"):
             "createArgument": {"admin": ADMIN, "token": token, "name": name, "symbol": "TUSD", "decimals": decimals}}
 
 
+def acceptance_event(party=RECEIVER, admin=ADMIN, cid="acceptance-1"):
+    return {"contractId": cid, "templateId": "pkg:Twin.Twin:TwinAcceptance", "createArgument": {"party": party, "admin": admin}}
+
+
 class Fake:
     """A fake ledger (the JSON Ledger API reads) and a fake Ostia (eth_call), on one port each."""
     def __init__(self):
         self.chains = [{"contractId": "chain-1", "createArgument": {"gateway": ADMIN, "chainId": str(CHAIN_ID), "contracts": [
             {"contractAddress": "c" * 40, "contractKind": "Gateway"}, {"contractAddress": VAULT, "contractKind": "Vault"}]}}]
         self.set_rules([rules_event()])
+        self.acceptances = [acceptance_event()]
         self.balance = 1_500_000
         self.rpc_calls, self.tokens_seen, self.rpc_down = [], [], False
         fake = self
@@ -40,7 +45,7 @@ class Fake:
                 body = json.loads(self.rfile.read(int(self.headers["content-length"])))
                 fake.tokens_seen.append(self.headers.get("authorization"))
                 template = list(body["eventFormat"]["filtersByParty"][ADMIN]["cumulative"][0]["identifierFilter"]["TemplateFilter"]["value"].items())[0][1]
-                events = fake.rules if template == R.RULES else fake.chains
+                events = fake.rules if template == R.RULES else fake.acceptances if template == R.ACCEPTANCE else fake.chains
                 self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": e, "synchronizerId": SYNC}}} for e in events])
 
             def log_message(self, *a): pass
@@ -243,6 +248,31 @@ class RegistryTest(unittest.TestCase):
                      {"receiver": "a::b::c", "ref": "r"}, {"receiver": "alice::1220bb", "ref": "r"}, {"receiver": "alice::1220" + "B" * 64, "ref": "r"},
                      {"receiver": RECEIVER, "ref": "\ud800"}, {"receiver": RECEIVER, "ref": "r", "token": "XYZ"}, {"receiver": RECEIVER, "ref": "x" * 300}, {"receiver": 5, "ref": "r"}, []):
             self.assertEqual(self.call("/twin/v1/lock-parts", body)[0], 400, body)
+
+    def test_a_receiver_with_no_acceptance_is_refused_with_409(self):
+        other = "bob::1220" + "c" * 64
+        status, out = self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r"})
+        self.assertEqual((status, out), (409, {"error": "the receiver has not accepted twins: its party must sign a TwinAcceptance first"}))
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + R.lock_id(other, "r"))[0], 404)   # nothing was kept
+        self.fake.acceptances.append(acceptance_event(other, cid="acceptance-2"))
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r"})[0], 200)   # accepted since: ttl is 0 here
+        self.fake.acceptances[:] = [acceptance_event(other, admin="someone-else::1220aa")]   # an acceptance of another admin does not count
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r2"})[0], 409)
+        self.fake.acceptances[:] = []   # taken back
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})[0], 409)
+
+    def test_a_token_with_no_twin_is_still_404_before_the_acceptance_is_looked_at(self):
+        self.fake.acceptances[:] = []
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r", "token": "d" * 40})[0], 404)
+
+    def test_acceptances_are_read_once_in_the_ttl(self):
+        self.registry.ttl = 3600
+        reads = []
+        real = self.registry.ledger.active
+        self.registry.ledger.active = lambda template, party, blob=False: (reads.append(template), real(template, party, blob))[1]
+        for ref in ("1", "2", "3"):
+            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": ref})[0], 200)
+        self.assertEqual(reads.count(R.ACCEPTANCE), 1)
 
     def test_lock_parts_are_bounded(self):
         self.registry.parts.limit = 1
