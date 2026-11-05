@@ -202,6 +202,8 @@ alive
 step "U and V accept twins (a TwinAcceptance each, signed by the party); the registry service refuses a lock for a party that has not"
 accepted_u=$(twin accept u); echo "$accepted_u" | jq -c .
 twin accept v | jq -c .
+for _ in $(seq 1 40); do curl -sf "$REGISTRY_URL/healthz" | jq -e '.acceptances >= 2' >/dev/null && break; sleep 1; done   # the registry service reads its index of acceptances every 10 s
+curl -sf "$REGISTRY_URL/healthz" | jq -e '.acceptances >= 2' >/dev/null || fail "the registry service's index does not show the two acceptances: $(curl -s "$REGISTRY_URL/healthz")"
 NOBODY="nobody::1220$(printf 'ab%.0s' $(seq 1 32))"
 is "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data "$(jq -nc --arg r "$NOBODY" '{receiver: $r, ref: "no-acceptance"}')" "$REGISTRY_URL/twin/v1/lock-parts")" 409 "the registry service's answer for a receiver with no acceptance"
 alive
