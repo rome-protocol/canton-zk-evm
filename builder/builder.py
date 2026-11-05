@@ -181,13 +181,14 @@ def is_loopback_address(address: str) -> bool:
 
 
 def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: float = 10, max_body: int = REGISTRY_MAX_BODY, body: bytes | None = None,
-                  headers: dict | None = None, token: bool = False) -> bytes:
+                  headers: dict | None = None) -> bytes:
     """One request to a service that is trusted for nothing: bounded as a whole by `limit` seconds, by a timer (see twin_registry_reader), its answer
-    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body. With `token` set (the request
-    carries a token), over plain http the connection must reach this machine: this is checked on the connected peer, not on the name, and nothing is sent
-    otherwise."""
+    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body. A request that carries an
+    Authorization header goes over plain http only if the connection reaches this machine: this is checked on the connected peer, not on the name, and
+    nothing is sent otherwise."""
     url = urllib.parse.urlsplit(base_url)
     connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
+    token = any(k.lower() == "authorization" for k in (headers or {}))
     out: dict = {}
     over = threading.Event()
 
@@ -531,8 +532,7 @@ class ChoiceContexts:
             headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
         started = time.monotonic()
         try:
-            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers,
-                                                     "authorization" in headers),
+            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
                                         parse_constant=refuse_constant)
         except _RegistryStatus as e:
             raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e

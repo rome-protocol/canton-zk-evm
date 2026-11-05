@@ -133,11 +133,12 @@ class SettingsTests(ExternalTestCase):
                 self.assertFalse(canton.https_or_on_this_machine(bad), bad)
             for good in ("https://example.com/x", "http://localhost/x", "http://127.0.0.1:1/x", "http://[::1]:1/x"):
                 self.assertTrue(canton.https_or_on_this_machine(good), good)
+
+    def test_the_ledger_api_is_never_a_localhost_name(self):   # its role tokens (the admin's too) are not peer-checked at each request
         os.environ["CZE_LEDGER_URL"] = "http://wallet.localhost:7575"
-        with mock.patch.object(canton.socket, "getaddrinfo", return_value=answer("127.0.0.1")):
-            canton.Network()
-        with mock.patch.object(canton.socket, "getaddrinfo", return_value=answer("10.1.2.3")), self.assertRaises(SystemExit):
-            canton.Network()
+        with mock.patch.object(canton.socket, "getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 7575))]):
+            with self.assertRaises(SystemExit):
+                canton.Network()
 
     def test_a_token_goes_only_to_a_peer_on_this_machine_at_each_request(self):
         import twin

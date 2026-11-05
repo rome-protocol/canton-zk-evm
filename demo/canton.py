@@ -83,7 +83,9 @@ COMMAND_ROLES = {"upload-dars": ("admin",), "setup": ("demo",), "payment-id": ()
                  "accept": ("demo", "operator"), "withdraw-allocation": ("demo", "operator"), "resubmit": ("operator", "builder")}
 DEFAULT_ROLES = ("demo", "operator", "reader")
 # As network/external/setup.py: a token must not cross a network in the clear.
-LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.localhost)(:[0-9]+)?)(/.*)?$")
+LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?)(/.*)?$")
+# The scan-proxy registry (demo/cc.py) may also be a name under .localhost, whose addresses are checked (https_or_on_this_machine).
+REGISTRY_URL = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.localhost)(:[0-9]+)?)(/.*)?$")
 # The seconds to wait before each repeat of a submit that got no answer: 4 tries over about a minute.
 SUBMIT_RETRY_WAITS = (5, 15, 30)
 COMPLETION_LIMIT = 500    # completions one read takes at most; a full page is followed by the next
@@ -108,9 +110,10 @@ def is_loopback_address(address: str) -> bool:
 
 
 def https_or_on_this_machine(url: str) -> bool:
-    """Whether a token may be sent to this URL: https, or http to localhost, 127.0.0.1, [::1], or a name under .localhost (RFC 6761) whose every address
-    is loopback (a name that does not resolve is not). twin.py checks the connected peer again at each request."""
-    m = LOOPBACK_OR_HTTPS.match(url)
+    """Whether a token may be sent to this registry URL: https, or http to localhost, 127.0.0.1, [::1], or a name under .localhost (RFC 6761) whose every
+    address is loopback (a name that does not resolve is not). Only the scan-proxy calls (cc.py, through twin.py's opener) check the connected peer
+    again at each request; the Ledger API (Network) keeps the strict LOOPBACK_OR_HTTPS."""
+    m = REGISTRY_URL.match(url)
     if not m:
         return False
     host = m.group(2)
@@ -156,7 +159,7 @@ class Network:
             url = os.environ.get("CZE_LEDGER_URL", "")
             if not url:
                 raise SystemExit("CZE_CANTON=external needs CZE_LEDGER_URL, the participant's JSON Ledger API")
-            if not https_or_on_this_machine(url):
+            if not LOOPBACK_OR_HTTPS.match(url):
                 raise SystemExit("the Ledger API URL must be https, or http on this machine (127.0.0.1): a token must not cross a network in the clear")
             self.urls = {node: url.rstrip("/") for node in ("operator", "confirmer", "users")}
         else:
