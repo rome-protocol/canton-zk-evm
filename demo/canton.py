@@ -55,7 +55,7 @@ OPERATOR (the operator and the gateway), READER, BUILDER (resubmit), CONFIRMER (
 from its file at every call, so a short-lived one can be written again between calls, and it is never printed. CZE_LEDGER_NO_AUTH=1: a Ledger API
 with no login (no token is sent). Everything else is as on the local network; CZE_CANTON unset or `local` changes nothing.
 """
-import hashlib, io, json, os, re, secrets, subprocess, sys, time, urllib.error, urllib.request, uuid, zipfile
+import hashlib, io, ipaddress, json, os, re, secrets, socket, subprocess, sys, time, urllib.error, urllib.request, uuid, zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,7 +83,7 @@ COMMAND_ROLES = {"upload-dars": ("admin",), "setup": ("demo",), "payment-id": ()
                  "accept": ("demo", "operator"), "withdraw-allocation": ("demo", "operator"), "resubmit": ("operator", "builder")}
 DEFAULT_ROLES = ("demo", "operator", "reader")
 # As network/external/setup.py: a token must not cross a network in the clear.
-LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?)(/.*)?$")
+LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.localhost)(:[0-9]+)?)(/.*)?$")
 # The seconds to wait before each repeat of a submit that got no answer: 4 tries over about a minute.
 SUBMIT_RETRY_WAITS = (5, 15, 30)
 COMPLETION_LIMIT = 500    # completions one read takes at most; a full page is followed by the next
@@ -99,6 +99,28 @@ ADDRESS = re.compile(r"(?:0x)?[0-9a-fA-F]{40}")
 CANTON_AMOUNT = re.compile(r"[0-9]+(?:\.[0-9]{1,10})?")   # as a Daml Decimal that the gateway's 10-decimal wrapped token can hold exactly
 WHOLE = re.compile(r"[0-9]+")
 HOLDER_NODES = {"u": ("users", "reader"), "v": ("users", "reader"), "gateway": ("operator", "operator")}   # holder -> (participant, party that reads the BlockRecord there)
+
+
+def is_loopback_address(address: str) -> bool:
+    """Whether an IP address (a zone after % is ignored) is loopback, an IPv4 loopback in its IPv6-mapped form included."""
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return ip.is_loopback or (ip.version == 6 and ip.ipv4_mapped is not None and ip.ipv4_mapped.is_loopback)
+
+
+def https_or_on_this_machine(url: str) -> bool:
+    """Whether a token may be sent to this URL: https, or http to localhost, 127.0.0.1, [::1], or a name under .localhost (RFC 6761) whose every address
+    is loopback (a name that does not resolve is not). twin.py checks the connected peer again at each request."""
+    m = LOOPBACK_OR_HTTPS.match(url)
+    if not m:
+        return False
+    host = m.group(2)
+    if m.group(1).startswith("https://") or not host.endswith(".localhost"):
+        return True
+    try:
+        found = {a[4][0] for a in socket.getaddrinfo(host, int(m.group(3)[1:]) if m.group(3) else 80)}
+        return bool(found) and all(is_loopback_address(a) for a in found)
+    except (OSError, ValueError):
+        return False
 
 
 class Fail(Exception):
@@ -134,7 +156,7 @@ class Network:
             url = os.environ.get("CZE_LEDGER_URL", "")
             if not url:
                 raise SystemExit("CZE_CANTON=external needs CZE_LEDGER_URL, the participant's JSON Ledger API")
-            if not LOOPBACK_OR_HTTPS.match(url):
+            if not https_or_on_this_machine(url):
                 raise SystemExit("the Ledger API URL must be https, or http on this machine (127.0.0.1): a token must not cross a network in the clear")
             self.urls = {node: url.rstrip("/") for node in ("operator", "confirmer", "users")}
         else:

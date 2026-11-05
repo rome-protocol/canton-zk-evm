@@ -63,7 +63,7 @@ class Scan:
     """The validator's scan proxy and validator API, with the bearer token that the validator API wants, read from its file at every call."""
     def __init__(self, url: str, token_file: str):
         url = (url or "").rstrip("/")
-        if not canton.LOOPBACK_OR_HTTPS.match(url) or not url.endswith("/scan-proxy"):
+        if not canton.https_or_on_this_machine(url) or not url.endswith("/scan-proxy"):
             raise SystemExit(f"--scan-proxy must be the validator's scan proxy, https (or http on this machine) and ending in /scan-proxy, not {url!r}")
         if not token_file:
             raise SystemExit(f"a scan token file is needed: --scan-token-file or {SCAN_TOKEN_FILE}")

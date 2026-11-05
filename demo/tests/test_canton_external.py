@@ -1,7 +1,7 @@
 """Tests for demo/canton.py on an existing participant (CZE_CANTON=external): one Ledger API for every role, the user prefix, the token files, and
 the upload of the test token alone. A fake participant answers (one server, which keeps what it was asked and with which token).
 Run: python3 -m unittest discover -s demo/tests"""
-import hashlib, io, json, os, subprocess, sys, tempfile, unittest, threading, http.server
+import hashlib, io, json, os, socket, subprocess, sys, tempfile, unittest, threading, http.server
 from pathlib import Path
 from unittest import mock
 
@@ -115,6 +115,71 @@ class SettingsTests(ExternalTestCase):
         for good in ("https://ledger.example", "http://127.0.0.1:7575", "http://localhost:7575"):
             os.environ["CZE_LEDGER_URL"] = good
             canton.Network()
+
+    def test_a_localhost_name_is_on_this_machine_only_if_every_address_is_loopback(self):
+        def answer(*addresses):
+            return [(socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, 80)) for a in addresses]
+
+        url = "http://wallet.localhost:17580/api/validator/v0/scan-proxy"
+        for addresses, accepted in ((("127.0.0.1",), True), (("::1",), True), (("127.0.0.1", "93.184.216.34"), False), (("93.184.216.34",), False),
+                                    (("0.0.0.0",), False), ((), False)):
+            with self.subTest(addresses=addresses), mock.patch.object(canton.socket, "getaddrinfo", return_value=answer(*addresses)) as lookup:
+                self.assertEqual(canton.https_or_on_this_machine(url), accepted)
+                self.assertEqual(lookup.call_args.args, ("wallet.localhost", 17580))
+        with mock.patch.object(canton.socket, "getaddrinfo", side_effect=socket.gaierror(socket.EAI_NONAME, "not known")):
+            self.assertFalse(canton.https_or_on_this_machine(url))
+        with mock.patch.object(canton.socket, "getaddrinfo", return_value=answer("127.0.0.1")):
+            for bad in ("http://wallet.localhost./x", "http://0.0.0.0/x", "http://[::ffff:127.0.0.1]/x", "http://example.com/x", "http://wallet.localhost.example.com/x"):
+                self.assertFalse(canton.https_or_on_this_machine(bad), bad)
+            for good in ("https://example.com/x", "http://localhost/x", "http://127.0.0.1:1/x", "http://[::1]:1/x"):
+                self.assertTrue(canton.https_or_on_this_machine(good), good)
+        os.environ["CZE_LEDGER_URL"] = "http://wallet.localhost:7575"
+        with mock.patch.object(canton.socket, "getaddrinfo", return_value=answer("127.0.0.1")):
+            canton.Network()
+        with mock.patch.object(canton.socket, "getaddrinfo", return_value=answer("10.1.2.3")), self.assertRaises(SystemExit):
+            canton.Network()
+
+    def test_a_token_goes_only_to_a_peer_on_this_machine_at_each_request(self):
+        import twin
+        asked = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+
+            def do_GET(self):
+                asked.append(self.headers.get("authorization"))
+                data = b"{}"
+                self.send_response(200)
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        port = server.server_port
+        real_connect = socket.create_connection
+
+        class FarSocket:
+            """The real connection, which says its peer is a public address."""
+            def __init__(self, real):
+                self.real = real
+            def getpeername(self):
+                return ("93.184.216.34", port)
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+
+        def connect(far):   # the name reaches the registry, far or not
+            return lambda address, *a, **k: (FarSocket if far else lambda x: x)(real_connect(("127.0.0.1", port), *a, **k))
+
+        url = f"http://wallet.localhost:{port}/api/validator/v0/scan-proxy/dso-party-id"
+        with mock.patch.object(socket, "create_connection", connect(True)):
+            with self.assertRaises(canton.Fail):
+                twin.get_json(url, {"authorization": "Bearer s3cret"})
+        self.assertEqual(asked, [])   # nothing was sent: no request, and no Authorization header
+        with mock.patch.object(socket, "create_connection", connect(False)):
+            twin.get_json(url, {"authorization": "Bearer s3cret"})
+        self.assertEqual(asked, ["Bearer s3cret"])
 
     def test_the_mode_is_local_or_external(self):
         os.environ["CZE_CANTON"] = "remote"

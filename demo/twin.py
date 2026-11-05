@@ -36,7 +36,7 @@
 
 All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the key U), all Canton ones through demo/canton.py's network, so its settings apply. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
-import hashlib, json, os, re, sys, time, urllib.error, urllib.request, uuid
+import hashlib, http.client, json, os, re, sys, time, urllib.error, urllib.request, uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -290,7 +290,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+class _CheckedConnection(http.client.HTTPConnection):
+    """A plain-http connection that is refused, before anything is sent, unless its peer is on this machine (the name is resolved again at each request)."""
+    def connect(self):
+        super().connect()
+        if not canton.is_loopback_address(self.sock.getpeername()[0]):
+            self.close()
+            raise ConnectionRefusedError("the service is not on this machine")
+
+
+class _TokenHTTP(urllib.request.HTTPHandler):
+    """A request that carries a token goes over plain http only to a peer on this machine."""
+    def http_open(self, req):
+        return self.do_open(_CheckedConnection if req.has_header("Authorization") else http.client.HTTPConnection, req)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect, _TokenHTTP)
 
 
 def fetch_json(request: urllib.request.Request) -> dict:

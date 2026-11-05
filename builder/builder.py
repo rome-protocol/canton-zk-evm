@@ -174,10 +174,18 @@ class _RegistryStatus(Exception):
     """The registry answered with this HTTP status instead of 200."""
 
 
+def is_loopback_address(address: str) -> bool:
+    """Whether an IP address (a zone after % is ignored) is loopback, an IPv4 loopback in its IPv6-mapped form included."""
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return ip.is_loopback or (ip.version == 6 and ip.ipv4_mapped is not None and ip.ipv4_mapped.is_loopback)
+
+
 def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: float = 10, max_body: int = REGISTRY_MAX_BODY, body: bytes | None = None,
-                  headers: dict | None = None) -> bytes:
+                  headers: dict | None = None, token: bool = False) -> bytes:
     """One request to a service that is trusted for nothing: bounded as a whole by `limit` seconds, by a timer (see twin_registry_reader), its answer
-    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body."""
+    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body. With `token` set (the request
+    carries a token), over plain http the connection must reach this machine: this is checked on the connected peer, not on the name, and nothing is sent
+    otherwise."""
     url = urllib.parse.urlsplit(base_url)
     connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
     out: dict = {}
@@ -189,6 +197,8 @@ def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: 
             connection.connect()
             if over.is_set():
                 return
+            if token and url.scheme != "https" and not is_loopback_address(connection.sock.getpeername()[0]):
+                raise ConnectionRefusedError("the token registry is not on this machine")
             connection.request(method, f"{url.path.rstrip('/')}{path}", body=body, headers={"accept": "application/json", **(headers or {})})
             r = connection.getresponse()
             if r.status != 200:
@@ -521,7 +531,8 @@ class ChoiceContexts:
             headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
         started = time.monotonic()
         try:
-            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
+            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers,
+                                                     "authorization" in headers),
                                         parse_constant=refuse_constant)
         except _RegistryStatus as e:
             raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e
@@ -2892,7 +2903,7 @@ def on_this_machine(url) -> bool:
         return False
     try:
         found = {a[4][0] for a in socket.getaddrinfo(host, url.port or 80)}
-        return bool(found) and all(ipaddress.ip_address(a).is_loopback for a in found)
+        return bool(found) and all(is_loopback_address(a) for a in found)
     except (OSError, ValueError):
         return False
 
