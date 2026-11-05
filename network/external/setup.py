@@ -28,6 +28,9 @@
               a package whose dependencies are not vetted), in one change, with --dry-run first (the participant prepares the change and answers what
               the vetting would be, and applies nothing). Does nothing where all of them are vetted by this participant.
     Without --package-step the setup above is unchanged: it uploads with vetting on, as before.
+    --twin-dar <DAR> (once for each) puts the twin app's DARs on the participant first, in both forms above, each by the same step: the chain package
+    mints twins of ostia-twin 0.1.0, and the acceptance template is in 0.2.0, so a participant that hosts twin receivers gets both
+    (apps/twin/dist/ostia-twin-0.1.0.dar and ostia-twin-0.2.0.dar). Each DAR prints its own JSON line in a --package-step.
 
   setup.py --ledger-url <URL> --gas-cap-step propose|accept --new-gas-cap <N> [--dry-run]
 
@@ -1099,6 +1102,7 @@ def main(argv: list) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ledger-url", default=os.environ.get("CZE_LEDGER_URL"))
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
+    ap.add_argument("--twin-dar", action="append", default=[], metavar="DAR", help="a twin app DAR (apps/twin/dist/ostia-twin-<version>.dar) to put on the participant before the chain DAR; give it once for each version (0.1.0 and 0.2.0)")
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
     ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step --contract-step or --twin-step: nothing is submitted")
@@ -1256,16 +1260,20 @@ def main(argv: list) -> int:
         ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step, --twin-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
+    twin_dars = [Path(p) for p in own.twin_dar]
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)
     if own.package_step:
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
-        print(json.dumps(package_step(Participant(own.ledger_url), Path(own.dar), own.package_step, own.dry_run)))
+        node = Participant(own.ledger_url)
+        for dar in (*twin_dars, Path(own.dar)):   # one JSON line for each DAR
+            print(json.dumps(package_step(node, dar, own.package_step, own.dry_run)))
         return 0
     chain_args = propose.parse(rest, propose.read_env_file(ROOT / "PINS"))[1] if rest else None
     prefix = os.environ.get("CZE_PARTY_PREFIX", "ostia-")
     os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
     node = Participant(own.ledger_url)
-    ensure_package(node, Path(own.dar))
+    for dar in (*twin_dars, Path(own.dar)):
+        ensure_package(node, dar)
     parties = ensure_parties(node, CHAIN_PARTIES + (DEMO_PARTIES if own.demo else ()), prefix)
     ensure_users(node, {**USERS, **(DEMO_USERS if own.demo else {})}, parties)
     write_parties(parties, Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")))

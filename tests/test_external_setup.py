@@ -1284,6 +1284,23 @@ class Setup(unittest.TestCase):
         self.run_setup(chain=False)
         self.assertNotIn(("POST", "/v2/packages", "Bearer tok-admin-1"), self.node.calls)
 
+    def test_the_twin_dars_go_to_the_participant_before_the_chain_dar(self):
+        seen = []
+        real = setup.ensure_package
+        with mock.patch.object(setup, "ensure_package", lambda node, dar: (seen.append(dar.name), real(node, dar))[1]):
+            self.run_setup("--twin-dar", "ostia-twin-0.1.0.dar", "--twin-dar", "ostia-twin-0.2.0.dar", chain=False)
+        self.assertEqual(seen, ["ostia-twin-0.1.0.dar", "ostia-twin-0.2.0.dar", "stand-in.dar"])
+
+    def test_a_package_step_runs_for_each_twin_dar_and_then_the_chain_dar(self):
+        seen = []
+        with mock.patch.object(setup, "package_step", lambda node, dar, step, dry_run: seen.append((dar.name, step)) or {"packageId": dar.name}):
+            os.environ.pop("CZE_TOKEN_FILE_OPERATOR", None); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER", None)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), "--package-step", "check", "--twin-dar", "ostia-twin-0.1.0.dar", "--twin-dar", "ostia-twin-0.2.0.dar"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(out.getvalue().splitlines()), 3)
+        self.assertEqual(seen, [("ostia-twin-0.1.0.dar", "check"), ("ostia-twin-0.2.0.dar", "check"), ("stand-in.dar", "check")])
+
     def test_a_missing_ledger_url_is_an_error(self):
         with mock.patch.dict(os.environ), self.assertRaises(SystemExit):
             os.environ.pop("CZE_LEDGER_URL", None)

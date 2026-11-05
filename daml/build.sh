@@ -15,9 +15,18 @@ b=$here/build/$form
 rm -rf "$b"; mkdir -p "$b" "$here/dist"
 cp -r "$here/src" "$b/src"
 cp "$here/sidecar/$form.daml" "$b/src/Zk/Sidecar.daml"
-# The chain package depends on the twin app's DAR (from 0.5.0), which is built first with the same toolchain.
-"$here/../apps/twin/build.sh" >&2
-twin=$(cd "$here/../apps/twin" && pwd)/dist/ostia-twin.dar
+# The chain package depends on the twin app's DAR (from 0.5.0). While the chain package is 0.5.0, that is ostia-twin 0.1.0, as the
+# live 0.5.0 was built (both package ids are in PINS), not the current twin source: it is built here from the source commit that
+# PINS names (TWIN_V0_1_0_COMMIT), with the same toolchain as the chain package. A new chain version moves this pin with it.
+commit=$(sed -n 's/^TWIN_V0_1_0_COMMIT=//p' "$here/../PINS")
+[[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "FAIL: PINS has no TWIN_V0_1_0_COMMIT" >&2; exit 1; }
+git -C "$here/.." cat-file -e "$commit^{tree}" 2>/dev/null || git -C "$here/.." fetch --no-tags --depth=1 origin "$commit" >&2
+twinsrc=$here/../apps/twin/build/src-0.1.0
+rm -rf "$twinsrc"; mkdir -p "$twinsrc"
+git -C "$here/.." archive "$commit" apps/twin/src apps/twin/daml.yaml | tar -x -C "$twinsrc"
+grep -qx 'version: 0.1.0' "$twinsrc/apps/twin/daml.yaml" || { echo "FAIL: $commit has no ostia-twin 0.1.0" >&2; exit 1; }
+TWIN_SRC=$twinsrc/apps/twin "$here/../apps/twin/build.sh" >&2
+twin=$(cd "$here/../apps/twin" && pwd)/dist/ostia-twin-0.1.0.dar
 sed "s|__DARS__|$here/dars|; s|__TWIN__|$twin|" "$here/daml.yaml" > "$b/daml.yaml"
 if [ "$form" = stub ]; then
   sed -i.bak "s|^name: canton-zk-evm\$|name: canton-zk-evm-stub|" "$b/daml.yaml"
