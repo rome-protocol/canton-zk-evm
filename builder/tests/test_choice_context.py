@@ -1,7 +1,7 @@
 """The token registry's choice context (Daml 0.5.0): a deposit, withdrawal, payment or trade leg of an instrument whose registry the builder is given
 (`--registry ADMIN=URL`) carries the registry's context for its choice, and the contracts the context names go with the Advance as disclosed contracts.
 The registry is a fake CIP-0056 off-ledger service; the tests run against test_builder.py's fake ledger."""
-import contextlib, http.client, io, json, sys, tempfile, threading, time, unittest
+import contextlib, http.client, io, json, socket, sys, tempfile, threading, time, unittest
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -492,6 +492,43 @@ class Contexts(tb.LegCase):
                 reader.allocation(ADMIN, "a-3")
             self.assertEqual(len(r.asked), 2)
 
+    def test_a_token_goes_only_to_a_peer_on_this_machine_whatever_the_name_gave_at_the_check(self):
+        class FarSocket:
+            """The real connection, which says its peer is a public address."""
+            def __init__(self, real):
+                self.real = real
+            def getpeername(self):
+                return ("93.184.216.34", self.real.getpeername()[1])
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+
+        real_connect = socket.create_connection
+        r = Registry(answer=ANSWER)
+        self.addCleanup(r.close)
+        port = r.server.server_port
+
+        def connect_to_the_registry(far):   # the name resolves at the check to loopback only, and at the connection to the registry (far or not)
+            def connect(address, *a, **k):
+                sock = real_connect(("127.0.0.1", port), *a, **k)
+                return FarSocket(sock) if far else sock
+            return connect
+
+        loopback = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "token"
+            f.write_text("s3cret\n")
+            for url in (f"http://wallet.localhost:{port}", f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+                b.REGISTRY_DOWN.clear()
+                with self.subTest(url), mock.patch.object(b.socket, "getaddrinfo", return_value=loopback), \
+                        mock.patch.object(socket, "create_connection", connect_to_the_registry(True)):
+                    with self.assertRaises(b.NoCantonSide):
+                        b.ChoiceContexts({ADMIN: url}, {ADMIN: str(f)}).allocation(ADMIN, "a-1")
+                    self.assertEqual(r.asked, [])   # nothing was sent: no request, and no Authorization header
+            b.REGISTRY_DOWN.clear()
+            with mock.patch.object(b.socket, "getaddrinfo", return_value=loopback), mock.patch.object(socket, "create_connection", connect_to_the_registry(False)):
+                b.ChoiceContexts({ADMIN: f"http://wallet.localhost:{port}"}, {ADMIN: str(f)}).allocation(ADMIN, "a-1")
+            self.assertEqual([a[2] for a in r.asked], ["Bearer s3cret"])   # the same, with a peer on this machine, goes through
+
     # ---- the reader on its own
     def test_a_slow_registry_is_given_up_on_at_the_deadline_and_not_asked_again_for_a_while(self):
         r = Registry(answer=ANSWER, delay=2)
@@ -645,6 +682,66 @@ class Contexts(tb.LegCase):
         for url in ("https://v.example/scan", "http://127.0.0.1:8080", "http://localhost/x", "http://[::1]:8080"):
             with self.subTest(url):
                 self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url}), {ADMIN: str(f)})
+
+    def test_a_localhost_name_is_on_this_machine_only_if_every_address_is_loopback(self):
+        s = self.setup({ALICE: []})
+        f = Path(s.dir) / "token"
+        f.write_text("abc\n")
+
+        def answer(*addresses):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, 17580)) for a in addresses]
+
+        url = "http://wallet.localhost:17580/api/validator"
+        with mock.patch.object(b.socket, "getaddrinfo", return_value=answer("127.0.0.1")) as lookup:
+            self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url}), {ADMIN: str(f)})
+            self.assertEqual(lookup.call_args.args[:2], ("wallet.localhost", 17580))   # the URL's port
+        with mock.patch.object(b.socket, "getaddrinfo", return_value=answer("127.0.0.1")) as lookup:
+            b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: "http://wallet.localhost/x"})
+            self.assertEqual(lookup.call_args.args[:2], ("wallet.localhost", 80))   # 80 when the URL has none
+        refused = (("a loopback and a public address", {"return_value": answer("127.0.0.1", "93.184.216.34")}),
+                   ("only a public address", {"return_value": answer("93.184.216.34")}),
+                   ("no address", {"return_value": []}),
+                   ("no answer", {"side_effect": socket.gaierror(socket.EAI_NONAME, "not known")}))
+        for name, how in refused:
+            with self.subTest(name), mock.patch.object(b.socket, "getaddrinfo", **how):
+                with self.assertRaises(b.BuilderError):
+                    b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url})
+
+    def test_edge_cases_of_a_localhost_name(self):
+        s = self.setup({ALICE: []})
+        f = Path(s.dir) / "token"
+        f.write_text("abc\n")
+
+        def answer(*addresses):
+            return [(socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, 80)) for a in addresses]
+
+        for url, addresses, accepted in (("http://WALLET.LOCALHOST/x", ("127.0.0.1",), True),
+                                         ("http://wallet.localhost/x", ("::1",), True),
+                                         ("http://wallet.localhost/x", ("::ffff:127.0.0.1",), True),   # reaches 127.0.0.1; the connection is checked again at each request
+                                         ("http://wallet.localhost./x", ("127.0.0.1",), False),
+                                         ("http://wallet.localhost/x", ("0.0.0.0",), False),
+                                         ("http://0.0.0.0/x", ("127.0.0.1",), False),
+                                         ("http://[::ffff:127.0.0.1]/x", ("127.0.0.1",), False)):
+            with self.subTest(url=url, addresses=addresses), mock.patch.object(b.socket, "getaddrinfo", return_value=answer(*addresses)) as lookup:
+                if accepted:
+                    self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url}), {ADMIN: str(f)})
+                    self.assertEqual(lookup.call_args.args[0], "wallet.localhost")   # urlsplit lowercases the name
+                else:
+                    with self.assertRaises(b.BuilderError):
+                        b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url})
+
+    def test_a_name_that_is_not_localhost_is_not_looked_up(self):
+        s = self.setup({ALICE: []})
+        f = Path(s.dir) / "token"
+        f.write_text("abc\n")
+        with mock.patch.object(b.socket, "getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]) as lookup:
+            for url in ("http://example.com/x", "http://notlocalhost/x", "http://wallet.localhost.example.com/x"):
+                with self.subTest(url), self.assertRaises(b.BuilderError):
+                    b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url})
+            for url in ("https://example.com/x", "https://wallet.localhost/x", "http://localhost/x", "http://127.0.0.1/x", "http://[::1]/x"):
+                with self.subTest(url):
+                    self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url}), {ADMIN: str(f)})
+            lookup.assert_not_called()
 
     def test_a_registry_url_with_a_user_and_password_is_refused(self):
         for bad in (f"{ADMIN}=https://u:p@v.example/x", f"{ADMIN}=https://u@v.example/x"):

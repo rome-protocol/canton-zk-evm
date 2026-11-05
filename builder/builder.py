@@ -14,7 +14,7 @@ not known whether it committed ("committed": null; reth is left where it is: an 
 README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, ipaddress, itertools, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -174,12 +174,21 @@ class _RegistryStatus(Exception):
     """The registry answered with this HTTP status instead of 200."""
 
 
+def is_loopback_address(address: str) -> bool:
+    """Whether an IP address (a zone after % is ignored) is loopback, an IPv4 loopback in its IPv6-mapped form included."""
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return ip.is_loopback or (ip.version == 6 and ip.ipv4_mapped is not None and ip.ipv4_mapped.is_loopback)
+
+
 def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: float = 10, max_body: int = REGISTRY_MAX_BODY, body: bytes | None = None,
                   headers: dict | None = None) -> bytes:
     """One request to a service that is trusted for nothing: bounded as a whole by `limit` seconds, by a timer (see twin_registry_reader), its answer
-    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body."""
+    read to at most `max_body` bytes, a redirect not followed (any status but 200 raises _RegistryStatus). Returns the body. A request that carries an
+    Authorization header goes over plain http only if the connection reaches this machine: this is checked on the connected peer, not on the name, and
+    nothing is sent otherwise."""
     url = urllib.parse.urlsplit(base_url)
     connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
+    token = any(k.lower() == "authorization" for k in (headers or {}))
     out: dict = {}
     over = threading.Event()
 
@@ -189,6 +198,8 @@ def bounded_fetch(base_url: str, method: str, path: str, limit: float, timeout: 
             connection.connect()
             if over.is_set():
                 return
+            if token and url.scheme != "https" and not is_loopback_address(connection.sock.getpeername()[0]):
+                raise ConnectionRefusedError("the token registry is not on this machine")
             connection.request(method, f"{url.path.rstrip('/')}{path}", body=body, headers={"accept": "application/json", **(headers or {})})
             r = connection.getresponse()
             if r.status != 200:
@@ -2882,6 +2893,21 @@ def party_token(path: str) -> str:
     return token
 
 
+def on_this_machine(url) -> bool:
+    """Whether a registry URL's host is this machine: localhost, 127.0.0.1 or ::1, or a name under .localhost (RFC 6761) whose every address is loopback.
+    A name that does not resolve, or resolves to any other address, is not."""
+    host = url.hostname
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if not host or not host.endswith(".localhost"):
+        return False
+    try:
+        found = {a[4][0] for a in socket.getaddrinfo(host, url.port or 80)}
+        return bool(found) and all(is_loopback_address(a) for a in found)
+    except (OSError, ValueError):
+        return False
+
+
 def read_registry_tokens(items, registries: dict) -> dict:
     """{admin: token file} from `ADMIN=FILE` items, each for an admin that has a registry that is https or on this machine (a token is not sent in the
     clear); the file is checked to hold one token now, and read again for each request. The token is never printed."""
@@ -2891,7 +2917,7 @@ def read_registry_tokens(items, registries: dict) -> dict:
         if admin not in registries:
             raise BuilderError(f"a registry token for {admin}, which has no token registry (--registry)")
         url = urllib.parse.urlsplit(registries[admin])
-        if url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
+        if url.scheme != "https" and not on_this_machine(url):
             raise BuilderError(f"a registry token for {admin}, whose token registry is not https (a token is not sent in the clear, except to this machine)")
         try:
             registry_token(path)
