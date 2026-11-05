@@ -82,16 +82,20 @@ jobs:
         if: always()
         run: docker rm -f -v explorer-nightly-l1-db
 
-  # PROBE (temporary): on each runner, the short L2 four times, the server in its own process (l2.test.ts) and in the test's process (l2-inline.test.ts, main's), in turn.
+  # PROBE (temporary): on each runner, the short L2 four times, the explorer with its reads side by side (this commit) and one after another (base), in turn.
   l2-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        probe: [1, 2, 3, 4, 5, 6]
+        probe: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ff5dd6d3ba6f554491037e9e20b99a17986a80a7
+          path: base
       - uses: ./.github/actions/pinned-images
         with:
           images: EXPLORER_NODE_IMAGE POSTGRES_IMAGE
@@ -116,22 +120,29 @@ jobs:
         run: |
           set -a; . ./PINS; set +a
           grep -m1 "model name" /proc/cpuinfo; nproc
-          if [ $((PROBE % 2)) = 0 ]; then order="l2 l2-inline l2 l2-inline"; else order="l2-inline l2 l2-inline l2"; fi
-          mkdir -p explorer/probe
-          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
-            -e L2=1 -e L2_TRANSACTIONS=300000 -e L2_SECONDS=30 -e L2_SSE=2000 -e ORDER="$order" \
-            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
-            sh -c 'npm ci --ignore-scripts >/dev/null 2>&1; i=0; for v in $ORDER; do i=$((i+1)); L2_RESULTS=/repo/explorer/probe/$i-$v.json npx vitest run test/l2/$v.test.ts --maxWorkers=2 > /repo/explorer/probe/$i-$v.log 2>&1; echo "$i $v exit $?"; grep -h "AssertionError" /repo/explorer/probe/$i-$v.log | head -3; done'
-          for f in explorer/probe/*.json; do
-            jq -r --arg f "$(basename "$f")" '"\($f) single p50 \(.classes[] | select(.name=="single") | .latency.p50) p97.5 \(.classes[] | select(.name=="single") | .latency.p97_5) | addr \(.classes[] | select(.name=="address page") | .latency.p97_5) list \(.classes[] | select(.name=="list") | .latency.p97_5) search \(.classes[] | select(.name=="search") | .latency.p97_5) health \(.classes[] | select(.name=="health") | .latency.p97_5) | server p50 \(.server.p50Ms) p97.5 \(.server.p97_5Ms) evloop p99 \(.server.eventLoopP99Ms) max \(.server.eventLoopMaxMs) | ingest p95 \(.ingestion.p95) | seed \(.seedSeconds) | runner \(.runner // "n/a")"' "$f"
+          if [ $((PROBE % 2)) = 0 ]; then order="par seq par seq"; else order="seq par seq par"; fi
+          mkdir -p probe
+          i=0
+          for v in $order; do
+            i=$((i + 1))
+            if [ "$v" = par ]; then src=$PWD; else src=$PWD/base; fi
+            rc=0
+            docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
+              -e L2=1 -e L2_TRANSACTIONS=300000 -e L2_SECONDS=30 -e L2_SSE=2000 -e L2_RESULTS=/out/$i-$v.json \
+              -v "$src:/repo" -v "$PWD/probe:/out" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+              sh -c "npm ci --ignore-scripts >/dev/null 2>&1 && npx vitest run test/l2/l2.test.ts --maxWorkers=2" > "probe/$i-$v.log" 2>&1 || rc=$?
+            echo "$i $v exit $rc"; grep -h "AssertionError" "probe/$i-$v.log" | head -3 || true
+          done
+          for f in probe/*.json; do
+            jq -r --arg f "$(basename "$f")" '"\($f) single p50 \(.classes[] | select(.name=="single") | .latency.p50) p97.5 \(.classes[] | select(.name=="single") | .latency.p97_5) routes \(.classes[] | select(.name=="single") | .routes | to_entries | map("\(.key) \(.value.p97_5)") | join(", ")) | server routes \(.server.routes | to_entries | map(select(.key | test("^/api/(blocks|txs|addresses)/[{][^}]*[}]$"))) | map("\(.key) \(.value.p97_5)") | join(", ")) | addr \(.classes[] | select(.name=="address page") | .latency.p97_5) list \(.classes[] | select(.name=="list") | .latency.p97_5) search \(.classes[] | select(.name=="search") | .latency.p97_5) health \(.classes[] | select(.name=="health") | .latency.p97_5) | ingest p95 \(.ingestion.p95) | seed \(.seedSeconds | round) | runner \(.runner)"' "$f"
           done | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the numbers
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: l2-probe-${{ matrix.probe }}
-          path: explorer/probe
+          path: probe
           if-no-files-found: warn
       - name: Remove the PostgreSQL and its volume
         if: always()
