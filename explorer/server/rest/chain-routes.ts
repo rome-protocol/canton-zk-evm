@@ -48,8 +48,9 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
   async function finalTx(hash: string) {
     if (!HASH.test(hash)) throw new BadRequest("A transaction is named by its 0x hash.");
-    const at = await rest.placeOf(hash);
-    return at && { at, derived: at.block <= (await rest.deriveCursor()) };
+    // Side by side: the derive cursor only grows, so one read with the place is at worst a moment older, and says "not derived yet" a moment longer.
+    const [at, cursor] = await Promise.all([rest.placeOf(hash), rest.deriveCursor()]);
+    return at && { at, derived: at.block <= cursor };
   }
   /** `after` of an ascending list inside one block or transaction. */
   const afterOf = (q: URLSearchParams, shape: Parameters<typeof cursorOf>[1]) => cursorOf(q.get("after"), shape);
@@ -87,8 +88,8 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     if (a.status !== 200) return a;
     const body = a.body as { status: string; number: number; canton: Record<string, unknown> | null };
     const final = body.status === "final";
-    const extras = final ? await rest.blockExtras(body.number) : undefined;
-    const derived = final && body.number <= (await rest.deriveCursor());
+    const [extras, cursor] = final ? await Promise.all([rest.blockExtras(body.number), rest.deriveCursor()]) : ([undefined, 0] as const);
+    const derived = final && body.number <= cursor;
     // The record's hex is kept apart (/record): a block's page is small.
     const canton = body.canton && pick(body.canton, F.cantonSummary);
     return cached(ok(pick({ ...body, canton, legsCount: extras?.legsCount ?? null, derived, lifecycle: extras?.lifecycle ? pick(extras.lifecycle, F.blockLifecycle) : null } as Record<string, unknown>, F.blockDetail)), "composite");
@@ -153,14 +154,15 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
 
   async function oneTx(hash: string, q: URLSearchParams): Promise<Answer> {
     if (q.get("raw") === "1") return rawReceipt(hash);
-    const a = await transaction(hash);
+    // The answer and the transaction's place are read side by side, and so are its trace and fee caps: one query after another, this route's time under load was mostly waiting.
+    const [a, placed] = await Promise.all([transaction(hash), HASH.test(hash) ? finalTx(hash) : undefined]);
     if (a.status !== 200) return a;
     const body = a.body as { status: string };
-    const here = body.status === "final" ? await finalTx(hash) : undefined;
+    // A transaction the indexer wrote between the two reads is final in the answer and not yet in its place: read the place again.
+    const here = body.status === "final" ? placed ?? (await finalTx(hash)) : undefined;
     const derived = !!here?.derived;
     // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
-    const trace = derived && here ? await rest.traceOf(here.at) : undefined;
-    const caps = here ? await rest.feeCapsOf(here.at) : { maxFeePerGas: null, maxPriorityFeePerGas: null };
+    const [trace, caps] = await Promise.all([derived && here ? rest.traceOf(here.at) : undefined, here ? rest.feeCapsOf(here.at) : { maxFeePerGas: null, maxPriorityFeePerGas: null }]);
     return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: here?.at.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
   }
 

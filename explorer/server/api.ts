@@ -223,18 +223,20 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
 
   async function transaction(hash: string): Promise<Answer> {
     if (!HASH.test(hash)) return fail(400, "A transaction is named by its 0x hash.");
-    const final = await chain.tx(hash);
+    // Reads that do not depend on each other are made side by side: one after another, this answer's time under load was mostly waiting. What the block wrote
+    // with the transaction (its legs) is read once its row has been seen, so that it is never read from before the block was written.
+    const [final, lifecycle] = await Promise.all([chain.tx(hash), lifecycleOf(hash)]);
     const tr = tracker?.state(hash);
     if (final) {
-      const transfer = await transferOf(final.input, final.to);
+      const [transfer, legs] = await Promise.all([transferOf(final.input, final.to), chain.txLegs(hash, BLOCK_LEGS)]);
       const toToken = transfer?.symbol ?? (final.to ? (await tokenOf(final.to))?.symbol ?? null : null);
       return ok({
-        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle: await lifecycleOf(hash),
+        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle,
         block: pick(final.block, FIELDS.txBlock),
         from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
         gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
         input: final.input, logs: final.logs.map((l) => pick(l, FIELDS.log)), transfer, toToken, created: final.created,
-        legs: (await chain.txLegs(hash, BLOCK_LEGS)).map(legOf),
+        legs: legs.map(legOf),
       });
     }
     // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.
@@ -247,7 +249,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const status = t.blockNumber === null ? "waiting" : unindexed ? "unindexed" : "proving";
     const state: ApiTxState = status === "waiting" ? "pending" : status;
     return ok({
-      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null, lifecycle: await lifecycleOf(hash),
+      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null, lifecycle,
       block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,
