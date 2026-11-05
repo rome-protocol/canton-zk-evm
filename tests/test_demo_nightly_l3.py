@@ -267,8 +267,8 @@ class SenderNonces(unittest.TestCase):
         (folder / "demo_w1.py").write_text(body)
         return folder
 
-    def sender(self, folder, per_block=3):
-        s = l3.Sender(sys.executable, folder, per_block)
+    def sender(self, folder, per_block=3, mined=None):
+        s = l3.Sender(sys.executable, folder, per_block, mined or (lambda: s.nonce))   # every transfer sent is in a block, unless the test says otherwise
         s.prefix = []   # no `nice`
         return s
 
@@ -295,6 +295,65 @@ class SenderNonces(unittest.TestCase):
         s.stop = True
         self.assertIn("nonce too low: next nonce 5, tx nonce 4", str(caught.exception))
         self.assertIn("returned non-zero exit status 1", str(caught.exception))
+
+    def test_while_no_block_takes_the_transfers_it_stops_at_two_blocks_worth(self):
+        """The base fee over V's fee cap: blocks take none of V's transfers, and the pool must not fill (reth: "txpool is full")."""
+        folder = self.fake("import sys\nopen(__file__ + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint(7 if sys.argv[1] == 'nonce' else 'ok')\n")
+        s = self.sender(folder, mined=lambda: 7)
+        s.start()
+        for _ in range(5):
+            s.next_batch()
+        s.stop = True
+        s.join(5)
+        lines = (folder / "demo_w1.py.log").read_text().splitlines()
+        self.assertEqual(lines[1:], ["plain 3 7", "plain 3 10"])
+        self.assertEqual(s.sent, 6)
+
+    def test_it_sends_what_the_blocks_took(self):
+        folder = self.fake("import sys\nopen(__file__ + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint(7 if sys.argv[1] == 'nonce' else 'ok')\n")
+        mined = iter([7, 7, 9])   # the first block takes 2 of the first batch's 3
+        s = self.sender(folder, mined=lambda: next(mined, 9))
+        s.start()
+        for _ in range(3):
+            s.next_batch()
+        s.stop = True
+        s.join(5)
+        lines = (folder / "demo_w1.py.log").read_text().splitlines()
+        self.assertEqual(lines[1:4], ["plain 3 7", "plain 3 10", "plain 2 13"])
+
+
+class BatchSize(unittest.TestCase):
+    def test_a_block_s_worth_when_none_is_waiting_or_one_block_s_worth_is(self):
+        self.assertEqual(l3.batch_size(1428, 0), 1428)
+        self.assertEqual(l3.batch_size(1428, 1428), 1428)
+
+    def test_none_when_two_blocks_worth_are_waiting(self):
+        self.assertEqual(l3.batch_size(1428, 2856), 0)
+        self.assertEqual(l3.batch_size(1428, 4000), 0)
+
+    def test_the_rest_up_to_two_blocks_worth(self):
+        self.assertEqual(l3.batch_size(1428, 2000), 856)
+
+
+class CutFacts(unittest.TestCase):
+    def test_the_base_fee_and_the_builder_s_numbers(self):
+        out = 'block 9: 1428 transactions\n{"committed": true, "updateId": "1220ab", "advanceSeconds": 1.25, "proveSeconds": 0.05, "leftOut": [{"reason": "no Canton side"}]}\n'
+        self.assertEqual(l3.cut_facts(out, {"baseFeePerGas": hex(10_130_000_000)}),
+                         {"base_fee_gwei": 10.13, "advance_s": 1.25, "prove_s": 0.05, "left_out": [{"reason": "no Canton side"}]})
+        self.assertEqual(l3.committed(out), "1220ab")
+
+    def test_an_answer_without_them(self):
+        self.assertEqual(l3.cut_facts("", {}), {"base_fee_gwei": 0.0, "advance_s": None, "prove_s": None, "left_out": []})
+
+    def test_the_chain_summary_counts_the_empty_blocks_and_each_reason_once_a_block(self):
+        blocks = [{"number": 58, "txs": 1428, "base_fee_gwei": 8.5, "advance_s": 1.0, "prove_s": 0.05, "left_out": []},
+                  {"number": 59, "txs": 1425, "base_fee_gwei": 9.6, "advance_s": 2.0, "prove_s": 0.05, "left_out": [{"reason": "r"}, {"reason": "r"}]},
+                  {"number": 60, "txs": 0, "base_fee_gwei": 10.8, "advance_s": 3.0, "prove_s": 0.05, "left_out": [{"reason": "r"}]}]
+        summary = l3.chain_summary(blocks, 4284)
+        self.assertEqual((summary["transactions_sent"], summary["empty_blocks"], summary["first_empty_block"]), (4284, 1, 60))
+        self.assertEqual((summary["base_fee_gwei_first"], summary["base_fee_gwei_last"], summary["base_fee_gwei_max"]), (8.5, 10.8, 10.8))
+        self.assertEqual((summary["advance_p50_s"], summary["advance_p95_s"], summary["advance_max_s"]), (2.0, 3.0, 3.0))
+        self.assertEqual(summary["left_out_reasons"], {"r": 2})
 
 
 if __name__ == "__main__":

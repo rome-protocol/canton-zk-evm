@@ -24,8 +24,9 @@ at most 1,428 transactions is the budget on the reference machine, the explorer'
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
 
 Reads: EXPLORER (the explorer's URL), L3_PY (the Python of the demo's virtualenv), L3_DB (the explorer's database container), and the demo's own variables,
-which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder; with CUT_BLOCK_JSON=1 it prints the commit's update id),
-and L3_LEDGER (the reader's participant, http://127.0.0.1:7577). The next batch of transfers is sent while the builder cuts the block before it. Exits 1 when a budget is broken.
+which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder; with CUT_BLOCK_JSON=1 it prints the commit's update id,
+the builder's advance and prove seconds and its reasons for leaving transactions out), and L3_LEDGER (the reader's participant, http://127.0.0.1:7577). The next batch of transfers
+is sent while the builder cuts the block before it, and only as many as keep two blocks' worth of V's transfers out of a block (see batch_size). Exits 1 when a budget is broken.
 """
 import json
 import math
@@ -282,16 +283,59 @@ class DbClock(threading.Thread):
         return [b - a for a, b in zip(self.times, self.times[1:])]
 
 
-def committed(output):
-    """The `updateId` of the commit that `cut_block` printed (the last JSON line of its output); None when it says none."""
+def cut_answer(output):
+    """The last JSON object that `cut_block` printed; {} when there is none."""
     for line in reversed(output.strip().splitlines()):
         try:
             answer = json.loads(line)
         except ValueError:
             continue
         if isinstance(answer, dict):
-            return answer.get("updateId") if isinstance(answer.get("updateId"), str) and answer.get("updateId") else None
-    return None
+            return answer
+    return {}
+
+
+def committed(output):
+    """The `updateId` of the commit that `cut_block` printed (the last JSON line of its output); None when it says none."""
+    answer = cut_answer(output)
+    return answer.get("updateId") if isinstance(answer.get("updateId"), str) and answer.get("updateId") else None
+
+
+def seconds(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def cut_facts(output, block):
+    """What a block's cut says beside its update id: the block's base fee (gwei), the builder's advance and prove seconds, and why it left transactions out."""
+    answer = cut_answer(output)
+    left_out = answer.get("leftOut")
+    return {"base_fee_gwei": int(block.get("baseFeePerGas") or "0x0", 16) / 1e9, "advance_s": seconds(answer.get("advanceSeconds")),
+            "prove_s": seconds(answer.get("proveSeconds")), "left_out": left_out if isinstance(left_out, list) else []}
+
+
+def batch_size(per_block, unmined):
+    """How many transfers the sender sends next, with `unmined` of V's transfers sent and not yet in a block: enough to keep two blocks' worth out of a block (the one
+    being cut and the next), and never more than one block's. Each full block of 1,428 transfers (30 Mgas, twice the gas target) raises the base fee by an eighth
+    (EIP-1559), so about 40 blocks into the flood it reaches V's fee cap (demo/evm.py, MAX_FEE): from then on the builder can take V's transfers only into every other
+    block, and a sender that sent a block's worth for every cut whatever was taken filled reth's pool ("txpool is full") in about 10 minutes."""
+    return max(0, min(per_block, 2 * per_block - unmined))
+
+
+def chain_summary(blocks, sent):
+    """What the chain did with the flood, beside the budgets: the transfers sent and the blocks with none, the base fee, the builder's advance (how long Canton took to
+    commit each block) and prove seconds, and each reason the builder gave for leaving a transaction out, with how many blocks gave it."""
+    advance = [b["advance_s"] for b in blocks if b.get("advance_s") is not None]
+    prove = [b["prove_s"] for b in blocks if b.get("prove_s") is not None]
+    fees = [b["base_fee_gwei"] for b in blocks if b.get("base_fee_gwei") is not None]
+    reasons = {}
+    for b in blocks:
+        for r in {str(x.get("reason") if isinstance(x, dict) else x)[:200] for x in b.get("left_out") or []}:
+            reasons[r] = reasons.get(r, 0) + 1
+    return {"transactions_sent": sent, "empty_blocks": sum(1 for b in blocks if b["txs"] == 0),
+            "first_empty_block": next((b["number"] for b in blocks if b["txs"] == 0), None),
+            "base_fee_gwei_first": fees[0] if fees else None, "base_fee_gwei_last": fees[-1] if fees else None, "base_fee_gwei_max": max(fees, default=None),
+            "advance_p50_s": percentile(advance, 50), "advance_p95_s": percentile(advance, 95), "advance_max_s": max(advance, default=None),
+            "prove_p50_s": percentile(prove, 50), "left_out_reasons": reasons}
 
 
 def reth_head():
@@ -333,13 +377,16 @@ class Sender(threading.Thread):
     """Sends batches of transfers one after another, one batch ahead of the builder: the next batch goes into reth's pool while the builder cuts the block before it.
     V's nonce is read once, at the start, and counted up here: while the builder cuts a block, reth moves back and sends the block's transactions to the pool one at a
     time, and a read of "pending" in that window answers the old nonce (reth 2.5.2 counts the unbroken run of pool transactions from the chain's nonce), so a batch
-    that read it would sign nonces that are taken."""
-    def __init__(self, py, root, per_block):
+    that read it would sign nonces that are taken. How many of them are in a block is V's nonce at the latest block (`mined`), which moves back only while a block is
+    cut, and then by that block: the next batch is smaller for it, never larger. Each batch is batch_size's."""
+    def __init__(self, py, root, per_block, mined=None):
         super().__init__(daemon=True)
         # At the lowest priority: on the runner the sender shares its cores with Canton, reth, the builder and the explorer, and a sender that is ahead of them starved
         # Canton into answering the builder's Advance too late (20 s) in two of four trial runs.
         self.prefix, self.script, self.per_block = ["nice", "-n", "19"], [py, str(root / "demo_w1.py")], per_block
         self.nonce = None   # V's next nonce
+        self.mined = mined   # V's nonce at the latest block; read from reth for V's address when not given
+        self.sent = 0
         self.ready, self.stop, self.error = queue.Queue(maxsize=1), False, None
 
     def command(self, *args):
@@ -356,9 +403,15 @@ class Sender(threading.Thread):
     def run(self):
         try:
             self.nonce = int(self.call("nonce").strip().splitlines()[-1])
+            if self.mined is None:
+                address = self.call("address").strip().splitlines()[-1]
+                self.mined = lambda: int(rpc("eth_getTransactionCount", [address, "latest"]), 16)
             while not self.stop:
-                self.call("plain", self.per_block, self.nonce)
-                self.nonce += self.per_block
+                count = batch_size(self.per_block, self.nonce - self.mined())
+                if count:
+                    self.call("plain", count, self.nonce)
+                    self.nonce += count
+                    self.sent += count
                 while not self.stop:
                     try:
                         self.ready.put(True, timeout=0.5)
@@ -390,6 +443,7 @@ def run(seconds, per_block, results):
     accepted0 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables0 = table_sizes()
     cut = []          # (number, update id, returned at, transactions)
+    facts = {}        # number -> cut_facts
     seen = {}         # number -> {"api_sent": t, "api_answered": t}: the first answer of the API from its database (monotonic seconds)
     done = threading.Event()
     cuts_kept = []    # cuts that reported a failure but that Canton and reth both hold
@@ -437,7 +491,9 @@ def run(seconds, per_block, results):
             out = cutting.stdout
             returned = time.monotonic()
             number = int(rpc("eth_blockNumber", []), 16)
-            count = len(rpc("eth_getBlockByNumber", [hex(number), False])["transactions"])
+            block = rpc("eth_getBlockByNumber", [hex(number), False])
+            count = len(block["transactions"])
+            facts[number] = cut_facts(out, block)
             cut.append((number, committed(out), returned, count))
             print(f"block {number}: {count} transactions committed", flush=True)
     finally:
@@ -472,10 +528,12 @@ def run(seconds, per_block, results):
                        "record_time_to_served_s": None if first is None or record_at.get(update_id) is None else first - record_at[update_id],
                        "database_tick_gap_s": None if first is None or before is None else first - before,
                        "api_answer_after_served_s": None if first is None or answered is None else answered + WALL_OFFSET - first,
-                       "sse_after_served_s": None if got is None or (before is None and first is None) else got - (first if before is None else before)})
+                       "sse_after_served_s": None if got is None or (before is None and first is None) else got - (first if before is None else before),
+                       **facts.get(number, {})})
     summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0, dbclock.error)
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
+        summary.update(chain_summary(blocks, sender.sent))
     if txs1 > txs0:   # where the growth is: the five tables that grew most, in bytes per million transactions added
         grown = sorted(((t, tables1.get(t, 0) - tables0.get(t, 0)) for t in tables1), key=lambda kv: -kv[1])[:5]
         summary["growth_by_table_bytes_per_million"] = {t: round(g / (txs1 - txs0) * 1_000_000) for t, g in grown}

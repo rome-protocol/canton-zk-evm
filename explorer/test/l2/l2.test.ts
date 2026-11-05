@@ -4,30 +4,18 @@
  * 1,428 transactions every 3 s, with `L2_SSE` live-stream clients and the health route asked throughout. It asserts B3, B4, B6 and B7 and writes the
  * numbers to `L2_RESULTS` (a JSON file) and to the log. It runs only when `L2=1`, on the pinned PostgreSQL; the design's size is
  * `L2_TRANSACTIONS=10000000 L2_SECONDS=600`, `L2_KEEP_DATABASE=1` leaves the seeded database in place to look at query plans, and CI runs a smaller one (docs/METRICS.md says which, and what was measured).
+ * The server runs in a process of its own (test/l2/serve.ts), as the deployed explorer does beside its indexer; this process seeds, ingests and runs the getLogs and txlist clients.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
-import { createApi } from "../../server/api.ts";
-import { createEtherscanRest } from "../../server/rest/etherscan-rest.ts";
-import { createApiHealth } from "../../server/api-health.ts";
-import { createChainDb } from "../../server/chain-db.ts";
-import { loadConfig } from "../../server/config.ts";
 import { migrate } from "../../server/db/migrate.ts";
 import { TEST_URL, checkRequired, makeDatabase } from "../../server/db/testing.ts";
-import { createHttpServer } from "../../server/http.ts";
 import { createIndexer } from "../../server/indexer/indexer.ts";
 import { CHANNEL } from "../../server/indexer/notify.ts";
-import { createAccountRest } from "../../server/rest/account-rest.ts";
-import { createChainRest } from "../../server/rest/chain-rest.ts";
-import { createStreamHub, startStreamTimers } from "../../server/rest/stream.ts";
-import { createStreamSource } from "../../server/rest/stream-source.ts";
-import type { Reth } from "../../server/reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeBlock, makeChain } from "../synthetic-chain.ts";
 
 const int = (name: string, fallback: number) => Number(process.env[name] ?? fallback);
@@ -44,6 +32,24 @@ const q95 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.cei
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 const bytea = (h: string) => Buffer.from(h.slice(2), "hex");
 
+/** The machine's CPU time so far, from the "cpu" line of /proc/stat (Linux; the counters are the host's, also in a container), in clock ticks; null elsewhere. */
+function cpuTicks(): { total: number; idle: number; iowait: number; steal: number } | null {
+  try {
+    const [user = 0, nice = 0, system = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0] = readFileSync("/proc/stat", "utf8").split("\n")[0]!.trim().split(/\s+/).slice(1).map(Number);
+    return { total: user + nice + system + idle + iowait + irq + softirq + steal, idle, iowait, steal };
+  } catch {
+    return null;
+  }
+}
+/** What the runner is: its CPU and cores, and over the load, the share of the machine's CPU time that was busy, waiting on disk, or taken by the host for other machines (steal). */
+function runnerOver(before: ReturnType<typeof cpuTicks>, after: ReturnType<typeof cpuTicks>) {
+  let cpu: string | null = null;
+  try { cpu = /^model name\s*:\s*(.+)$/m.exec(readFileSync("/proc/cpuinfo", "utf8"))?.[1]?.trim() ?? null; } catch { /* not Linux */ }
+  const d = before && after ? after.total - before.total : 0;
+  const pct = (n: number) => Math.round((n / d) * 1000) / 10;
+  return { cpu, cores: availableParallelism(), ...(before && after && d > 0 ? { busyPct: pct(d - (after.idle - before.idle) - (after.iowait - before.iowait) - (after.steal - before.steal)), iowaitPct: pct(after.iowait - before.iowait), stealPct: pct(after.steal - before.steal) } : {}) };
+}
+
 describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on the pinned PostgreSQL", () => {
   checkRequired();
 
@@ -52,8 +58,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
     const folder = mkdtempSync(join(tmpdir(), "explorer-l2-"));
     const stops: (() => Promise<void> | void)[] = [];
     try {
-      // The API's pool is sized as a server's would be (the helper's is for small tests); the pool of the helper stays for the seed's and the load's own checks.
-      const pool = new pg.Pool({ connectionString: db.url, max: int("L2_POOL", 20) });
+      // The indexer's pool, as large as server/indexer/cli.ts's (pg's default), which also serves this process's own queries; the server's pool (L2_POOL) is in its process.
+      const pool = new pg.Pool({ connectionString: db.url, max: 10 });
       pool.on("error", () => undefined);
       stops.push(() => pool.end());
       await migrate(pool);
@@ -88,40 +94,22 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const hotTxs = Number((await pool.query("select count(*) as n from transactions where from_address = $1", [bytea(HOT)])).rows[0].n);
       expect(hotTxs, "the one address's history").toBeGreaterThanOrEqual(HOT_TXS * 0.9);
 
-      // ---- The server: the pages' routes, the live stream, and the health route, over the database.
-      const reth = { code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => ({ number: 1 }), transaction: async () => ({ hash: "0x" }), balance: async () => 0n, balanceAt: async () => 0n, nonce: async () => 0 } as unknown as Reth;
-      // reth answers at once here: it is not what L2 measures. The routes under test are the database's.
-      const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`);
-      // The health route as the deployed server has it: this instance's checks run on a timer in the background and are written through a pool of the route's own, which reads them.
-      const healthPool = new pg.Pool({ connectionString: db.url, max: 2 });
-      healthPool.on("error", () => undefined);
-      stops.push(() => healthPool.end());
-      const ledger = { ledgerEnd: async () => 1 } as never;
-      const health = createApiHealth({ pool: healthPool, instance: "l2", reth, ledger });
-      const api = createApi({ config, reth, ledger, chain: createChainDb(pool, healthPool), health, rest: createChainRest(pool), accounts: createAccountRest(pool), etherscanRest: createEtherscanRest(pool), live: true });
-      const hub = createStreamHub();
-      const source = createStreamSource({ pool, connection: { connectionString: db.url }, hub, log: () => undefined });
-      const server = createHttpServer(api, folder, undefined, "x-client-ip", hub);
-      const served: number[] = []; // how long the server itself took for each request, from its arrival to the end of its answer
-      const slowest: { ms: number; url: string }[] = []; // the slowest answers, named, so that a failed budget says which route
-      server.on("request", (rq, rs) => {
-        if (rq.url?.startsWith("/api/stream") || rq.url?.startsWith("/api?module=logs") || rq.url?.startsWith("/api?module=account")) return; // the stream has its own budget, and so have getLogs and txlist (B3)
-        const t = performance.now(), url = rq.url ?? "";
-        rs.on("finish", () => { const ms = performance.now() - t; served.push(ms); if (slowest.length < 12 || ms > slowest[slowest.length - 1]!.ms) { slowest.push({ ms, url: url.slice(0, 100) }); slowest.sort((a, b) => b.ms - a.ms); slowest.length = Math.min(slowest.length, 12); } });
-      });
-      await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
-      stops.push(() => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }));
-      await source.start();
       // The indexer's own checks (C4, C5, the derive lag), every 2 s as its run loop does, so that the rows /api/health reads are fresh.
       const checker = setInterval(() => void indexer.checkOnce().catch(() => undefined), 2000);
       stops.push(() => clearInterval(checker));
       await indexer.checkOnce();
-      await health.refresh();
-      health.start();
-      stops.push(() => health.stop());
-      stops.push(() => source.stop());
-      stops.push(startStreamTimers(hub));
-      stops.push(() => hub.close());
+
+      // ---- The server: the pages' routes, the live stream, and the health route, over the database, in a process of its own (test/l2/serve.ts). The deployed indexer
+      // is a process of its own too, so neither this process's ingestion and synthetic blocks nor its getLogs and txlist clients are on the event loop that B3 times.
+      const serveConfig = join(folder, "serve.json");
+      writeFileSync(serveConfig, JSON.stringify({ url: db.url, folder, poolMax: int("L2_POOL", 20), pins: { programVK: PINS.programVK, rootC: PINS.rootC } }));
+      const serve = spawn(process.execPath, ["test/l2/serve.ts", serveConfig], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+      const serveExit = new Promise<void>((ok) => serve.once("exit", () => ok()));
+      stops.push(async () => { if (serve.exitCode === null && serve.signalCode === null) { serve.kill("SIGTERM"); await Promise.race([serveExit, sleep(10_000)]); } });
+      const port = await new Promise<number>((ok, fail) => {
+        serve.once("message", (m) => ok((m as { port: number }).port));
+        serve.once("exit", (code) => fail(new Error(`the server process exited ${code} before it listened`)));
+      });
 
       // The moment each block's NOTIFY is sent is the moment it is indexed, for B4.
       const listener = new pg.Client({ connectionString: db.url });
@@ -135,7 +123,6 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const some = async (sql: string, args: unknown[] = []) => (await pool.query(sql, args)).rows.map((r) => r.v as string);
       const blocks = (await some("select number::text as v from blocks order by random() limit 300")), hashes = await some("select '0x' || encode(hash, 'hex') as v from transactions order by random() limit 300");
       const addresses = [HOT, ...(await some("select distinct '0x' || encode(from_address, 'hex') as v from transactions limit 50"))];
-      const port = (server.address() as AddressInfo).port;
       const classes = [
         { name: "single", share: 0.6, clients: 60, paths: [...blocks.slice(0, 100).map((n) => `/api/blocks/${n}`), ...hashes.slice(0, 100).map((h) => `/api/txs/${h}`), ...addresses.map((a) => `/api/addresses/${a}`)] },
         { name: "address page", share: 0.2, clients: 30, paths: [...addresses.map((a) => `/api/addresses/${a}/txs?limit=25`), `/api/addresses/${HOT}/txs?limit=25`, `/api/addresses/${HOT}/token-transfers?limit=25`] },
@@ -160,12 +147,13 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const driveConfig = join(folder, "drive.json");
       writeFileSync(driveConfig, JSON.stringify({ host: "127.0.0.1", port, seconds: SECONDS, ipHeader: "x-client-ip", connections: 32, sse: SSE, classes }));
 
-      // ---- Run: the load in its own process, ingestion and getLogs in this one.
+      // ---- Run: the load in its own process, ingestion, getLogs and txlist in this one.
       const load = spawn(process.execPath, ["test/l2/drive.ts", driveConfig], { stdio: ["ignore", "pipe", "inherit"] });
       let out = "";
       load.stdout.on("data", (d: Buffer) => { out += d; });
       const finished = new Promise<void>((ok, fail) => { load.on("exit", (code) => (code === 0 ? ok() : fail(new Error(`the load process exited ${code}`)))); });
-      const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
+      serve.send({ load: true }); // the server times its answers and its event loop from here
+      const cpuBefore = cpuTicks();
       // Every answer of the health route that is not 200, with the checks that made it so: a B7 failure says which row went down or stale.
       const unhealthy: string[] = [];
       const watch = setInterval(() => { void fetch(`http://127.0.0.1:${port}/api/health`, { headers: { "x-client-ip": "10.250.0.3" } }).then(async (r) => { if (r.status === 200) return; const j = (await r.json()) as { status: string; checks: { id: string; role: string; status: string; stale: boolean; detail: unknown }[] }; unhealthy.push(`${r.status} ${j.status}: ${j.checks.filter((c) => c.status !== "ok" || c.stale).map((c) => `${c.role}/${c.id} ${c.stale ? "stale" : c.status} ${c.detail ?? ""}`).join("; ")}`); }).catch(() => undefined); }, 250);
@@ -213,8 +201,12 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const txlistMs: number[] = [];
       const txlistRun = openLoop(`http://127.0.0.1:${port}/api?module=account&action=txlist&address=${HOT}&page=1&offset=100&sort=desc`, Math.max(1, Math.round(RATE * 0.01)), 252, txlistMs, (b) => b.status === "1" && b.result.length === 100);
       await finished;
-      loop.disable(); clearInterval(watch);
-      served.sort((a, b) => a - b);
+      const runner = runnerOver(cpuBefore, cpuTicks());
+      clearInterval(watch);
+      const served = await new Promise<{ requests: number; p50Ms: number; p97_5Ms: number; maxMs: number; eventLoopP99Ms: number; eventLoopMaxMs: number; slowest: { ms: number; url: string }[] }>((ok) => {
+        serve.once("message", (m) => ok(m as never));
+        serve.send({ report: true });
+      });
       running = false;
       const ingestTimes = await ingestion;
       await Promise.all([logsRun.done, txlistRun.done]);
@@ -241,8 +233,9 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         classes: report.results, getLogs: { route: "/api?module=logs&action=getLogs", requests: logsMs.length, empty: logsEmpty, p95: q95(logsMs), max: Math.max(...logsMs) },
         txlist: { route: "/api?module=account&action=txlist", page: { offset: 100, requests: txlistMs.length, wrong: txlistRun.miss.n, p95: q95(txlistMs), max: Math.max(...txlistMs) }, defaultPage: { rows: "up to 10,000", alone: true, requests: txlistWideMs.length, wrong: txlistWideWrong, p95: q95(txlistWideMs), max: Math.max(...txlistWideMs) } },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
-        server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5), slowest },
+        server: { ...served, unhealthyAnswers: unhealthy.slice(0, 5) },
         ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
+        runner,
       };
       console.log("L2 " + JSON.stringify(summary, null, 1));
       if (process.env.L2_RESULTS) writeFileSync(process.env.L2_RESULTS, JSON.stringify(summary, null, 1));

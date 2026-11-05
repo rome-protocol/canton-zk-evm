@@ -78,15 +78,16 @@ else
     printf '%s%064x\n' "$(cat "$l5_work/creation-${l5_runs[n-1]}.hex")" "$n" > "$l5_work/deploy-$n.hex"
     l5_txs+=("$(w1py deploy "$l5_work/deploy-$n.hex")")
   done
-  # L3 leaves the transfers it sent after its last cut in the pool, and a block holds at most what 30 Mgas allows, so the first block after L3 may not hold the three deployments:
-  # cut until all three have receipts (at most 6 blocks), never assume one cut is enough.
-  for _ in 1 2 3 4 5 6; do
+  # L3 leaves up to two blocks' worth of transfers it sent after its last cut in the pool, a block holds at most what 30 Mgas allows, and once L3's full blocks have taken
+  # the base fee to V's fee cap only every other block can take V's transactions: so the three deployments may be in the fifth or sixth block after L3. Cut until all
+  # three have receipts (at most 10 blocks), never assume one cut is enough.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     cut_block
     l5_missing=0
     for tx in "${l5_txs[@]}"; do receipt_of "$tx" >/dev/null 2>&1 || l5_missing=1; done
     [ "$l5_missing" = 0 ] && break
   done
-  [ "$l5_missing" = 0 ] || fail "L5's deployments are not in a block after 6 blocks"
+  [ "$l5_missing" = 0 ] || fail "L5's deployments are not in a block after 10 blocks"
   l5_addrs=""
   for tx in "${l5_txs[@]}"; do
     addr=$(receipt_of "$tx" | jq -r '.contract // empty')
@@ -111,7 +112,7 @@ fi
   echo
   echo "| | result |"
   echo "|---|---|"
-  jq -r '"| L3 flood | \(.blocks // 0) blocks (\(.blocks_per_minute // "n/a") a minute\(if ((.cuts_failed_but_committed // []) | length) > 0 then ", \(.cuts_failed_but_committed | length) cuts that failed but committed" else "" end)), \(.transactions // 0) transactions; index lag p50 \(.served_p50_s // "n/a") s, p95 \(.served_p95_s // "n/a") s (budget 2.75; over by at most \(.measurement_error_s.lag_over_by_at_most_s // "n/a") s), stream p95 \(.sse_p95_s // "n/a") s (budget 0.5), Canton record time to served p50 \(.record_time_to_served_p50_s // "n/a") s, p95 \(.record_time_to_served_p95_s // "n/a") s (observed, not held), time to final not measured, database \(if .growth_bytes_per_million then ((.growth_bytes_per_million / 1e7 | round) / 100) else "n/a" end) GB per million transactions (budget 2.5)\(if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) |"' "$NIGHTLY_OUT/l3.json"
+  jq -r '"| L3 flood | \(.blocks // 0) blocks (\(.blocks_per_minute // "n/a") a minute\(if ((.cuts_failed_but_committed // []) | length) > 0 then ", \(.cuts_failed_but_committed | length) cuts that failed but committed" else "" end)), \(.transactions // 0) transactions\(if (.empty_blocks // 0) > 0 then " (\(.empty_blocks) blocks empty from block \(.first_empty_block): the base fee reached the fee cap of the transfers, \(.base_fee_gwei_max // "n/a") gwei at most)" else "" end); builder advance p50 \(.advance_p50_s // "n/a") s, p95 \(.advance_p95_s // "n/a") s; index lag p50 \(.served_p50_s // "n/a") s, p95 \(.served_p95_s // "n/a") s (budget 2.75; over by at most \(.measurement_error_s.lag_over_by_at_most_s // "n/a") s), stream p95 \(.sse_p95_s // "n/a") s (budget 0.5), Canton record time to served p50 \(.record_time_to_served_p50_s // "n/a") s, p95 \(.record_time_to_served_p95_s // "n/a") s (observed, not held), time to final not measured, database \(if .growth_bytes_per_million then ((.growth_bytes_per_million / 1e7 | round) / 100) else "n/a" end) GB per million transactions (budget 2.5)\(if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) |"' "$NIGHTLY_OUT/l3.json"
   jq -r '"| L4 pages | " + ([.pages[] | "\(.name) LCP \(if .median.lcpMs then (.median.lcpMs | round) else "n/a" end) ms\(if .held then "" else " (not held)" end)"] | join(", ")) + (if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) + " |"' "$NIGHTLY_OUT/l4.json"
   jq -r '"| L5 Etherscan door | \(if .reason then .reason else (.status | ascii_upcase) end)\(if ((.modules // []) | length) > 0 then " (modules in the door: \(.modules | join(", ")))" else "" end)\(if ((.skipped // []) | length) > 0 then ". **SKIPPED, not passed:** \(.skipped | join("; "))" else "" end)\(if (.failures | length) > 0 then " **\(.failures | join("; ") | gsub("\n"; " "))**" else "" end) |"' "$NIGHTLY_OUT/l5.json"
   echo

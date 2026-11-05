@@ -15,6 +15,7 @@
   demo_w1.py plain <count> [nonce]         <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
                                            (the nightly load test's flood, tests/demo_nightly_l3.py). The nonces start at [nonce], or at V's pending nonce when none is given
   demo_w1.py nonce                         print V's pending nonce
+  demo_w1.py address                       print V's address
   demo_w1.py osaka                         check that the chain runs Osaka: the pool refuses a transaction of 16,777,217 gas (2^24 + 1), and the CLZ opcode answers 255 for 1
                                            (an eth_call with its own code); print "osaka ok", and send nothing that reth would take
 
@@ -129,6 +130,10 @@ def main(argv: list) -> int:
         return 0
     if cmd == ["nonce"] and len(argv) == 1:
         print(pending_nonce(folder))
+        return 0
+    if cmd == ["address"] and len(argv) == 1:
+        evm.make_keys(folder)
+        print(Account.from_key(evm.load_key(folder, "v")).address)
         return 0
     print(__doc__, file=sys.stderr)
     return 2
