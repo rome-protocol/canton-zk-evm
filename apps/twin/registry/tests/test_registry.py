@@ -291,6 +291,25 @@ class RegistryTest(unittest.TestCase):
         self.start()   # a restart reads the state file
         self.assertEqual(self.call("/twin/v1/lock-parts/" + out["lockId"])[1]["acceptance"], "acceptance-9")
 
+    def test_the_lock_parts_answer_gives_the_current_acceptance_and_falls_back_to_the_stored_one(self):
+        lid = self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})[1]["lockId"]
+        self.fake.acceptances[:] = [acceptance_event(cid="acceptance-7")]   # signed again after the lock was announced
+        self.registry.refresh_acceptances()
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[1]["acceptance"], "acceptance-7")
+        self.fake.acceptances[:] = []   # taken back: the stored id is what is left, and the builder checks it
+        self.registry.refresh_acceptances()
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[1]["acceptance"], "acceptance-1")
+        self.registry.parts.parts[lid] = (RECEIVER, "r", self.now, None)   # a part saved before acceptances were kept has none: the index answers
+        self.fake.acceptances[:] = [acceptance_event(cid="acceptance-8")]
+        self.registry.refresh_acceptances()
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[1]["acceptance"], "acceptance-8")
+
+    def test_before_the_index_is_first_read_an_announcement_is_503_not_409(self):
+        self.registry.acceptances = None   # the ledger was down at start
+        status, out = self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})
+        self.assertEqual((status, out), (503, {"error": "the acceptance index is not ready"}))
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + R.lock_id(RECEIVER, "r"))[0], 404)   # nothing was kept
+
     def test_the_index_pages_through_more_than_one_page(self):
         parties = [f"p{i}::1220" + "%064x" % i for i in range(5)]
         self.fake.acceptances[:] = [acceptance_event(p, cid=f"acc-{i}") for i, p in enumerate(parties)]

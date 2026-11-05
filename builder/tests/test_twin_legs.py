@@ -122,6 +122,7 @@ class Twins(tb.LegCase):
             s.registry = Registry({LOCK_ID: PARTS} if parts is True else parts or {})
             self.addCleanup(s.registry.close)
             s.cfg.twin_registry_url = s.registry.url
+        s.cfg.read_as = ("gw",)   # with a registry the builder must read as the chain's gateway
         return s, t
 
     # ---- the lock
@@ -212,6 +213,11 @@ class Twins(tb.LegCase):
             return out
         with mock.patch.object(b, "post_json", other):
             self.assert_left_out(s, t, "not a TwinAcceptance")
+
+    def test_a_contract_of_another_package_is_not_an_acceptance(self):
+        s, t = self.setup_twin(LOCK)
+        s.ledger.acceptance_package = "another-twin"   # a template of the same module and name, in a package that is not the twin's
+        self.assert_left_out(s, t, "not a TwinAcceptance")
 
     def test_an_accepting_receiver_is_attached_and_one_contract_is_read_as_the_gateway(self):
         s, t = self.setup_twin(LOCK)
@@ -533,6 +539,34 @@ class CommandLine(tb.Case):
         self.assertEqual(s.ledger.submitted, [])
         code, out = self.run_main(s, "--twin-registry-url", "http://127.0.0.1:9", "--read-as", "gw")
         self.assertEqual((code, out["committed"]), (0, True))
+
+    def producer(self, s):
+        return b.Producer(s.cfg, threading.Event(), idle=0.5, status_file=str(Path(s.dir) / "status.json"), emit=lambda r: None, wait=lambda seconds: False)
+
+    def test_an_unreachable_canton_at_start_is_retried_and_the_check_is_made_on_the_first_read(self):
+        s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+        s.cfg.twin_registry_url = "http://127.0.0.1:9"
+        up, s.cfg.ledger_url = s.cfg.ledger_url, "http://127.0.0.1:1"   # Canton is down at start
+        p = self.producer(s)
+        p.step()
+        self.assertEqual((p.failures, p.fatal, p.stop.is_set()), (1, None, False))   # the usual retry: no exit, and no word about --read-as
+        self.assertNotIn("--read-as", p.last_error["error"])
+        s.cfg.ledger_url = up   # Canton is back, and --read-as is still wrong: the first read that succeeds refuses, clearly
+        p.step()
+        self.assertTrue(p.stop.is_set())
+        self.assertIn("--read-as gw", p.fatal)
+        self.assertEqual(s.ledger.submitted, [])
+
+    def test_with_the_gateway_in_read_as_a_canton_that_comes_up_late_is_built_on(self):
+        s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+        s.cfg.twin_registry_url, s.cfg.read_as = "http://127.0.0.1:9", ("gw",)
+        up, s.cfg.ledger_url = s.cfg.ledger_url, "http://127.0.0.1:1"
+        p = self.producer(s)
+        p.step()
+        self.assertEqual((p.failures, p.fatal), (1, None))
+        s.cfg.ledger_url = up
+        p.step()
+        self.assertEqual((p.fatal, p.committed, p.stop.is_set()), (None, 1, False))
 
     def test_the_party_token_file_option_is_still_accepted_and_is_not_read(self):
         s = self.setup({ALICE: [tb.tx(ALICE, 0)]})

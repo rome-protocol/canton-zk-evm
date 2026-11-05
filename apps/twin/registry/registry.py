@@ -310,7 +310,8 @@ class Registry:
                 found = self.parts.get(segments[3])
                 if not found:
                     raise HttpError(404, "no such lock id")
-                return {"lockId": segments[3], "receiver": found[0], "ref": found[1], "acceptance": found[3]}
+                current = (self.acceptances or {}).get(found[0])   # the index's current acceptance; a part saved before acceptances were kept has none of its own
+                return {"lockId": segments[3], "receiver": found[0], "ref": found[1], "acceptance": current or found[3]}
         elif method == "POST":
             if path == "/registry/transfer-instruction/v1/transfer-factory":
                 args = self.choice_arguments(body)
@@ -374,7 +375,9 @@ class Registry:
                 raise HttpError(400, "token is 40 lowercase hex digits")
             if token not in self._read()[0]:
                 raise HttpError(404, f"no twin erc20:{token}")
-        acceptance = (self.acceptances or {}).get(receiver)
+        if self.acceptances is None:
+            raise HttpError(503, "the acceptance index is not ready")
+        acceptance = self.acceptances.get(receiver)
         if acceptance is None:
             raise HttpError(409, "the receiver has not accepted twins: its party must sign a TwinAcceptance first")
         vaults = self.vaults()

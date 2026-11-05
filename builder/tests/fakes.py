@@ -415,6 +415,7 @@ class FakeLedger:
         self.archived_acceptances: set = set()   # contract ids of those that are archived: the answer has the archived event too
         self.acceptance_failure = None   # an HTTP status that the read of an acceptance answers (413, 500), or "timeout": no answer within acceptance_delay seconds
         self.acceptance_delay = 1.0
+        self.acceptance_package = "ostia-twin"   # the package name the created event of a TwinAcceptance carries
         self.event_queries: list = []   # the bodies of the reads of an acceptance
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
@@ -613,7 +614,7 @@ class FakeLedger:
                     found = {cid: args for cid, args in ledger.twin_acceptances}.get(body["contractId"])
                     if found is None:
                         return self._reply(404, {"code": "CONTRACT_EVENTS_NOT_FOUND"})
-                    out = {"created": {"createdEvent": {"contractId": body["contractId"], "templateId": "pkg:Twin.Twin:TwinAcceptance", "createArgument": found}, "synchronizerId": "sync::1"}}
+                    out = {"created": {"createdEvent": {"contractId": body["contractId"], "templateId": "pkg:Twin.Twin:TwinAcceptance", "packageName": ledger.acceptance_package, "createArgument": found}, "synchronizerId": "sync::1"}}
                     if body["contractId"] in ledger.archived_acceptances:
                         out["archived"] = {"archivedEvent": {"contractId": body["contractId"], "templateId": "pkg:Twin.Twin:TwinAcceptance"}, "synchronizerId": "sync::1"}
                     try:

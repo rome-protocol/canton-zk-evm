@@ -67,6 +67,10 @@ class ForeignHead(HeadMismatch):
     """Canton's head is a block reth does not have: nobody here can say what to build on, so the producer stops."""
 
 
+class ReaderMissing(BuilderError):
+    """--twin-registry-url is set but --read-as does not give the chain's gateway: no acceptance can be read, so a producer stops."""
+
+
 class ProvingError(BuilderError):
     """The input tool or the prover failed, or gave back a proof that is not this block's. `kept` is the hashes of the block's
     transactions: the loop uses them to find a transaction that cannot be proven."""
@@ -995,6 +999,9 @@ class Ledger:
         found = [c for c in self.active(CHAIN) if c.get("builder") == self.cfg.party]
         if len(found) != 1:   # the chain has exactly one state contract
             raise BuilderError(f"expected one active ZkChain contract built by {self.cfg.party}, found {len(found)}")
+        gateway = found[0]["gateway"]
+        if self.cfg.twin_registry_url and gateway not in self.readers():   # checked on the first read that succeeds: an unreachable Canton is retried as ever
+            raise ReaderMissing(f"--twin-registry-url needs the builder to read as the chain's gateway party ({gateway}): add --read-as {gateway}")
         return found[0]
 
     def advance(self, chain: dict, argument: dict, command_id: str | None = None, disclosed: list | None = None) -> dict:
@@ -1440,7 +1447,7 @@ class Canton:
             if archived:
                 raise NoCantonSide("the acceptance contract is archived")
             template, arguments = str(created["templateId"]).split(":"), created["createArgument"]
-            if created["contractId"] != cid or template[-2:] != ["Twin.Twin", "TwinAcceptance"]:
+            if created["contractId"] != cid or template[-2:] != ["Twin.Twin", "TwinAcceptance"] or created["packageName"] != "ostia-twin":
                 raise NoCantonSide("the contract the registry service named is not a TwinAcceptance")
             if arguments["party"] != receiver or arguments["admin"] != gateway:
                 raise NoCantonSide("the acceptance contract is not the receiver's acceptance of the chain's gateway")
@@ -3200,6 +3207,9 @@ class Producer:
                     self.control, self.hunt, self.proof_kept = None, None, set()
                 else:
                     self.proving_failed(e, now)
+            if isinstance(e, ReaderMissing):   # a wrong --read-as: retrying cannot help, so the producer ends, with its status naming why
+                self.fatal = str(e)
+                self.stop.set()
             self.fail(failure_report(e))
             return
         failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
@@ -3799,7 +3809,7 @@ class Pipeline(Producer):
                     self.control, self.hunt, self.proof_kept = None, None, set()
                 else:
                     self.proving_failed(e, now)
-            if isinstance(e, ForeignHead):   # nothing here knows what to build on: the producer ends, with its status naming why
+            if isinstance(e, (ForeignHead, ReaderMissing)):   # nothing here knows what to build on, or the --read-as is wrong: the producer ends, with its status naming why
                 self.fatal = str(e)
                 self.stop.set()
             self.fail(failure_report(e))
@@ -4165,14 +4175,6 @@ def settle_once(cfg: Config, result: dict, sleep=time.sleep) -> dict:
             "reason": f"{result['reason']}; settled as not committed ({how})"}
 
 
-def check_twin_acceptance_reader(cfg: Config) -> None:
-    """With a twin registry service, the builder reads each lock receiver's TwinAcceptance as the chain's gateway: refuse to start when --read-as does not give it."""
-    if cfg.twin_registry_url:
-        gateway = Ledger(cfg).head()["gateway"]
-        if gateway not in Ledger(cfg).readers():
-            raise BuilderError(f"--twin-registry-url needs the builder to read as the chain's gateway party ({gateway}): add --read-as {gateway}")
-
-
 def produce(cfg: Config, args) -> int:
     stop = threading.Event()
     def on_signal(signum, frame):   # the block in progress finishes; a second signal acts as usual
@@ -4321,7 +4323,6 @@ def main() -> int:
             cfg.package_id = check_package_id(args.package_id)
         cfg.unlabelled_deposits = args.unlabelled_deposits
         with work_lock(cfg.work_dir):
-            check_twin_acceptance_reader(cfg)
             if args.command == "run":
                 return produce(cfg, args)
             recovered = recover_saved(cfg, wait=time.sleep)   # a block cut short earlier: its transactions go back to reth first
