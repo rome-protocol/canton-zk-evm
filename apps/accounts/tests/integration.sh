@@ -82,7 +82,14 @@ python3 "$ROOT/network/external/setup.py" --demo -- --genesis-hash "$H0" --genes
 curl -sf -H "Authorization: Bearer $(tr -d '[:space:]' < "$WORK/token-admin")" -H 'content-type: application/json' "$CZE_LEDGER_URL/v2/users" \
   -d "{\"user\":{\"id\":\"$ACCOUNTS_USER\",\"primaryParty\":\"\",\"isDeactivated\":false,\"identityProviderId\":\"\"},\"rights\":[]}" > /dev/null || fail "the service's user was not made"
 
-python3 "$ROOT/apps/accounts/accounts.py" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
+# The chain's parties: the only observers the service lets an account's create name.
+python3 - "$CZE_STATE_DIR/canton/parties.env" "$WORK/chain-parties.json" <<'PY'
+import json, sys
+env = dict(line.strip().split("=", 1) for line in open(sys.argv[1]) if "=" in line)
+json.dump({f: env[f.upper() + "_PARTY"] for f in ("operator", "confirmer", "gateway", "builder")}, open(sys.argv[2], "w"))
+PY
+
+python3 "$ROOT/apps/accounts/accounts.py" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
   --state-file "$WORK/accounts.jsonl" --listen 127.0.0.1:18081 > "$WORK/service.log" 2>&1 & pids+=($!)
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18081/healthz > /dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:18081/healthz > /dev/null || fail "the service did not come up"

@@ -10,7 +10,7 @@ The token comes from `LEDGER_TOKEN` or `--token-file` (read again for each call,
 
 ## Endpoints
 
-Every answer is JSON; an error is `{"error": "..."}` with 400 (a bad request), 403 (a command that is not on the list), 404 (no such account, topology or prepared transaction), 422 (the participant refused it: `code` and `detail` carry its answer), 429 (a limit, with `Retry-After`), 502 (the participant could not be reached, or refused the service's own login; no detail is given) or 500. Binary values are base64.
+Every answer is JSON; an error is `{"error": "..."}` with 400 (a bad request), 401 (a signature that is not the account's), 403 (a command that is not on the list, or names other parties), 404 (no such account, topology or prepared transaction), 409 (the account has the open contracts it may), 422 (the participant refused it: `code` and `detail` carry its answer), 429 (a limit, with `Retry-After`), 502 (the participant could not be reached, or refused the service's own login; no detail is given) or 500. Binary values are base64.
 
 | Endpoint | Request | Answer |
 |---|---|---|
@@ -33,7 +33,13 @@ The participant must let a user without an admin right allocate parties for itse
 
 ## Limits
 
-Per client address: `--accounts-per-day` (3) allocations that make an account in 24 hours, and `--requests-per-minute` (60) requests of any kind. A body is at most 512 KiB. The service makes no account from a key that is not signed for: the participant checks the signature over the topology, and a refused one leaves nothing. Both limits are in memory.
+Per client address: `--accounts-per-day` (3) allocations that make an account in 24 hours, and `--requests-per-minute` (60) requests of any kind. A body is at most 512 KiB. The service makes no account from a key that is not signed for: it checks the signature over the topology itself, and the participant checks it again. All limits are in memory.
+
+**Creates name observers.** A `WithdrawalAcceptance` or `DepositRequest` is seen by the chain's parties, so `prepare` refuses (403) one whose `operator`, `confirmer`, `gateway` or `builder` is not the chain's, and any create that names a party that is neither the account nor one of the chain's. Name the chain's parties with `--chain-parties <json file>` (`{"operator": ..., "confirmer": ..., "gateway": ..., "builder": ...}`) or `--chain-operator`, `--chain-confirmer`, `--chain-gateway`, `--chain-builder`; without them these creates are refused. An account may have one open `WithdrawalAcceptance` and `--open-deposit-requests` (3) open `DepositRequest`s: the service reads the account's own active contracts and answers 409 over that, at prepare and again at execute.
+
+**Traffic.** Each execute and each allocation counts against a budget for 24 hours (429 over it): `--executes-per-account-day` (50), `--executes-per-client-day` (200) and `--executes-per-day` (2000, all clients). The participant's cost estimate of a prepared transaction (`costEstimation.totalTrafficCostEstimation`) must be at most `--max-transaction-traffic` (200000; a transaction with no estimate is refused with 502), and the estimates of the executes count against `--traffic-per-day` (50000000). A prepared transaction has one attempt to execute: its entry is removed before anything is sent, so a refusal means preparing again. The service checks the account's Ed25519 signature of the prepared transaction's hash itself (`ed25519.py`, RFC 8032) before it asks the participant; a wrong one is a 401 and costs the participant nothing. The signature is sent with format `SIGNATURE_FORMAT_RAW`: the 3.7.1 OpenAPI spec leaves the format a free string and names no other value.
+
+**What waits for a signature.** At most `--max-pending-topologies` (2000) topologies and `--max-pending-prepared` (5000) prepared transactions, and `--max-pending-per-client` (10) of each per client address (503 over it). A key has one topology blob while it lives: asking again returns it and does not reach the participant.
 
 ## The protocol version
 

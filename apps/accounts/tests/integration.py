@@ -76,6 +76,15 @@ class AccountsOnCanton(unittest.TestCase):
             status, prepared = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}]})
             self.assertEqual(status, 200, prepared)
             body = {"preparedTransaction": prepared["preparedTransaction"], "partySignatures": [{"party": party, "signature": key.sign(prepared["preparedTransactionHash"])}]}
+
+            # A signature of another key is refused by the service itself (401, where the participant's refusal would be 422), and nothing reaches the participant:
+            # the account has no acceptance, and the same prepared transaction is still there for the right key.
+            with tempfile.TemporaryDirectory() as other:
+                wrong = {**body, "partySignatures": [{"party": party, "signature": Key(other).sign(prepared["preparedTransactionHash"])}]}
+            status, refused = service("/accounts/v1/execute", wrong)
+            self.assertEqual(status, 401, refused)
+            self.assertEqual([c for c in builder.active("WithdrawalAcceptance") if c["party"] == party], [])
+
             status, done = service("/accounts/v1/execute", body)
             self.assertEqual(status, 200, done)
             self.assertTrue(done["updateId"])
@@ -85,6 +94,10 @@ class AccountsOnCanton(unittest.TestCase):
             while time.time() < deadline and not [c for c in builder.active("WithdrawalAcceptance") if c["party"] == party]:
                 time.sleep(1)
             self.assertEqual(len([c for c in builder.active("WithdrawalAcceptance") if c["party"] == party]), 1)
+
+            # One acceptance per account: the service finds the first in the account's own contracts and refuses a second.
+            status, again = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}]})
+            self.assertEqual(status, 409, again)
 
             status, holdings = service(f"/accounts/v1/holdings/{party}")
             self.assertEqual((status, holdings), (200, {"party": party, "holdings": []}))
