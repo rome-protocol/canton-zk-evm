@@ -248,12 +248,10 @@ class Accounts:
     def prepare(self, body: dict, ip: str) -> dict:
         party = self.known(body.get("party"))
         request = {"commandId": str(uuid.uuid4()), "userId": self.user, "actAs": [party], "synchronizerId": self.sync_id(),
-                   "commands": self.check_commands(body.get("commands"))}
-        disclosed = body.get("disclosedContracts")
-        if disclosed is not None:
-            if not isinstance(disclosed, list):
-                raise HttpError(400, "disclosedContracts is a list")
-            request["disclosedContracts"] = disclosed
+                   "commands": self.check_commands(body.get("commands")), "readAs": [], "packageIdSelectionPreference": [], "prefetchContractKeys": [],
+                   "verboseHashing": False, "disclosedContracts": body.get("disclosedContracts", [])}   # the JSON API wants every list, though they are optional
+        if not isinstance(request["disclosedContracts"], list):
+            raise HttpError(400, "disclosedContracts is a list")
         made = self.ledger.call("POST", "/v2/interactive-submission/prepare", request)
         tx, version = made["preparedTransaction"], made["hashingSchemeVersion"]
         self.pending.put("prepared:" + hashlib.sha256(tx.encode()).hexdigest(), (party, version))
@@ -280,7 +278,7 @@ class Accounts:
     def holdings(self, party: str) -> dict:
         """The party's CIP-0056 holdings (the Holding interface's view), all pages of one snapshot."""
         self.known(party)
-        flt = {"cumulative": [{"identifierFilter": {"InterfaceFilter": {"value": {"interfaceId": HOLDING, "includeInterfaceView": True}}}}]}
+        flt = {"cumulative": [{"identifierFilter": {"InterfaceFilter": {"value": {"interfaceId": HOLDING, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}}]}
         request, out = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": HOLDINGS_PAGE}, []
         for _ in range(HOLDINGS_PAGES):
             page = self.ledger.call("POST", "/v2/state/active-contracts-page", request)

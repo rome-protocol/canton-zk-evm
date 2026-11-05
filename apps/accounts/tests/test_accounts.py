@@ -184,7 +184,7 @@ class PrepareAndExecute(Case):
         self.assertEqual((status, out["preparedTransactionHash"], out["hashingSchemeVersion"]), (200, "aGFzaA==", "HASHING_SCHEME_VERSION_V2"))
         sent = self.calls_to("/prepare")[0][2]
         self.assertEqual((sent["actAs"], sent["userId"], sent["synchronizerId"]), ([PARTY], "svc", SYNC))
-        self.assertNotIn("readAs", sent)
+        self.assertEqual((sent["readAs"], sent["disclosedContracts"]), ([], []))
 
     def test_commands_off_the_list_are_refused(self):
         self.make_account()
