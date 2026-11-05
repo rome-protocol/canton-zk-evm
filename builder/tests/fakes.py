@@ -410,6 +410,7 @@ class FakeLedger:
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
         self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
+        self.no_acceptance_template = False   # a participant that has not uploaded twin package 0.2.0: a query for the TwinAcceptance template is refused (HTTP 404)
         self.twin_acceptances: list = []   # (contract id, create arguments) of the TwinAcceptance contracts it shows
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
@@ -593,7 +594,7 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
-                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules", ":TwinAcceptance")):
+                    if (ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules"))) or (ledger.no_acceptance_template and tmpl.endswith(":TwinAcceptance")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":

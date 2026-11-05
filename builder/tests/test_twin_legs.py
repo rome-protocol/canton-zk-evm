@@ -193,7 +193,8 @@ class Twins(tb.LegCase):
         self.assertEqual([g for g in s.ledger.gets if g.startswith("/v2/parties/")], [])   # no party lookup, so no admin-level token
 
     def test_a_participant_that_has_not_uploaded_the_acceptance_template_leaves_the_lock_out(self):
-        s, t = self.setup_twin(LOCK, no_040=True)
+        s, t = self.setup_twin(LOCK)
+        s.ledger.no_acceptance_template = True
         self.assert_left_out(s, t, "the receiver has not accepted twins")
 
     def test_a_twin_answer_that_raises_anything_leaves_the_lock_out(self):
