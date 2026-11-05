@@ -99,3 +99,21 @@ jobs:
             echo "upgrade check from $v"
             dpm upgrade-check --both "$RUNNER_TEMP/old-$v.dar" "$RUNNER_TEMP/new.dar"
           done
+      # The chain package 0.5.0 is live and was built against ostia-twin 0.1.0: daml/build.sh builds that twin from the commit in PINS, so the
+      # package built above must have the live ids (Canton refuses a second 0.5.0 with another id). The current twin (0.2.0) is built from
+      # the source in this tree, as its own package, and must be a valid upgrade of 0.1.0.
+      - name: Check the package ids of the chain package 0.5.0 and of twin 0.1.0, and that twin 0.2.0 upgrades 0.1.0
+        run: |
+          . ./PINS
+          export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
+          pkg() { network/canton/dar-id.sh "$1" | sed -n 's/^package_id=//p'; }
+          id=$(pkg "$RUNNER_TEMP/new.dar")
+          echo "canton-zk-evm 0.5.0 package id: $id"
+          [ "$id" = "$PACKAGE_ID_V0_5_0" ] || { echo "FAIL: canton-zk-evm 0.5.0 has package id $id, not the live $PACKAGE_ID_V0_5_0" >&2; exit 1; }
+          id=$(pkg apps/twin/dist/ostia-twin-0.1.0.dar)
+          echo "ostia-twin 0.1.0 package id: $id"
+          [ "$id" = "$PACKAGE_ID_TWIN_V0_1_0" ] || { echo "FAIL: ostia-twin 0.1.0 has package id $id, not $PACKAGE_ID_TWIN_V0_1_0" >&2; exit 1; }
+          grep -qx 'version: 0.2.0' apps/twin/daml.yaml
+          SDK_VERSION=$DAML_SDK_VERSION TARGET=$DAML_TARGET apps/twin/build.sh
+          echo "ostia-twin 0.2.0 package id: $(pkg apps/twin/dist/ostia-twin-0.2.0.dar)"
+          dpm upgrade-check --both apps/twin/dist/ostia-twin-0.1.0.dar apps/twin/dist/ostia-twin-0.2.0.dar

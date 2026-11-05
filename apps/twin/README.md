@@ -53,6 +53,8 @@ apps/twin/test.sh    # builds, then runs the Daml Script tests in apps/twin/test
 
 CI runs it in [`twin.yml`](../../.github/workflows/twin.yml). The tests cover the instrument and metadata, the balance, a transfer completed at once (change, merging, a split, the smallest amount), allocation and execution (DvP: a single leg, the exclusive `settleBefore`, and two legs of two twins settled in one transaction, which fail together when one is withdrawn), withdraw and cancel, mint and burn by the admin alone, every refused case (including holdings of other templates that report the instrument, and a wrong expected admin on every factory choice), a 6-decimal twin, and the base-unit conversions.
 
+Two versions of the package are in use. The chain package 0.5.0 is built against `ostia-twin` 0.1.0 and mints twins as 0.1.0 contracts, while the acceptance template is in 0.2.0, so a participant that hosts twin receivers vets both. `daml/build.sh` builds 0.1.0 from its source commit (`TWIN_V0_1_0_COMMIT` in `PINS`) and `apps/twin/build.sh` builds the current source; `dist/` then holds `ostia-twin-0.1.0.dar` and `ostia-twin-0.2.0.dar`, and `network/external/setup.py` puts both on a participant (`--twin-dar`, once for each) before the chain DAR. CI checks that 0.2.0 is a valid upgrade of 0.1.0.
+
 ## Registry service
 
 [`registry/`](registry) serves the token standard's off-ledger registry API for the twins (metadata, factories, choice contexts) and the parts of lock ids. See its README.
