@@ -1343,6 +1343,7 @@ class Canton:
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
+        self.acceptances_read: set = set()   # (contract id, receiver) of the TwinAcceptance contracts that were read and count, for this block
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -1408,6 +1409,8 @@ class Canton:
         read (an HTTP error of any status, a timeout, an answer that cannot be used) leaves out this lock only."""
         if not isinstance(cid, str) or not cid:
             raise NoCantonSide("the twin registry service gave no acceptance contract for the receiver")
+        if (cid, receiver) in self.acceptances_read:
+            return
         gateway = self.chain["gateway"]
         flt = {gateway: {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}}
         body = {"contractId": cid, "eventFormat": {"filtersByParty": flt, "verbose": False}}
@@ -1443,6 +1446,7 @@ class Canton:
                 raise NoCantonSide("the acceptance contract is not the receiver's acceptance of the chain's gateway")
         except (KeyError, TypeError, AttributeError):
             raise NoCantonSide("the participant gave an answer for the acceptance contract that cannot be used") from None
+        self.acceptances_read.add((cid, receiver))
 
     @functools.cached_property
     def holdings(self): return self.ledger.active_holdings()
