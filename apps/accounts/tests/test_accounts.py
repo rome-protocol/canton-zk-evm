@@ -331,8 +331,9 @@ class Hardening(Case):
     def test_a_breach_of_the_accounts_own_budget_draws_nothing_from_the_overall_one(self):
         self.start(per_account=A.Limiter(1, DAY))
         self.make_account()
+        made = len(self.service.overall.hits["all"])   # the allocation counted once
         self.assertEqual([self.send() for _ in range(3)], [200, 429, 429])
-        self.assertEqual(len(self.service.overall.hits["all"]), 1)
+        self.assertEqual(len(self.service.overall.hits["all"]), made + 1)   # the one execute that was within the account's budget
 
     def test_allocations_are_budgeted_too(self):
         self.start(overall=A.Limiter(0, DAY))
