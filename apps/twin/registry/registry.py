@@ -71,6 +71,21 @@ class Ledger:
                 for e in found if "JsActiveContract" in e["contractEntry"]]
 
 
+    def active_pages(self, template: str, party: str, size: int):
+        """The created event of each active contract of a template that `party` sees, one page of at most `size` at a time (the participant refuses a
+        list longer than its limit). Every page is read at the offset of the first."""
+        flt = {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}}]}
+        body = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": size}
+        while True:
+            out = http_json(self.url + "/v2/state/active-contracts-page", body, self.auth)
+            for e in out["activeContracts"]:
+                if "JsActiveContract" in e["contractEntry"]:
+                    yield e["contractEntry"]["JsActiveContract"]["createdEvent"]
+            if not out.get("nextPageToken"):
+                return
+            body = {**body, "activeAtOffset": out["activeAtOffset"], "pageToken": out["nextPageToken"]}
+
+
 class Ostia:
     """What Ostia's JSON-RPC says of the vaults."""
     def __init__(self, url: str):
@@ -86,7 +101,7 @@ class Ostia:
 
 
 class LockParts:
-    """The parts of the lock ids that payers announced: id -> (receiver, ref, announced at). Kept in memory, and appended to `path` (one JSON line
+    """The parts of the lock ids that payers announced: id -> (receiver, ref, announced at, the receiver's acceptance contract id). Kept in memory, and appended to `path` (one JSON line
     each, flushed to disk) so that a restart does not lose a lock that is paid but not yet in a block. An entry lives `ttl` seconds from its
     announcement; a payer announces it again to get it back, and gets the same id. The file is compacted when it loads and when entries expire."""
     def __init__(self, path: str, limit: int, ttl: float = LOCK_PARTS_TTL, clock=time.time):
@@ -98,14 +113,14 @@ class LockParts:
                 for line in f:
                     try:
                         e = json.loads(line)
-                        receiver, ref, at = e["receiver"], e["ref"], float(e.get("at", self.swept))
+                        receiver, ref, at, acceptance = e["receiver"], e["ref"], float(e.get("at", self.swept)), e.get("acceptance")
                         if e["lockId"] != lock_id(receiver, ref):
                             raise ValueError("the id is not the one of the parts")
                     except (ValueError, KeyError, TypeError, AttributeError, UnicodeEncodeError) as err:
                         dropped += 1
                         print(f"state file {path}: a line is dropped ({type(err).__name__}: {err})", file=sys.stderr)
                         continue
-                    self.parts[e["lockId"]] = (receiver, ref, max(at, self.parts.get(e["lockId"], (0, 0, 0))[2]))
+                    self.parts[e["lockId"]] = (receiver, ref, max(at, self.parts.get(e["lockId"], (0, 0, 0))[2]), acceptance)
             self.sweep(force=bool(dropped))
 
     def _alive(self, entry) -> bool:
@@ -120,8 +135,8 @@ class LockParts:
         if (expired or force or self._lines != len(self.parts)) and self.path:
             tmp = self.path + ".tmp"
             with open(tmp, "w") as f:
-                for k, (receiver, ref, at) in self.parts.items():
-                    f.write(json.dumps({"lockId": k, "receiver": receiver, "ref": ref, "at": at}) + "\n")
+                for k, (receiver, ref, at, acceptance) in self.parts.items():
+                    f.write(json.dumps({"lockId": k, "receiver": receiver, "ref": ref, "at": at, "acceptance": acceptance}) + "\n")
                 f.flush(); os.fsync(f.fileno())
             os.replace(tmp, self.path)
         self._lines = len(self.parts)
@@ -131,11 +146,11 @@ class LockParts:
     def _append(self, lid: str, entry):
         if self.path:
             with open(self.path, "a") as f:
-                f.write(json.dumps({"lockId": lid, "receiver": entry[0], "ref": entry[1], "at": entry[2]}) + "\n")
+                f.write(json.dumps({"lockId": lid, "receiver": entry[0], "ref": entry[1], "at": entry[2], "acceptance": entry[3]}) + "\n")
                 f.flush(); os.fsync(f.fileno())
             self._lines += 1
 
-    def add(self, receiver: str, ref: str) -> str:
+    def add(self, receiver: str, ref: str, acceptance: str) -> str:
         lid = lock_id(receiver, ref)
         with self.lock:
             now = self.clock()
@@ -144,8 +159,8 @@ class LockParts:
             known = self.parts.get(lid)
             if known is None and len(self.parts) >= self.limit:
                 raise HttpError(503, "the registry holds as many lock ids as it keeps")
-            if known is None or now - known[2] > self.ttl / 2:   # a new one, or an old one that is brought back
-                entry = (receiver, ref, now)
+            if known is None or known[3] != acceptance or now - known[2] > self.ttl / 2:   # a new one, one whose acceptance changed, or an old one that is brought back
+                entry = (receiver, ref, now, acceptance)
                 self.parts[lid] = entry
                 self._append(lid, entry)
         return lid
@@ -157,9 +172,11 @@ class LockParts:
 
 
 class Registry:
-    def __init__(self, ledger: Ledger, ostia: Ostia, admin: str, parts: LockParts, chain_id, ttl: float = 5.0, supply_ttl: float = 10.0):
+    def __init__(self, ledger: Ledger, ostia: Ostia, admin: str, parts: LockParts, chain_id, ttl: float = 5.0, supply_ttl: float = 10.0, page_size: int = 100):
         self.ledger, self.ostia, self.admin, self.parts, self.chain_id, self.ttl, self.supply_ttl = ledger, ostia, admin, parts, str(chain_id), ttl, supply_ttl
-        self.lock, self.cache, self.supply_cache, self.accepted_cache = threading.Lock(), None, {}, None
+        self.lock, self.cache, self.supply_cache = threading.Lock(), None, {}
+        self.page_size = page_size
+        self.acceptances, self.acceptances_error = None, "not read yet"   # party -> the contract id of its active TwinAcceptance of the admin; None until the first read
 
     def _read(self):
         """(rules by token, problems, vaults), from the one chain record of `chain_id` whose gateway is the admin. The twins are the ones the chain
@@ -187,13 +204,30 @@ class Registry:
             self.cache = (time.monotonic(), (rules, problems, vaults))
             return self.cache[1]
 
-    def accepted(self, party: str) -> bool:
-        """Whether `party` has an active TwinAcceptance of this admin, as the admin sees it. The parties are cached for `ttl` seconds."""
-        with self.lock:
-            if not (self.accepted_cache and time.monotonic() - self.accepted_cache[0] < self.ttl):
-                found = {c["createArgument"].get("party") for c, _ in self.ledger.active(ACCEPTANCE, self.admin) if c["createArgument"].get("admin") == self.admin}
-                self.accepted_cache = (time.monotonic(), found)
-            return party in self.accepted_cache[1]
+    def refresh_acceptances(self):
+        """Read every active TwinAcceptance of the admin, a page at a time, into the index party -> contract id. Off the request path: a request reads the
+        index only. A read that fails keeps the last index and says so in /healthz."""
+        try:
+            found = {}
+            for c in self.ledger.active_pages(ACCEPTANCE, self.admin, self.page_size):
+                a = c["createArgument"]
+                if a.get("admin") == self.admin and isinstance(a.get("party"), str):
+                    found.setdefault(a["party"], c["contractId"])
+            self.acceptances, self.acceptances_error = found, None
+        except Exception as e:
+            self.acceptances_error = f"{type(e).__name__}: {e}"[:200]
+            print(f"acceptances: {self.acceptances_error}", file=sys.stderr)
+
+    def keep_acceptances_fresh(self, every: float = 10.0, stop: threading.Event | None = None):
+        """refresh_acceptances now, then every `every` seconds on a thread of its own."""
+        self.refresh_acceptances()
+        stop = stop or threading.Event()
+
+        def loop():
+            while not stop.wait(every):
+                self.refresh_acceptances()
+        threading.Thread(target=loop, daemon=True).start()
+        return stop
 
     def twin(self, instrument_id: str) -> dict:
         """The pinned rules of the twin whose instrument id is `erc20:<token>`."""
@@ -259,7 +293,8 @@ class Registry:
                     rules, problems, vaults = self._read()
                 except HttpError as e:
                     return {"ok": False, "error": e.message}
-                return {"ok": not problems["pinnedWithoutRules"], "twins": len(rules), **problems, "vaults": vaults}
+                return {"ok": not problems["pinnedWithoutRules"] and self.acceptances is not None, "twins": len(rules), **problems, "vaults": vaults,
+                        "acceptances": len(self.acceptances or {}), "acceptancesError": self.acceptances_error}
             if path == "/registry/metadata/v1/info":
                 return {"adminId": self.admin, "supportedApis": APIS}
             if path == "/registry/metadata/v1/instruments":
@@ -275,7 +310,7 @@ class Registry:
                 found = self.parts.get(segments[3])
                 if not found:
                     raise HttpError(404, "no such lock id")
-                return {"lockId": segments[3], "receiver": found[0], "ref": found[1]}
+                return {"lockId": segments[3], "receiver": found[0], "ref": found[1], "acceptance": found[3]}
         elif method == "POST":
             if path == "/registry/transfer-instruction/v1/transfer-factory":
                 args = self.choice_arguments(body)
@@ -321,7 +356,8 @@ class Registry:
 
     def announce(self, body) -> dict:
         """A payer hands the receiver and the ref of a lock it is about to pay; it gets the id to pay against and the vaults that take the lock. A receiver that has not
-        accepted twins (no active TwinAcceptance) is refused with 409: a lock for it would be refused by Canton."""
+        accepted twins (no active TwinAcceptance in the index) is refused with 409: a lock for it would be refused by Canton. The answer carries the contract id of
+        the receiver's acceptance, and the parts keep it: the builder reads that one contract and believes nothing else."""
         receiver, ref = (body.get("receiver"), body.get("ref")) if isinstance(body, dict) else (None, None)
         for name, value in (("receiver", receiver), ("ref", ref)):
             try:
@@ -338,10 +374,11 @@ class Registry:
                 raise HttpError(400, "token is 40 lowercase hex digits")
             if token not in self._read()[0]:
                 raise HttpError(404, f"no twin erc20:{token}")
-        if not self.accepted(receiver):
+        acceptance = (self.acceptances or {}).get(receiver)
+        if acceptance is None:
             raise HttpError(409, "the receiver has not accepted twins: its party must sign a TwinAcceptance first")
         vaults = self.vaults()
-        return {"lockId": self.parts.add(receiver, ref), "receiver": receiver, "ref": ref, "vaults": vaults}
+        return {"lockId": self.parts.add(receiver, ref, acceptance), "receiver": receiver, "ref": ref, "acceptance": acceptance, "vaults": vaults}
 
 
 def make_server(registry: Registry, host: str, port: int) -> ThreadingHTTPServer:
@@ -400,6 +437,7 @@ def main(argv=None):
         sys.exit("a read token is required: LEDGER_TOKEN or --token-file")
     host, _, port = a.listen.rpartition(":")
     registry = Registry(Ledger(a.ledger_url, token), Ostia(a.ostia_rpc), a.admin, LockParts(a.state_file, a.max_lock_parts, a.lock_parts_ttl_days * 86400), a.chain_id)
+    registry.keep_acceptances_fresh()
     make_server(registry, host or "127.0.0.1", int(port)).serve_forever()
 
 

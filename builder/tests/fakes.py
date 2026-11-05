@@ -410,8 +410,12 @@ class FakeLedger:
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
         self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
-        self.no_acceptance_template = False   # a participant that has not uploaded twin package 0.2.0: a query for the TwinAcceptance template is refused (HTTP 404)
-        self.twin_acceptances: list = []   # (contract id, create arguments) of the TwinAcceptance contracts it shows
+        self.no_acceptance_template = False   # a participant that has not uploaded twin package 0.2.0: a read of a TwinAcceptance is refused (HTTP 404, no template)
+        self.twin_acceptances: list = []   # (contract id, create arguments) of the TwinAcceptance contracts it shows, to POST /v2/events/events-by-contract-id
+        self.archived_acceptances: set = set()   # contract ids of those that are archived: the answer has the archived event too
+        self.acceptance_failure = None   # an HTTP status that the read of an acceptance answers (413, 500), or "timeout": no answer within acceptance_delay seconds
+        self.acceptance_delay = 1.0
+        self.event_queries: list = []   # the bodies of the reads of an acceptance
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
         self.commit = True   # a test can set it False: then a dropped Advance leaves the head alone
@@ -534,9 +538,6 @@ class FakeLedger:
         if template.endswith(":TwinRules"):
             return [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": cid, "templateId": "pkg:Twin.Twin:TwinRules", "createArgument": args}}}}
                     for cid, args in self.twin_rules]
-        if template.endswith(":TwinAcceptance"):
-            return [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": cid, "templateId": "pkg:Twin.Twin:TwinAcceptance", "createArgument": args}}}}
-                    for cid, args in self.twin_acceptances]
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
@@ -594,9 +595,31 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
-                    if (ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules"))) or (ledger.no_acceptance_template and tmpl.endswith(":TwinAcceptance")):
+                    if tmpl.endswith(":TwinAcceptance"):   # a list of every acceptance: what the builder never asks for (anyone may make 201 of them, and the participant refuses a list that long)
+                        return self._reply(413, {"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"})
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
+                if self.path == "/v2/events/events-by-contract-id":
+                    ledger.event_queries.append(body)
+                    if ledger.acceptance_failure == "timeout":
+                        time.sleep(ledger.acceptance_delay)
+                    elif ledger.acceptance_failure:
+                        return self._reply(ledger.acceptance_failure, {"code": "FAILURE"})
+                    if ledger.no_acceptance_template:
+                        return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template TwinAcceptance"})
+                    if list(body["eventFormat"]["filtersByParty"]) != ["gw"]:   # read as the gateway, which is the acceptance's observer
+                        return self._reply(403, {"code": "PERMISSION_DENIED"})
+                    found = {cid: args for cid, args in ledger.twin_acceptances}.get(body["contractId"])
+                    if found is None:
+                        return self._reply(404, {"code": "CONTRACT_EVENTS_NOT_FOUND"})
+                    out = {"created": {"createdEvent": {"contractId": body["contractId"], "templateId": "pkg:Twin.Twin:TwinAcceptance", "createArgument": found}, "synchronizerId": "sync::1"}}
+                    if body["contractId"] in ledger.archived_acceptances:
+                        out["archived"] = {"archivedEvent": {"contractId": body["contractId"], "templateId": "pkg:Twin.Twin:TwinAcceptance"}, "synchronizerId": "sync::1"}
+                    try:
+                        return self._reply(200, out)
+                    except OSError:   # the builder gave up on a slow answer
+                        return
                 if self.path.split("?")[0] == "/v2/commands/completions":
                     ledger.completion_queries.append((self.path, body))
                     time.sleep(ledger.completions_delay)

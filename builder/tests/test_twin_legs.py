@@ -37,6 +37,7 @@ REDEEM = ("redeem-1", {**named, "gateway": "gw", "holder": RECEIVER, "token": TK
 TWIN = {"admin": "gw", "id": "erc20:" + TKA}
 HOLDING = tb.holding("th-1", "2.5", instrument=TWIN, owner=RECEIVER)
 ACCEPTANCE = ("acceptance-1", {"party": RECEIVER, "admin": "gw"})
+PARTS = {"receiver": RECEIVER, "ref": REF, "acceptance": "acceptance-1"}   # what the registry service gives for the lock's id: the receiver's acceptance contract too
 RULES_ARGS = (RULES, {"admin": "gw", "token": TKA, "decimals": str(USDC_DECIMALS), "name": "USD Coin", "symbol": "USDC"})
 REF2 = "order-8"
 RELEASE2 = Leg(PAYMENT, sha(f"vault-release,{VAULT},{REF2}"), TKA, PAYEE, 2_500_000)
@@ -118,7 +119,7 @@ class Twins(tb.LegCase):
         t = self.leg_tx(s, leg)
         s.reth.pool[ALICE] = [t]
         if registry:
-            s.registry = Registry({LOCK_ID: {"receiver": RECEIVER, "ref": REF}} if parts is True else parts or {})
+            s.registry = Registry({LOCK_ID: PARTS} if parts is True else parts or {})
             self.addCleanup(s.registry.close)
             s.cfg.twin_registry_url = s.registry.url
         return s, t
@@ -178,24 +179,71 @@ class Twins(tb.LegCase):
 
     def test_a_receiver_with_no_acceptance_is_left_out(self):
         s, t = self.setup_twin(LOCK, acceptances=())
-        self.assert_left_out(s, t, "the receiver has not accepted twins")
+        self.assert_left_out(s, t, "the acceptance contract is not found")
+
+    def test_parts_without_an_acceptance_leave_the_lock_out(self):
+        for parts in ({"receiver": RECEIVER, "ref": REF}, {**PARTS, "acceptance": None}):
+            s, t = self.setup_twin(LOCK, parts={LOCK_ID: parts})
+            self.assert_left_out(s, t, "gave no acceptance contract")
+            self.assertEqual(s.ledger.event_queries, [])   # nothing is read for it
 
     def test_an_acceptance_of_another_party_or_another_admin_does_not_count(self):
-        for other in (("acceptance-2", {"party": "bob::1220" + "cd" * 32, "admin": "gw"}), ("acceptance-3", {"party": RECEIVER, "admin": "someone-else"})):
+        for other in (("acceptance-1", {"party": "bob::1220" + "cd" * 32, "admin": "gw"}), ("acceptance-1", {"party": RECEIVER, "admin": "someone-else"})):
             s, t = self.setup_twin(LOCK, acceptances=(other,))
-            self.assert_left_out(s, t, "the receiver has not accepted twins")
+            self.assert_left_out(s, t, "not the receiver's acceptance of the chain's gateway")
 
-    def test_an_accepting_receiver_is_attached_and_acceptances_are_read_once_a_block(self):
+    def test_an_acceptance_of_the_receiver_that_the_registry_does_not_name_does_not_count(self):
+        s, t = self.setup_twin(LOCK, acceptances=(ACCEPTANCE,), parts={LOCK_ID: {**PARTS, "acceptance": "acceptance-7"}})
+        self.assert_left_out(s, t, "not found")
+
+    def test_an_archived_acceptance_leaves_the_lock_out(self):
+        s, t = self.setup_twin(LOCK)
+        s.ledger.archived_acceptances = {"acceptance-1"}
+        self.assert_left_out(s, t, "archived")
+
+    def test_a_contract_of_another_template_is_not_an_acceptance(self):
+        s, t = self.setup_twin(LOCK)
+        original = b.post_json
+
+        def other(url, body, headers, timeout=120):
+            out = original(url, body, headers, timeout)
+            if url.endswith("/events-by-contract-id"):
+                out["created"]["createdEvent"]["templateId"] = "pkg:Twin.Twin:TwinHolding"
+            return out
+        with mock.patch.object(b, "post_json", other):
+            self.assert_left_out(s, t, "not a TwinAcceptance")
+
+    def test_an_accepting_receiver_is_attached_and_one_contract_is_read_as_the_gateway(self):
         s, t = self.setup_twin(LOCK)
         self.build(s)
         self.assertEqual(self.attached(s, "LockLeg")["lockReceiver"], RECEIVER)
-        self.assertEqual(sum(1 for q in s.ledger.queries if "TwinAcceptance" in json.dumps(q)), 1)
+        self.assertEqual([(q["contractId"], list(q["eventFormat"]["filtersByParty"])) for q in s.ledger.event_queries], [("acceptance-1", ["gw"])])
+        self.assertEqual([q for q in s.ledger.queries if "TwinAcceptance" in json.dumps(q)], [])   # no list of acceptances is asked for
         self.assertEqual([g for g in s.ledger.gets if g.startswith("/v2/parties/")], [])   # no party lookup, so no admin-level token
+
+    def test_many_acceptances_do_not_stop_the_chain(self):
+        # anyone can make acceptances that name the gateway; the participant refuses a list of more than its limit (HTTP 413), and the builder asks for none
+        spam = tuple((f"spam-{i}", {"party": f"spam{i}::1220" + "ab" * 32, "admin": "gw"}) for i in range(201))
+        s, t = self.setup_twin(LOCK, acceptances=(ACCEPTANCE, *spam))
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+
+    def test_a_participant_that_cannot_answer_for_the_acceptance_leaves_only_that_lock_out(self):
+        for failure in (413, 500):
+            s, t = self.setup_twin(LOCK)
+            s.ledger.acceptance_failure = failure
+            result = self.assert_left_out(s, t, f"HTTP {failure}")
+            self.assertTrue(result["committed"])
+        s, t = self.setup_twin(LOCK)
+        s.ledger.acceptance_failure, s.ledger.acceptance_delay = "timeout", 1.0
+        with mock.patch.object(b, "ACCEPTANCE_TIMEOUT", 0.2):
+            self.assert_left_out(s, t, "cannot be read")
 
     def test_a_participant_that_has_not_uploaded_the_acceptance_template_leaves_the_lock_out(self):
         s, t = self.setup_twin(LOCK)
         s.ledger.no_acceptance_template = True
-        self.assert_left_out(s, t, "the receiver has not accepted twins")
+        result = self.assert_left_out(s, t, "the twin acceptance template is not on this participant")
+        self.assertNotIn("has not accepted", result["leftOut"][0]["reason"])
 
     def test_a_twin_answer_that_raises_anything_leaves_the_lock_out(self):
         class Odd(Exception):
@@ -476,6 +524,15 @@ class Twins(tb.LegCase):
 
 class CommandLine(tb.Case):
     run_main = tb.CommandLine.run_main
+
+    def test_a_twin_registry_needs_the_builder_to_read_as_the_gateway(self):
+        s = self.setup({ALICE: [tb.tx(ALICE, 0)]})
+        code, out = self.run_main(s, "--twin-registry-url", "http://127.0.0.1:9")
+        self.assertEqual(code, 1)
+        self.assertIn("--read-as gw", out["error"])
+        self.assertEqual(s.ledger.submitted, [])
+        code, out = self.run_main(s, "--twin-registry-url", "http://127.0.0.1:9", "--read-as", "gw")
+        self.assertEqual((code, out["committed"]), (0, True))
 
     def test_the_party_token_file_option_is_still_accepted_and_is_not_read(self):
         s = self.setup({ALICE: [tb.tx(ALICE, 0)]})

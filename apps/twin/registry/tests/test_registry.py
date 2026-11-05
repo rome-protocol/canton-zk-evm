@@ -29,13 +29,13 @@ class Fake:
         self.set_rules([rules_event()])
         self.acceptances = [acceptance_event()]
         self.balance = 1_500_000
-        self.rpc_calls, self.tokens_seen, self.rpc_down = [], [], False
+        self.rpc_calls, self.tokens_seen, self.rpc_down, self.pages, self.page_status = [], [], False, [], 0
         fake = self
 
         class Ledger(BaseHTTPRequestHandler):
-            def reply(self, obj):
+            def reply(self, obj, status=200):
                 data = json.dumps(obj).encode()
-                self.send_response(200); self.send_header("content-length", str(len(data))); self.end_headers(); self.wfile.write(data)
+                self.send_response(status); self.send_header("content-length", str(len(data))); self.end_headers(); self.wfile.write(data)
 
             def do_GET(self):
                 fake.tokens_seen.append(self.headers.get("authorization"))
@@ -46,7 +46,21 @@ class Fake:
                 fake.tokens_seen.append(self.headers.get("authorization"))
                 template = list(body["eventFormat"]["filtersByParty"][ADMIN]["cumulative"][0]["identifierFilter"]["TemplateFilter"]["value"].items())[0][1]
                 events = fake.rules if template == R.RULES else fake.acceptances if template == R.ACCEPTANCE else fake.chains
-                self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": e, "synchronizerId": SYNC}}} for e in events])
+                shown = lambda es: [{"contractEntry": {"JsActiveContract": {"createdEvent": e, "synchronizerId": SYNC}}} for e in es]
+                if self.path == "/v2/state/active-contracts-page":
+                    fake.pages.append(body)
+                    if fake.page_status:
+                        return self.reply({"code": "DOWN"}, fake.page_status)
+                    start = int(body.get("pageToken") or 0)
+                    if body.get("pageToken") and body.get("activeAtOffset") != 7:   # every page is read at the offset of the first
+                        return self.reply({"code": "BAD_OFFSET"}, 400)
+                    out = {"activeContracts": shown(events[start:start + body["maxPageSize"]]), "activeAtOffset": 7}
+                    if start + body["maxPageSize"] < len(events):
+                        out["nextPageToken"] = str(start + body["maxPageSize"])
+                    return self.reply(out)
+                if template == R.ACCEPTANCE:   # a list of everything: the participant refuses one over its limit
+                    return self.reply({"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"}, 413)
+                self.reply(shown(events))
 
             def log_message(self, *a): pass
 
@@ -89,7 +103,8 @@ class RegistryTest(unittest.TestCase):
         self.start()
 
     def start(self):
-        reg = R.Registry(R.Ledger(self.fake.ledger_url, "read-token"), R.Ostia(self.fake.rpc_url), ADMIN, R.LockParts(self.state, 100, clock=lambda: self.now), CHAIN_ID, ttl=0, supply_ttl=0)
+        reg = R.Registry(R.Ledger(self.fake.ledger_url, "read-token"), R.Ostia(self.fake.rpc_url), ADMIN, R.LockParts(self.state, 100, clock=lambda: self.now), CHAIN_ID, ttl=0, supply_ttl=0, page_size=2)
+        reg.refresh_acceptances()   # main does this, then every 10 s on a thread of its own
         self.registry = reg
         if getattr(self, "server", None):
             self.server.shutdown(); self.server.server_close()
@@ -255,24 +270,54 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((status, out), (409, {"error": "the receiver has not accepted twins: its party must sign a TwinAcceptance first"}))
         self.assertEqual(self.call("/twin/v1/lock-parts/" + R.lock_id(other, "r"))[0], 404)   # nothing was kept
         self.fake.acceptances.append(acceptance_event(other, cid="acceptance-2"))
-        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r"})[0], 200)   # accepted since: ttl is 0 here
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r"})[0], 409)   # the index is read in the background, not by the request
+        self.registry.refresh_acceptances()
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r"})[0], 200)
         self.fake.acceptances[:] = [acceptance_event(other, admin="someone-else::1220aa")]   # an acceptance of another admin does not count
+        self.registry.refresh_acceptances()
         self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": other, "ref": "r2"})[0], 409)
         self.fake.acceptances[:] = []   # taken back
+        self.registry.refresh_acceptances()
         self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})[0], 409)
+
+    def test_the_acceptance_contract_id_is_returned_and_kept_with_the_parts(self):
+        status, out = self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})
+        self.assertEqual((status, out["acceptance"]), (200, "acceptance-1"))
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + out["lockId"])[1]["acceptance"], "acceptance-1")
+        self.fake.acceptances[:] = [acceptance_event(cid="acceptance-9")]   # signed again: announcing the lock again keeps the new contract
+        self.registry.refresh_acceptances()
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})[1]["acceptance"], "acceptance-9")
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + out["lockId"])[1]["acceptance"], "acceptance-9")
+        self.start()   # a restart reads the state file
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + out["lockId"])[1]["acceptance"], "acceptance-9")
+
+    def test_the_index_pages_through_more_than_one_page(self):
+        parties = [f"p{i}::1220" + "%064x" % i for i in range(5)]
+        self.fake.acceptances[:] = [acceptance_event(p, cid=f"acc-{i}") for i, p in enumerate(parties)]
+        self.fake.pages.clear()
+        self.registry.refresh_acceptances()
+        self.assertEqual(len(self.fake.pages), 3)   # 2 + 2 + 1, at page size 2
+        self.assertEqual(self.registry.acceptances, {p: f"acc-{i}" for i, p in enumerate(parties)})
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": parties[4], "ref": "r"})[1]["acceptance"], "acc-4")
+        self.assertEqual(self.call("/healthz")[1]["acceptances"], 5)
+
+    def test_a_failed_refresh_keeps_the_last_index_and_says_so_in_healthz(self):
+        self.fake.page_status = 500
+        self.registry.refresh_acceptances()
+        health = self.call("/healthz")[1]
+        self.assertEqual((health["acceptances"], bool(health["acceptancesError"])), (1, True))
+        self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r"})[0], 200)
+
+    def test_a_request_reads_no_acceptance_from_the_ledger(self):
+        self.fake.pages.clear()
+        for ref in ("1", "2", "3"):
+            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": ref})[0], 200)
+        self.assertEqual(self.fake.pages, [])
 
     def test_a_token_with_no_twin_is_still_404_before_the_acceptance_is_looked_at(self):
         self.fake.acceptances[:] = []
+        self.registry.refresh_acceptances()
         self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": "r", "token": "d" * 40})[0], 404)
-
-    def test_acceptances_are_read_once_in_the_ttl(self):
-        self.registry.ttl = 3600
-        reads = []
-        real = self.registry.ledger.active
-        self.registry.ledger.active = lambda template, party, blob=False: (reads.append(template), real(template, party, blob))[1]
-        for ref in ("1", "2", "3"):
-            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": RECEIVER, "ref": ref})[0], 200)
-        self.assertEqual(reads.count(R.ACCEPTANCE), 1)
 
     def test_lock_parts_are_bounded(self):
         self.registry.parts.limit = 1
