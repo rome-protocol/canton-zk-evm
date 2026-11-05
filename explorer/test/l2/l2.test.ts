@@ -153,7 +153,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       load.stdout.on("data", (d: Buffer) => { out += d; });
       const finished = new Promise<void>((ok, fail) => { load.on("exit", (code) => (code === 0 ? ok() : fail(new Error(`the load process exited ${code}`)))); });
       serve.send({ load: true }); // the server times its answers and its event loop from here
-      const cpuBefore = cpuTicks();
+      const cpuBefore = cpuTicks(), ownCpu = process.cpuUsage(), loadStart = performance.now();
       // Every answer of the health route that is not 200, with the checks that made it so: a B7 failure says which row went down or stale.
       const unhealthy: string[] = [];
       const watch = setInterval(() => { void fetch(`http://127.0.0.1:${port}/api/health`, { headers: { "x-client-ip": "10.250.0.3" } }).then(async (r) => { if (r.status === 200) return; const j = (await r.json()) as { status: string; checks: { id: string; role: string; status: string; stale: boolean; detail: unknown }[] }; unhealthy.push(`${r.status} ${j.status}: ${j.checks.filter((c) => c.status !== "ok" || c.stale).map((c) => `${c.role}/${c.id} ${c.stale ? "stale" : c.status} ${c.detail ?? ""}`).join("; ")}`); }).catch(() => undefined); }, 250);
@@ -201,9 +201,10 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const txlistMs: number[] = [];
       const txlistRun = openLoop(`http://127.0.0.1:${port}/api?module=account&action=txlist&address=${HOT}&page=1&offset=100&sort=desc`, Math.max(1, Math.round(RATE * 0.01)), 252, txlistMs, (b) => b.status === "1" && b.result.length === 100);
       await finished;
+      const ownCpuUsed = process.cpuUsage(ownCpu), loadSeconds = (performance.now() - loadStart) / 1000;
       const runner = runnerOver(cpuBefore, cpuTicks());
       clearInterval(watch);
-      const served = await new Promise<{ requests: number; p50Ms: number; p97_5Ms: number; maxMs: number; eventLoopP99Ms: number; eventLoopMaxMs: number; slowest: { ms: number; url: string }[] }>((ok) => {
+      const served = await new Promise<{ cpuSeconds: number; requests: number; p50Ms: number; p97_5Ms: number; maxMs: number; eventLoopP99Ms: number; eventLoopMaxMs: number; slowest: { ms: number; url: string }[] }>((ok) => {
         serve.once("message", (m) => ok(m as never));
         serve.send({ report: true });
       });
@@ -222,7 +223,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         txlistWideMs.push(performance.now() - t);
         if (res.status !== 200 || body.status !== "1" || body.result.length === 0) txlistWideWrong++;
       }
-      const report = JSON.parse(out) as { streams: number; results: { name: string; target: number; requests: number; non2xx: number; errors: number; timeouts: number; latency: Record<string, number> }[]; received: { number: number; times: number[] }[] };
+      const report = JSON.parse(out) as { streams: number; cpuSeconds: number; results: { name: string; target: number; requests: number; non2xx: number; errors: number; timeouts: number; latency: Record<string, number> }[]; received: { number: number; times: number[] }[] };
 
       // ---- The numbers.
       const lag = report.received.filter((b) => b.number > ingestedBefore && notifiedAt.has(b.number)).map((b) => ({ number: b.number, clients: b.times.length, p95: q95(b.times.map((t) => t - notifiedAt.get(b.number)!)), max: Math.max(...b.times.map((t) => t - notifiedAt.get(b.number)!)) }));
@@ -235,7 +236,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
         server: { ...served, unhealthyAnswers: unhealthy.slice(0, 5) },
         ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
-        runner,
+        // The CPU each of the three processes took over the load, in cores (seconds of CPU a second); the rest of the machine's busy time is PostgreSQL's and the runner's own.
+        runner: { ...runner, coresUsed: { server: served.cpuSeconds / loadSeconds, load: report.cpuSeconds / loadSeconds, test: (ownCpuUsed.user + ownCpuUsed.system) / 1e6 / loadSeconds } },
       };
       console.log("L2 " + JSON.stringify(summary, null, 1));
       if (process.env.L2_RESULTS) writeFileSync(process.env.L2_RESULTS, JSON.stringify(summary, null, 1));

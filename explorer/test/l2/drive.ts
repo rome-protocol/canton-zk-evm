@@ -52,9 +52,13 @@ process.stderr.write(`${streams} streams open\n`);
  * the time it was due to the end of its answer, so a slow server cannot hide by being asked less. (The load tools tried first, autocannon with its rate option,
  * report 50 to 100 ms against a server that answers at once, because their latency includes waiting for the rate's turn; that is why this is written here.)
  */
+/** A path's route: its hashes, addresses and numbers as placeholders, without the query (`/api/txs/0xab..` is `/api/txs/{0x}`). */
+const routeOf = (path: string) => path.split("?")[0]!.replace(/0x[0-9a-fA-F]+/g, "{0x}").replace(/\/\d+(?=\/|$)/g, "/{n}");
+const at = (sorted: number[], f: number) => Math.round(sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * f) - 1))] ?? 0);
+
 async function runClass(c: Config["classes"][number], ci: number) {
   const agent = new Agent({ keepAlive: true, maxSockets: cfg.connections });
-  const total = Math.round(c.rate * cfg.seconds), latencies: number[] = [];
+  const total = Math.round(c.rate * cfg.seconds), latencies: number[] = [], byRoute = new Map<string, number[]>();
   const out = { retried: 0, requests: 0, non2xx: 0, errors: 0, timeouts: 0, s2: 0, s4: 0, s5: 0 };
   const inflight: Promise<void>[] = [];
   const start = performance.now();
@@ -71,7 +75,9 @@ async function runClass(c: Config["classes"][number], ci: number) {
           res.resume();
           res.on("end", () => {
             out.requests++;
-            latencies.push(performance.now() - due);
+            const ms = performance.now() - due, route = routeOf(path);
+            latencies.push(ms);
+            (byRoute.get(route) ?? byRoute.set(route, []).get(route)!).push(ms);
             const code = res.statusCode ?? 0;
             if (code >= 200 && code < 300) out.s2++; else { out.non2xx++; if (code >= 400 && code < 500) out.s4++; else out.s5++; }
             done();
@@ -92,13 +98,16 @@ async function runClass(c: Config["classes"][number], ci: number) {
   await Promise.all(inflight);
   agent.destroy();
   latencies.sort((x, y) => x - y);
-  const at = (f: number) => Math.round(latencies[Math.min(latencies.length - 1, Math.max(0, Math.ceil(latencies.length * f) - 1))] ?? 0);
-  return { name: c.name, target: c.rate, retried: out.retried, requests: out.requests, non2xx: out.non2xx, errors: out.errors, timeouts: out.timeouts, statusCodes: { "2xx": out.s2, "4xx": out.s4, "5xx": out.s5 }, latency: { p50: at(0.5), p90: at(0.9), p97_5: at(0.975), p99: at(0.99), max: Math.round(latencies[latencies.length - 1] ?? 0) } };
+  // Each route of the class on its own, so that a class over its budget says which route took it there.
+  const routes = Object.fromEntries([...byRoute].map(([route, ms]) => { ms.sort((x, y) => x - y); return [route, { requests: ms.length, p50: at(ms, 0.5), p97_5: at(ms, 0.975), max: Math.round(ms[ms.length - 1] ?? 0) }]; }));
+  return { name: c.name, target: c.rate, retried: out.retried, requests: out.requests, non2xx: out.non2xx, errors: out.errors, timeouts: out.timeouts, statusCodes: { "2xx": out.s2, "4xx": out.s4, "5xx": out.s5 }, latency: { p50: at(latencies, 0.5), p90: at(latencies, 0.9), p97_5: at(latencies, 0.975), p99: at(latencies, 0.99), max: Math.round(latencies[latencies.length - 1] ?? 0) }, routes };
 }
+const cpu0 = process.cpuUsage();
 const runs = cfg.classes.map((c, ci) => runClass(c, ci));
 const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
 const results = await Promise.all(runs);
+const cpu = process.cpuUsage(cpu0), cpuSeconds = (cpu.user + cpu.system) / 1e6; // what the load itself took of the machine's CPU
 loop.disable(); process.stderr.write(`load process event loop delay ms: p50 ${loop.percentile(50) / 1e6} p99 ${loop.percentile(99) / 1e6} max ${loop.max / 1e6}\n`);
 await new Promise((ok) => setTimeout(ok, 1500)); // the last block's event
 // A pipe's write is not done when write() returns: leave only when the whole document has been handed over, or a large one is cut short.
-process.stdout.write(JSON.stringify({ streams, results, received: [...received].map(([number, times]) => ({ number, times })) }) + "\n", () => process.exit(0));
+process.stdout.write(JSON.stringify({ streams, cpuSeconds, results, received: [...received].map(([number, times]) => ({ number, times })) }) + "\n", () => process.exit(0));

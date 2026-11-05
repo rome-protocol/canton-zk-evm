@@ -42,13 +42,15 @@ const server = createHttpServer(api, cfg.folder, undefined, "x-client-ip", hub);
 
 const served: number[] = []; // how long the server itself took for each request of the load, from its arrival to the end of its answer
 const slowest: { ms: number; url: string }[] = []; // the slowest answers, named, so that a failed budget says which route
+const byRoute = new Map<string, number[]>(); // the same times by route (drive.ts's routes), to set beside the load's own times of each route
+const routeOf = (path: string) => path.split("?")[0]!.replace(/0x[0-9a-fA-F]+/g, "{0x}").replace(/\/\d+(?=\/|$)/g, "/{n}");
 const loop = monitorEventLoopDelay({ resolution: 10 });
-let timing = false;
+let timing = false, cpu0 = process.cpuUsage();
 server.on("request", (rq, rs) => {
   if (!timing) return;
   if (rq.url?.startsWith("/api/stream") || rq.url?.startsWith("/api?module=logs") || rq.url?.startsWith("/api?module=account")) return; // the stream has its own budget, and so have getLogs and txlist (B3)
   const t = performance.now(), url = rq.url ?? "";
-  rs.on("finish", () => { const ms = performance.now() - t; served.push(ms); if (slowest.length < 12 || ms > slowest[slowest.length - 1]!.ms) { slowest.push({ ms, url: url.slice(0, 100) }); slowest.sort((a, b) => b.ms - a.ms); slowest.length = Math.min(slowest.length, 12); } });
+  rs.on("finish", () => { const ms = performance.now() - t, route = routeOf(url); served.push(ms); (byRoute.get(route) ?? byRoute.set(route, []).get(route)!).push(ms); if (slowest.length < 12 || ms > slowest[slowest.length - 1]!.ms) { slowest.push({ ms, url: url.slice(0, 100) }); slowest.sort((a, b) => b.ms - a.ms); slowest.length = Math.min(slowest.length, 12); } });
 });
 
 await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
@@ -76,12 +78,15 @@ process.on("disconnect", () => void close(1)); // the test is gone: so is its se
 
 process.on("message", (message) => {
   const m = message as { load?: boolean; report?: boolean };
-  if (m.load) { timing = true; loop.enable(); }
+  if (m.load) { timing = true; loop.enable(); cpu0 = process.cpuUsage(); }
   if (m.report) {
     timing = false;
     loop.disable();
     served.sort((a, b) => a - b);
-    void send({ requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, slowest });
+    const cpu = process.cpuUsage(cpu0);
+    const at = (ms: number[], f: number) => Math.round(ms[Math.min(ms.length - 1, Math.max(0, Math.ceil(ms.length * f) - 1))] ?? 0);
+    const routes = Object.fromEntries([...byRoute].map(([route, ms]) => { ms.sort((a, b) => a - b); return [route, { requests: ms.length, p50: at(ms, 0.5), p97_5: at(ms, 0.975), max: Math.round(ms[ms.length - 1] ?? 0) }]; }));
+    void send({ cpuSeconds: (cpu.user + cpu.system) / 1e6, requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, slowest, routes });
   }
 });
 await send({ port: (server.address() as AddressInfo).port });
