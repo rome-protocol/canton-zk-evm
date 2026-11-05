@@ -381,6 +381,9 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
     answer = post_json(registry_url_of(registry_url) + "/twin/v1/lock-parts", {"receiver": party, "ref": ref, "token": token})
     if answer.get("lockId") != expected:
         raise canton.Fail(f"the registry gave the lock id {answer.get('lockId')!r}, not the {expected} that lock,{party},{ref} makes: nothing was sent")
+    acceptance = answer.get("acceptance")   # the receiver's TwinAcceptance, which the builder reads before it takes the lock
+    if not isinstance(acceptance, str) or not acceptance:
+        raise canton.Fail("the registry gave no acceptance contract for the receiver: nothing was sent")
     gateway, erc20 = evm.gateway_address(), evm.address_of("0x" + token, "the token")
     approved = send_checked(who, erc20, "approve(address,uint256)", [gateway, base], evm.APPROVE_GAS, "the approval")
     paid_tx = send_checked(who, gateway, "pay(bytes32,address,address,uint256)", [evm.id_of(expected), erc20, evm.address_of("0x" + paid, "the vault"), base], evm.PAY_GAS, "the lock payment")
@@ -396,7 +399,7 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
     # the finalized block next must see the payment, so the command returns when the block is final.
     evm.wait_finalized(paid_tx["tx"], WAIT_SECONDS)
     return {"tx": paid_tx["tx"], "block": paid_tx["block"], "approveTx": approved["tx"], "lockId": expected, "vault": "0x" + paid, "receiver": party,
-            "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
+            "acceptance": acceptance, "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
 
 
 def holdings_of(net: canton.Network, who: str, token: str) -> list:

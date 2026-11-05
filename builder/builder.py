@@ -42,7 +42,7 @@ TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
 CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
 REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
 TWIN_RULES = "#ostia-twin:Twin.Twin:TwinRules"
-TWIN_ACCEPTANCE = "#ostia-twin:Twin.Twin:TwinAcceptance"
+ACCEPTANCE_TIMEOUT = 10   # seconds the one read of a lock's TwinAcceptance may take
 NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
@@ -269,8 +269,8 @@ def registry_guard(who: str):
 
 
 def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
-    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
-    or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
+    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref",
+    "acceptance"} (the contract id of the receiver's TwinAcceptance, or None when the answer names none), or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
     the headers and the body) by `deadline` seconds, by a timer and not by the socket's timeout, which a server that sends a byte now and then
     defeats; when it runs out the connection is closed under the request. The answer is read to at most REGISTRY_MAX_BODY bytes, a redirect is
     not followed, and the receiver must be a party id and the ref text of at most REGISTRY_MAX_FIELD bytes. All the requests of one reader (the
@@ -291,7 +291,10 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             raise ValueError("not {receiver, ref}")
         if not 0 < len(body["ref"].encode("utf-8")) <= REGISTRY_MAX_FIELD:   # a lone surrogate cannot be encoded: a ValueError
             raise ValueError("the ref is empty or too long")
-        return {"receiver": body["receiver"], "ref": body["ref"]}
+        accepted = body.get("acceptance")
+        if accepted is not None and (not isinstance(accepted, str) or not 0 < len(accepted.encode("utf-8")) <= REGISTRY_MAX_FIELD):
+            raise ValueError("the acceptance is not a contract id")
+        return {"receiver": body["receiver"], "ref": body["ref"], "acceptance": accepted}
 
     @registry_guard("twin registry service")
     def read(lock_id: str):
@@ -1340,6 +1343,7 @@ class Canton:
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
+        self.acceptances_read: set = set()   # (contract id, receiver) of the TwinAcceptance contracts that were read and count, for this block
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -1399,11 +1403,50 @@ class Canton:
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
 
-    @functools.cached_property
-    def twin_acceptors(self) -> set:
-        """The parties with an active TwinAcceptance of the chain's gateway (the twins' admin) that the builder can see: each one's participant has
-        vetted the twin package, so a twin minted to it is not refused. Read as the gateway, as the rules are."""
-        return {a["party"] for a in self.active_if_uploaded(TWIN_ACCEPTANCE) if a.get("admin") == self.chain["gateway"]}
+    def check_acceptance(self, receiver: str, cid) -> None:
+        """Raises NoCantonSide unless `cid` is an active TwinAcceptance of `receiver` for the chain's gateway: one contract, read as the gateway, so that
+        what the block asks of the participant does not grow with what others create. The registry service's word is not believed; any failure of the
+        read (an HTTP error of any status, a timeout, an answer that cannot be used) leaves out this lock only."""
+        if not isinstance(cid, str) or not cid:
+            raise NoCantonSide("the twin registry service gave no acceptance contract for the receiver")
+        if (cid, receiver) in self.acceptances_read:
+            return
+        gateway = self.chain["gateway"]
+        flt = {gateway: {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}}
+        body = {"contractId": cid, "eventFormat": {"filtersByParty": flt, "verbose": False}}
+        try:
+            found = post_json(self.ledger.cfg.ledger_url + "/v2/events/events-by-contract-id", body, self.ledger.auth, timeout=ACCEPTANCE_TIMEOUT)
+        except urllib.error.HTTPError as e:
+            try:
+                text = e.read(4096).decode("utf-8", "replace")
+            except Exception:
+                text = ""
+            finally:
+                e.close()
+            if any(code in text for code in NO_TEMPLATE_CODES):
+                raise NoCantonSide("the twin acceptance template is not on this participant") from None
+            if e.code == 404:
+                raise NoCantonSide("the acceptance contract is not found by the participant") from None
+            raise NoCantonSide(f"the acceptance contract cannot be read: the participant answered HTTP {e.code}") from None
+        except (OSError, http.client.HTTPException) as e:   # a timeout, a refused or dropped connection
+            raise NoCantonSide(f"the acceptance contract cannot be read: {bounded_text(e)}") from None
+        except (ValueError, RecursionError):
+            raise NoCantonSide("the participant gave an answer for the acceptance contract that is not JSON") from None
+        try:
+            created = found["created"]["createdEvent"] if isinstance(found, dict) and found.get("created") else None
+            archived = isinstance(found, dict) and bool(found.get("archived"))
+            if created is None:
+                raise NoCantonSide("the acceptance contract is not found by the participant")
+            if archived:
+                raise NoCantonSide("the acceptance contract is archived")
+            template, arguments = str(created["templateId"]).split(":"), created["createArgument"]
+            if created["contractId"] != cid or template[-2:] != ["Twin.Twin", "TwinAcceptance"]:
+                raise NoCantonSide("the contract the registry service named is not a TwinAcceptance")
+            if arguments["party"] != receiver or arguments["admin"] != gateway:
+                raise NoCantonSide("the acceptance contract is not the receiver's acceptance of the chain's gateway")
+        except (KeyError, TypeError, AttributeError):
+            raise NoCantonSide("the participant gave an answer for the acceptance contract that cannot be used") from None
+        self.acceptances_read.add((cid, receiver))
 
     @functools.cached_property
     def holdings(self): return self.ledger.active_holdings()
@@ -1798,8 +1841,8 @@ def pinned_for(leg: LegEvent, canton: Canton) -> tuple:
 
 
 def lock_leg(leg: LegEvent, canton: Canton) -> dict:
-    """A lock: the twin of the token is pinned, the amount converts exactly, the registry service has announced the parts of the id, and the receiver
-    has an active TwinAcceptance."""
+    """A lock: the twin of the token is pinned, the amount converts exactly, the registry service has announced the parts of the id, and the receiver's
+    TwinAcceptance (the contract the parts name, which the builder reads itself) is active."""
     rules, decimals = pinned_for(leg, canton)
     if twin_units(leg.amount, decimals) is None:
         raise NoCantonSide("the lock's amount is not exact in the twin's 10 decimals")
@@ -1815,8 +1858,7 @@ def lock_leg(leg: LegEvent, canton: Canton) -> dict:
         made = None
     if made != leg.id:
         raise NoCantonSide("the parts the twin registry service gave do not make the lock's id")
-    if receiver not in canton.twin_acceptors:
-        raise NoCantonSide("the receiver has not accepted twins")
+    canton.check_acceptance(receiver, parts.get("acceptance"))
     return {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
 
 
@@ -4123,6 +4165,14 @@ def settle_once(cfg: Config, result: dict, sleep=time.sleep) -> dict:
             "reason": f"{result['reason']}; settled as not committed ({how})"}
 
 
+def check_twin_acceptance_reader(cfg: Config) -> None:
+    """With a twin registry service, the builder reads each lock receiver's TwinAcceptance as the chain's gateway: refuse to start when --read-as does not give it."""
+    if cfg.twin_registry_url:
+        gateway = Ledger(cfg).head()["gateway"]
+        if gateway not in Ledger(cfg).readers():
+            raise BuilderError(f"--twin-registry-url needs the builder to read as the chain's gateway party ({gateway}): add --read-as {gateway}")
+
+
 def produce(cfg: Config, args) -> int:
     stop = threading.Event()
     def on_signal(signum, frame):   # the block in progress finishes; a second signal acts as usual
@@ -4271,6 +4321,7 @@ def main() -> int:
             cfg.package_id = check_package_id(args.package_id)
         cfg.unlabelled_deposits = args.unlabelled_deposits
         with work_lock(cfg.work_dir):
+            check_twin_acceptance_reader(cfg)
             if args.command == "run":
                 return produce(cfg, args)
             recovered = recover_saved(cfg, wait=time.sleep)   # a block cut short earlier: its transactions go back to reth first

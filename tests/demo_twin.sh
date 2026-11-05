@@ -200,8 +200,10 @@ curl -sf "$REGISTRY_URL/healthz" | jq -e '.ok == true and .twins == 1' >/dev/nul
 alive
 
 step "U and V accept twins (a TwinAcceptance each, signed by the party); the registry service refuses a lock for a party that has not"
-twin accept u | jq -c .
+accepted_u=$(twin accept u); echo "$accepted_u" | jq -c .
 twin accept v | jq -c .
+for _ in $(seq 1 40); do curl -sf "$REGISTRY_URL/healthz" | jq -e '.acceptances >= 2' >/dev/null && break; sleep 1; done   # the registry service reads its index of acceptances every 10 s
+curl -sf "$REGISTRY_URL/healthz" | jq -e '.acceptances >= 2' >/dev/null || fail "the registry service's index does not show the two acceptances: $(curl -s "$REGISTRY_URL/healthz")"
 NOBODY="nobody::1220$(printf 'ab%.0s' $(seq 1 32))"
 is "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data "$(jq -nc --arg r "$NOBODY" '{receiver: $r, ref: "no-acceptance"}')" "$REGISTRY_URL/twin/v1/lock-parts")" 409 "the registry service's answer for a receiver with no acceptance"
 alive
@@ -210,6 +212,7 @@ step "(a) U locks 5 TKA for itself: the twin of 5 is minted to U"
 tka_u_before=$(tka_of "$TOKEN" "$U_ADDR"); tka_v_before=$(tka_of "$TOKEN" "$V_ADDR")
 locked=$(twin lock u "$TOKEN" 5 u lock-1 --registry-url "$REGISTRY_URL"); echo "$locked" | jq -c .
 is "$(jq -r .vault <<<"$locked")" "$VAULT" "the vault the lock went to"
+is "$(jq -r .acceptance <<<"$locked")" "$(jq -r .contractId <<<"$accepted_u")" "the acceptance the registry service named for the lock (the one U signed)"
 jq -e '(.amount | tonumber) == 5' <<<"$locked" >/dev/null || fail "the amount of the minted holding: $(jq -r .amount <<<"$locked")"
 expect_twin "$(twin_of "$TOKEN")" 5 0 5 "after the lock"
 is "$(tka_of "$TOKEN" "$U_ADDR")" $((tka_u_before - 5)) "U's TKA after the lock"

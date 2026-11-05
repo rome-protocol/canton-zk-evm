@@ -473,7 +473,7 @@ class LockTests(ChainTestCase):
 
     def post(self, url, body):
         self.posts.append((url, body))
-        return {"lockId": twin.lock_id(body["receiver"], body["ref"]), "receiver": body["receiver"], "ref": body["ref"], "vaults": ["0x" + OTHER_VAULT], **self.answer}
+        return {"lockId": twin.lock_id(body["receiver"], body["ref"]), "receiver": body["receiver"], "ref": body["ref"], "acceptance": "acceptance-1", "vaults": ["0x" + OTHER_VAULT], **self.answer}
 
     def lock(self, *args, **kw):
         return twin.lock(self.net, *(args or ("u", TOKEN, "2.5", "v", "ref-1")), self.URL, **kw)
@@ -490,7 +490,16 @@ class LockTests(ChainTestCase):
         self.assertEqual((pay["who"], pay["to"]), ("u", GATEWAY))
         self.assertEqual(pay["data"], evm.call_data("pay(bytes32,address,address,uint256)", [bytes.fromhex(twin.lock_id(V, "ref-1")), evm.address_of("0x" + TOKEN, "t"), evm.address_of("0x" + VAULT_A, "v"), 2_500_000]))
         self.assertEqual(got, {"tx": f"0x{2:064x}", "block": 102, "approveTx": f"0x{1:064x}", "lockId": twin.lock_id(V, "ref-1"), "vault": "0x" + VAULT_A, "receiver": V,
-                               "holding": "minted-1", "amount": "2.5"})
+                               "acceptance": "acceptance-1", "holding": "minted-1", "amount": "2.5"})
+
+    def test_an_answer_with_no_acceptance_sends_nothing(self):
+        self.holds()
+        for answer in ({"acceptance": None}, {"acceptance": ""}, {"acceptance": 5}):
+            self.answer = answer
+            with self.assertRaises(canton.Fail) as e:
+                self.lock()
+            self.assertIn("no acceptance contract", str(e.exception))
+        self.assertEqual(self.evm.sent, [])
 
     def test_the_registrys_vaults_are_a_hint_and_the_ledgers_are_the_truth(self):
         self.holds()

@@ -18,7 +18,7 @@ The package is `ostia-twin` 0.2.0 and depends only on the Canton token standard 
 |---|---|---|
 | `TwinHolding` | the admin (the owner observes) | an amount of the twin owned by a party |
 | `TwinAllocation` | the admin (sender, receiver and executor observe) | the sender's amount held for a settlement; also a locked `Holding` of the sender. Executing it makes the receiver's holding; withdraw and cancel give the sender's back |
-| `TwinAcceptance` | the party (the admin observes) | "I accept twins": a party signs it once, when its account is opened. It exists only on a participant that has vetted this package, so it shows that a twin minted to the party will not be refused. The builder and the registry service check it before they take a lock for the party. `Withdraw` (or the archive every signatory has) takes it back |
+| `TwinAcceptance` | the party (the admin observes) | "I accept twins": a party signs it once, when its account is opened. It exists only on a participant that has vetted this package, but it does not by itself show that a twin the chain mints will be accepted: the receiver's participant must also have the twin package version the chain mints with (network/README.md, "A new version of the package on a chain that runs", vets both versions). The registry service looks for it before it announces a lock for the party, and the builder reads that one contract before it takes the lock. `Withdraw` (or the archive every signatory has) takes it back |
 | `TwinRules` | the admin | one per ERC-20 (its address, name, symbol and decimals): the transfer factory, the allocation factory, `Mint` and `Burn`. Wallets get it by explicit disclosure |
 
 ## Mint and burn (what the chain's `Advance` calls)
