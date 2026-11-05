@@ -1285,10 +1285,12 @@ class Setup(unittest.TestCase):
         self.assertNotIn(("POST", "/v2/packages", "Bearer tok-admin-1"), self.node.calls)
 
     def test_the_twin_dars_go_to_the_participant_before_the_chain_dar(self):
-        seen = []
-        real = setup.ensure_package
+        seen, real = [], setup.ensure_package
+        twins = [Path(self.tmp.name) / f"ostia-twin-{v}.dar" for v in ("0.1.0", "0.2.0")]
+        for t in twins:
+            t.write_bytes(b"PK stand-in")
         with mock.patch.object(setup, "ensure_package", lambda node, dar: (seen.append(dar.name), real(node, dar))[1]):
-            self.run_setup("--twin-dar", "ostia-twin-0.1.0.dar", "--twin-dar", "ostia-twin-0.2.0.dar", chain=False)
+            self.run_setup("--twin-dar", str(twins[0]), "--twin-dar", str(twins[1]), chain=False)
         self.assertEqual(seen, ["ostia-twin-0.1.0.dar", "ostia-twin-0.2.0.dar", "stand-in.dar"])
 
     def test_a_package_step_runs_for_each_twin_dar_and_then_the_chain_dar(self):
