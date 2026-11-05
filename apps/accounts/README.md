@@ -29,7 +29,7 @@ The party id is `bridge::<fingerprint of the key>`, so the same key is always th
 
 The participant user of the token (`--user-id`) holds **no right of its own**. `allocate` passes the user id to the participant's external-party allocation, which gives that user `CanActAs` for the new party in the same call; the endpoint accepts the user's own token for that (the authenticated user may name itself), so the service needs no `ParticipantAdmin` and no `IdentityProviderAdmin`, and cannot grant itself or anyone else anything. `CanActAs` for the party implies reading as it and executing as it, which is all `prepare` (reads as the party), `execute` (acts or executes as the party) and `holdings` (reads as the party) ask for. It does not let the service act for an external party without that party's signature: the participant holds no key of the party. The integration test checks that the user ends with a right on the new party and no other right.
 
-One limit follows: a participant caps the rights of one user (`max-rights-per-user`, 1000 by default), and each account adds one. Raise it in the participant's configuration to the number of accounts wanted, or the 1001st allocation is refused (422).
+The participant must let a user without an admin right allocate parties for itself: `canton.participants.<name>.ledger-api.party-management-service.max-self-allocated-parties` (0 by default, which refuses the allocation with "User quota of party allocations exhausted"). Set it to the number of accounts the service may hold: it counts the user's rights on parties, so it is the cap on accounts, and the participant's `max-rights-per-user` (1000 by default) must be at least as high.
 
 ## Limits
 
