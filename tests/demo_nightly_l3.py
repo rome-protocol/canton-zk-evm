@@ -47,6 +47,11 @@ from pathlib import Path
 # lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the 1.0 s of docs/DESIGN.md, Budgets, is the budget on the reference
 # machine (the explorer's DevNet host), where L3 is still to be measured. test_demo_nightly_l3.py checks that the two files agree.
 B1_S = 2.75
+# The fee cap of the flood's transfers, in wei. The base fee of a chain flooded with full blocks rises to the cap and stays there (see batch_size), so the flood
+# pays about the cap for half the gas of every block: at demo/evm.py's MAX_FEE (10 gwei) about 0.15 ETH a block, and V's 10 ETH of the genesis ran out about
+# 10 minutes in. At 1 gwei (the genesis base fee) the 30 minutes cost V about 4 ETH; the base fee reaches the cap about 20 full blocks in, from the 0.1 gwei
+# or so it has when the flood starts.
+FLOOD_MAX_FEE = 10**9
 B4_S = 0.5
 B6_BYTES = 2.5e9
 MIN_TXS_FOR_B6 = 5_000
@@ -86,7 +91,9 @@ def judge(blocks, growth, txs_added, database_clock_error=None):
     clockless = [b["number"] for b in blocks if b.get("t0_from") == "fallback"]
     if clockless:
         failures.append(f"B1: the clock of blocks {clockless} could not start from the reader's ledger end (the offset was not read), so their lag is not measured")
-    served = [b["served_s"] for b in blocks if b["served_s"] is not None]
+    # B1 is held over the blocks with transactions: once the base fee is at the transfers' fee cap every other block is empty (batch_size), and an empty block's
+    # lag, a fraction of a full one's, would lower the percentile.
+    served = [b["served_s"] for b in blocks if b["served_s"] is not None and b["txs"] > 0]
     sse = [b["sse_after_served_s"] for b in blocks if b["sse_after_served_s"] is not None]
     since_record = [b["record_time_to_served_s"] for b in blocks if b.get("record_time_to_served_s") is not None]   # observed, never held
     summary = {
@@ -100,7 +107,9 @@ def judge(blocks, growth, txs_added, database_clock_error=None):
         "budgets": {"B1_p95_s": B1_S, "B4_p95_s": B4_S, "B6_bytes_per_million": B6_BYTES},
     }
     p95 = summary["served_p95_s"]
-    if p95 is not None and p95 > B1_S:
+    if p95 is None:
+        failures.append("B1: no block with transactions was served")
+    elif p95 > B1_S:
         failures.append(f"B1: index lag p95 {p95:.3f} s is over {B1_S} s")
     unreceived = [b["number"] for b in blocks if b["served_s"] is not None and b["sse_after_served_s"] is None]
     if not sse:
@@ -316,8 +325,8 @@ def cut_facts(output, block):
 def batch_size(per_block, unmined):
     """How many transfers the sender sends next, with `unmined` of V's transfers sent and not yet in a block: enough to keep two blocks' worth out of a block (the one
     being cut and the next), and never more than one block's. Each full block of 1,428 transfers (30 Mgas, twice the gas target) raises the base fee by an eighth
-    (EIP-1559), so about 40 blocks into the flood it reaches V's fee cap (demo/evm.py, MAX_FEE): from then on the builder can take V's transfers only into every other
-    block, and a sender that sent a block's worth for every cut whatever was taken filled reth's pool ("txpool is full") in about 10 minutes."""
+    (EIP-1559), so it reaches the transfers' fee cap (FLOOD_MAX_FEE) some 20 to 40 blocks into the flood: from then on the builder can take V's transfers only into every
+    other block, and a sender that sent a block's worth for every cut whatever was taken filled reth's pool ("txpool is full") in about 10 minutes."""
     return max(0, min(per_block, 2 * per_block - unmined))
 
 
@@ -409,7 +418,7 @@ class Sender(threading.Thread):
             while not self.stop:
                 count = batch_size(self.per_block, self.nonce - self.mined())
                 if count:
-                    self.call("plain", count, self.nonce)
+                    self.call("plain", count, self.nonce, FLOOD_MAX_FEE)
                     self.nonce += count
                     self.sent += count
                 while not self.stop:

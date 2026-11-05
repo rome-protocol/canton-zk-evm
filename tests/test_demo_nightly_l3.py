@@ -197,6 +197,16 @@ class Judge(unittest.TestCase):
         _, failures = l3.judge(blocks, **self.ok)
         self.assertTrue(any(f.startswith("B1") for f in failures), failures)
 
+    def test_b1_is_held_over_the_blocks_with_transactions(self):
+        """Half the blocks empty (the base fee at the transfers' fee cap) must not take B1's p95 below the full blocks' own."""
+        blocks = [block(i, served=0.2) for i in range(17)] + [block(17, served=2.9), block(18, served=3.0)] + [block(100 + i, txs=0, served=0.05) for i in range(19)]
+        _, failures = l3.judge(blocks, **self.ok)
+        self.assertTrue(any(f.startswith("B1") for f in failures), failures)
+
+    def test_only_empty_blocks_fail_b1(self):
+        _, failures = l3.judge([block(i, txs=0) for i in range(5)], **self.ok)
+        self.assertIn("B1: no block with transactions was served", failures)
+
     def test_b4_p95_over_half_a_second_fails(self):
         blocks = [block(i, sse=0.1) for i in range(18)] + [block(18, sse=0.9), block(19, sse=0.9)]
         _, failures = l3.judge(blocks, **self.ok)
@@ -282,7 +292,7 @@ class SenderNonces(unittest.TestCase):
         s.join(5)
         lines = (folder / "demo_w1.py.log").read_text().splitlines()
         self.assertEqual(lines[0], "nonce")
-        self.assertEqual(lines[1:4], ["plain 3 7", "plain 3 10", "plain 3 13"])
+        self.assertEqual(lines[1:4], ["plain 3 7 1000000000", "plain 3 10 1000000000", "plain 3 13 1000000000"])
         self.assertEqual(lines.count("nonce"), 1)
 
     def test_a_failing_batch_shows_what_it_printed(self):
@@ -306,7 +316,7 @@ class SenderNonces(unittest.TestCase):
         s.stop = True
         s.join(5)
         lines = (folder / "demo_w1.py.log").read_text().splitlines()
-        self.assertEqual(lines[1:], ["plain 3 7", "plain 3 10"])
+        self.assertEqual(lines[1:], ["plain 3 7 1000000000", "plain 3 10 1000000000"])
         self.assertEqual(s.sent, 6)
 
     def test_it_sends_what_the_blocks_took(self):
@@ -319,7 +329,7 @@ class SenderNonces(unittest.TestCase):
         s.stop = True
         s.join(5)
         lines = (folder / "demo_w1.py.log").read_text().splitlines()
-        self.assertEqual(lines[1:4], ["plain 3 7", "plain 3 10", "plain 2 13"])
+        self.assertEqual(lines[1:4], ["plain 3 7 1000000000", "plain 3 10 1000000000", "plain 2 13 1000000000"])
 
 
 class BatchSize(unittest.TestCase):

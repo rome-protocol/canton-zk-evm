@@ -12,8 +12,9 @@
                                            batches (Multi: 18 ERC-1155 batches of 4,096 ids that share one array, from the holder of the ids to new holders)
                                            or spawn (Flood: new tokens that need their metadata read, a third of them Burners whose reads spend all their gas, and one a FatReturn whose reads answer 170 KB)
 
-  demo_w1.py plain <count> [nonce]         <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
-                                           (the nightly load test's flood, tests/demo_nightly_l3.py). The nonces start at [nonce], or at V's pending nonce when none is given
+  demo_w1.py plain <count> [nonce] [fee cap]  <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
+                                           (the nightly load test's flood, tests/demo_nightly_l3.py). The nonces start at [nonce], or at V's pending nonce when none is given; each
+                                           transfer's maxFeePerGas is [fee cap] (wei), or demo/evm.py's MAX_FEE, and its tip the lesser of that and PRIORITY_FEE
   demo_w1.py nonce                         print V's pending nonce
   demo_w1.py address                       print V's address
   demo_w1.py osaka                         check that the chain runs Osaka: the pool refuses a transaction of 16,777,217 gas (2^24 + 1), and the CLZ opcode answers 255 for 1
@@ -61,16 +62,17 @@ def pending_nonce(folder: Path) -> int:
     return int(evm.rpc("eth_getTransactionCount", [Account.from_key(evm.load_key(folder, "v")).address, "pending"]), 16)
 
 
-def plain(folder: Path, count: int, first_nonce: int | None = None) -> list:
+def plain(folder: Path, count: int, first_nonce: int | None = None, max_fee: int | None = None) -> list:
     """Signs `count` transfers in one process (the key is read once and used here only) and sends them to reth's pool, nonces in order."""
+    max_fee = evm.MAX_FEE if max_fee is None else max_fee
     evm.make_keys(folder)
     account = Account.from_key(evm.load_key(folder, "v"))
     chain_id = int(evm.rpc("eth_chainId", []), 16)
     nonce = pending_nonce(folder) if first_nonce is None else first_nonce
     hashes = []
     for i in range(count):
-        tx = {"type": 2, "chainId": chain_id, "nonce": nonce + i, "value": 1, "gas": PLAIN_GAS, "maxFeePerGas": evm.MAX_FEE,
-              "maxPriorityFeePerGas": evm.PRIORITY_FEE, "to": to_checksum_address(recipient(i)), "data": "0x"}
+        tx = {"type": 2, "chainId": chain_id, "nonce": nonce + i, "value": 1, "gas": PLAIN_GAS, "maxFeePerGas": max_fee,
+              "maxPriorityFeePerGas": min(evm.PRIORITY_FEE, max_fee), "to": to_checksum_address(recipient(i)), "data": "0x"}
         hashes.append(evm.rpc("eth_sendRawTransaction", ["0x" + account.sign_transaction(tx).raw_transaction.hex().removeprefix("0x")]))
     return hashes
 
@@ -121,8 +123,8 @@ def main(argv: list) -> int:
             data = selector(signature) + encode(["uint256"] * len(args), args).hex()
             print(evm.send(folder, "v", argv[1], data, gas))
         return 0
-    if cmd == ["plain"] and len(argv) in (2, 3) and all(a.isdigit() for a in argv[1:]):
-        print("\n".join(plain(folder, int(argv[1]), int(argv[2]) if len(argv) == 3 else None)))
+    if cmd == ["plain"] and len(argv) in (2, 3, 4) and all(a.isdigit() for a in argv[1:]):
+        print("\n".join(plain(folder, int(argv[1]), int(argv[2]) if len(argv) >= 3 else None, int(argv[3]) if len(argv) == 4 else None)))
         return 0
     if cmd == ["osaka"] and len(argv) == 1:
         osaka_checks(folder)
