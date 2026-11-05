@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# The accounts service on a real Canton, on the protocol version PINS names (CANTON_PROTOCOL_VERSION): the pinned Canton, started as tests/canton_external.sh
+# starts it (an existing participant with a login on its Ledger API), Ostia's chain set up on it, and a Ledger API user that holds NO right. The service
+# runs with that user's token alone; integration.py then makes an external party from an Ed25519 key, creates a WithdrawalAcceptance for it, and lists its holdings.
+# The tokens live two minutes (as on the DevNet) and are written again every twenty seconds, each by a replace of the file, so a reader never sees half of one.
+# Needs Java 21, openssl 3 and network access to the registry in PINS. No GPU, no reth, no ZisK.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+# shellcheck disable=SC1091
+. "$ROOT/PINS"
+WORK=$(mktemp -d)
+export CZE_STATE_DIR=$WORK/state FAKE_LOG=$WORK/calls FAKE_ANSWER=$WORK/answer
+fail() { echo "FAIL: $*" >&2; exit 1; }
+pids=()
+cleanup() {
+  local status=$?
+  [ "$status" = 0 ] || {
+    echo "--- Canton log (errors)"; grep -E 'ERROR|WARN|Exception|rror' "$WORK/canton.log" 2>/dev/null | head -n 25 | cut -c1-400 || true
+    echo "--- service log"; head -n 40 "$WORK/service.log" 2>/dev/null | cut -c1-400 || true
+  }
+  for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+umask 077
+
+tools=$("$ROOT/network/canton/fetch.sh")
+CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools")
+export CZE_TOOLS_DIR=${CZE_TOOLS_DIR:-$CZE_STATE_DIR/tools}
+CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
+
+SECRET=$(openssl rand -hex 32)
+cat > "$WORK/auth.conf" <<CONF
+canton.participants.operator.ledger-api.auth-services = [{ type = unsafe-jwt-hmac-256, secret = "$SECRET", target-audience = "https://canton.network.global" }]
+CONF
+ACCOUNTS_USER=accounts-service; export ACCOUNTS_USER
+mint() {
+python3 - "$SECRET" "$WORK" "$ACCOUNTS_USER" <<'PY'
+import base64, hashlib, hmac, json, os, sys, time
+secret, work, accounts = sys.argv[1:]
+enc = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=")
+users = {"admin": "participant_admin", "operator": "ostia-operator", "confirmer": "ostia-confirmer", "builder": "ostia-builder", "reader": "ostia-reader", "demo": "ostia-demo", "accounts": accounts}
+for role, user in users.items():
+    claims = {"sub": user, "aud": "https://canton.network.global", "exp": int(time.time()) + 120}
+    signing = enc(b'{"alg":"HS256","typ":"JWT"}') + b"." + enc(json.dumps(claims).encode())
+    token = signing + b"." + enc(hmac.new(secret.encode(), signing, hashlib.sha256).digest())
+    fd = os.open(f"{work}/token-{role}.tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(token + b"\n")
+    os.replace(f"{work}/token-{role}.tmp", f"{work}/token-{role}")
+PY
+}
+mint
+for role in admin operator confirmer builder reader demo; do
+  export "CZE_TOKEN_FILE_${role^^}=$WORK/token-$role"
+done
+export CZE_LEDGER_URL=http://127.0.0.1:7575 CZE_READER_LEDGER_URL=http://127.0.0.1:7575 CZE_USER_PREFIX=ostia-
+( while sleep 20; do mint; done ) & pids+=($!)
+
+VERIFY_OK="ok $(printf 'cd%.0s' $(seq 32)) $(printf 'ef%.0s' $(seq 32)) $(printf 'bb%.0s' $(seq 32)) $(printf 'ab%.0s' $(seq 32)) 1 $(printf '55%.0s' $(seq 32)) 1700000000 30000000 0 0"
+LEGS_OK="ok $(printf '55%.0s' $(seq 32)) 1 ${GATEWAY_ADDRESS#0x} 0"
+mkdir -p "$CZE_STATE_DIR"
+echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$VERIFY_OK" > "$FAKE_ANSWER.verify2"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; : > "$FAKE_LOG"
+# The stand-ins for the sidecars: Canton checks them at start-up (canton.conf); nothing here asks them for a block.
+python3 "$ROOT/tests/fake_sidecar.py" 8085 & pids+=($!)
+python3 "$ROOT/tests/fake_sidecar.py" 8086 & pids+=($!)
+sleep 1
+
+java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" -c "$WORK/auth.conf" --bootstrap "$ROOT/tests/external_bootstrap.canton" --no-tty > "$WORK/canton.log" 2>&1 &
+pids+=($!)
+for _ in $(seq 1 300); do grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" && break; kill -0 "${pids[-1]}" 2>/dev/null || fail "Canton stopped"; sleep 1; done
+grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" || fail "the participant did not come up"
+echo "the synchronizer runs protocol version $CANTON_PROTOCOL_VERSION (PINS)"
+
+# Ostia's chain: the package, the parties, the users and the chain record, as an existing participant gets them.
+H0=$(printf 'ab%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
+python3 "$ROOT/network/external/setup.py" --demo -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
+  --rules-hash "$(printf '12%.0s' $(seq 32))" --gateway-address "${GATEWAY_ADDRESS#0x}" > "$WORK/setup.json" || fail "the setup failed"
+
+# The service's user: no right at all. The participant gives it the right to act as each account when the account is allocated.
+curl -sf -H "Authorization: Bearer $(tr -d '[:space:]' < "$WORK/token-admin")" -H 'content-type: application/json' "$CZE_LEDGER_URL/v2/users" \
+  -d "{\"user\":{\"id\":\"$ACCOUNTS_USER\",\"primaryParty\":\"\",\"isDeactivated\":false,\"identityProviderId\":\"\"},\"rights\":[]}" > /dev/null || fail "the service's user was not made"
+
+python3 "$ROOT/apps/accounts/accounts.py" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
+  --state-file "$WORK/accounts.jsonl" --listen 127.0.0.1:18081 > "$WORK/service.log" 2>&1 & pids+=($!)
+for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18081/healthz > /dev/null && break; sleep 1; done
+curl -sf http://127.0.0.1:18081/healthz > /dev/null || fail "the service did not come up"
+
+ACCOUNTS_URL=http://127.0.0.1:18081 python3 "$ROOT/apps/accounts/tests/integration.py" -v
+echo "accounts service test on Canton passed"
