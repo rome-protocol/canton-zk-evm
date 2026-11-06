@@ -357,7 +357,7 @@ class Hardening(Case):
         self.start(per_account=A.Limiter(1, DAY))
         self.make_account()
         made = len(self.service.overall.hits["all"])   # the allocation counted once
-        self.assertEqual([self.send() for _ in range(3)], [200, 429, 429])
+        self.assertEqual([self.send() for _ in range(2)], [200, 429])   # the 429 keeps its entry, so a third prepare would wait for it
         self.assertEqual(len(self.service.overall.hits["all"]), made + 1)   # the one execute that was within the account's budget
 
     def test_allocations_are_budgeted_too(self):
@@ -374,6 +374,7 @@ class Hardening(Case):
         self.assertEqual([self.send() for _ in range(2)], [200, 429])
         self.assertEqual(len(self.calls_to("/executeAndWait")), 1)
         self.ledger.fail["/v2/interactive-submission/prepare"] = (200, {"preparedTransaction": "eA==", "preparedTransactionHash": "aGFzaA==", "hashingSchemeVersion": "V"})
+        self.service.prepared.items.clear()   # the over-budget one kept its entry
         self.assertEqual(self.prepare()[0], 502)   # no estimate: no transaction
 
     def test_a_prepared_transaction_gets_one_attempt_to_execute(self):
