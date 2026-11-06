@@ -449,6 +449,11 @@ def run(seconds, per_block, results):
     dbclock = DbClock(os.environ["L3_DB"])
     dbclock.start()
     size0, txs0 = database()
+    # V, the flood's sender: its balance before and after (the flood pays its fee), and how many of its transfers are in a block.
+    v = subprocess.run([py, str(root / "demo_w1.py"), "address"], capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
+    balance = lambda: int(rpc("eth_getBalance", [v, "latest"]), 16) / 1e18   # noqa: E731
+    mined = lambda: int(rpc("eth_getTransactionCount", [v, "latest"]), 16)   # noqa: E731
+    balance0 = balance()
     accepted0 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables0 = table_sizes()
     cut = []          # (number, update id, returned at, transactions)
@@ -474,7 +479,7 @@ def run(seconds, per_block, results):
 
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
-    sender = Sender(py, root, per_block)
+    sender = Sender(py, root, per_block, mined)
     sender.start()
     started = time.monotonic()
     end = started + seconds
@@ -516,6 +521,7 @@ def run(seconds, per_block, results):
         time.sleep(0.1)
     stream.stop = clock.stop = dbclock.stop = True
     size1, txs1 = database()
+    balance1, waiting = balance(), None if sender.nonce is None else sender.nonce - mined()
     accepted1 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables1 = table_sizes()
     update_ids = block_updates([n for n, *_ in cut])   # the block's update by its number in the database, not from what cut_block printed
@@ -543,6 +549,8 @@ def run(seconds, per_block, results):
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
         summary.update(chain_summary(blocks, sender.sent))
+    # What the flood left: V's balance, and its transfers still in reth's pool (sent and not in a block).
+    summary.update(v_balance_eth_before=balance0, v_balance_eth_after=balance1, v_transfers_waiting_after=waiting)
     if txs1 > txs0:   # where the growth is: the five tables that grew most, in bytes per million transactions added
         grown = sorted(((t, tables1.get(t, 0) - tables0.get(t, 0)) for t in tables1), key=lambda kv: -kv[1])[:5]
         summary["growth_by_table_bytes_per_million"] = {t: round(g / (txs1 - txs0) * 1_000_000) for t, g in grown}
