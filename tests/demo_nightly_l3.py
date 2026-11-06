@@ -52,6 +52,10 @@ B1_S = 2.75
 # 10 minutes in. At 1 gwei (the genesis base fee) the 30 minutes cost V about 4 ETH; the base fee reaches the cap about 20 full blocks in, from the 0.1 gwei
 # or so it has when the flood starts.
 FLOOD_MAX_FEE = 10**9
+# The flood keeps the chain busy: about 125 full blocks in 30 minutes were measured (about 4.2 a minute, with every other block empty once the base fee is at the cap).
+# A flood that made fewer than 64% of that (80 in 30 minutes) stalled: a transfer lost from the pool would leave the sender sending nothing for the rest of the run.
+MIN_FULL_BLOCKS_PER_MINUTE = 80 / 30
+FULL_BLOCK_SHARE = 0.9   # of a block's worth of transfers
 B4_S = 0.5
 B6_BYTES = 2.5e9
 MIN_TXS_FOR_B6 = 5_000
@@ -77,8 +81,8 @@ def growth_per_million(size_before, size_after, txs_before, txs_after):
     return (size_after - size_before) / (txs_after - txs_before) * 1_000_000
 
 
-def judge(blocks, growth, txs_added, database_clock_error=None):
-    """The summary of a flood and the budgets it broke."""
+def judge(blocks, growth, txs_added, database_clock_error=None, seconds=None, per_block=None):
+    """The summary of a flood and the budgets it broke. With the flood's length and a block's worth of transfers, also whether the flood kept pace (see below)."""
     failures = []
     if not blocks:
         return {"blocks": 0}, ["no block was cut"]
@@ -91,6 +95,17 @@ def judge(blocks, growth, txs_added, database_clock_error=None):
     clockless = [b["number"] for b in blocks if b.get("t0_from") == "fallback"]
     if clockless:
         failures.append(f"B1: the clock of blocks {clockless} could not start from the reader's ledger end (the offset was not read), so their lag is not measured")
+    # The only legitimate cause of an empty block in the flood is the base fee over the transfers' fee cap (batch_size): an empty block with the base fee under it is a
+    # sender that stopped sending (a transfer lost from the pool keeps `mined` from catching up), and the flood after it measures nothing.
+    cap = FLOOD_MAX_FEE / 1e9
+    stalled = [b["number"] for b in blocks if b["txs"] == 0 and b.get("base_fee_gwei") is not None and b["base_fee_gwei"] < cap]
+    if stalled:
+        failures.append(f"the flood stalled: blocks {stalled} were empty with the base fee under the transfers' fee cap of {cap} gwei")
+    if seconds is not None and per_block:
+        needed = int(seconds / 60 * MIN_FULL_BLOCKS_PER_MINUTE)
+        full = sum(1 for b in blocks if b["txs"] >= FULL_BLOCK_SHARE * per_block)
+        if full < needed:
+            failures.append(f"the flood did not keep pace: {full} full blocks in {seconds} s, at least {needed} are needed")
     # B1 is held over the blocks with transactions: once the base fee is at the transfers' fee cap every other block is empty (batch_size), and an empty block's
     # lag, a fraction of a full one's, would lower the percentile.
     served = [b["served_s"] for b in blocks if b["served_s"] is not None and b["txs"] > 0]
@@ -325,7 +340,7 @@ def cut_facts(output, block):
 def batch_size(per_block, unmined):
     """How many transfers the sender sends next, with `unmined` of V's transfers sent and not yet in a block: enough to keep two blocks' worth out of a block (the one
     being cut and the next), and never more than one block's. Each full block of 1,428 transfers (30 Mgas, twice the gas target) raises the base fee by an eighth
-    (EIP-1559), so it reaches the transfers' fee cap (FLOOD_MAX_FEE) some 20 to 40 blocks into the flood: from then on the builder can take V's transfers only into every
+    (EIP-1559), so it reaches the transfers' fee cap (FLOOD_MAX_FEE) about 20 blocks into the flood: from then on the builder can take V's transfers only into every
     other block, and a sender that sent a block's worth for every cut whatever was taken filled reth's pool ("txpool is full") in about 10 minutes."""
     return max(0, min(per_block, 2 * per_block - unmined))
 
@@ -409,6 +424,14 @@ class Sender(threading.Thread):
                                f"{(done.stderr.strip() or done.stdout.strip())[-600:]}")
         return done.stdout
 
+    def mined_now(self):
+        """V's nonce at the latest block. A read that fails (reth busy while a block is cut, the 60 s timeout) is tried once more: a flood ends on a second failure, not a first."""
+        try:
+            return self.mined()
+        except Exception:
+            time.sleep(1)
+            return self.mined()
+
     def run(self):
         try:
             self.nonce = int(self.call("nonce").strip().splitlines()[-1])
@@ -416,7 +439,7 @@ class Sender(threading.Thread):
                 address = self.call("address").strip().splitlines()[-1]
                 self.mined = lambda: int(rpc("eth_getTransactionCount", [address, "latest"]), 16)
             while not self.stop:
-                count = batch_size(self.per_block, self.nonce - self.mined())
+                count = batch_size(self.per_block, self.nonce - self.mined_now())
                 if count:
                     self.call("plain", count, self.nonce, FLOOD_MAX_FEE)
                     self.nonce += count
@@ -545,7 +568,7 @@ def run(seconds, per_block, results):
                        "api_answer_after_served_s": None if first is None or answered is None else answered + WALL_OFFSET - first,
                        "sse_after_served_s": None if got is None or (before is None and first is None) else got - (first if before is None else before),
                        **facts.get(number, {})})
-    summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0, dbclock.error)
+    summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0, dbclock.error, seconds, per_block)
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
         summary.update(chain_summary(blocks, sender.sent))

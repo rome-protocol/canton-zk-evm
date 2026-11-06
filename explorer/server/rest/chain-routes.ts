@@ -154,16 +154,19 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
 
   async function oneTx(hash: string, q: URLSearchParams): Promise<Answer> {
     if (q.get("raw") === "1") return rawReceipt(hash);
-    // The answer and the transaction's place are read side by side, and so are its trace and fee caps: one query after another, this route's time under load was mostly waiting.
-    const [a, placed] = await Promise.all([transaction(hash), HASH.test(hash) ? finalTx(hash) : undefined]);
+    // The answer and the transaction's place are read side by side: the place is one read of an index, all that a 404 or a transaction still waiting adds. The rest is read
+    // only for a final transaction (the cursor and the fee caps, then the trace), so a route holds at most four connections at once (the answer's three and the place), then two, then one.
+    const [a, placed] = await Promise.all([transaction(hash), HASH.test(hash) ? rest.placeOf(hash) : undefined]);
     if (a.status !== 200) return a;
     const body = a.body as { status: string };
     // A transaction the indexer wrote between the two reads is final in the answer and not yet in its place: read the place again.
-    const here = body.status === "final" ? placed ?? (await finalTx(hash)) : undefined;
-    const derived = !!here?.derived;
+    const at = body.status === "final" ? placed ?? (await rest.placeOf(hash)) : undefined;
+    // The derive cursor only grows, so one read of it beside the fee caps is at worst a moment older, and says "not derived yet" a moment longer.
+    const [cursor, caps] = await Promise.all([at ? rest.deriveCursor() : 0, at ? rest.feeCapsOf(at) : { maxFeePerGas: null, maxPriorityFeePerGas: null }]);
+    const derived = !!at && at.block <= cursor;
     // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
-    const [trace, caps] = await Promise.all([derived && here ? rest.traceOf(here.at) : undefined, here ? rest.feeCapsOf(here.at) : { maxFeePerGas: null, maxPriorityFeePerGas: null }]);
-    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: here?.at.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
+    const trace = derived && at ? await rest.traceOf(at) : undefined;
+    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: at?.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
   }
 
   /** The receipt of a final transaction as reth gave it: a chain fact that never changes. */

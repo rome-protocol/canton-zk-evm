@@ -58,7 +58,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
     const folder = mkdtempSync(join(tmpdir(), "explorer-l2-"));
     const stops: (() => Promise<void> | void)[] = [];
     try {
-      // The indexer's pool, as large as server/indexer/cli.ts's (pg's default), which also serves this process's own queries; the server's pool (L2_POOL) is in its process.
+      // The indexer's pool, as large as server/indexer/cli.ts's (pg's default), which also serves this process's own queries; the server's pool (L2_POOL, 10 as in production) is in its process.
       const pool = new pg.Pool({ connectionString: db.url, max: 10 });
       pool.on("error", () => undefined);
       stops.push(() => pool.end());
@@ -101,8 +101,9 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
 
       // ---- The server: the pages' routes, the live stream, and the health route, over the database, in a process of its own (test/l2/serve.ts). The deployed indexer
       // is a process of its own too, so neither this process's ingestion and synthetic blocks nor its getLogs and txlist clients are on the event loop that B3 times.
+      // The server's pool is the deployed one's (10, as server/storage.ts opens it): B3 is not held with more connections than production has.
       const serveConfig = join(folder, "serve.json");
-      writeFileSync(serveConfig, JSON.stringify({ url: db.url, folder, poolMax: int("L2_POOL", 20), pins: { programVK: PINS.programVK, rootC: PINS.rootC } }));
+      writeFileSync(serveConfig, JSON.stringify({ url: db.url, folder, poolMax: int("L2_POOL", 10), pins: { programVK: PINS.programVK, rootC: PINS.rootC } }));
       const serve = spawn(process.execPath, ["test/l2/serve.ts", serveConfig], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
       const serveExit = new Promise<void>((ok) => serve.once("exit", () => ok()));
       stops.push(async () => { if (serve.exitCode === null && serve.signalCode === null) { serve.kill("SIGTERM"); await Promise.race([serveExit, sleep(10_000)]); } });

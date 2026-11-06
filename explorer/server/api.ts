@@ -223,12 +223,13 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
 
   async function transaction(hash: string): Promise<Answer> {
     if (!HASH.test(hash)) return fail(400, "A transaction is named by its 0x hash.");
-    // Reads that do not depend on each other are made side by side: one after another, this answer's time under load was mostly waiting. What the block wrote
-    // with the transaction (its legs) is read once its row has been seen, so that it is never read from before the block was written.
-    const [final, lifecycle] = await Promise.all([chain.tx(hash), lifecycleOf(hash)]);
+    const final = await chain.tx(hash);
     const tr = tracker?.state(hash);
     if (final) {
-      const [transfer, legs] = await Promise.all([transferOf(final.input, final.to), chain.txLegs(hash, BLOCK_LEGS)]);
+      // What the indexer wrote with the transaction (its legs, its lifecycle) is read once its row has been seen: it writes them in one database transaction, so they
+      // are there by then, and read side by side with the row they could be from before it. The rest of what is read here does not depend on each other either: at
+      // most three connections at once, and a 404 or a transaction still waiting costs the one read it did.
+      const [transfer, legs, lifecycle] = await Promise.all([transferOf(final.input, final.to), chain.txLegs(hash, BLOCK_LEGS), lifecycleOf(hash)]);
       const toToken = transfer?.symbol ?? (final.to ? (await tokenOf(final.to))?.symbol ?? null : null);
       return ok({
         hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle,
@@ -249,7 +250,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const status = t.blockNumber === null ? "waiting" : unindexed ? "unindexed" : "proving";
     const state: ApiTxState = status === "waiting" ? "pending" : status;
     return ok({
-      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null, lifecycle,
+      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null, lifecycle: await lifecycleOf(hash),
       block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,

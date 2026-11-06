@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createApi, type Answer } from "../api.ts";
-import { createChainDb } from "../chain-db.ts";
+import { ChainDbError, createChainDb, type ChainDb } from "../chain-db.ts";
 import { loadConfig } from "../config.ts";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/testing.ts";
@@ -21,13 +21,14 @@ const frame = { type: "call", action: { callType: "call", from: "0x" + "11".repe
 describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   checkRequired();
   let db: TestDatabase, pool: Pool, chain: ReturnType<typeof makeChain>, rethTrace: unknown[] | null;
-  const get = async (target: string): Promise<Answer> => {
+  /** `over` replaces reads of the database, by name, as a test needs them to go: the route is the real one. */
+  const get = async (target: string, over: { chain?: Partial<ChainDb>; rest?: Partial<ReturnType<typeof createChainRest>> } = {}): Promise<Answer> => {
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const reth = {
       code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => undefined, transaction: async () => null,
       rpc: async (m: string) => (m === "trace_transaction" ? (rethTrace === ("toobig" as never) ? Promise.reject(new RethTooBig(m, 1)) : rethTrace) : m === "eth_getTransactionReceipt" ? { status: "0x1", gasUsed: "0x5208", logs: [] } : null),
     } as unknown as Reth;
-    return createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), rest: createChainRest(pool) })("GET", target);
+    return createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: { ...createChainDb(pool), ...over.chain }, rest: { ...createChainRest(pool), ...over.rest } })("GET", target);
   };
   const tx = (block: number, i: number) => chain.blocks[block - 1]!.block.transactions[i]!.hash;
   const setCursor = (n: number) => pool.query("update cursors set position = $1 where stream = 'derive'", [n]);
@@ -419,6 +420,60 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   it("gives a final transaction its place in its block and the fee caps the sender signed", async () => {
     expect(body(await get(`/api/txs/${tx(2, 1)}`))).toMatchObject({ index: 1, maxFeePerGas: "9", maxPriorityFeePerGas: "1" });
     expect(body(await get(`/api/txs/${tx(3, 4)}`))).toMatchObject({ index: 4 });
+  });
+
+  it("reads a final transaction's lifecycle after its row, not beside it: a commit between the two reads must not show a final transaction with no lifecycle", async () => {
+    const real = createChainDb(pool);
+    let rowRead = false;
+    const stub = { state: "final", reason: null, acceptedAt: null, acceptedVia: null, includedAt: null, attempts: 1, leftOutReason: null, proofStartedAt: null, proofEndedAt: null, submittedAt: null, committedAt: null, finalAt: "2026-11-01T00:00:00.000Z", finalBlock: 2, timeToFinalMs: null };
+    // The indexer writes the row and the lifecycle in one database transaction: a read of the lifecycle that starts before the row has been read can find neither.
+    const chain = { tx: async (h: string) => { const r = await real.tx(h); rowRead = true; return r; }, lifecycleOf: async () => (rowRead ? stub : undefined) };
+    const answer = body(await get(`/api/txs/${tx(2, 1)}`, { chain }));
+    expect(answer.status).toBe("final");
+    expect(answer.lifecycle).toMatchObject({ state: "final", finalAt: "2026-11-01T00:00:00.000Z" });
+  });
+
+  it("reads a transaction's place again when it was not there beside the answer", async () => {
+    const real = createChainRest(pool);
+    let reads = 0;
+    // The indexer commits the transaction between the route's first look at its place and the answer: the first read of the place misses, the second finds it.
+    const rest = { placeOf: async (h: string) => (reads++ === 0 ? undefined : real.placeOf(h)) };
+    const answer = body(await get(`/api/txs/${tx(2, 1)}`, { rest }));
+    expect(reads).toBe(2);
+    expect(answer).toMatchObject({ status: "final", index: 1, maxFeePerGas: "9", maxPriorityFeePerGas: "1" });
+  });
+
+  it("asks nothing more for a transaction that is not there than its place", async () => {
+    const calls: string[] = [];
+    const real = createChainRest(pool);
+    const rest = { placeOf: async (h: string) => { calls.push("placeOf"); return real.placeOf(h); }, deriveCursor: async () => { calls.push("deriveCursor"); return real.deriveCursor(); }, feeCapsOf: async (at: Parameters<typeof real.feeCapsOf>[0]) => { calls.push("feeCapsOf"); return real.feeCapsOf(at); } };
+    const lifecycle = createChainDb(pool).lifecycleOf;
+    const chain = { lifecycleOf: async (h: string) => { calls.push("lifecycleOf"); return lifecycle(h); } };
+    expect((await get(`/api/txs/0x${"ab".repeat(32)}`, { rest, chain })).status).toBe(404);
+    expect(calls).toEqual(["placeOf"]);
+  });
+
+  it("fails the whole answer when one of the reads made side by side fails: never a partial 200", async () => {
+    const down = () => Promise.reject(new ChainDbError("the database cannot be read"));
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const cases: [string, { chain?: Partial<ChainDb>; rest?: Partial<ReturnType<typeof createChainRest>> }][] = [
+        [`/api/txs/${tx(2, 1)}`, { rest: { feeCapsOf: down } }],
+        [`/api/txs/${tx(2, 1)}`, { rest: { deriveCursor: down } }],
+        [`/api/txs/${tx(2, 1)}`, { rest: { placeOf: down } }],
+        [`/api/txs/${tx(2, 1)}`, { chain: { lifecycleOf: down } }],
+        [`/api/txs/${tx(2, 1)}`, { chain: { txLegs: down } }],
+        ["/api/blocks/2", { rest: { deriveCursor: down } }],
+        ["/api/blocks/2", { rest: { blockExtras: down } }],
+      ];
+      for (const [target, over] of cases) {
+        const a = await get(target, over);
+        expect(a.status, `${target} ${JSON.stringify(Object.keys(over))}`).toBe(502);
+        expect(JSON.stringify(a.body)).not.toContain('"status":"final"');
+      }
+    } finally {
+      err.mockRestore();
+    }
   });
 
   it("says 'not derived yet' for what stage 2 has not reached, and caches it as nothing final", async () => {

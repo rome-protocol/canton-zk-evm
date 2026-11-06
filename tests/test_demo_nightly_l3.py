@@ -10,8 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import demo_nightly_l3 as l3  # noqa: E402
 
 
-def block(n, txs=1000, served=0.2, sse=0.05):
-    return {"number": n, "txs": txs, "served_s": served, "sse_after_served_s": sse}
+def block(n, txs=1000, served=0.2, sse=0.05, fee=None):
+    b = {"number": n, "txs": txs, "served_s": served, "sse_after_served_s": sse}
+    if fee is not None:
+        b["base_fee_gwei"] = fee
+    return b
 
 
 class Percentile(unittest.TestCase):
@@ -207,6 +210,32 @@ class Judge(unittest.TestCase):
         _, failures = l3.judge([block(i, txs=0) for i in range(5)], **self.ok)
         self.assertIn("B1: no block with transactions was served", failures)
 
+    def test_an_empty_block_under_the_fee_cap_is_a_stalled_flood(self):
+        blocks = [block(i, txs=1428, fee=0.5) for i in range(20)] + [block(20, txs=0, fee=0.6)]
+        _, failures = l3.judge(blocks, **self.ok)
+        self.assertTrue(any(f.startswith("the flood stalled") and "[20]" in f for f in failures), failures)
+
+    def test_an_empty_block_over_the_fee_cap_is_a_fee_market(self):
+        blocks = [block(i, txs=1428, fee=0.9) for i in range(20)] + [block(20, txs=0, fee=1.02), block(21, txs=0, fee=1.0)]
+        _, failures = l3.judge(blocks, **self.ok)
+        self.assertFalse(any("stalled" in f for f in failures), failures)
+
+    def test_too_few_full_blocks_for_the_length_of_the_flood_fail(self):
+        blocks = [block(i, txs=1428, fee=0.5) for i in range(79)]
+        _, failures = l3.judge(blocks, seconds=1800, per_block=1428, **self.ok)
+        self.assertTrue(any("did not keep pace: 79 full blocks in 1800 s, at least 80" in f for f in failures), failures)
+
+    def test_enough_full_blocks_pass_and_a_part_block_is_not_full(self):
+        blocks = [block(i, txs=1428, fee=0.5) for i in range(80)]
+        _, failures = l3.judge(blocks, seconds=1800, per_block=1428, **self.ok)
+        self.assertFalse(any("keep pace" in f for f in failures), failures)
+        _, failures = l3.judge([block(i, txs=500, fee=0.5) for i in range(80)], seconds=1800, per_block=1428, **self.ok)
+        self.assertTrue(any("keep pace" in f for f in failures), failures)
+
+    def test_the_minimum_follows_the_length_of_the_flood(self):
+        _, failures = l3.judge([block(i, txs=1428, fee=0.5) for i in range(8)], seconds=180, per_block=1428, **self.ok)
+        self.assertFalse(any("keep pace" in f for f in failures), failures)
+
     def test_b4_p95_over_half_a_second_fails(self):
         blocks = [block(i, sse=0.1) for i in range(18)] + [block(18, sse=0.9), block(19, sse=0.9)]
         _, failures = l3.judge(blocks, **self.ok)
@@ -330,6 +359,32 @@ class SenderNonces(unittest.TestCase):
         s.join(5)
         lines = (folder / "demo_w1.py.log").read_text().splitlines()
         self.assertEqual(lines[1:4], ["plain 3 7 1000000000", "plain 3 10 1000000000", "plain 2 13 1000000000"])
+
+    def test_a_read_of_the_nonce_that_fails_once_is_tried_again(self):
+        folder = self.fake("import sys\nprint(7 if sys.argv[1] == 'nonce' else 'ok')\n")
+        calls = []
+        def mined():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("timed out")
+            return 7
+        s = self.sender(folder, mined=mined)
+        s.start()
+        s.next_batch()
+        s.stop = True
+        s.join(5)
+        self.assertIsNone(s.error)
+        self.assertGreaterEqual(s.sent, 3)
+
+    def test_a_read_that_fails_twice_ends_the_flood(self):
+        folder = self.fake("import sys\nprint(7 if sys.argv[1] == 'nonce' else 'ok')\n")
+        def mined():
+            raise OSError("timed out")
+        s = self.sender(folder, mined=mined)
+        s.start()
+        with self.assertRaises(RuntimeError) as caught:
+            s.next_batch()
+        self.assertIn("timed out", str(caught.exception))
 
 
 class BatchSize(unittest.TestCase):
