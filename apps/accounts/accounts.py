@@ -7,7 +7,7 @@ See README.md.
 The service holds a Ledger API token and no key of any party. An account is an external party: its key is made by its owner, and only that key can
 sign for it. The service generates the topology and the transactions to be signed, hands them out, and submits what comes back signed.
 """
-import argparse, base64, binascii, collections, hashlib, hmac, json, os, re, secrets, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, binascii, collections, hashlib, hmac, ipaddress, json, os, re, secrets, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ed25519
@@ -32,6 +32,9 @@ MAX_BODY = 512 * 1024
 PENDING_TTL = 600        # seconds a topology or a prepared transaction can be signed and sent back
 HOLDINGS_PAGE, HOLDINGS_PAGES = 100, 50
 DAY = 86400
+AUTH_WINDOW = 60         # seconds of clock difference an account signature may have
+HEALTH_TTL = 5           # seconds /healthz is answered from the last check
+TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
 SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the 3.7.1 OpenAPI spec leaves the format a free string and names no value; RAW is what the pinned Canton accepts
 
 
@@ -57,6 +60,33 @@ def text(body, name: str, limit: int = 4096) -> str:
     if not isinstance(value, str) or not 0 < len(value) <= limit:
         raise HttpError(400, f"{name} must be non-empty text")
     return value
+
+
+def norm(address: str):
+    """An IP address; an IPv4 address inside an IPv6 one (::ffff:a.b.c.d) is the IPv4 address. ValueError when it is not an address."""
+    a = ipaddress.ip_address(address.strip())
+    return a.ipv4_mapped or a if a.version == 6 else a
+
+
+def client_key(address: str) -> str:
+    """What limits count a client by: an IPv4 address as it is, an IPv6 address as its /64 (one subscriber holds a whole /64)."""
+    try:
+        a = norm(address)
+    except ValueError:
+        return address
+    return str(ipaddress.ip_network((a, 64), strict=False)) if a.version == 6 else str(a)
+
+
+def client_address(peer: str, header: str, n: int, trusted) -> str:
+    """The client's address: the n-th entry from the right of the proxy header, but only when the TCP peer is a trusted proxy; otherwise the peer itself."""
+    try:
+        if header and any(norm(peer) in net for net in trusted):
+            entries = [e.strip() for e in header.split(",")]
+            if 1 <= n <= len(entries):
+                return str(norm(entries[-n]))
+    except ValueError:
+        pass
+    return peer
 
 
 class Ledger:
@@ -98,11 +128,16 @@ class Pending:
     def put(self, key: str, value, owner: str = "") -> None:
         with self.lock:
             now = self.clock()
-            if key not in self.items:
-                self.items = {k: v for k, v in self.items.items() if v[0] > now}
-                if len(self.items) >= self.limit or sum(v[2] == owner for v in self.items.values()) >= self.per_owner:
+            if key not in self.items or self.items[key][0] <= now:
+                live = [v for v in self.items.values() if v[0] > now]
+                if len(live) >= self.limit or sum(v[2] == owner for v in live) >= self.per_owner:
                     raise HttpError(503, "too many requests are waiting for a signature")
             self.items[key] = (now + self.ttl, value, owner)
+
+    def prune(self) -> None:
+        with self.lock:
+            now = self.clock()
+            self.items = {k: v for k, v in self.items.items() if v[0] > now}
 
     def get(self, key: str):
         with self.lock:
@@ -134,23 +169,50 @@ class Limiter:
             if sum(w for _, w in q) + weight > self.count:
                 raise HttpError(429, "too many requests: try again later", retryAfter=int(q[0][0] + self.window - now) + 1 if q else int(self.window))
             q.append((now, weight))
-            if len(self.hits) > 10000:
-                self.hits = {k: v for k, v in self.hits.items() if v and v[-1][0] > now - self.window}
+
+    def prune(self) -> None:
+        with self.lock:
+            now = self.clock()
+            self.hits = {k: q for k, q in self.hits.items() if q and q[-1][0] > now - self.window}
+
+
+class Replays:
+    """The account signatures seen inside the time window: (party, seconds, signature) is accepted once."""
+    def __init__(self, wall=time.time):
+        self.wall, self.seen, self.lock = wall, {}, threading.Lock()
+
+    def add(self, party: str, seconds: int, signature: bytes) -> bool:
+        with self.lock:
+            key = (party, seconds, signature)
+            if key in self.seen:
+                return False
+            self.seen[key] = seconds + AUTH_WINDOW
+            return True
+
+    def prune(self) -> None:
+        with self.lock:
+            now = self.wall()
+            self.seen = {k: until for k, until in self.seen.items() if until >= now}
 
 
 class Parties:
     """The parties this service allocated, each with the Ed25519 key it was made with: kept in memory and appended to `path` (one JSON line each), so that it
     answers for them after a restart."""
     def __init__(self, path: str):
-        self.path, self.parties, self.lock = path, {}, threading.Lock()
+        self.path, self.parties, self.lock, self.torn = path, {}, threading.Lock(), False
         if os.path.exists(path):
-            with open(path) as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line)
-                        self.parties[entry["party"]] = base64.b64decode(entry["key"], validate=True)
-                    except (ValueError, KeyError, TypeError):
-                        print(f"state file {path}: a line is dropped", file=sys.stderr)
+            with open(path, "rb") as f:
+                lines = f.read().split(b"\n")
+            # The last piece is empty when the file ends in a newline; else a write did not finish: that line is ignored, and the next append starts a new one.
+            self.torn = bool(lines.pop())
+            if self.torn:
+                print(f"state file {path}: the last line is torn and ignored", file=sys.stderr)
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                    self.parties[entry["party"]] = base64.b64decode(entry["key"], validate=True)
+                except (ValueError, KeyError, TypeError):
+                    print(f"state file {path}: a line is dropped", file=sys.stderr)
 
     def __contains__(self, party: str) -> bool:
         return party in self.parties
@@ -162,8 +224,9 @@ class Parties:
         with self.lock:
             if party not in self.parties:
                 with open(self.path, "a") as f:
-                    f.write(json.dumps({"party": party, "key": base64.b64encode(key).decode(), "at": int(time.time())}) + "\n")
+                    f.write("\n" * self.torn + json.dumps({"party": party, "key": base64.b64encode(key).decode(), "at": int(time.time())}) + "\n")
                     f.flush(); os.fsync(f.fileno())
+                self.torn = False
                 self.parties[party] = key
 
 
@@ -171,7 +234,7 @@ class Accounts:
     def __init__(self, ledger: Ledger, user: str, parties: Parties, allow, hint: str = "bridge", synchronizer: str = None, topology_version: int = None,
                  creates: Limiter = None, rate: Limiter = None, topologies: Pending = None, prepared: Pending = None, chain: dict = None,
                  open_limits: dict = None, per_account: Limiter = None, per_client: Limiter = None, overall: Limiter = None, traffic: Limiter = None,
-                 max_traffic: int = 200000):
+                 max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0):
         self.ledger, self.user, self.parties, self.allow, self.hint = ledger, user, parties, set(allow), hint
         self.synchronizer, self.topology_version = synchronizer, topology_version
         self.creates, self.rate = creates or Limiter(3, DAY), rate or Limiter(60, 60)
@@ -181,7 +244,12 @@ class Accounts:
         # What executes and allocations may spend in a day: per account, per client, overall, and the overall traffic that the participant estimates.
         self.per_account, self.per_client, self.overall = per_account or Limiter(50, DAY), per_client or Limiter(200, DAY), overall or Limiter(2000, DAY)
         self.traffic, self.max_traffic = traffic or Limiter(50_000_000, DAY), max_traffic
+        self.new_total = new_total or Limiter(200, DAY)   # new accounts a day, all clients: the participant's party and rights quotas are finite
         self.secret = secrets.token_bytes(32)
+        self.clock, self.wall, self.replays = time.monotonic, time.time, Replays()
+        # The ledger user's own rights are the truth of which parties this service holds; read at start and again on a miss, at most every `rights_gap` seconds.
+        self.rights, self.rights_at, self.rights_gap, self.rights_lock = set(), None, rights_gap, threading.Lock()
+        self.health_at, self.health_error, self.health_lock = None, None, threading.Lock()
 
     def sync_id(self) -> str:
         if not self.synchronizer:
@@ -209,25 +277,110 @@ class Accounts:
             raise HttpError(404, "this service did not make that account")
         return party
 
+    # ---- which parties are held, and proof of the key
+
+    def load_rights(self, force: bool = False) -> None:
+        """Read the ledger user's CanActAs rights (the parties this service holds), at most every `rights_gap` seconds unless forced."""
+        if not self.rights_lock.acquire(blocking=False):
+            return
+        try:
+            now = self.clock()
+            if not force and self.rights_at is not None and now - self.rights_at < self.rights_gap:
+                return
+            self.rights_at = now
+            out = self.ledger.call("GET", "/v2/users/" + urllib.parse.quote(self.user, safe="") + "/rights")
+            kinds = [(r.get("kind") or {}) for r in out.get("rights") or [] if isinstance(r, dict)]
+            self.rights = {((k.get("CanActAs") or {}).get("value") or {}).get("party") for k in kinds} - {None}
+        finally:
+            self.rights_lock.release()
+
+    def holds(self, party: str) -> bool:
+        if party not in self.rights:
+            self.load_rights()
+        return party in self.rights
+
+    def key_of(self, party) -> bytes:
+        if isinstance(party, str):
+            if party in self.parties:
+                return self.parties.key(party)
+            if self.holds(party):   # the user can act as it, the state file has no line for it: the Ledger API does not give a party's key
+                raise HttpError(409, "this service holds that account but not its key: register it again (topology, then allocate, with the same key)")
+        raise HttpError(404, "this service did not make that account")
+
+    def authenticate(self, party, method: str, path: str, raw: bytes, header) -> None:
+        """Proof of the account's key on a request about it: header `<unix seconds>.<base64 signature>`, the signature over
+        `accounts-v1\\n<METHOD>\\n<PATH>\\n<hex sha256 of the body>\\n<unix seconds>`, within AUTH_WINDOW of the server's time, and not seen before."""
+        key = self.key_of(party)
+        m = re.fullmatch(r"(\d{1,12})\.([A-Za-z0-9+/=]{1,100})", header or "")
+        try:
+            signature = base64.b64decode(m[2], validate=True) if m else b""
+        except (binascii.Error, ValueError):
+            signature = b""
+        if len(signature) != 64:
+            raise HttpError(401, "this request needs the account's signature in X-Account-Signature: <unix seconds>.<base64 signature>")
+        seconds = int(m[1])
+        message = f"accounts-v1\n{method}\n{path}\n{hashlib.sha256(raw).hexdigest()}\n{seconds}".encode()
+        if abs(self.wall() - seconds) > AUTH_WINDOW or not ed25519.verify(key, message, signature):
+            raise HttpError(401, "the account's signature is not valid for this request, or is too old")
+        if not self.replays.add(party, seconds, signature):
+            raise HttpError(401, "this signature was used already")
+
+    def health(self) -> dict:
+        """The participant's answer to /v2/version, asked at most every HEALTH_TTL seconds however many ask."""
+        with self.health_lock:
+            now = self.clock()
+            if self.health_at is None or now - self.health_at >= HEALTH_TTL:
+                try:
+                    self.ledger.call("GET", "/v2/version")
+                    self.health_error = None
+                except HttpError as e:
+                    self.health_error = e.message
+                self.health_at = now
+            error = self.health_error
+        return {"ok": True, "accounts": len(self.parties.parties)} if error is None else {"ok": False, "error": error}
+
+    def sweep(self) -> None:
+        """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
+        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.topologies, self.prepared, self.replays):
+            part.prune()
+
+    def start_sweeper(self, every: float = 30) -> threading.Thread:
+        def loop():
+            while True:
+                time.sleep(every)
+                try:
+                    self.sweep()
+                except Exception as e:
+                    print(f"sweep: {type(e).__name__}: {e}", file=sys.stderr)
+        thread = threading.Thread(target=loop, daemon=True)
+        thread.start()
+        return thread
+
     # ---- the routes
 
-    def handle(self, method: str, path: str, body, ip: str):
+    def handle(self, method: str, path: str, body, ip: str, raw: bytes = b"", auth: str = None):
         if path == "/healthz" and method == "GET":
-            try:
-                self.ledger.call("GET", "/v2/version")
-                return {"ok": True, "accounts": len(self.parties.parties)}
-            except HttpError as e:
-                return {"ok": False, "error": e.message}
+            return self.health()
+        ip = client_key(ip)
         self.rate.hit(ip)
         if method == "POST":
             route = {"/accounts/v1/topology": self.topology, "/accounts/v1/allocate": self.allocate, "/accounts/v1/prepare": self.prepare,
                      "/accounts/v1/execute": self.execute}.get(path)
             if route:
-                return route(body if isinstance(body, dict) else {}, ip)
+                body = body if isinstance(body, dict) else {}
+                if route in (self.prepare, self.execute):   # the party the request is about must have signed it
+                    sigs = body.get("partySignatures")
+                    first = sigs[0] if isinstance(sigs, list) and sigs else None
+                    party = body.get("party") if route == self.prepare else first.get("party") if isinstance(first, dict) else None
+                    if isinstance(party, str):
+                        self.authenticate(party, method, path, raw, auth)
+                return route(body, ip)
         elif method == "GET":
             m = re.fullmatch(r"/accounts/v1/holdings/([^/]+)", path)
             if m:
-                return self.holdings(urllib.parse.unquote(m.group(1)))
+                party = urllib.parse.unquote(m.group(1))
+                self.authenticate(party, method, path, raw, auth)
+                return self.holdings(party)
         raise HttpError(404, "no such route")
 
     def topology(self, body: dict, ip: str) -> dict:
@@ -266,13 +419,19 @@ class Accounts:
             return {"party": party, "created": False}
         if not ed25519.verify(raw, base64.b64decode(multi_hash), base64.b64decode(signature)):
             raise HttpError(401, "the signature is not the key's signature of the multi-hash")
+        if self.holds(party):   # the participant has this party for the service's user, the state file lost its line: the key is proved, so the line is written again
+            self.parties.add(party, raw)
+            self.topologies.drop(blob)
+            return {"party": party, "created": False, "restored": True}
         self.creates.hit(ip)
+        self.new_total.hit("all")
         self.spend(ip)
         # The user gets the right to act as the new party in the same call, so the service's user needs no admin right of its own.
         self.ledger.call("POST", "/v2/parties/external/allocate", {
             "synchronizer": self.sync_id(), "onboardingTransactions": [{"transaction": t} for t in transactions],
             "multiHashSignatures": [self.signature(signature, fingerprint)], "userId": self.user, "waitForAllocation": True})
         self.parties.add(party, raw)
+        self.rights = self.rights | {party}
         self.topologies.drop(blob)
         return {"party": party, "created": True}
 
@@ -365,7 +524,7 @@ class Accounts:
         return {"updateId": done["updateId"]}
 
     def holdings(self, party: str) -> dict:
-        """The party's CIP-0056 holdings (the Holding interface's view), all pages of one snapshot."""
+        """The party's own CIP-0056 holdings (the Holding interface's view, owner = the party), all pages of one snapshot."""
         self.known(party)
         flt = {"cumulative": [{"identifierFilter": {"InterfaceFilter": {"value": {"interfaceId": HOLDING, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}}]}
         request, out = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": HOLDINGS_PAGE}, []
@@ -375,7 +534,7 @@ class Accounts:
                 event = (entry.get("contractEntry") or {}).get("JsActiveContract", {}).get("createdEvent") or {}
                 for view in event.get("interfaceViews") or []:
                     v = view.get("viewValue")
-                    if isinstance(v, dict):
+                    if isinstance(v, dict) and v.get("owner") == party:   # a holding the party only observes is not its own
                         out.append({"contractId": event["contractId"], "instrumentId": v["instrumentId"], "amount": v["amount"], "locked": bool(v.get("lock"))})
             if not page.get("nextPageToken"):
                 return {"party": party, "holdings": out}
@@ -383,14 +542,14 @@ class Accounts:
         raise HttpError(500, "the account holds more than this service lists")
 
 
-def make_server(service: Accounts, host: str, port: int, ip_header: str = None) -> ThreadingHTTPServer:
+def make_server(service: Accounts, host: str, port: int, ip_header: str = None, proxies: int = 1, trusted=TRUSTED_ADDRESSES) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         timeout = 20
 
         def serve(self, method: str):
             headers = {}
             try:
-                body = None
+                body, raw = None, b""
                 if method == "POST":
                     try:
                         length = int(self.headers.get("content-length") or 0)
@@ -398,13 +557,14 @@ def make_server(service: Accounts, host: str, port: int, ip_header: str = None) 
                         length = -1
                     if not 0 <= length <= MAX_BODY:
                         raise HttpError(400, f"the body must be at most {MAX_BODY} bytes")
+                    raw = self.rfile.read(length)
                     try:
-                        body = json.loads(self.rfile.read(length) or b"null")
+                        body = json.loads(raw or b"null")
                     except ValueError:
                         raise HttpError(400, "the body is not JSON")
-                # Behind a reverse proxy the client is the last address that the proxy itself wrote into the header.
-                ip = (self.headers.get(ip_header) or "").split(",")[-1].strip() if ip_header else ""
-                status, out = 200, service.handle(method, urllib.parse.urlsplit(self.path).path, body, ip or self.client_address[0])
+                # Behind reverse proxies the client is the entry that the nearest trusted proxy wrote: the `proxies`-th from the right, and only from a trusted peer.
+                ip = client_address(self.client_address[0], ",".join(self.headers.get_all(ip_header, [])) if ip_header else "", proxies, trusted)
+                status, out = 200, service.handle(method, urllib.parse.urlsplit(self.path).path, body, ip, raw, self.headers.get("X-Account-Signature"))
             except HttpError as e:
                 status, out = e.status, {"error": e.message, **{k: v for k, v in e.extra.items() if v is not None and k != "retryAfter"}}
                 if "retryAfter" in e.extra:
@@ -451,7 +611,10 @@ def main(argv=None):
     p.add_argument("--max-pending-topologies", type=int, default=2000, help="topologies waiting for a signature")
     p.add_argument("--max-pending-prepared", type=int, default=5000, help="prepared transactions waiting for a signature")
     p.add_argument("--max-pending-per-client", type=int, default=10, help="topologies, and prepared transactions, waiting for a signature for one client address (each)")
+    p.add_argument("--accounts-per-day-total", type=int, default=200, help="new accounts in 24 hours, all clients together")
     p.add_argument("--client-ip-header", help="the header in which the reverse proxy puts the client's address, such as X-Forwarded-For")
+    p.add_argument("--trusted-proxies", type=int, default=1, help="proxies in front of the service: the client's address is this many entries from the right of --client-ip-header")
+    p.add_argument("--trusted-proxy-addresses", default="127.0.0.1,::1", help="comma-separated addresses or networks of the proxies; the header is read only from a peer among them")
     a = p.parse_args(argv)
     token = "" if a.token_file else os.environ.get("LEDGER_TOKEN", "")
     if not (token or a.token_file):
@@ -467,13 +630,24 @@ def main(argv=None):
     if not all(PARTY.match(v or "") for v in chain.values()):
         print("the chain's parties are not all set: creates that name them are refused", file=sys.stderr)
         chain = {}
+    try:
+        trusted = [ipaddress.ip_network(x.strip(), strict=False) for x in a.trusted_proxy_addresses.split(",") if x.strip()]
+    except ValueError as e:
+        sys.exit(f"--trusted-proxy-addresses: {e}")
+    if a.trusted_proxies < 1:
+        sys.exit("--trusted-proxies is at least 1")
     host, _, port = a.listen.rpartition(":")
     service = Accounts(Ledger(a.ledger_url, a.token_file, token), a.user_id, Parties(a.state_file), allow, a.party_hint, a.synchronizer_id, a.topology_protocol_version,
                        Limiter(a.accounts_per_day, DAY), Limiter(a.requests_per_minute, 60), Pending(limit=a.max_pending_topologies, per_owner=a.max_pending_per_client),
                        Pending(limit=a.max_pending_prepared, per_owner=a.max_pending_per_client), chain, {ACCEPTANCE: 1, DEPOSIT: a.open_deposit_requests},
                        Limiter(a.executes_per_account_day, DAY), Limiter(a.executes_per_client_day, DAY), Limiter(a.executes_per_day, DAY),
-                       Limiter(a.traffic_per_day, DAY), a.max_transaction_traffic)
-    make_server(service, host or "127.0.0.1", int(port), a.client_ip_header).serve_forever()
+                       Limiter(a.traffic_per_day, DAY), a.max_transaction_traffic, Limiter(a.accounts_per_day_total, DAY))
+    try:
+        service.load_rights(force=True)
+    except HttpError as e:
+        print(f"the ledger user's rights could not be read now ({e.message}); they are read again when an account is missed", file=sys.stderr)
+    service.start_sweeper()
+    make_server(service, host or "127.0.0.1", int(port), a.client_ip_header, a.trusted_proxies, trusted).serve_forever()
 
 
 if __name__ == "__main__":

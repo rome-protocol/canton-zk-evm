@@ -1,5 +1,5 @@
 """The accounts service against a fake JSON Ledger API. Run: python3 -m unittest discover -s apps/accounts/tests -v (pytest collects them too)."""
-import base64, http.client, json, os, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import base64, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -22,6 +22,7 @@ class FakeLedger:
     """Answers the endpoints the service uses, records every call, and can be told to refuse."""
     def __init__(self):
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
+        self.rights = []   # the parties the service's user can act as
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -51,7 +52,10 @@ class FakeLedger:
         if path.endswith("/generate-topology"):
             return 200, {"partyId": PARTY, "publicKeyFingerprint": FINGERPRINT, "topologyTransactions": ["t1", "t2"], "multiHash": "bXVsdGk="}
         if path.endswith("/external/allocate"):
+            self.rights.append(PARTY)
             return 200, {"partyId": PARTY}
+        if path == "/v2/users/svc/rights":
+            return 200, {"rights": [{"kind": {"CanReadAs": {"value": {"party": "reader::1220" + "11" * 32}}}}] + [{"kind": {"CanActAs": {"value": {"party": p}}}} for p in self.rights]}
         if path.endswith("/prepare"):
             self.prepared += 1
             return 200, {"preparedTransaction": base64.b64encode(b"prepared%d" % self.prepared).decode(), "preparedTransactionHash": "aGFzaA==", "hashingSchemeVersion": "HASHING_SCHEME_VERSION_V2",
@@ -65,9 +69,10 @@ class FakeLedger:
             pages = self.holdings
             at = int(body["pageToken"]) if body.get("pageToken") else 0
             page = pages[at] if at < len(pages) else []
+            owners = {entry[0]: entry[2] for entry in page if len(entry) > 2}
             out = {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:HoldingV1:Holding", "viewValue": {
-                    "owner": PARTY, "instrumentId": {"admin": "reg::1", "id": "TKB"}, "amount": amount, "lock": None, "meta": {"values": {}}}}]}}}} for cid, amount in page]}
+                    "owner": owners.get(cid, PARTY), "instrumentId": {"admin": "reg::1", "id": "TKB"}, "amount": amount, "lock": None, "meta": {"values": {}}}}]}}}} for cid, amount, *_ in page]}
             if at + 1 < len(pages):
                 out["nextPageToken"] = str(at + 1)
             return 200, out
@@ -79,6 +84,7 @@ class Case(unittest.TestCase):
         self.ledger = FakeLedger()
         self.dir = tempfile.TemporaryDirectory()
         self.state = os.path.join(self.dir.name, "accounts.jsonl")
+        self.used = set()
         self.start()
 
     def start(self, **kw):
@@ -86,6 +92,7 @@ class Case(unittest.TestCase):
             self.http.shutdown()
         kw.setdefault("allow", A.DEFAULT_ALLOW)
         kw.setdefault("chain", CHAIN)
+        kw.setdefault("rights_gap", 0)
         self.service = A.Accounts(A.Ledger(self.ledger.url, token="tok"), "svc", A.Parties(self.state), **kw)
         self.http = A.make_server(self.service, "127.0.0.1", 0)
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
@@ -94,9 +101,21 @@ class Case(unittest.TestCase):
     def tearDown(self):
         self.http.shutdown(); self.ledger.server.shutdown(); self.dir.cleanup()
 
-    def req(self, method, path, body=None, headers=None, raw=None):
+    def account_signature(self, method, path, data, seed=SEED, at=None):
+        """The X-Account-Signature value, built as the README says; a fresh second for each request that is the same as an earlier one."""
+        if at is None:
+            now = int(time.time())
+            at = next(t for t in range(now, now - 50, -1) if (method, path, data, t) not in self.used)
+            self.used.add((method, path, data, at))
+        message = f"accounts-v1\n{method}\n{path}\n{hashlib.sha256(data).hexdigest()}\n{at}".encode()
+        return f"{at}.{base64.b64encode(sign(seed, message)).decode()}"
+
+    def req(self, method, path, body=None, headers=None, raw=None, signed=True, seed=SEED, at=None):
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
-        r = urllib.request.Request(self.base + path, data, headers or {}, method=method)
+        headers = dict(headers or {})
+        if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute") or path.startswith("/accounts/v1/holdings/")) and "X-Account-Signature" not in headers:
+            headers["X-Account-Signature"] = self.account_signature(method, path, data or b"", seed, at)
+        r = urllib.request.Request(self.base + path, data, headers, method=method)
         try:
             with urllib.request.urlopen(r) as f:
                 return f.status, json.load(f), f.headers
@@ -150,7 +169,7 @@ class TopologyAndAllocate(Case):
         self.assertEqual(sent["multiHashSignatures"], [{"format": A.SIGNATURE_FORMAT, "signature": self.sig("bXVsdGk="), "signedBy": FINGERPRINT,
                                                          "signingAlgorithmSpec": "SIGNING_ALGORITHM_SPEC_ED25519"}])
         self.assertEqual((sent["userId"], sent["synchronizer"]), ("svc", SYNC))
-        self.assertEqual(self.calls_to("/rights"), [])   # no separate grant: the service's user has no admin right
+        self.assertEqual([c for c in self.calls_to("/rights") if c[0] == "POST"], [])   # no separate grant: the service's user has no admin right
 
     def test_allocate_is_idempotent_and_survives_a_restart(self):
         self.make_account()
@@ -229,7 +248,7 @@ class PrepareAndExecute(Case):
         for status in (self.req("POST", "/accounts/v1/prepare", self.command())[0], self.req("GET", f"/accounts/v1/holdings/{PARTY}")[0],
                        self.req("POST", "/accounts/v1/execute", {"preparedTransaction": "x", "partySignatures": [{"party": PARTY, "signature": SIG}]})[0]):
             self.assertEqual(status, 404)
-        self.assertEqual(self.ledger.calls, [])
+        self.assertEqual({c[1] for c in self.ledger.calls}, {"/v2/users/svc/rights"})   # only the read of the user's rights, on each miss
 
     def test_execute_sends_the_signature_and_returns_the_update_id(self):
         self.make_account()
@@ -428,9 +447,204 @@ class Holdings(Case):
         self.assertEqual(first["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.HOLDING)
         self.assertEqual((second["activeAtOffset"], second["pageToken"]), (9, "1"))   # the same snapshot, the next page
 
+    def test_only_views_the_party_owns_are_listed(self):
+        self.make_account()
+        self.ledger.holdings = [[("c1", "10.0"), ("c2", "99.0", "other::1220" + "99" * 32), ("c3", "1.0", PARTY)]]
+        out = self.req("GET", f"/accounts/v1/holdings/{PARTY}")[1]
+        self.assertEqual([h["contractId"] for h in out["holdings"]], ["c1", "c3"])
+
     def test_no_holdings_is_an_empty_list(self):
         self.make_account()
         self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{PARTY}")[1], {"party": PARTY, "holdings": []})
+
+
+class Authentication(Case):
+    """M1: every account-scoped request carries the account's signature."""
+    def holdings(self, **kw):
+        return self.req("GET", f"/accounts/v1/holdings/{PARTY}", **kw)
+
+    def test_a_good_signature_passes_on_all_three_calls(self):
+        self.make_account()
+        self.assertEqual(self.holdings()[0], 200)
+        _, p, _ = self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"CreateCommand": {"templateId": DEPOSIT, "createArguments": {"party": PARTY, **CHAIN}}}]})
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", {"preparedTransaction": p["preparedTransaction"], "partySignatures": [
+            {"party": PARTY, "signature": self.sig(p["preparedTransactionHash"])}]})[0], 200)
+
+    def test_a_missing_signature_is_401_on_all_three_calls_and_nothing_reaches_the_ledger(self):
+        self.make_account()
+        before = len(self.ledger.calls)
+        self.assertEqual(self.holdings(signed=False)[0], 401)
+        self.assertEqual(self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": []}, signed=False)[0], 401)
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", {"preparedTransaction": "x", "partySignatures": [{"party": PARTY, "signature": SIG}]}, signed=False)[0], 401)
+        self.assertEqual(len(self.ledger.calls), before)
+
+    def test_a_bad_signature_is_401(self):
+        self.make_account()
+        self.assertEqual(self.holdings(seed=OTHER_SEED)[0], 401)   # another key's
+        for header in ("", "garbage", "123", f"{int(time.time())}.", f"{int(time.time())}.!!!!", f"{int(time.time())}.{SIG}"):
+            self.assertEqual(self.holdings(headers={"X-Account-Signature": header})[0], 401, header)
+        # made for another body, another path or another method
+        body = {"party": PARTY, "commands": []}
+        other = self.account_signature("POST", "/accounts/v1/prepare", json.dumps({**body, "x": 1}).encode())
+        self.assertEqual(self.req("POST", "/accounts/v1/prepare", body, headers={"X-Account-Signature": other})[0], 401)
+        self.assertEqual(self.holdings(headers={"X-Account-Signature": self.account_signature("POST", f"/accounts/v1/holdings/{PARTY}", b"")})[0], 401)
+
+    def test_a_stale_or_future_signature_is_401_and_the_window_is_a_minute(self):
+        self.make_account()
+        now = int(time.time())
+        self.assertEqual(self.holdings(at=now - 120)[0], 401)
+        self.assertEqual(self.holdings(at=now + 120)[0], 401)
+        self.assertEqual(self.holdings(at=now - 50)[0], 200)
+
+    def test_a_replayed_signature_is_401(self):
+        self.make_account()
+        header = {"X-Account-Signature": self.account_signature("GET", f"/accounts/v1/holdings/{PARTY}", b"")}
+        self.assertEqual(self.holdings(headers=header)[0], 200)
+        self.assertEqual(self.holdings(headers=header)[0], 401)
+
+    def test_the_replay_memory_is_dropped_when_the_window_is_over(self):
+        now = [1000.0]
+        replays = A.Replays(wall=lambda: now[0])
+        self.assertTrue(replays.add(PARTY, 1000, b"s"))
+        self.assertFalse(replays.add(PARTY, 1000, b"s"))
+        self.assertTrue(replays.add("other", 1000, b"s"))   # another account's
+        now[0] = 1061
+        replays.prune()
+        self.assertEqual(replays.seen, {})
+
+
+class Quota(Case):
+    """H3: the account quota cannot be used up by one client or by all of them."""
+    def test_ipv6_clients_count_by_their_64_and_ipv4_by_address(self):
+        key = A.client_key
+        self.assertEqual(key("2001:db8:1:2:aaaa::1"), key("2001:db8:1:2:bbbb:cccc:dddd:eeee"))
+        self.assertNotEqual(key("2001:db8:1:2::1"), key("2001:db8:1:3::1"))
+        self.assertEqual(key("203.0.113.7"), "203.0.113.7")
+        self.assertNotEqual(key("203.0.113.7"), key("203.0.113.8"))
+        self.assertEqual(key("::ffff:203.0.113.7"), "203.0.113.7")
+        self.start(rate=A.Limiter(1, 60))
+        get = lambda ip: self.service.handle("GET", "/accounts/v1/holdings/x", None, ip)
+        for ip in ("2001:db8:1:2::1", "2001:db8:1:3::1", "203.0.113.7"):
+            with self.assertRaises(A.HttpError) as e:
+                get(ip)
+            self.assertEqual(e.exception.status, 404)
+        with self.assertRaises(A.HttpError) as e:
+            get("2001:db8:1:2:ffff::9")   # the same /64 as the first
+        self.assertEqual(e.exception.status, 429)
+
+    def test_new_accounts_have_a_global_cap_a_day(self):
+        self.assertEqual(A.Accounts(None, "svc", None, []).new_total.count, 200)
+        self.start(new_total=A.Limiter(1, DAY), creates=A.Limiter(5, DAY))
+        self.assertEqual(self.make_account()[0], 200)
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "bridge::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
+                                                                           "topologyTransactions": ["t"], "multiHash": "bQ=="})
+        _, t2, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})
+        status, _, headers = self.req("POST", "/accounts/v1/allocate", {"blob": t2["blob"], "signature": self.sig(t2["multiHash"], OTHER_SEED)})
+        self.assertEqual(status, 429)
+        self.assertTrue(int(headers["retry-after"]) > 0)
+        self.assertEqual(len(self.calls_to("/external/allocate")), 1)
+
+
+class StateAndRights(Case):
+    """M3: the state file can lose a line; the user's rights say which parties are held."""
+    def holdings(self):
+        return self.req("GET", f"/accounts/v1/holdings/{PARTY}")
+
+    def test_a_torn_last_line_is_ignored_and_the_next_append_starts_a_new_line(self):
+        self.make_account()
+        line = open(self.state).read()
+        with open(self.state, "w") as f:
+            f.write(line + line[:40])   # a second write that stopped half way, with no newline
+        parties = A.Parties(self.state)
+        self.assertEqual(list(parties.parties), [PARTY])
+        self.assertTrue(parties.torn)
+        other = "bridge::1220" + "ef" * 32
+        parties.add(other, public_key(OTHER_SEED))
+        self.assertEqual(set(A.Parties(self.state).parties), {PARTY, other})
+
+    def test_the_rights_are_read_at_start_and_again_on_a_miss(self):
+        self.service.load_rights(force=True)
+        self.assertEqual(self.service.rights, set())
+        self.assertEqual(self.calls_to("/rights")[0][:2], ("GET", "/v2/users/svc/rights"))
+        self.ledger.rights.append(PARTY)   # a party the file does not have: held, key unknown
+        status, out, _ = self.holdings()
+        self.assertEqual(status, 409)
+        self.assertIn("register it again", out["error"])
+        self.assertEqual(self.service.rights, {PARTY})   # the read on the miss; a CanReadAs right is not a held party
+        self.assertEqual(self.req("GET", "/accounts/v1/holdings/stranger::1220" + "99" * 32)[0], 404)
+
+    def test_a_lost_line_is_restored_by_a_fresh_topology_and_allocate_for_the_same_key(self):
+        self.make_account()
+        with open(self.state) as f:
+            text = f.read()
+        with open(self.state, "w") as f:
+            f.write(text[:20])   # the line is torn
+        self.start()
+        self.service.load_rights(force=True)
+        self.assertEqual(self.holdings()[0], 409)
+        self.assertEqual(self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": []})[0], 409)
+        _, t, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})
+        self.assertEqual(t["exists"], False)
+        self.assertEqual(self.req("POST", "/accounts/v1/allocate", {"blob": t["blob"], "signature": self.sig(t["multiHash"], OTHER_SEED)})[0], 401)   # not the key's
+        status, out, _ = self.req("POST", "/accounts/v1/allocate", {"blob": t["blob"], "signature": self.sig(t["multiHash"])})
+        self.assertEqual((status, out), (200, {"party": PARTY, "created": False, "restored": True}))
+        self.assertEqual(len(self.calls_to("/external/allocate")), 1)   # the participant was not asked again
+        self.assertEqual(self.holdings()[0], 200)
+        self.start()   # and it holds after a restart: the new line began on a line of its own
+        self.assertEqual(self.holdings()[0], 200)
+
+
+class Proxies(Case):
+    """M4: the header is read only from a trusted peer, and the n-th entry from the right."""
+    def test_the_nth_entry_from_the_right_of_a_trusted_peer(self):
+        trusted = A.TRUSTED_ADDRESSES
+        header = "6.6.6.6, 1.1.1.1, 9.9.9.1"
+        self.assertEqual([A.client_address("127.0.0.1", header, n, trusted) for n in (1, 2, 3)], ["9.9.9.1", "1.1.1.1", "6.6.6.6"])
+        self.assertEqual(A.client_address("127.0.0.1", header, 4, trusted), "127.0.0.1")   # fewer entries than proxies: not written by the whole chain
+        self.assertEqual(A.client_address("::1", header, 1, trusted), "9.9.9.1")
+        self.assertEqual(A.client_address("::ffff:127.0.0.1", header, 1, trusted), "9.9.9.1")
+        self.assertEqual(A.client_address("203.0.113.9", header, 1, trusted), "203.0.113.9")   # a peer that is not a proxy: the header is a client's own
+        self.assertEqual(A.client_address("127.0.0.1", "", 1, trusted), "127.0.0.1")
+        self.assertEqual(A.client_address("127.0.0.1", "1.1.1.1, not-an-address", 1, trusted), "127.0.0.1")
+        self.assertEqual(A.client_address("10.1.2.3", header, 1, [ipaddress.ip_network("10.0.0.0/8")]), "9.9.9.1")
+
+    def test_a_header_from_a_peer_that_is_not_trusted_is_ignored(self):
+        self.http.shutdown()
+        self.service.rate = A.Limiter(1, 60)
+        self.http = A.make_server(self.service, "127.0.0.1", 0, "X-Forwarded-For", 1, [ipaddress.ip_network("10.0.0.0/8")])
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+        spoofed = lambda real: {"X-Forwarded-For": real}
+        self.assertEqual(self.req("GET", "/accounts/v1/holdings/x", headers=spoofed("9.9.9.1"))[0], 404)
+        self.assertEqual(self.req("GET", "/accounts/v1/holdings/x", headers=spoofed("9.9.9.2"))[0], 429)   # both are the peer
+
+
+class Upkeep(Case):
+    """L3: health is cached; limiters and pending maps are pruned by the timer, not by requests."""
+    def test_health_asks_the_ledger_once_in_five_seconds(self):
+        now = [100.0]
+        self.service.clock = lambda: now[0]
+        for _ in range(5):
+            self.assertTrue(self.req("GET", "/healthz")[1]["ok"])
+        self.assertEqual(len(self.calls_to("/v2/version")), 1)
+        now[0] = 106
+        self.ledger.fail["/v2/version"] = (503, {})
+        self.assertFalse(self.req("GET", "/healthz")[1]["ok"])
+        self.assertFalse(self.req("GET", "/healthz")[1]["ok"])
+        self.assertEqual(len(self.calls_to("/v2/version")), 2)
+
+    def test_expired_entries_wait_for_the_sweep(self):
+        now = [0.0]
+        limiter, pending = A.Limiter(5, 10, clock=lambda: now[0]), A.Pending(ttl=10, clock=lambda: now[0])
+        for i in range(20):
+            limiter.hit(f"k{i}")
+            pending.put(f"p{i}", i, f"o{i}")
+        now[0] = 11
+        limiter.hit("fresh"); pending.put("fresh", 1)
+        self.assertEqual((len(limiter.hits), len(pending.items)), (21, 21))   # a request did not prune
+        limiter.prune(); pending.prune()
+        self.assertEqual((list(limiter.hits), list(pending.items)), (["fresh"], ["fresh"]))
+        self.service.sweep()   # all of the service's own, without error
 
 
 class Limits(Case):
