@@ -22,11 +22,12 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   checkRequired();
   let db: TestDatabase, pool: Pool, chain: ReturnType<typeof makeChain>, rethTrace: unknown[] | null;
   /** `over` replaces reads of the database, by name, as a test needs them to go: the route is the real one. */
-  const get = async (target: string, over: { chain?: Partial<ChainDb>; rest?: Partial<ReturnType<typeof createChainRest>> } = {}): Promise<Answer> => {
+  const get = async (target: string, over: { chain?: Partial<ChainDb>; rest?: Partial<ReturnType<typeof createChainRest>>; reth?: Partial<Reth> } = {}): Promise<Answer> => {
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const reth = {
       code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => undefined, transaction: async () => null,
       rpc: async (m: string) => (m === "trace_transaction" ? (rethTrace === ("toobig" as never) ? Promise.reject(new RethTooBig(m, 1)) : rethTrace) : m === "eth_getTransactionReceipt" ? { status: "0x1", gasUsed: "0x5208", logs: [] } : null),
+      ...over.reth,
     } as unknown as Reth;
     return createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: { ...createChainDb(pool), ...over.chain }, rest: { ...createChainRest(pool), ...over.rest } })("GET", target);
   };
@@ -450,6 +451,23 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const lifecycle = createChainDb(pool).lifecycleOf;
     const chain = { lifecycleOf: async (h: string) => { calls.push("lifecycleOf"); return lifecycle(h); } };
     expect((await get(`/api/txs/0x${"ab".repeat(32)}`, { rest, chain })).status).toBe(404);
+    expect(calls).toEqual(["placeOf"]);
+  });
+
+  it("answers a transaction waiting in reth's pool with nothing derived, and reads the REST tables for its place alone", async () => {
+    const hash = `0x${"cd".repeat(32)}`;
+    const waiting = { hash, blockNumber: null, blockHash: null, index: null, from: `0x${"11".repeat(20)}`, to: `0x${"22".repeat(20)}`, value: 1n, nonce: 7, type: 2, gas: 21000, input: "0x" };
+    const calls: string[] = [];
+    const real = createChainRest(pool);
+    const rest = {
+      placeOf: async (h: string) => { calls.push("placeOf"); return real.placeOf(h); },
+      deriveCursor: async () => { calls.push("deriveCursor"); return real.deriveCursor(); },
+      feeCapsOf: async (at: Parameters<typeof real.feeCapsOf>[0]) => { calls.push("feeCapsOf"); return real.feeCapsOf(at); },
+      traceOf: async (at: Parameters<typeof real.traceOf>[0]) => { calls.push("traceOf"); return real.traceOf(at); },
+    };
+    const answer = await get(`/api/txs/${hash}`, { rest, reth: { transaction: async () => waiting } as Partial<Reth> });
+    expect(answer.status).toBe(200);
+    expect(body(answer)).toMatchObject({ status: "waiting", derived: false, index: null, maxFeePerGas: null, maxPriorityFeePerGas: null, callCount: null });
     expect(calls).toEqual(["placeOf"]);
   });
 

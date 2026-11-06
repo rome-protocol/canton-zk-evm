@@ -187,6 +187,15 @@ class Budgets(unittest.TestCase):
         self.assertEqual(l3.B1_S * 1000, int(re.search(r"B1_MS\s*=\s*([0-9_]+)", src).group(1).replace("_", "")))
 
 
+class FloodFunding(unittest.TestCase):
+    def test_the_designs_30_minutes_are_paid_for(self):
+        l3.check_flood_funded(9.9, 30 * 60)
+
+    def test_a_flood_that_runs_v_out_fails_with_the_length_it_can_pay_for(self):
+        with self.assertRaisesRegex(RuntimeError, r"60 minutes.*under 64"):
+            l3.check_flood_funded(9.9, 60 * 60)
+
+
 class Judge(unittest.TestCase):
     ok = dict(growth=1.2e9, txs_added=50_000)
 

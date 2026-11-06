@@ -49,12 +49,15 @@ from pathlib import Path
 B1_S = 2.75
 # The fee cap of the flood's transfers, in wei. The base fee of a chain flooded with full blocks rises to the cap and stays there (see batch_size), so the flood
 # pays about the cap for half the gas of every block: at demo/evm.py's MAX_FEE (10 gwei) about 0.15 ETH a block, and V's 10 ETH of the genesis ran out about
-# 10 minutes in. At 1 gwei (the genesis base fee) the 30 minutes cost V about 4 ETH; the base fee reaches the cap about 20 full blocks in, from the 0.1 gwei
+# 10 minutes in. At 1 gwei (the genesis base fee) the 30 minutes cost V 4.4 to 4.7 ETH; the base fee reaches the cap about 20 full blocks in, from the 0.1 gwei
 # or so it has when the flood starts.
 FLOOD_MAX_FEE = 10**9
-# The flood keeps the chain busy: about 125 full blocks in 30 minutes were measured (about 4.2 a minute, with every other block empty once the base fee is at the cap).
-# A flood that made fewer than 64% of that (80 in 30 minutes) stalled: a transfer lost from the pool would leave the sender sending nothing for the rest of the run.
+# The flood keeps the chain busy: 147 to 157 full blocks in 30 minutes were measured (about 5 a minute, with every other block empty once the base fee is at the cap).
+# A flood that made fewer than about 53% of that (80 in 30 minutes) stalled: a transfer lost from the pool would leave the sender sending nothing for the rest of the run.
 MIN_FULL_BLOCKS_PER_MINUTE = 80 / 30
+# What the flood spends: about 0.154 ETH a minute at FLOOD_MAX_FEE. V holds about 9.9 ETH, so a flood of about 60 minutes or more runs it out; L3 checks V's
+# balance against the flood's length when it starts.
+FLOOD_ETH_PER_MINUTE = 0.154
 FULL_BLOCK_SHARE = 0.9   # of a block's worth of transfers
 B4_S = 0.5
 B6_BYTES = 2.5e9
@@ -65,6 +68,14 @@ HASH_LISTS = re.compile(r'\[\s*(?:"0x[0-9a-fA-F]+"(?:\s*,\s*"0x[0-9a-fA-F]+")*)?
 LEDGER_POLL_S = 0.02
 DB_POLL_S = 0.02
 WALL_OFFSET = time.time() - time.monotonic()   # monotonic seconds + this = wall-clock seconds (the database's clock is the wall clock of this machine)
+
+
+def check_flood_funded(balance_eth, seconds):
+    """Fail at the start of a flood that V's balance cannot pay for, rather than an hour in."""
+    need = seconds / 60 * FLOOD_ETH_PER_MINUTE
+    if balance_eth < need:
+        raise RuntimeError(f"V holds {balance_eth:.2f} ETH and a flood of {seconds / 60:g} minutes at {FLOOD_MAX_FEE / 1e9:g} gwei costs about {need:.2f} ETH "
+                           f"({FLOOD_ETH_PER_MINUTE} ETH a minute): use a shorter l3_minutes (under {balance_eth / FLOOD_ETH_PER_MINUTE:.0f})")
 
 
 def percentile(values, p):
@@ -477,6 +488,7 @@ def run(seconds, per_block, results):
     balance = lambda: int(rpc("eth_getBalance", [v, "latest"]), 16) / 1e18   # noqa: E731
     mined = lambda: int(rpc("eth_getTransactionCount", [v, "latest"]), 16)   # noqa: E731
     balance0 = balance()
+    check_flood_funded(balance0, seconds)
     accepted0 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables0 = table_sizes()
     cut = []          # (number, update id, returned at, transactions)

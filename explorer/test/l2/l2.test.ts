@@ -205,8 +205,10 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const ownCpuUsed = process.cpuUsage(ownCpu), loadSeconds = (performance.now() - loadStart) / 1000;
       const runner = runnerOver(cpuBefore, cpuTicks());
       clearInterval(watch);
-      const served = await new Promise<{ cpuSeconds: number; requests: number; p50Ms: number; p97_5Ms: number; maxMs: number; eventLoopP99Ms: number; eventLoopMaxMs: number; slowest: { ms: number; url: string }[] }>((ok) => {
-        serve.once("message", (m) => ok(m as never));
+      const served = await new Promise<{ cpuSeconds: number; requests: number; p50Ms: number; p97_5Ms: number; maxMs: number; eventLoopP99Ms: number; eventLoopMaxMs: number; slowest: { ms: number; url: string }[] }>((ok, fail) => {
+        const died = (code: number | null, signal: string | null) => fail(new Error(`the server process exited (${code ?? signal}) before it reported`));
+        serve.once("message", (m) => { serve.off("exit", died); ok(m as never); });
+        serve.once("exit", died);
         serve.send({ report: true });
       });
       running = false;

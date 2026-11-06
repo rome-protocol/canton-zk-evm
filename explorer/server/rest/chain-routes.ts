@@ -48,9 +48,8 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
   async function finalTx(hash: string) {
     if (!HASH.test(hash)) throw new BadRequest("A transaction is named by its 0x hash.");
-    // Side by side: the derive cursor only grows, so one read with the place is at worst a moment older, and says "not derived yet" a moment longer.
-    const [at, cursor] = await Promise.all([rest.placeOf(hash), rest.deriveCursor()]);
-    return at && { at, derived: at.block <= cursor };
+    const at = await rest.placeOf(hash);
+    return at && { at, derived: at.block <= (await rest.deriveCursor()) };
   }
   /** `after` of an ascending list inside one block or transaction. */
   const afterOf = (q: URLSearchParams, shape: Parameters<typeof cursorOf>[1]) => cursorOf(q.get("after"), shape);
