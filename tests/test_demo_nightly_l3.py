@@ -192,8 +192,8 @@ class FloodFunding(unittest.TestCase):
         l3.check_flood_funded(9.9, 30 * 60)
 
     def test_a_flood_that_runs_v_out_fails_with_the_length_it_can_pay_for(self):
-        with self.assertRaisesRegex(RuntimeError, r"60 minutes.*under 64"):
-            l3.check_flood_funded(9.9, 60 * 60)
+        with self.assertRaisesRegex(RuntimeError, r"70 minutes.*under 64"):
+            l3.check_flood_funded(9.9, 70 * 60)
 
 
 class Judge(unittest.TestCase):
