@@ -21,6 +21,12 @@ jobs:
         run: python3 --version | grep -q '^Python 3\.12\.'
       - name: Run the tests
         run: python3 -m unittest discover -s apps/accounts/tests -p 'test_*.py' -v
+      - name: Run the tests with the cryptography package (the fast signature check)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/fast"
+          "$RUNNER_TEMP/fast/bin/pip" install --quiet 'cryptography==50.0.0'
+          "$RUNNER_TEMP/fast/bin/python" -c 'import sys; sys.path.insert(0, "apps/accounts"); import ed25519; assert ed25519.Ed25519PublicKey is not None'
+          cd apps/accounts/tests && "$RUNNER_TEMP/fast/bin/python" -m unittest test_ed25519 test_accounts -v
 
   # The service on the real, pinned Canton (the protocol version PINS names): an external party from an Ed25519 key made in the test, a WithdrawalAcceptance
   # of the real Daml package created for it with that key's signature, and its holdings.

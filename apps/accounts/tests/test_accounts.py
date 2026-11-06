@@ -1,5 +1,5 @@
 """The accounts service against a fake JSON Ledger API. Run: python3 -m unittest discover -s apps/accounts/tests -v (pytest collects them too)."""
-import base64, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
+import base64, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -23,6 +23,7 @@ class FakeLedger:
     def __init__(self):
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
         self.rights = []   # the parties the service's user can act as
+        self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -61,6 +62,9 @@ class FakeLedger:
             return 200, {"preparedTransaction": base64.b64encode(b"prepared%d" % self.prepared).decode(), "preparedTransactionHash": "aGFzaA==", "hashingSchemeVersion": "HASHING_SCHEME_VERSION_V2",
                          "costEstimation": {"totalTrafficCostEstimation": self.cost}}
         if path.endswith("/executeAndWait"):
+            if self.commits:
+                time.sleep(0.05)
+                self.open[self.commits] = self.open.get(self.commits, 0) + 1
             return 200, {"updateId": "u-1", "completionOffset": 5}
         if path.endswith("/active-contracts-page") and "TemplateFilter" in json.dumps(body):   # the account's own contracts of one template
             template = json.dumps(body).split('"templateId": "')[1].split('"')[0]
@@ -84,7 +88,7 @@ class Case(unittest.TestCase):
         self.ledger = FakeLedger()
         self.dir = tempfile.TemporaryDirectory()
         self.state = os.path.join(self.dir.name, "accounts.jsonl")
-        self.used = set()
+        self.used, self.sig_lock = set(), threading.Lock()
         self.start()
 
     def start(self, **kw):
@@ -104,9 +108,10 @@ class Case(unittest.TestCase):
     def account_signature(self, method, path, data, seed=SEED, at=None):
         """The X-Account-Signature value, built as the README says; a fresh second for each request that is the same as an earlier one."""
         if at is None:
-            now = int(time.time())
-            at = next(t for t in range(now, now - 50, -1) if (method, path, data, t) not in self.used)
-            self.used.add((method, path, data, at))
+            with self.sig_lock:   # requests made together do not pick the same second
+                now = int(time.time())
+                at = next(t for t in range(now, now - 50, -1) if (method, path, data, t) not in self.used)
+                self.used.add((method, path, data, at))
         message = f"accounts-v1\n{method}\n{path}\n{hashlib.sha256(data).hexdigest()}\n{at}".encode()
         return f"{at}.{base64.b64encode(sign(seed, message)).decode()}"
 
@@ -324,6 +329,7 @@ class Hardening(Case):
         self.assertEqual(asked["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["TemplateFilter"]["value"]["templateId"], ACCEPT)
         self.ledger.open[DEPOSIT] = 2
         self.assertEqual(self.prepare(DEPOSIT)[0], 200)
+        self.service.prepared.items.clear()   # the one waiting for a signature does not count here
         self.ledger.open[DEPOSIT] = 3
         self.assertEqual(self.prepare(DEPOSIT)[0], 409)
         self.start(open_limits={DEPOSIT: 5})
@@ -413,7 +419,7 @@ class Hardening(Case):
         self.assertEqual(len(self.service.topologies.items), 2)
 
     def test_topologies_and_prepared_transactions_have_caps_of_their_own(self):
-        self.start(topologies=A.Pending(limit=1), prepared=A.Pending(limit=1))
+        self.start(topologies=A.Pending(limit=1), prepared=A.Pending(limit=1), open_limits={})
         self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[0], 200)
         self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})[0], 503)   # full of topologies
         self.make_account()   # the one topology is used up
@@ -430,9 +436,119 @@ class Hardening(Case):
         self.assertEqual(pending.take("a"), 2)
         self.assertIsNone(pending.take("a"))
         pending.put("c2", 1, "x")   # taking one freed a place
-        self.start(prepared=A.Pending(per_owner=1))
+        self.start(prepared=A.Pending(per_owner=1), open_limits={})
         self.make_account()
         self.assertEqual([self.prepare()[0], self.prepare()[0]], [200, 503])
+
+    # round 3
+
+    def together(self, calls):
+        out = [None] * len(calls)
+
+        def run(i, call):
+            out[i] = call()
+        threads = [threading.Thread(target=run, args=(i, c)) for i, c in enumerate(calls)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        return out
+
+    def put_prepared(self, i, template=ACCEPT):
+        """An entry as an earlier prepare would have made it."""
+        tx = base64.b64encode(b"tx%d" % i).decode()
+        self.service.prepared.put(hashlib.sha256(tx.encode()).hexdigest(), {"party": PARTY, "version": "V", "hash": b"hash", "cost": 1000, "template": template}, "x", PARTY)
+        return {"preparedTransaction": tx, "preparedTransactionHash": "aGFzaA=="}
+
+    def test_five_executes_at_once_make_one_acceptance(self):
+        self.make_account()
+        self.ledger.commits = ACCEPT
+        entries = [self.put_prepared(i) for i in range(5)]
+        statuses = self.together([lambda p=p: self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0] for p in entries])
+        self.assertEqual(sorted(statuses), [200, 409, 409, 409, 409])
+        self.assertEqual(len(self.calls_to("/executeAndWait")), 1)
+
+    def test_five_prepares_at_once_leave_one_waiting(self):
+        self.make_account()
+        statuses = self.together([lambda: self.prepare()[0] for _ in range(5)])
+        self.assertEqual(sorted(statuses), [200, 409, 409, 409, 409])
+        self.assertEqual(len(self.calls_to("/prepare")), 1)
+
+    def test_an_account_with_a_create_waiting_prepares_no_other_of_that_template(self):
+        self.make_account()
+        self.assertEqual(self.prepare()[0], 200)
+        self.assertEqual(self.prepare()[0], 409)
+        self.assertEqual(len(self.calls_to("/prepare")), 1)
+        self.assertEqual(self.prepare(DEPOSIT)[0], 200)   # another template is not hindered
+
+    # round 3: text in creates, and the account's room
+
+    def test_long_text_in_a_chain_create_is_refused(self):
+        self.make_account()
+        self.assertEqual(self.prepare(label="x" * 129)[0], 400)
+        self.assertEqual(self.prepare(DEPOSIT, label={"ref": ["x" * 129]})[0], 400)
+        self.assertEqual(self.calls_to("/prepare"), [])
+        self.assertEqual(self.prepare(DEPOSIT, label="x" * 128)[0], 200)
+
+    def test_one_account_may_have_only_so_many_prepared_waiting(self):
+        self.start()
+        self.assertEqual(self.service.prepared.per_group, 5)
+        self.start(prepared=A.Pending(per_group=2), open_limits={})
+        self.make_account()
+        self.assertEqual([self.prepare()[0] for _ in range(3)], [200, 200, 503])
+
+    def test_waiting_entries_count_ipv6_clients_by_their_48_and_the_rates_stay_per_64(self):
+        self.start(topologies=A.Pending(per_owner=1))
+        topology = lambda key, ip: self.service.handle("POST", "/accounts/v1/topology", {"publicKey": key}, ip)
+        topology(KEY, "2001:db8:1:2::1")
+        with self.assertRaises(A.HttpError) as e:
+            topology(OTHER_KEY, "2001:db8:1:3::1")   # another /64 of the same /48
+        self.assertEqual(e.exception.status, 503)
+        topology(OTHER_KEY, "2001:db8:2:3::1")   # another /48
+        self.assertEqual(A.pending_owner(A.client_key("203.0.113.7")), "203.0.113.7")
+        self.assertNotEqual(A.client_key("2001:db8:1:2::1"), A.client_key("2001:db8:1:3::1"))
+
+    # round 3: budgets and verifies
+
+    def test_an_exhausted_overall_budget_charges_nothing_else_and_the_entry_survives(self):
+        self.start(overall=A.Limiter(1, DAY))
+        self.make_account()   # the allocation took the overall budget's one
+        service = self.service
+        _, p, _ = self.prepare()
+        client = len(service.per_client.hits["127.0.0.1"])
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0], 429)
+        self.assertNotIn(PARTY, service.per_account.hits)
+        self.assertEqual(len(service.per_client.hits["127.0.0.1"]), client)
+        self.assertNotIn("all", service.traffic.hits)
+        service.overall = A.Limiter(5, DAY)
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0], 200)   # the entry was kept
+
+    def test_failed_verifies_are_limited_before_anything_is_verified(self):
+        self.start(failures=A.Limiter(2, 60))
+        self.make_account()
+        _, p, _ = self.prepare()
+        calls, real = [], A.ed25519.verify
+        with unittest.mock.patch.object(A.ed25519, "verify", side_effect=lambda *a: (calls.append(1), real(*a))[1]):
+            bad = lambda: self.req("POST", "/accounts/v1/execute", self.execute_body(p, OTHER_SEED))[0]
+            self.assertEqual([bad(), bad(), bad()], [401, 401, 429])
+            verified = len(calls)
+            self.assertEqual(bad(), 429)
+            self.assertEqual(len(calls), verified)
+
+    def test_a_failing_party_and_a_failing_client_are_each_limited(self):
+        self.start(failures=A.Limiter(1, 60))
+        self.make_account()
+        other = "bridge::1220" + "ee" * 32
+        self.service.parties.parties[other] = public_key(OTHER_SEED)
+        path = "/accounts/v1/holdings/x"
+
+        def status(party, ip):
+            try:
+                self.service.authenticate(party, "GET", path, b"", f"{int(time.time())}.{SIG}", ip)
+            except A.HttpError as e:
+                return e.status
+        self.assertEqual(status(PARTY, "198.51.100.1"), 401)
+        self.assertEqual(status(PARTY, "198.51.100.2"), 429)   # the party has failed enough, from whoever
+        self.assertEqual(status(other, "198.51.100.1"), 429)   # the client has failed enough, for whichever party
+        self.assertEqual(status(other, "198.51.100.3"), 401)
 
 
 class Holdings(Case):
@@ -573,6 +689,13 @@ class StateAndRights(Case):
         self.assertEqual(self.service.rights, {PARTY})   # the read on the miss; a CanReadAs right is not a held party
         self.assertEqual(self.req("GET", "/accounts/v1/holdings/stranger::1220" + "99" * 32)[0], 404)
 
+    def test_the_rights_are_not_read_for_an_id_that_cannot_be_a_party(self):
+        for junk in ("x", "bridge::1220" + "AB" * 32, "bridge::" + "ab" * 32, "a" * 5000):
+            self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{junk}")[0], 404, junk)
+        self.assertEqual(self.calls_to("/rights"), [])
+        self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{PARTY}")[0], 404)
+        self.assertEqual(len(self.calls_to("/rights")), 1)
+
     def test_a_lost_line_is_restored_by_a_fresh_topology_and_allocate_for_the_same_key(self):
         self.make_account()
         with open(self.state) as f:
@@ -633,6 +756,26 @@ class Upkeep(Case):
         self.assertFalse(self.req("GET", "/healthz")[1]["ok"])
         self.assertEqual(len(self.calls_to("/v2/version")), 2)
 
+    def test_health_serves_the_last_answer_while_a_refresh_runs(self):
+        now = [100.0]
+        self.service.clock = lambda: now[0]
+        self.assertTrue(self.service.health()["ok"])
+        now[0] = 106
+        started, release = threading.Event(), threading.Event()
+
+        class Slow:
+            def call(self, *a):
+                started.set()
+                release.wait(10)
+                raise A.HttpError(502, "down")
+        self.service.ledger = Slow()
+        refresh = threading.Thread(target=self.service.health)
+        refresh.start()
+        self.assertTrue(started.wait(10))
+        self.assertTrue(self.service.health()["ok"])   # at once: the last answer, not a wait for the refresh
+        release.set(); refresh.join(10)
+        self.assertEqual(self.service.health(), {"ok": False, "error": "down"})
+
     def test_expired_entries_wait_for_the_sweep(self):
         now = [0.0]
         limiter, pending = A.Limiter(5, 10, clock=lambda: now[0]), A.Pending(ttl=10, clock=lambda: now[0])
@@ -691,6 +834,25 @@ class Limits(Case):
 
 
 class Config(unittest.TestCase):
+    def test_every_allowed_create_needs_an_open_limit(self):
+        thing = "#other:Mod:Thing"
+        allow = [*A.DEFAULT_ALLOW, thing, thing + "#Choice"]
+        with self.assertRaises(SystemExit):
+            A.open_limits_from(allow, 3, None)
+        self.assertEqual(A.open_limits_from(allow, 3, [thing + "=2"])[thing], 2)
+        self.assertIsNone(A.open_limits_from(allow, 3, [thing + "=none"])[thing])
+        for bad in (thing + "=0", thing + "=x", "#nope:Mod:X=1", thing + "#Choice=1", thing):
+            with self.assertRaises(SystemExit, msg=bad):
+                A.open_limits_from(allow, 3, [bad])
+        self.assertEqual(A.open_limits_from(A.DEFAULT_ALLOW, 4, None), {ACCEPT: 1, DEPOSIT: 4})
+
+    def test_the_service_does_not_start_with_an_unlimited_create(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}):
+            argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(d, "s"), "--allow", "#other:Mod:Thing"]
+            with self.assertRaises(SystemExit) as e:
+                A.main(argv)
+            self.assertIn("no open limit", str(e.exception))
+
     def test_the_built_in_list_is_well_formed(self):
         self.assertTrue(all(A.ALLOW_ENTRY.match(e) for e in A.DEFAULT_ALLOW))
 

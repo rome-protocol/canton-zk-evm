@@ -33,31 +33,76 @@ def sign(seed: bytes, message: bytes) -> bytes:
     return big_r + ((r + k * a) % E.Q).to_bytes(32, "little")
 
 
-class Vectors(unittest.TestCase):
+class Checks:
+    """The checks of one verify function (`verify`); the classes below run them on each path."""
+    verify = None
+
     def test_rfc_8032_vectors_verify_and_our_signing_agrees(self):
         for seed, public, message, signature in VECTORS:
             seed, public, message, signature = map(bytes.fromhex, (seed, public, message, signature))
             self.assertEqual(public_key(seed), public)
             self.assertEqual(sign(seed, message), signature)
-            self.assertTrue(E.verify(public, message, signature))
+            self.assertTrue(self.verify(public, message, signature))
 
     def test_a_changed_message_signature_or_key_is_refused(self):
         _, public, message, signature = map(bytes.fromhex, VECTORS[1])
-        self.assertFalse(E.verify(public, message + b"\0", signature))
-        self.assertFalse(E.verify(public, b"", signature))
+        self.assertFalse(self.verify(public, message + b"\0", signature))
+        self.assertFalse(self.verify(public, b"", signature))
         for i in (0, 31, 32, 63):
             bad = bytearray(signature); bad[i] ^= 1
-            self.assertFalse(E.verify(public, message, bytes(bad)), i)
-        self.assertFalse(E.verify(bytes.fromhex(VECTORS[0][1]), message, signature))
+            self.assertFalse(self.verify(public, message, bytes(bad)), i)
+        self.assertFalse(self.verify(bytes.fromhex(VECTORS[0][1]), message, signature))
 
     def test_malformed_input_is_refused(self):
         _, public, message, signature = map(bytes.fromhex, VECTORS[0])
         s = int.from_bytes(signature[32:], "little")
-        self.assertFalse(E.verify(public, message, signature[:63]))
-        self.assertFalse(E.verify(public[:31], message, signature))
-        self.assertFalse(E.verify(public, message, signature[:32] + (s + E.Q).to_bytes(32, "little")))   # s not below the group order
-        self.assertFalse(E.verify(public, message, bytes(64)))
-        self.assertFalse(E.verify(b"\xff" * 32, message, signature))   # not a point
+        self.assertFalse(self.verify(public, message, signature[:63]))
+        self.assertFalse(self.verify(public[:31], message, signature))
+        self.assertFalse(self.verify(public, message, signature[:32] + (s + E.Q).to_bytes(32, "little")))   # s not below the group order
+        self.assertFalse(self.verify(public, message, bytes(64)))
+        self.assertFalse(self.verify(b"\xff" * 32, message, signature))   # not a point
+
+
+class Pure(Checks, unittest.TestCase):
+    verify = staticmethod(E.verify_pure)
+
+
+@unittest.skipIf(E.Ed25519PublicKey is None, "the cryptography package is not installed")
+class Fast(Checks, unittest.TestCase):
+    verify = staticmethod(E.verify_fast)
+
+    def test_it_agrees_with_the_pure_one_on_changed_signatures(self):
+        _, public, message, signature = map(bytes.fromhex, VECTORS[2])
+        for i in range(64):
+            bad = bytearray(signature); bad[i] ^= 0x10
+            self.assertEqual(E.verify_fast(public, message, bytes(bad)), E.verify_pure(public, message, bytes(bad)), i)
+
+
+class Dispatch(Checks, unittest.TestCase):
+    """`verify` uses the cryptography package when it can be imported, and the pure-Python code when it cannot."""
+    verify = staticmethod(E.verify)
+
+    def test_without_the_package_the_pure_path_answers(self):
+        saved, E.Ed25519PublicKey = E.Ed25519PublicKey, None
+        try:
+            for seed, public, message, signature in VECTORS:
+                self.assertTrue(E.verify(*map(bytes.fromhex, (public, message, signature))))
+            self.assertFalse(E.verify(bytes.fromhex(VECTORS[0][1]), b"x", bytes.fromhex(VECTORS[0][3])))
+        finally:
+            E.Ed25519PublicKey = saved
+
+
+class Keys(unittest.TestCase):
+    def test_keys_of_a_small_order_are_not_usable(self):
+        identity = (1).to_bytes(32, "little")
+        order_two = (E.P - 1).to_bytes(32, "little")
+        order_four = bytes(32)   # y = 0
+        for key in (identity, order_two, order_four):
+            self.assertFalse(E.usable_key(key), key.hex())
+        self.assertTrue(E.usable_key(public_key(bytes(range(32)))))
+        self.assertTrue(E.usable_key(bytes.fromhex(VECTORS[0][1])))
+        self.assertFalse(E.usable_key(b"\xff" * 32))   # not a point
+        self.assertFalse(E.usable_key(bytes(31)))
 
 
 if __name__ == "__main__":
