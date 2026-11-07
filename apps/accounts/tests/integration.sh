@@ -107,7 +107,12 @@ ALLOW=(--allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance' --allow '#canton-z
   --allow '#canton-zk-evm:Zk.Chain:RedeemRequest' --open-limit '#canton-zk-evm:Zk.Chain:RedeemRequest=3'
   --allow '#ostia-twin:Twin.Twin:TwinAcceptance' --open-limit '#ostia-twin:Twin.Twin:TwinAcceptance=1'
   --requests-per-minute 600 --requests-per-account-minute 600 --requests-per-network-minute 600)
-python3 "$ROOT/apps/accounts/accounts.py" "${ALLOW[@]}" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
+# The local network has no Canton Coin, so no scan proxy: a stand-in for a token registry (with a bearer token) that the test fills with the test token's rules, which the service relays.
+REGISTRY_PARTY=$(sed -n 's/^REGISTRY_PARTY=//p' "$CZE_STATE_DIR/canton/parties.env")
+export REGISTRY_ANSWERS=$WORK/registry-answers; mkdir "$REGISTRY_ANSWERS"
+openssl rand -hex 16 > "$WORK/registry-token"
+python3 "$ROOT/apps/accounts/tests/fake_registry.py" 18090 "$REGISTRY_ANSWERS" "$WORK/registry-token" & pids+=($!)
+python3 "$ROOT/apps/accounts/accounts.py" "${ALLOW[@]}" --registry "$REGISTRY_PARTY=http://127.0.0.1:18090" --registry-token-file "$REGISTRY_PARTY=$WORK/registry-token" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
   --state-file "$WORK/accounts.jsonl" --listen 127.0.0.1:18081 > "$WORK/service.log" 2>&1 & pids+=($!)
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18081/healthz > /dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:18081/healthz > /dev/null || fail "the service did not come up"
