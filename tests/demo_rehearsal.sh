@@ -146,7 +146,7 @@ echo "--- the pages and the Verify check, on run 1's block (block $run1_block)"
 # builds of the packages there, not in the checkout's node_modules.
 docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e EXPLORER_URL="$EXPLORER" -e RUN1_FILE=/results/run1.txt \
   -v "$CZE_DEMO_RESULTS:/results:ro" -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
-  sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run e2e"
+  sh -c "mkdir -p /tmp/repo/explorer /tmp/repo/gateway && cp /repo/PINS /tmp/repo/PINS && cp /repo/gateway/Vault.bin-runtime /tmp/repo/gateway/ && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/repo/explorer && cd /tmp/repo/explorer && npm ci --ignore-scripts && npx vitest run e2e"
 
 echo "--- the faucet: 1 tROME, once"
 TO=0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
@@ -191,7 +191,7 @@ echo "--- the Etherscan door's proxy: ethers' EtherscanProvider and Foundry's ca
 chain_id=$(($(rpc eth_chainId | jq -r .result)))
 docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e EXPLORER_URL="$EXPLORER" -e CHAIN_ID="$chain_id" -e ETHERSCAN_ADDRESS="$TO" -e ETHERSCAN_BALANCE=1000000000000000000 -e ETHERSCAN_TX="$payout" \
   -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
-  sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run e2e/etherscan" || fail "ethers' EtherscanProvider and the Etherscan door disagree"
+  sh -c "mkdir -p /tmp/repo/explorer /tmp/repo/gateway && cp /repo/PINS /tmp/repo/PINS && cp /repo/gateway/Vault.bin-runtime /tmp/repo/gateway/ && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/repo/explorer && cd /tmp/repo/explorer && npm ci --ignore-scripts && npx vitest run e2e/etherscan" || fail "ethers' EtherscanProvider and the Etherscan door disagree"
 EXPLORER=$EXPLORER ETHERSCAN_ADDRESS=$TO ETHERSCAN_BALANCE=1000000000000000000 ETHERSCAN_TX=$payout "$ROOT/tests/demo_etherscan_cast.sh" || fail "cast and the Etherscan door's proxy disagree"
 
 echo "--- what the explorer asked reth and Canton for"
@@ -408,7 +408,7 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -e EXPLORER_TEST_LEDGER_URL=http://127.0.0.1:7577 -e READER_PARTY="$READER_PARTY" -e GATEWAY_ADDRESS="$GATEWAY_ADDRESS" -e CHAIN_ID="$(($(rpc eth_chainId | jq -r .result)))" \
   -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL="postgres://explorer:$PGPW@127.0.0.1:55433/explorer" \
   -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
-  sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run server/indexer/real-reth.test.ts --reporter=verbose" \
+  sh -c "mkdir -p /tmp/repo/explorer /tmp/repo/gateway && cp /repo/PINS /tmp/repo/PINS && cp /repo/gateway/Vault.bin-runtime /tmp/repo/gateway/ && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/repo/explorer && cd /tmp/repo/explorer && npm ci --ignore-scripts && npx vitest run server/indexer/real-reth.test.ts --reporter=verbose" \
   | tee "$WORK/w1.log"
 grep -q 'W1 inline:' "$WORK/w1.log" || fail "the W1 test did not run"
 grep -E '^W1 ' "$WORK/w1.log" || true
