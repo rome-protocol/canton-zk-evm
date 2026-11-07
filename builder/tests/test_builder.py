@@ -568,7 +568,7 @@ class VenueLegs(LegCase):
         s.ledger.no_040 = True
         self.assert_left_out(s, t, "no deposit request")
 
-    def test_another_refusal_of_the_trade_query_is_raised(self):
+    def test_another_refusal_of_the_trade_query_leaves_the_leg_out(self):
         def refused(code, text):
             class Ledger:
                 def active(self, template):
@@ -576,7 +576,7 @@ class VenueLegs(LegCase):
             return b.Canton(Ledger(), {}, datetime.now(timezone.utc))
         self.assertEqual(refused(404, '{"code":"NOT_FOUND","cause":"PACKAGE_NAMES_NOT_FOUND(11,0)"}').trades, [])
         for code, text in ((500, '{"cause":"the participant is down"}'), (404, '{"code":"NOT_FOUND","cause":"another thing"}')):
-            with self.assertRaises(urllib.error.HTTPError):
+            with self.assertRaisesRegex(b.NoCantonSide, f"funded claims cannot be read.*HTTP {code}"):
                 refused(code, text).claims
 
     def test_a_deposit_leg_adds_no_disclosure(self):

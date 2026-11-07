@@ -33,7 +33,8 @@
       }
      },
      "verbose": false
-    }
+    },
+    "maxPageSize": 200
    }
   ],
   [
@@ -304,7 +305,8 @@
       }
      },
      "verbose": false
-    }
+    },
+    "maxPageSize": 200
    }
   ],
   [
