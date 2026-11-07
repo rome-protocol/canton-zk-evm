@@ -143,7 +143,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
-    expect(await page.getByRole("link", { name: "block 36512" }).getAttribute("href")).toBe("/block/36512");
+    expect(await page.getByRole("region", { name: "Move tokens" }).getByRole("link", { name: "block 36512" }).getAttribute("href")).toBe("/block/36512");   // the card says where it is final; the bar under it names the block too
     expect([...chain.sent.values()].map((t) => t.to.toLowerCase())).toEqual([TKA, expect.any(String)]);   // the approval, then the payment to the gateway
     expect(chain.allowance).toBe(15n * 10n ** 17n);
     expect(chain.lastLock!.receiver).toBe(party);   // the lock is for the person's own Canton account
