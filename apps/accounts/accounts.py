@@ -203,7 +203,7 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
     except HttpError:
         raise
     except (OSError, http.client.HTTPException, ValueError, RecursionError) as e:
-        print(f"{what}: {path}: {type(e).__name__}", file=sys.stderr)
+        print(f"{what}: {path}: {type(e).__name__}" + (f": {e}"[:100] if isinstance(e, OSError) else ""), file=sys.stderr)   # a socket's message only, never the answer's text
         raise HttpError(502, f"{what} could not be used") from None
     finally:
         conn.close()
