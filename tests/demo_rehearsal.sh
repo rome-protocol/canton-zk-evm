@@ -97,6 +97,9 @@ CZE_SOURCE_COMMIT=$(printf 'a%.0s' $(seq 40)) "$ROOT/demo/run.sh"
 
 echo "== the results are complete and consistent"
 "$ROOT/tests/demo_results.sh" "$CZE_DEMO_RESULTS" --stand-in
+
+echo "== a list of 202 acceptances: the builder reads it 200 at a time and matches U's withdrawal on the second page"
+"$CZE_STATE_DIR/venv/bin/python3" "$ROOT/tests/demo_paged_acceptances.py" || fail "the builder did not match a withdrawal across the pages of a long list"
 # Calls: the stand-ins were asked to verify, and the real sidecar's legs answered for the legs.
 grep -qE ' verify2? submission$' "$FAKE_LOG" || fail "no verify call"
 grep -q '^8086 legs validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was never asked for legs: its participant did not check the legs when it validated"

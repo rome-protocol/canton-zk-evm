@@ -12,6 +12,7 @@ from keccak import keccak256
 JWT_SECRET = bytes.fromhex("11" * 32)
 LEDGER_TOKEN = "ledger-test-token"
 BUILDER = "builder::1220aa"
+LEDGER_END = 42    # the offset the ledger end is at
 LIST_LIMIT = 200   # the JSON API's http-list-max-elements-limit: a list (not a page) of more is refused with HTTP 413
 HEAD_HASH = "0x" + "ab" * 32
 HEAD_NUMBER = 4
@@ -416,7 +417,8 @@ class FakeLedger:
         self.archived_acceptances: set = set()   # contract ids of those that are archived: the answer has the archived event too
         self.acceptance_failure = None   # an HTTP status that the read of an acceptance answers (413, 500), or "timeout": no answer within acceptance_delay seconds
         self.acceptance_delay = 1.0
-        self.list_failure: dict = {}   # template or interface name (WithdrawalAcceptance, Allocation, ...) -> an HTTP status that a read of its list answers (413, 500), or "timeout"; "bad json" answers 200 with text
+        self.list_failure: dict = {}   # template or interface name (WithdrawalAcceptance, Allocation, ...) -> an HTTP status that a read of its list answers (413, 500), or "timeout"; "bad json" answers 200 with text; "no template" answers that no package has the template (404)
+        self.list_failure_from_page = 0   # the first page (0 is the first) that a list_failure answers: 0 fails every read, 1 only a request that carries a page token
         self.list_delay = 1.0          # seconds a "timeout" read takes to answer
         self.unpaged: list = []        # the bodies of the reads of a whole list (POST /v2/state/active-contracts), which the builder must not make; `queries` has these and the pages
         self.acceptance_package = "ostia-twin"   # the package name the created event of a TwinAcceptance carries
@@ -608,6 +610,11 @@ class FakeLedger:
                     if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     failure = next((f for name, f in ledger.list_failure.items() if tmpl.endswith(":" + name)), None)
+                    token = str(body.get("pageToken") or "")
+                    if paged and failure and int(token.split("|")[0] or 0) // (body.get("maxPageSize") or 1) < ledger.list_failure_from_page:
+                        failure = None   # this page is served: the failure starts on a later one
+                    if failure == "no template":
+                        return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     if failure == "timeout":
                         time.sleep(ledger.list_delay)
                     elif failure == "bad json":
@@ -620,12 +627,20 @@ class FakeLedger:
                             if len(found) > LIST_LIMIT:   # a list the participant will not give: the builder has to read pages
                                 return self._reply(413, {"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"})
                             return self._reply(200, found)
-                        size, start = body.get("maxPageSize"), int(body.get("pageToken") or 0)
+                        size = body.get("maxPageSize")
                         if not isinstance(size, int) or not 0 < size <= LIST_LIMIT:
                             return self._reply(400, {"code": "INVALID_ARGUMENT"})
-                        out = {"activeAtOffset": body.get("activeAtOffset", 42), "activeContracts": found[start:start + size]}
+                        offset = body.get("activeAtOffset", LEDGER_END)   # none given: the ledger end, which the answer names
+                        shape = hashlib.sha256(json.dumps(body.get("eventFormat"), sort_keys=True).encode()).hexdigest()[:16]
+                        start = 0
+                        if body.get("pageToken"):   # a page token only works at the offset and with the event format of the page it came from
+                            at, token_offset, token_shape = str(body["pageToken"]).split("|")
+                            if (str(body.get("activeAtOffset")), token_shape) != (token_offset, shape):
+                                return self._reply(400, {"code": "INVALID_ARGUMENT", "cause": "the page token does not fit this request"})
+                            start = int(at)
+                        out = {"activeAtOffset": offset, "activeContracts": found[start:start + size]}
                         if start + size < len(found):
-                            out["nextPageToken"] = str(start + size)
+                            out["nextPageToken"] = f"{start + size}|{offset}|{shape}"
                         return self._reply(200, out)
                     except OSError:   # the builder gave up on a slow answer
                         return

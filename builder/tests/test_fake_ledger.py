@@ -64,6 +64,15 @@ class FakeLedgerChecks(unittest.TestCase):
             if not after:
                 break
         self.assertEqual(seen, [f"r{i}" for i in range(450)])
+        status, first = self.listing("/v2/state/active-contracts-page", maxPageSize=200)   # no offset given: the ledger end, named in the answer
+        self.assertEqual((status, first["activeAtOffset"]), (200, 42))
+        after = first["nextPageToken"]
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=42, pageToken=after)[0], 200)
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, pageToken=after)[0], 400)   # a token needs the offset it came with
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=43, pageToken=after)[0], 400)
+        flt = {"identifierFilter": {"TemplateFilter": {"value": {"templateId": "pkg:Zk.Chain:DepositRequest", "includeCreatedEventBlob": True}}}}
+        other = {"eventFormat": {"filtersByParty": {BUILDER: {"cumulative": [flt]}}}, "maxPageSize": 200, "activeAtOffset": 42, "pageToken": after}
+        self.assertEqual(self.post("/v2/state/active-contracts-page", other)[0], 400)   # nor another event format
         for size in (None, 0, 201):
             self.assertEqual(self.listing("/v2/state/active-contracts-page", **({"maxPageSize": size} if size is not None else {}))[0], 400)
 

@@ -46,6 +46,7 @@ ACCEPTANCE_TIMEOUT = 10   # seconds the one read of a lock's TwinAcceptance may 
 LIST_PAGE = 200        # contracts in one page of a list read from Canton (the JSON API refuses a list longer than its limit, 200 by default, with HTTP 413)
 LIST_MAX_PAGES = 500   # pages one list read follows at most (100,000 contracts): a longer list leaves out the legs that need it
 LIST_TIMEOUT = 20      # seconds each request of a list read may take
+LIST_TOTAL = 20        # seconds all the pages of one list read may take together: a slower list is unreadable
 NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
@@ -914,6 +915,10 @@ def completion_in(items: list, command_id: str) -> tuple:
     return found, last, reached
 
 
+class PageFailed(OSError):
+    """A page of a list after the first that the participant refused."""
+
+
 class Ledger:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -964,20 +969,27 @@ class Ledger:
         return [self.cfg.party, *(p for p in self.cfg.read_as if p != self.cfg.party)]
 
     def _created(self, identifier_filter: dict) -> list:
-        """The created events of the active contracts the builder can see that match the filter. Read LIST_PAGE at a time, every page at the ledger
-        end the first was read at, so that a list anyone can make long is never refused for its length."""
-        request = urllib.request.Request(self.cfg.ledger_url + "/v2/state/ledger-end", headers=self.auth)
-        with urllib.request.urlopen(request, timeout=LIST_TIMEOUT) as r:
-            offset = json.load(r)["offset"]
+        """The created events of the active contracts the builder can see that match the filter. Read LIST_PAGE at a time, so that a list anyone can
+        make long is never refused for its length: the first page at the ledger end the participant picks, every later page at the offset it answered
+        with. The whole read may take LIST_TOTAL seconds."""
         filters = {p: {"cumulative": [{"identifierFilter": identifier_filter}]} for p in self.readers()}
-        body = {"eventFormat": {"filtersByParty": filters, "verbose": False}, "activeAtOffset": offset, "maxPageSize": LIST_PAGE}
-        found = []
-        for _ in range(LIST_MAX_PAGES):
-            page = post_json(self.cfg.ledger_url + "/v2/state/active-contracts-page", body, self.auth, timeout=LIST_TIMEOUT)
+        body = {"eventFormat": {"filtersByParty": filters, "verbose": False}, "maxPageSize": LIST_PAGE}
+        found, deadline = [], time.monotonic() + LIST_TOTAL
+        for number in range(LIST_MAX_PAGES):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"the list took longer than {LIST_TOTAL} s")
+            try:
+                page = post_json(self.cfg.ledger_url + "/v2/state/active-contracts-page", body, self.auth, timeout=min(LIST_TIMEOUT, left))
+            except urllib.error.HTTPError as e:
+                if not number:
+                    raise
+                e.close()   # a later page that fails is never read as "no such template": the list is unreadable
+                raise PageFailed(f"page {number + 1} answered HTTP {e.code}") from None
             found += [e["contractEntry"]["JsActiveContract"]["createdEvent"] for e in page["activeContracts"] if "JsActiveContract" in e["contractEntry"]]
             if not page.get("nextPageToken"):
                 return found
-            body = {**body, "pageToken": page["nextPageToken"]}
+            body = {**body, "activeAtOffset": page["activeAtOffset"], "pageToken": page["nextPageToken"]}
         raise ValueError(f"the list is longer than {LIST_MAX_PAGES} pages of {LIST_PAGE}")
 
     def active(self, template: str) -> list:
@@ -1202,6 +1214,10 @@ class NoCantonSide(Exception):
     """A leg that has no Canton side now; the message says why."""
 
 
+class ListUnreadable(NoCantonSide):
+    """A list of contracts that could not be read whole: no leg that needs it is matched on a part of it, or on another kind of contract instead."""
+
+
 LEG_WAITS = "its leg waits until the blocks before it are final"   # the reason of a leg that has its Canton side but the block is built on a block in flight
 
 
@@ -1351,7 +1367,7 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None, lists: dict | None = None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
@@ -1360,27 +1376,27 @@ class Canton:
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
-        self.lists: dict = {}   # name -> a list read from Canton for this block, or the NoCantonSide that its read ended in (see `listed`)
+        self.lists: dict = {} if lists is None else lists   # name -> a list read from Canton for this block (the caller's dict, so that every pass of the block shares it), or the ListUnreadable that its read ended in (see `listed`)
         self.acceptances_read: set = set()   # (contract id, receiver) of the TwinAcceptance contracts that were read and count, for this block
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     def listed(self, name: str, read):
         """What `read()` gives, asked for once in this block. A read that fails (an HTTP error of any status such as 413 or 500, a timeout, a dropped
-        connection, an answer that is not JSON or not a page of contracts) is NoCantonSide for this leg and for every later leg that needs the list,
+        connection, an answer that is not JSON or not a page of contracts) is ListUnreadable (a NoCantonSide) for this leg and for every later leg that needs the list,
         without another request: those legs are left out, never the block."""
         if name not in self.lists:
             try:
                 self.lists[name] = read()
             except urllib.error.HTTPError as e:
                 e.close()
-                self.lists[name] = NoCantonSide(f"the {name} cannot be read: the participant answered HTTP {e.code}")
+                self.lists[name] = ListUnreadable(f"the {name} cannot be read: the participant answered HTTP {e.code}")
             except (OSError, http.client.HTTPException) as e:   # a timeout, a refused or dropped connection
-                self.lists[name] = NoCantonSide(f"the {name} cannot be read: {bounded_text(e)}")
+                self.lists[name] = ListUnreadable(f"the {name} cannot be read: {bounded_text(e)}")
             except (ValueError, RecursionError, KeyError, TypeError, AttributeError) as e:   # not JSON, or not the shape of a page
-                self.lists[name] = NoCantonSide(f"the {name} cannot be read: the answer cannot be used ({type(e).__name__}: {bounded_text(e)})")
+                self.lists[name] = ListUnreadable(f"the {name} cannot be read: the answer cannot be used ({type(e).__name__}: {bounded_text(e)})")
         got = self.lists[name]
-        if isinstance(got, NoCantonSide):
-            raise NoCantonSide(str(got))
+        if isinstance(got, ListUnreadable):
+            raise ListUnreadable(str(got))
         return got
 
     @property
@@ -1529,6 +1545,8 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     if requests and not reserved:
         try:
             return request_leg(leg, canton, claimed, requests)
+        except ListUnreadable:
+            raise
         except NoCantonSide as e:
             problem = e
     own = [c for c in claims if c["recipient"] == leg.account]
@@ -1649,6 +1667,8 @@ def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     if named:   # the trades are read only when no terms settle
         try:
             return terms_leg(leg, canton, claimed, named)
+        except ListUnreadable:
+            raise
         except NoCantonSide as e:
             problem = e
     trades = [t for t in canton.trades if t["payId"] == leg.id and names_chain(t, chain, "gateway")]
@@ -2317,6 +2337,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     work = Path(cfg.work_dir) / f"block-{n}"
     contexts = ChoiceContexts(cfg.registries, cfg.registry_tokens) if cfg.registries else None   # one for the block, like the twin registry's reader
     lock_parts = twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None   # one for the block: its answers and its time budget hold across rebuilds
+    lists: dict = {}   # the lists read from Canton, one cache for the block: a list is read once however many times the block is built
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
@@ -2334,7 +2355,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts)
+                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts, lists=lists)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
