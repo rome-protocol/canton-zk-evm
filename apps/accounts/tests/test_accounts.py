@@ -1001,6 +1001,10 @@ FACTORY = {"factoryId": "00" + "cd" * 40, "choiceContext": {"choiceContextData":
 HANDLE = secrets.token_hex(8)
 
 
+# Splice 0.10.0 wallet-internal.yaml, TransferInstructionResultResponse: a completed transfer names the receiver's holdings, with no discriminator field.
+COMPLETED = {"output": {"receiver_holding_cids": ["00" + "ef" * 40]}, "sender_change_cids": [], "meta": {"values": {}}}
+
+
 class FakeOutside:
     """A registry or a wallet: records each request (path, body, authorization, user agent) and answers with what it is told, after `delay` seconds."""
     def __init__(self, status=200, answer=None, headers=None, raw=None, delay=0):
@@ -1184,7 +1188,7 @@ class Faucets(OutsideCase):
             A.main(["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--faucet-amount", "20"])
 
     def test_a_pending_transfer_gives_the_instruction_the_account_accepts(self):
-        self.outside.answer = {"output": {"output_type": "pending", "transfer_instruction_cid": INSTRUCTION}}
+        self.outside.answer = {"output": {"transfer_instruction_cid": INSTRUCTION}, "sender_change_cids": [], "meta": {"values": {}}}
         self.with_faucet()
         status, out, _ = self.ask()
         self.assertEqual((status, out), (200, {"transferInstructionCid": INSTRUCTION}))
@@ -1194,13 +1198,13 @@ class Faucets(OutsideCase):
         self.assertTrue(body["tracking_id"].startswith("faucet-") and body["expires_at"] > time.time() * 1_000_000)
 
     def test_a_completed_transfer(self):
-        self.outside.answer = {"output": {"output_type": "completed"}}
+        self.outside.answer = COMPLETED
         self.with_faucet()
         self.assertEqual(self.ask()[1], {"completed": True})
 
     def test_an_answer_that_made_no_transfer_is_a_502(self):
         self.with_faucet(per_day=100)
-        for answer in ({"output": {"output_type": "failed"}}, {"output": {"output_type": "pending", "transfer_instruction_cid": "x"}}, {"output": 1}, {}):
+        for answer in ({"output": {"dummy": {}}}, {"output": {"transfer_instruction_cid": "x"}}, {"output": {"receiver_holding_cids": "x"}}, {"output": 1}, {}):
             self.outside.answer = answer
             self.faucet_reset()
             self.assertEqual(self.ask()[0], 502, answer)
@@ -1213,7 +1217,7 @@ class Faucets(OutsideCase):
         self.assertEqual(self.outside.calls, [])
 
     def test_once_a_day_for_an_account_with_retry_after(self):
-        self.outside.answer = {"output": {"output_type": "completed"}}
+        self.outside.answer = COMPLETED
         self.with_faucet()
         self.assertEqual(self.ask()[0], 200)
         status, _, headers = self.ask()
@@ -1222,7 +1226,7 @@ class Faucets(OutsideCase):
         self.assertEqual(len(self.outside.calls), 1)
 
     def test_the_limits_of_the_account_the_client_and_the_day(self):
-        with unittest.mock.patch.object(A, "outside_post", return_value={"output": {"output_type": "completed"}}) as sent:
+        with unittest.mock.patch.object(A, "outside_post", return_value=COMPLETED) as sent:
             f = A.Faucet("20.0", "https://wallet.example", self.bearer_file, per_day=2)
             self.assertEqual(f.grant("p1", "1.1.1.1"), {"completed": True})
             for party, client in (("p1", "2.2.2.2"), ("p2", "1.1.1.1")):   # the same account, the same client
@@ -1243,7 +1247,7 @@ class Faucets(OutsideCase):
         self.assertNotEqual(A.pending_owner(A.client_key("2001:db8:1::5")), A.pending_owner(A.client_key("2001:db8:2::5")))
 
     def test_requests_at_once_cannot_both_pass(self):
-        self.outside.answer, self.outside.delay = {"output": {"output_type": "completed"}}, 0.3
+        self.outside.answer, self.outside.delay = COMPLETED, 0.3
         self.with_faucet()
         statuses = []
         threads = [threading.Thread(target=lambda: statuses.append(self.ask()[0])) for _ in range(4)]
@@ -1259,7 +1263,7 @@ class Faucets(OutsideCase):
         self.assertEqual(self.ask()[0], 502)
         self.assertEqual(other.calls, [])
         other.server.shutdown()
-        self.outside.status, self.outside.raw, self.outside.answer = 200, None, {"output": {"output_type": "completed"}}
+        self.outside.status, self.outside.raw, self.outside.answer = 200, None, COMPLETED
         self.faucet_reset()
         with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
             self.assertEqual(self.ask()[0], 502)

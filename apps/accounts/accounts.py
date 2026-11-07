@@ -264,11 +264,14 @@ class Faucet:
         request = {"receiver_party_id": party, "amount": self.amount, "description": "DevNet faucet", "expires_at": int((time.time() + 3600) * 1_000_000),
                    "tracking_id": "faucet-" + str(uuid.uuid4())}
         output = outside_post(self.url, "/v0/wallet/token-standard/transfers", request, self.bearer_file, "the validator's wallet").get("output")
-        kind, cid = (output.get("output_type"), output.get("transfer_instruction_cid")) if isinstance(output, dict) else (None, None)
-        if kind == "completed":
-            return {"completed": True}
-        if kind == "pending" and isinstance(cid, str) and CONTRACT_ID.match(cid):
+        # The answer is Splice 0.10.0's `TransferInstructionResultResponse` (wallet-internal.yaml, createTokenStandardTransfer): `output` is a oneOf with no discriminator field,
+        # {transfer_instruction_cid} when pending, {receiver_holding_cids: [...]} when completed, {dummy} when failed.
+        output = output if isinstance(output, dict) else {}
+        cid = output.get("transfer_instruction_cid")
+        if isinstance(cid, str) and CONTRACT_ID.match(cid):
             return {"transferInstructionCid": cid}
+        if isinstance(output.get("receiver_holding_cids"), list):
+            return {"completed": True}
         raise HttpError(502, "the validator's wallet did not make the transfer")
 
 
