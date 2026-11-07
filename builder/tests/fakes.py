@@ -12,6 +12,8 @@ from keccak import keccak256
 JWT_SECRET = bytes.fromhex("11" * 32)
 LEDGER_TOKEN = "ledger-test-token"
 BUILDER = "builder::1220aa"
+LEDGER_END = 42    # the offset the ledger end is at
+LIST_LIMIT = 200   # the JSON API's http-list-max-elements-limit: a list (not a page) of more is refused with HTTP 413
 HEAD_HASH = "0x" + "ab" * 32
 HEAD_NUMBER = 4
 PROOF_WINDOW = 1   # reth is run with --rpc.eth-proof-window 1
@@ -415,6 +417,10 @@ class FakeLedger:
         self.archived_acceptances: set = set()   # contract ids of those that are archived: the answer has the archived event too
         self.acceptance_failure = None   # an HTTP status that the read of an acceptance answers (413, 500), or "timeout": no answer within acceptance_delay seconds
         self.acceptance_delay = 1.0
+        self.list_failure: dict = {}   # template or interface name (WithdrawalAcceptance, Allocation, ...) -> an HTTP status that a read of its list answers (413, 500), or "timeout"; "bad json" answers 200 with text; "no template" answers that no package has the template (404)
+        self.list_failure_from_page = 0   # the first page (0 is the first) that a list_failure answers: 0 fails every read, 1 only a request that carries a page token
+        self.list_delay = 1.0          # seconds a "timeout" read takes to answer
+        self.unpaged: list = []        # the bodies of the reads of a whole list (POST /v2/state/active-contracts), which the builder must not make; `queries` has these and the pages
         self.acceptance_package = "ostia-twin"   # the package name the created event of a TwinAcceptance carries
         self.event_queries: list = []   # the bodies of the reads of an acceptance
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
@@ -588,8 +594,11 @@ class FakeLedger:
             def do_POST(self):
                 self._auth()
                 body = self._body()
-                if self.path == "/v2/state/active-contracts":
+                if self.path in ("/v2/state/active-contracts", "/v2/state/active-contracts-page"):
+                    paged = self.path.endswith("-page")
                     ledger.queries.append(body)
+                    if not paged:
+                        ledger.unpaged.append(body)
                     if ledger.bad_json:
                         return self._reply_raw(200, b"<html>not json")
                     if ledger.head_fails_after_submit and ledger.submitted:
@@ -600,7 +609,42 @@ class FakeLedger:
                         return self._reply(413, {"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"})
                     if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
-                    return self._reply(200, ledger._active(tmpl))
+                    failure = next((f for name, f in ledger.list_failure.items() if tmpl.endswith(":" + name)), None)
+                    token = str(body.get("pageToken") or "")
+                    if paged and failure and int(token.split("|")[0] or 0) // (body.get("maxPageSize") or 1) < ledger.list_failure_from_page:
+                        failure = None   # this page is served: the failure starts on a later one
+                    if failure == "no template":
+                        return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
+                    if failure == "timeout":
+                        time.sleep(ledger.list_delay)
+                    elif failure == "bad json":
+                        return self._reply_raw(200, b"<html>not json")
+                    elif failure:
+                        return self._reply(failure, {"code": "FAILURE"})
+                    found = ledger._active(tmpl)
+                    try:
+                        if not paged:
+                            if len(found) > LIST_LIMIT:   # a list the participant will not give: the builder has to read pages
+                                return self._reply(413, {"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"})
+                            return self._reply(200, found)
+                        size = body.get("maxPageSize")
+                        if not isinstance(size, int) or not 0 < size <= LIST_LIMIT:
+                            return self._reply(400, {"code": "INVALID_ARGUMENT"})
+                        offset = body.get("activeAtOffset", LEDGER_END)   # none given: the ledger end, which the answer names
+                        named = str(body.get("activeAtOffset"))   # "None": the request names no offset
+                        shape = hashlib.sha256(json.dumps(body.get("eventFormat"), sort_keys=True).encode()).hexdigest()[:16]
+                        start = 0
+                        if body.get("pageToken"):   # a page token only works with the offset (named or not) and the event format of the request it came from, as the real participant's does
+                            at, token_named, token_shape = str(body["pageToken"]).split("|")
+                            if (named, token_shape) != (token_named, shape):
+                                return self._reply(400, {"code": "INVALID_ARGUMENT", "cause": "the page token does not fit this request"})
+                            start = int(at)
+                        out = {"activeAtOffset": offset, "activeContracts": found[start:start + size]}
+                        if start + size < len(found):
+                            out["nextPageToken"] = f"{start + size}|{named}|{shape}"
+                        return self._reply(200, out)
+                    except OSError:   # the builder gave up on a slow answer
+                        return
                 if self.path == "/v2/events/events-by-contract-id":
                     ledger.event_queries.append(body)
                     if ledger.acceptance_failure == "timeout":

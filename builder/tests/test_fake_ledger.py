@@ -41,6 +41,43 @@ class FakeLedgerChecks(unittest.TestCase):
             {"identifierFilter": {"TemplateFilter": {"value": {"templateId": "pkg:Zk.Chain:ZkChain"}}}}]}}}})
         return [e["contractEntry"]["JsActiveContract"]["createdEvent"]["contractId"] for e in found]
 
+    def listing(self, path: str, **more):
+        flt = {"identifierFilter": {"TemplateFilter": {"value": {"templateId": "pkg:Zk.Chain:DepositRequest"}}}}
+        return self.post(path, {"eventFormat": {"filtersByParty": {BUILDER: {"cumulative": [flt]}}}, **more})
+
+    def test_a_list_of_more_than_the_limit_is_refused_and_a_page_of_it_is_not(self):
+        self.ledger.requests = [(f"r{i}", {"depositId": f"{i:064x}"}) for i in range(201)]
+        status, answer = self.listing("/v2/state/active-contracts")
+        self.assertEqual((status, answer["code"]), (413, "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"))
+        self.ledger.requests = self.ledger.requests[:200]
+        self.assertEqual(self.listing("/v2/state/active-contracts")[0], 200)   # a list at the limit is given
+        self.assertEqual(len(self.ledger.unpaged), 2)
+
+    def test_pages_follow_one_another_to_the_last_and_a_page_is_never_longer_than_the_limit(self):
+        self.ledger.requests = [(f"r{i}", {"depositId": f"{i:064x}"}) for i in range(450)]
+        seen, after = [], None
+        while True:
+            status, page = self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=42, **({"pageToken": after} if after else {}))
+            self.assertEqual((status, page["activeAtOffset"]), (200, 42))
+            seen += [e["contractEntry"]["JsActiveContract"]["createdEvent"]["contractId"] for e in page["activeContracts"]]
+            after = page.get("nextPageToken")
+            if not after:
+                break
+        self.assertEqual(seen, [f"r{i}" for i in range(450)])
+        status, first = self.listing("/v2/state/active-contracts-page", maxPageSize=200)   # no offset given: the ledger end, named in the answer
+        self.assertEqual((status, first["activeAtOffset"]), (200, 42))
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, pageToken=first["nextPageToken"])[0], 200)
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=42, pageToken=first["nextPageToken"])[0], 400)   # a token needs the request it came with: this one names an offset
+        _, named = self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=42)
+        after = named["nextPageToken"]
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, activeAtOffset=43, pageToken=after)[0], 400)
+        self.assertEqual(self.listing("/v2/state/active-contracts-page", maxPageSize=200, pageToken=after)[0], 400)
+        flt = {"identifierFilter": {"TemplateFilter": {"value": {"templateId": "pkg:Zk.Chain:DepositRequest", "includeCreatedEventBlob": True}}}}
+        other = {"eventFormat": {"filtersByParty": {BUILDER: {"cumulative": [flt]}}}, "maxPageSize": 200, "activeAtOffset": 42, "pageToken": after}
+        self.assertEqual(self.post("/v2/state/active-contracts-page", other)[0], 400)   # nor another event format
+        for size in (None, 0, 201):
+            self.assertEqual(self.listing("/v2/state/active-contracts-page", **({"maxPageSize": size} if size is not None else {}))[0], 400)
+
     def test_a_block_that_extends_the_head_commits(self):
         (cid,) = self.chain_ids()
         h = header(self.head_hash, HEAD_NUMBER + 1)
