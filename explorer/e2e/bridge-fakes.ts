@@ -51,9 +51,9 @@ export function sendTransaction(c: Chain, tx: { from: string; to: string; data?:
   const to = tx.to.toLowerCase();
   if (to === GATEWAY.toLowerCase()) {
     const call = decodeFunctionData({ abi: gatewayAbi, data });
-    if (call.functionName === "pay") leg = { kind: "payment", legId: call.args![0] as string, erc20: call.args![1] as string };
-    if (call.functionName === "claim") leg = { kind: "deposit", legId: call.args![0] as string, erc20: call.args![1] as string, amount: String(call.args![2]) };
-    if (call.functionName === "withdraw") leg = { kind: "withdrawal", legId: "0x", erc20: call.args![0] as string, amount: String(call.args![1]) };
+    if (call.functionName === "pay") leg = { kind: "payment", legId: call.args![0] as string, erc20: (call.args![1] as string).toLowerCase() };
+    if (call.functionName === "claim") leg = { kind: "deposit", legId: call.args![0] as string, erc20: (call.args![1] as string).toLowerCase(), amount: String(call.args![2]) };
+    if (call.functionName === "withdraw") leg = { kind: "withdrawal", legId: "0x", erc20: (call.args![0] as string).toLowerCase(), amount: String(call.args![1]) };
   } else if (to === VAULT) {
     const call = decodeFunctionData({ abi: vaultAbi, data });
     if (call.functionName === "release") leg = { kind: "payment", legId: releaseIdOf(VAULT as Hex, call.args![0] as string) };

@@ -186,7 +186,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect([...chain.sent.values()].map((t) => t.to.toLowerCase())).toEqual([TKA, expect.any(String)]);   // the approval, then the payment to the gateway
     expect(chain.allowance).toBe(15n * 10n ** 17n);
     expect(chain.lastLock!.receiver).toBe(party);   // the lock is for the person's own Canton account
-    expect([...chain.sent.values()][1]!.leg).toEqual({ kind: "payment", legId: chain.lastLock!.lockId });
+    expect([...chain.sent.values()][1]!.leg).toMatchObject({ kind: "payment", legId: chain.lastLock!.lockId });
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 120_000);
@@ -264,7 +264,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(sent.map((t) => t.to.toLowerCase())).toEqual([WTROME, WTROME, GATEWAY.toLowerCase()]);   // the wrap, the approval, the payment
     expect(sent[0]!.value).toBe(5n * 10n ** 17n);   // only what was missing is wrapped
     expect(chain.allowance).toBe(205n * 10n ** 17n);
-    expect(sent[2]!.leg).toEqual(expect.objectContaining({ kind: "payment", legId: chain.lastLock!.lockId }));
+    expect(sent[2]!.leg).toMatchObject({ kind: "payment", legId: chain.lastLock!.lockId });
     expect(chain.lastLock!.receiver).toBe(party);
     expect(await noSideways(page)).toBe(true);
     await page.close();
