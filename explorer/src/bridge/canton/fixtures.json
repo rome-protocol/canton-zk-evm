@@ -247,13 +247,25 @@
   "preparedTransactionHash": "10gFLsX3sIPOJfdCMcSqtQ5KJRPtoH0R1qnlgorJrTE="
  },
  {
-  "multiHash": "EiCT2ofMR6MhprM87qU/76cRPyve2HiigWgP0DoK2cJjOA==",
-  "name": "topology",
-  "participant": "operator::1220baf58a74b2fd61756a89e6f6e2142c50161cbf98525131a4a989ba28a8b80f14",
-  "party": "bridge::1220dc3408ffecdffa940e856390258bad34d6e7dc3a3f1c14ab3127e3af377f9522",
-  "publicKey": "4dRoApGdmkZ3d+IXSXby9bSAm7ssy5K468lgPwfnzwg=",
+  "multiHash": "EiAaUTW16a+448XYRncIZlBW9QGZjacCp2jKLqsBBxRnTA==",
+  "name": "topology-pv36",
+  "participant": "operator::122093cccfd60ee90e87ddcfe2a23451f2f0ba6384160d7e6071be5b79e5c2c84fce",
+  "party": "bridge::122032aff2ce2cf309c87396d4e478e52e52f1645014f4c0ab4dc96df1b9d05cb1a8",
+  "protocolVersion": 36,
+  "publicKey": "jG+Wvq3sugVOQD8ut9GPKubDT4FayMNsdmkHzB989eo=",
   "topologyTransactions": [
-   "Cu0BCAEQARrmAUrjAQpMYnJpZGdlOjoxMjIwZGMzNDA4ZmZlY2RmZmE5NDBlODU2MzkwMjU4YmFkMzRkNmU3ZGMzYTNmMWMxNGFiMzEyN2UzYWYzNzdmOTUyMhABGlQKTm9wZXJhdG9yOjoxMjIwYmFmNThhNzRiMmZkNjE3NTZhODllNmY2ZTIxNDJjNTAxNjFjYmY5ODUyNTEzMWE0YTk4OWJhMjhhOGI4MGYxNBACGAQiOwo3EAQaLDAqMAUGAytlcAMhAOHUaAKRnZpGd3fiF0l28vW0gJu7LMuSuOvJYD8H588IKgMBBQQwARABEB8="
+   "CusBCAEQARrkAUrhAQpMYnJpZGdlOjoxMjIwMzJhZmYyY2UyY2YzMDljODczOTZkNGU0NzhlNTJlNTJmMTY0NTAxNGY0YzBhYjRkYzk2ZGYxYjlkMDVjYjFhOBABGlIKTm9wZXJhdG9yOjoxMjIwOTNjY2NmZDYwZWU5MGU4N2RkY2ZlMmEyMzQ1MWYyZjBiYTYzODQxNjBkN2U2MDcxYmU1Yjc5ZTVjMmM4NGZjZRACMjsKNxAEGiwwKjAFBgMrZXADIQCMb5a+rey6BU5APy630Y8q5sNPgVrIw2x2aQfMH3z16ioDAQUEMAEQARAe"
+  ]
+ },
+ {
+  "multiHash": "EiBaXbIw+dnQq79cf63duHTPk/Xnu7eLQUFwu9Da+BvuVg==",
+  "name": "topology-pv37",
+  "participant": "operator::122073cf8b15522cf9204174d15451862beaf4015b4a6ddb128e846512e7faf92784",
+  "party": "bridge::1220d28ef9a1c92db3caee451b6482a9035ecbfacef1377c1a978130ab977cafe722",
+  "protocolVersion": 37,
+  "publicKey": "Uu0htyJxkvrz+F+ZKkHq3uFffdo9ZAyXYB5eVG8zjxI=",
+  "topologyTransactions": [
+   "Cu0BCAEQARrmAUrjAQpMYnJpZGdlOjoxMjIwZDI4ZWY5YTFjOTJkYjNjYWVlNDUxYjY0ODJhOTAzNWVjYmZhY2VmMTM3N2MxYTk3ODEzMGFiOTc3Y2FmZTcyMhABGlQKTm9wZXJhdG9yOjoxMjIwNzNjZjhiMTU1MjJjZjkyMDQxNzRkMTU0NTE4NjJiZWFmNDAxNWI0YTZkZGIxMjhlODQ2NTEyZTdmYWY5Mjc4NBACGAQiOwo3EAQaLDAqMAUGAytlcAMhAFLtIbcicZL68/hfmSpB6t7hX33aPWQMl2AeXlRvM48SKgMBBQQwARABEB8="
   ]
  }
 ]

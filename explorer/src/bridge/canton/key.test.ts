@@ -115,7 +115,7 @@ describe("the Canton key from a wallet signature", () => {
     for (const file of sources) expect(readFileSync(new URL(file, dir), "utf8"), file).not.toMatch(/localStorage|sessionStorage|indexedDB/);
     const users = (name: string) => sources.filter((f) => f !== "key.ts" && readFileSync(new URL(f, dir), "utf8").includes(name));
     expect(users("signVerifiedTransaction")).toEqual(["sign.ts"]);
-    expect(users("signOnboarding")).toEqual([]);   // no caller until the page can read the topology it would sign (topology.ts, OnboardingNotChecked)
+    expect(users("signOnboarding")).toEqual(["accounts.ts"]);   // after the topology it signs has been read (topology.ts)
     expect(users("signRequest")).toEqual(["accounts.ts"]);
     expect(base64(new Uint8Array([1]))).toBe("AQ==");
   });

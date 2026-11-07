@@ -17,6 +17,13 @@ export interface Intent {
 }
 export interface Built { command: Command; intent: Intent; disclosedContracts: DisclosedContract[] }
 
+/** The participant that hosts every account (`VITE_CANTON_PARTICIPANT`: its id as the Ledger API says it, PAR::name::fingerprint): an account is onboarded only onto it. */
+export function participantFromEnv(env: Record<string, string | undefined>): string {
+  const participant = env.VITE_CANTON_PARTICIPANT;
+  if (!participant) throw new Error("VITE_CANTON_PARTICIPANT is not set");
+  return participant;
+}
+
 /** The chain's parties and id, from the page's configuration (`VITE_CHAIN_*`): never written into the code. */
 export interface Chain { operator: string; confirmer: string; gateway: string; builder: string; chainId: number }
 export function chainFromEnv(env: Record<string, string | undefined>): Chain {

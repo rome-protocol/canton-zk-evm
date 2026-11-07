@@ -1,7 +1,7 @@
 // The account service's client (apps/accounts). The page holds the account's key: it signs the multi-hash of its own onboarding (after checking it, topology.ts), each prepared
 // transaction's hash, and each account-scoped request (X-Account-Signature). `signPrepared` in sign.ts is the only way a prepared transaction is signed here.
-import { base64, fromBase64, hex, signRequest, type CantonKey } from "./key.ts";
-import { OnboardingNotChecked, partyOf, topologyMultiHash } from "./topology.ts";
+import { base64, hex, signOnboarding, signRequest, type CantonKey } from "./key.ts";
+import { partyOf, verifyOnboarding } from "./topology.ts";
 
 export type Command = { CreateCommand: { templateId: string; createArguments: object } } | { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: object } };
 export interface DisclosedContract { templateId: string; contractId: string; createdEventBlob: string; synchronizerId: string }
@@ -104,19 +104,19 @@ export class AccountsClient {
     return this.send("GET", `/accounts/v1/open/${party}`, undefined, key);
   }
 
-  /** The account of this key. The party is the page's own (the key's fingerprint), never the service's word. A found account is returned. A new one is not made: the page cannot yet read the
-   * topology transactions (`OnboardingNotChecked`), so it signs no multi-hash. It recomputes the multi-hash from the transactions (a service that names another is refused first), and on a first
-   * account asks the wallet once more (`confirm`, see `confirmKey`) before it refuses, so the check of a wallet that signs another way is where account creation will be. */
-  async open(key: CantonKey, confirm?: () => Promise<void>): Promise<string> {
+  /** The account of this key. The party is the page's own (the key's fingerprint), never the service's word. A found account is returned. A new account is made only from a topology that is
+   * this key's onboarding on `participant` and nothing else (topology.ts): the page decodes it, computes the multi-hash itself, and signs its own multi-hash if the service's is the same.
+   * `confirm` runs after that check and before anything is signed (the wallet is asked again, and refused if it signs another way: `confirmKey`). */
+  async open(key: CantonKey, participant: string, confirm?: () => Promise<void>): Promise<string> {
     const party = await partyOf(key.publicKey);
     const found = await this.topology(key.publicKey);
     if (found.party !== party) throw new AccountsError("server", 200, `the account service names ${found.party}, not this key's account ${party}`);
     if (found.exists) return party;
-    if (!found.multiHash || !found.blob || !Array.isArray(found.topologyTransactions) || found.topologyTransactions.length === 0) throw new AccountsError("server", 200, "the topology has no multi-hash, blob or transactions");
-    let given: Uint8Array;
-    try { given = fromBase64(found.multiHash); } catch { throw new OnboardingNotChecked("the multi-hash is not base64"); }
-    if (hex(given) !== hex(await topologyMultiHash(found.topologyTransactions))) throw new OnboardingNotChecked("the multi-hash is not the hash of the transactions");
+    if (!found.multiHash || !found.blob || !Array.isArray(found.topologyTransactions)) throw new AccountsError("server", 200, "the topology has no multi-hash, blob or transactions");
+    const multiHash = await verifyOnboarding({ party: found.party, multiHash: found.multiHash, topologyTransactions: found.topologyTransactions }, key.publicKey, participant);
     await confirm?.();
-    throw new OnboardingNotChecked("the page cannot yet read what the participant's topology transactions say");
+    const made = await this.allocate(found.blob, await signOnboarding(key, multiHash));
+    if (made.party !== party) throw new AccountsError("server", 200, `the account service made ${made.party}, not this key's account ${party}`);
+    return party;
   }
 }
