@@ -1,0 +1,152 @@
+// @vitest-environment jsdom
+import { act, screen, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { addr, fakeApi, renderApp, reply, route, status } from "../test-utils.tsx";
+
+const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn() }));
+const closed = vi.fn();
+const opened = () => ({ party: PARTY, close: closed });
+vi.mock("../bridge/account.ts", () => mocks);
+
+const PARTY = "bridge::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
+const env = { VITE_CHAIN_OPERATOR: "operator::1220" + "01".repeat(32), VITE_CHAIN_CONFIRMER: "confirmer::1220" + "02".repeat(32), VITE_CHAIN_GATEWAY: "gateway::1220" + "03".repeat(32), VITE_CHAIN_BUILDER: "builder::1220" + "04".repeat(32), VITE_CHAIN_ID: "770101", VITE_CANTON_PARTICIPANT: "PAR::p::1220" + "05".repeat(32), VITE_SITE_ORIGIN: ORIGIN };
+const faucet = { on: true, address: addr(0xfa), balance: "1000000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0, balanceBlock: 21 };
+const twins = { through: 3, registryService: null, vaults: [], twins: [], legs: [], canton: [{ token: addr(0xcc), symbol: "wCC", instrumentAdmin: DSO, instrumentId: "Amulet" }] };
+
+const handlers: Record<string, (v: unknown) => void> = {};
+function wallet() {
+  const w = { on: vi.fn((event: string, fn: (v: unknown) => void) => { handlers[event] = fn; }), removeListener: vi.fn(), request: vi.fn(async ({ method }: { method: string }) => (method === "eth_requestAccounts" ? [ME] : method === "eth_chainId" ? "0x" + status().chainId.toString(16) : null)) };
+  Object.defineProperty(window, "ethereum", { value: w, configurable: true, writable: true });
+}
+afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
+const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
+const signIn = async () => {
+  renderApp("/bridge");
+  await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+};
+
+describe("the Bridge page", () => {
+  it("is in the header, and says the bridge is not set up when the build has no settings", async () => {
+    fakeApi(route({}));
+    renderApp("/bridge");
+    expect(await screen.findByText("The bridge is not set up on this site yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Bridge" })).toHaveClass("active");
+  });
+
+  it("asks to connect, shows the site's origin beside the sign-in, and then shows the account as Ready with a short id", async () => {
+    setUp();
+    mocks.openAccount.mockResolvedValue(opened());
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    expect(await screen.findByText(ORIGIN)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(mocks.openAccount).toHaveBeenCalledWith(expect.anything(), ME, expect.objectContaining({ origin: ORIGIN, participant: env.VITE_CANTON_PARTICIPANT }), expect.any(Function), undefined, expect.any(Function));
+    expect(screen.getByTitle(PARTY)).toHaveTextContent("bridge::1220abab…ababab");
+    expect(screen.getByRole("button", { name: "Copy account id" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Get 1 tROME" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Your Canton account" }).textContent).not.toMatch(/party|allocation|vault|external/i);   // no technical names on the screen
+  });
+
+  it("gets test Canton Coin from the Canton Coin registry the explorer lists, and hides the button when this site has no faucet for it", async () => {
+    setUp();
+    mocks.openAccount.mockResolvedValue(opened());
+    mocks.getTestCoin.mockResolvedValueOnce("done").mockResolvedValueOnce("off");
+    await signIn();
+    await userEvent.click(await screen.findByRole("button", { name: "Get test Canton Coin" }));
+    expect(await screen.findByText("Test Canton Coin is in your account.")).toBeInTheDocument();
+    expect(mocks.getTestCoin).toHaveBeenCalledWith(expect.objectContaining({ party: PARTY }), DSO);
+    await userEvent.click(screen.getByRole("button", { name: "Get test Canton Coin" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Get test Canton Coin" })).toBeNull());
+  });
+
+  it("says in words when the person declines the signature, and lets them try again", async () => {
+    setUp();
+    mocks.openAccount.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: 4001 })).mockResolvedValue({ party: PARTY });
+    await signIn();
+    expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+  });
+
+  it("shows the page's own origin beside the sign-in", async () => {
+    setUp();
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    expect(await screen.findByText(location.origin)).toBeInTheDocument();
+  });
+
+  it("refuses to sign when the page is not on the address it is set up for, and says so in plain words", async () => {
+    setUp();
+    vi.stubEnv("VITE_SITE_ORIGIN", "https://ostia.example");   // the page is at the test page's address, not this one
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(`This page is open at ${location.origin}, but this bridge is set up for https://ostia.example. Signing is turned off here.`);
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(mocks.openAccount).not.toHaveBeenCalled();
+  });
+
+  it("says each failure in plain words: a known case in its own sentence, anything else in one general sentence", async () => {
+    setUp();
+    mocks.openAccount
+      .mockRejectedValueOnce(Object.assign(new Error("account says no"), { name: "AccountsError", kind: "conflict", status: 409, code: "waiting_for_signature" }))
+      .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x') at accounts.ts:41"))
+      .mockResolvedValue(opened());
+    await signIn();
+    expect(await screen.findByRole("alert")).toHaveTextContent("A step for your account from a moment ago is still open. Try again in 10 minutes.");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Nothing was lost. Try again in a moment."));
+    expect(screen.getByRole("alert").textContent).not.toMatch(/TypeError|Cannot read|accounts\.ts|waiting_for_signature/);
+  });
+
+  it("shows a failure of the test coin in plain words too", async () => {
+    setUp();
+    mocks.openAccount.mockResolvedValue(opened());
+    mocks.getTestCoin.mockRejectedValue(Object.assign(new Error("raw"), { name: "AccountsError", kind: "unavailable", status: 503 }));
+    await signIn();
+    await userEvent.click(await screen.findByRole("button", { name: "Get test Canton Coin" }));
+    expect(await screen.findByText("The bridge is busy or restarting. Try again in a moment.")).toBeInTheDocument();
+  });
+
+  it("lets the old account go when the wallet switches account, and shows nothing of it", async () => {
+    setUp();
+    mocks.openAccount.mockResolvedValue(opened());
+    await signIn();
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    expect(closed).toHaveBeenCalledTimes(1);   // its key is dropped and nothing more is done for it
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+  });
+
+  it("does not show Copied for another account after the wallet switches", async () => {
+    setUp();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn(async () => {}) }, configurable: true });
+    mocks.openAccount.mockResolvedValue(opened());
+    await signIn();
+    await userEvent.click(await screen.findByRole("button", { name: "Copy account id" }));
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(screen.queryByText("Copied")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy account id" })).toHaveTextContent("Copy");
+  });
+
+  it("ignores an account that finishes opening after the wallet has switched to another", async () => {
+    setUp();
+    let finish!: (account: unknown) => void;
+    mocks.openAccount.mockImplementation(() => new Promise((done) => { finish = done; }));
+    await signIn();
+    await waitFor(() => expect(mocks.openAccount).toHaveBeenCalled());
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await act(async () => { finish(opened()); });
+    expect(screen.queryByText("Ready")).toBeNull();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+});
