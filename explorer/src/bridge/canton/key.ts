@@ -8,10 +8,12 @@ export const OSTIA_CHAIN_ID = 770101;   // PINS CHAIN_ID: the wallet must be on 
 export const KEY_INFO = "ostia-bridge canton-key v1";
 export const DIFFERENT_SIGNATURES = "this wallet does not sign the same way twice, so it cannot hold a Canton account here";
 
-/** The site's origin, from the page's configuration (`VITE_SITE_ORIGIN`, such as https://ostia.devnet.romeprotocol.xyz): scheme and host, no path. */
+/** The site's origin, from the page's configuration (`VITE_SITE_ORIGIN`: the scheme and the host of the site, as `location.origin` says it, with no path). */
 export function originFromEnv(env: Record<string, string | undefined>): string {
-  const origin = env.VITE_SITE_ORIGIN;
-  if (!origin || !/^https?:\/\/[^/\s?#]+$/.test(origin)) throw new Error("VITE_SITE_ORIGIN is not set to an origin (https://host)");
+  const origin = env.VITE_SITE_ORIGIN ?? "";
+  let parsed: URL | null = null;
+  try { parsed = new URL(origin); } catch { /* not a URL */ }
+  if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== origin) throw new Error("VITE_SITE_ORIGIN is not set to an origin (the scheme and the host)");
   return origin;
 }
 

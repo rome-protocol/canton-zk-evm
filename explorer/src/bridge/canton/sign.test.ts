@@ -205,7 +205,8 @@ describe("the allocation's transaction, from the real Canton", () => {
       if (cur.sum.oneofKind !== "record") throw new Error("not a record");
       return cur.sum.record.fields.find((f) => f.label === label)!.value!;
     }, v);
-    const exercise = (tx.transaction!.nodes[0]!.versionedNode as unknown as { v1: { nodeType: { exercise: { chosenValue: Value } } } }).v1.nodeType.exercise;
+    const root = tx.transaction!.nodes.find((n) => n.nodeId === tx.transaction!.roots[0])!;
+    const exercise = (root.versionedNode as unknown as { v1: { nodeType: { exercise: { chosenValue: Value } } } }).v1.nodeType.exercise;
     const values = down(exercise.chosenValue, "allocation", "settlement", "meta", "values");
     const text = (s: string): Value => ({ sum: { oneofKind: "text", text: s } });
     values.sum = { oneofKind: "textMap", textMap: { entries: [{ key: "a", value: text("x") }, { key: "a", value: text("x") }] } };

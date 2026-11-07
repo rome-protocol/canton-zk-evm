@@ -60,8 +60,10 @@ function matches(v: Value, want: unknown, path: string, ignore: string[]): void 
     }
     case "record": {
       const fields = s.record.fields;
-      if (!isMap(want) || fields.length !== Object.keys(want).length) return refuse(`${at} has ${fields.length} fields, not what was asked`);
+      if (!isMap(want)) return refuse(`${at} is a record, not what was asked`);
       const keys = Object.keys(want);
+      // Daml leaves a trailing None field out of a record's encoding (the real transactions have no `cid` in a settlementRef): what the record leaves out must have been asked as none.
+      if (fields.length > keys.length || keys.slice(fields.length).some((k) => want[k] !== null)) return refuse(`${at} has ${fields.length} fields, not what was asked`);
       return fields.forEach((f, i) => {
         if (f.label !== keys[i]) refuse(`${at} has the field ${f.label} where ${keys[i]} was asked`);
         if (!f.value) refuse(`${sub(path, f.label)} is empty`);
