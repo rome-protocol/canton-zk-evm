@@ -48,7 +48,7 @@ class FakeLedger:
         if path in self.fail:
             return self.fail[path]
         if path == "/v2/version":
-            return 200, {"version": "3.7.1"}
+            return 200, {"version": "3.7.2"}
         if path == "/v2/state/connected-synchronizers":
             return 200, {"connectedSynchronizers": [{"synchronizerAlias": "da", "synchronizerId": SYNC}]}
         if path.endswith("/generate-topology"):
