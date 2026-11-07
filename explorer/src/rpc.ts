@@ -1,3 +1,5 @@
+import { timeoutSignal } from "./timeout.ts";
+
 /** A JSON-RPC answer that was an error: its message as reth worded it, and its code. */
 export class RpcError extends Error {
   readonly code: number;
@@ -8,7 +10,7 @@ export class RpcError extends Error {
 export async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
   let res: Response;
   try {
-    res = await fetch("/rpc", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    res = await fetch("/rpc", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: timeoutSignal() });
   } catch {
     throw new RpcError("The explorer's RPC cannot be reached right now.", 0);
   }

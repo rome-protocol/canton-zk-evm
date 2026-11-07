@@ -1,3 +1,5 @@
+import { timeoutSignal } from "../../timeout.ts";
+
 /** The twin registry's answer for a lock: the id of the lock, the vaults it knows (a hint), and the receiver's acceptance contract. */
 export interface LockParts { lockId: string; vaults?: string[]; acceptance?: string }
 
@@ -17,7 +19,7 @@ export function registryClient(baseUrl: string, fetcher: typeof fetch = fetch): 
     async lockParts(a) {
       let res: Response;
       try {
-        res = await fetcher(`${baseUrl}/twin/v1/lock-parts`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(a) });
+        res = await fetcher(`${baseUrl}/twin/v1/lock-parts`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(a), signal: timeoutSignal() });
       } catch {
         throw new LockRefused("The twin registry cannot be reached right now.", 0);
       }

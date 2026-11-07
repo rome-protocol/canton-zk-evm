@@ -11,6 +11,7 @@ describe("the twin registry client", () => {
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://r.example/twin-registry/twin/v1/lock-parts");
     expect(init.method).toBe("POST");
+    expect(init.signal).toBeInstanceOf(AbortSignal);   // a registry that does not answer stops the lock after 20 seconds
     expect(JSON.parse(init.body as string)).toEqual(ask);
   });
   it("refuses with 409 for a receiver that has not accepted twins", async () => {

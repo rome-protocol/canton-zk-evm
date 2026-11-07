@@ -1,5 +1,6 @@
 import type { Lifecycle } from "./block-times.ts";
 import type { FaucetInfo } from "./faucet/faucet-client.ts";
+import { timeoutSignal } from "./timeout.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
 export interface ApiStatus {
@@ -149,7 +150,7 @@ const UNREADABLE = "The explorer cannot read the chain right now.";
 async function call(path: string, accept: readonly number[]): Promise<{ status: number; body: unknown }> {
   let res: Response;
   try {
-    res = await fetch(path, { headers: { accept: "application/json" } });
+    res = await fetch(path, { headers: { accept: "application/json" }, signal: timeoutSignal() });
   } catch {
     throw new ApiError(UNREADABLE, 0);
   }

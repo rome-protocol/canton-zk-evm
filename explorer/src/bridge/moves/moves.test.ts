@@ -4,7 +4,7 @@ import type { ApiTx, BlockLeg } from "../../api.ts";
 import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
-import { createMove, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { createMove, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -167,7 +167,9 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "execution reverted: nope" });
 
     t = setup({ evm: fakeEvm({ allowance: 10n ** 30n }), txs: [final([], false)] });
-    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "The transaction failed on Ostia.", from: "proving" });
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: "The transaction failed on Ostia; nothing moved. Continue to try again." });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "start" });
+    expect(loadCheckpoint(t.store)!.tx).toBeUndefined();
   });
   it("L9: a failed approval returns the move to the start and pauses, and the person's continue tries it again", async () => {
     const t = setup({ evm: fakeEvm({ receipt: (n) => n !== 1 }), txs: [final([lockLeg()])] });
@@ -247,7 +249,8 @@ describe("move 2: a twin back, Canton to Ostia", () => {
   });
   it("fails when the release transaction fails on Ostia", async () => {
     const t = setup({ txs: [final([], false)] });
-    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "The transaction failed on Ostia." });
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("nothing moved") });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "evm", vault: VAULT });
   });
   it("refuses an amount finer than 10 decimals without signing on Canton", async () => {
     const t = setup();
@@ -726,5 +729,89 @@ describe("two tabs, sends still pending, and a move that is already done", () =>
     keep(store, { input: withdraw, stage: "evm", ref: "undated" });
     expect(keptMoves(store, undefined, now).map((c) => c.ref).sort()).toEqual(["recent", "undated"]);
     expect(listMoves(store).sort()).toEqual(["recent", "undated"]);
+  });
+});
+
+describe("a failed release, a drained vault, a lock re-read, and waits that run out", () => {
+  const redeem = { kind: "redeem", asset: TKA, amount: "2" } as const;
+  const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const deposit = { kind: "deposit", asset: WCC, amount: "1" } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
+  const call = withdrawCall(GATEWAY, WCC, 10n ** 10n, PARTY);
+  const reverted = final([], false);
+
+  it("M12: a release that reverted with its id unused goes back before the send and pauses; the person's continue sends it again and the move finishes", async () => {
+    const store = memoryStore();
+    keep(store, { input: redeem, stage: "sent", step: "release", nonce: 8, tx: OTHER });
+    const t = setup({ store, tx: async (h) => (h === OTHER ? reverted : final([leg({ kind: "payment", legId: releaseIdOf(VAULT, "ref-1") })])) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: "The transaction failed on Ostia; nothing moved. Continue to try again." });
+    expect(loadCheckpoint(store)).toMatchObject({ stage: "evm" });
+    expect(loadCheckpoint(store)!.tx).toBeUndefined();
+    expect(t.evm.calls).toEqual([]);
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["release"]);
+    expect(t.canton.calls).toEqual([]);
+  });
+  it("M12: a withdrawal that failed on Ostia (nothing burnt) is sent again on continue", async () => {
+    const t = setup({ tx: async (h) => (h === hashOf(1) ? reverted : made(call, [withdrawLeg()])) });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused", note: expect.stringContaining("nothing moved") });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw", "withdraw"]);
+  });
+  it("M12: the vault drained since the redeem was signed: the release comes from another vault, and its id and the saved vault follow", async () => {
+    const store = memoryStore();
+    keep(store, { input: redeem, stage: "evm" });
+    const two = { ...config, vaults: [VAULT, VAULT2] };
+    const t = setup({ store, config: two, evm: fakeEvm({ vaultBalance: { [VAULT]: 1n, [VAULT2]: 10n ** 21n } }), tx: async () => final([leg({ kind: "payment", legId: releaseIdOf(VAULT2, "ref-1") })]) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused" });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls).toEqual([{ name: "release", args: [VAULT2, "ref-1", TKA, ME, 2n * 10n ** 18n] }]);
+  });
+  it("M12: no vault holds the amount: nothing is sent, and the move stays kept to try again", async () => {
+    const store = memoryStore();
+    keep(store, { input: redeem, stage: "evm" });
+    const t = setup({ store, evm: fakeEvm({ vaultBalance: { [VAULT]: 1n } }) });
+    await t.move.resume();
+    expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("vault does not hold") });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("L20: the record is read again inside the lock: a tab that moved it on between the check and the lock leaves this tab nothing to send", async () => {
+    const store = memoryStore(), locks = memoryLocks(), evm = fakeEvm();
+    keep(store, { input: withdraw, stage: "start" });
+    const t = setup({ store, locks, evm, txs: [final([withdrawLeg()])] });
+    await t.move.resume();
+    // Another tab sends and saves its progress just before this tab gets the lock.
+    const racing: LocksLike = { request: async (name, o, cb) => { keep(store, { input: withdraw, stage: "sent", tx: OTHER, step: "withdraw", nonce: 7, call }); return locks.request(name, o, cb); } };
+    t.deps.locks = racing;
+    expect(await t.move.proceed()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(evm.calls).toEqual([]);
+  });
+  it("L20: the wallet's pending count is checked before every send, also at the start of a move", async () => {
+    const store = memoryStore();
+    keep(store, { input: deposit, stage: "evm" });
+    const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } }) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused" });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls).toEqual([]);
+    const fresh = setup({ evm: fakeEvm({ nonce: 7, wallet: { pending: 9, latest: 7 } }) });
+    expect(await fresh.move.start(withdraw)).toMatchObject({ phase: "paused", note: expect.stringContaining("speed it up or cancel it in your wallet") });
+    expect(fresh.evm.calls).toEqual([]);
+  });
+  it("L22: a wait on Canton that runs out keeps the move, and the person's continue waits again", async () => {
+    const t = setup({ txs: [final([leg({ kind: "payment", legId: releaseIdOf(VAULT, "ref-1") })])] });
+    let attempts = 0;
+    t.deps.canton.waitRedeem = async () => { if (++attempts === 1) throw new Waited("Canton has not shown the command yet."); };
+    const move = createMove(t.deps);
+    expect(await move.start(redeem)).toMatchObject({ phase: "failed", kept: true, reason: "Canton has not shown the command yet." });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "canton" });
+    expect(await move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.canton.calls).toEqual(["signRedeem"]);
+  });
+  it("L23: without Web Locks, abandon() says the browser cannot run the bridge", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "evm" });
+    const t = setup({ store, locks: null });
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("cannot run the bridge");
+    await expect(t.move.start(withdraw)).rejects.toThrow("cannot run the bridge");
   });
 });

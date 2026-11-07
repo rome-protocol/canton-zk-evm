@@ -30,6 +30,7 @@ describe("the account service client", () => {
     await client(f).holdings(key, PARTY);
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`/accounts/v1/holdings/${PARTY}`);   // the party is not escaped: the service checks the path as sent
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     const header = (init.headers as Record<string, string>)["X-Account-Signature"]!;
     expect(header.startsWith(`${NOW / 1000}.`)).toBe(true);
     expect(await verifies(header, "GET", `/accounts/v1/holdings/${PARTY}`, "")).toBe(true);

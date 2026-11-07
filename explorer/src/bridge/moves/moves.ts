@@ -19,13 +19,16 @@ export interface CantonAdapter {
   /** The user's Canton party id, worked out locally (no request). */
   party(): string;
   signRedeem(a: { asset: Address; amount: string; recipient: Address; ref: string }): Promise<void>;
-  /** Ends when the redeem request is open. After a reload it reads GET /accounts/v1/open/{party}. */
+  /**
+   * Ends when the redeem request is open. After a reload it reads GET /accounts/v1/open/{party}. It must give up after a time and throw `Waited`: the move keeps its record and
+   * the person's continue waits again. (Any other error is a failure of the step.)
+   */
   waitRedeem(ref: string): Promise<void>;
   /** A deposit's first Canton step: allocate the tokens under `label`. The move saves a checkpoint when it returns. */
   allocateDeposit(a: { instrument: { admin: string; id: string }; amount: string; label: string }): Promise<void>;
   /** Its second step: the deposit request, which uses that allocation. */
   signDeposit(a: { instrument: { admin: string; id: string }; amount: string; label: string; depositId: Hex; recipient: Address }): Promise<void>;
-  /** Ends when the deposit is on the ledger. After a reload it reads GET /accounts/v1/open/{party} and GET /accounts/v1/allocations/{party}. */
+  /** Ends when the deposit is on the ledger. After a reload it reads GET /accounts/v1/open/{party} and GET /accounts/v1/allocations/{party}. It must give up after a time and throw `Waited`, as `waitRedeem` does. */
   waitDeposit(depositId: Hex): Promise<void>;
 }
 
@@ -36,7 +39,8 @@ export interface LocksLike {
 export const webLocks = (): LocksLike | null => {
   try { return typeof navigator !== "undefined" && navigator.locks ? (navigator.locks as unknown as LocksLike) : null; } catch { return null; }
 };
-const NO_LOCKS = "This browser cannot keep a second tab or window from working on the same move (Web Locks is missing), so a move cannot run here.";
+const STILL_WAITING = "A transaction from this account is still waiting. This move continues once it is final. If it does not go through, speed it up or cancel it in your wallet.";
+const NO_LOCKS = "This browser cannot run the bridge: it has no Web Locks, which keep a second tab or window from working on the same move. Use a current browser.";
 
 export interface Deps {
   config: BridgeConfig;
@@ -72,8 +76,8 @@ export const randomRef = (): string => Array.from(crypto.getRandomValues(new Uin
 
 /** A refusal with the words the person reads. */
 export class Refused extends Error {}
-/** The explorer did not show the move final in time. The move is kept for a reload. */
-class Waited extends Refused {}
+/** A wait ran out: the explorer did not show the move final in time, or (thrown by `waitRedeem` and `waitDeposit`) Canton did not show the command. The move is kept, and continuing waits again. */
+export class Waited extends Refused {}
 /** The move stops here until the person continues. */
 class Pause extends Error {}
 /** The record is gone: another tab finished the move or gave it up. */
@@ -153,8 +157,8 @@ export function createMove(d: Deps): Move {
 
   const enough = async (asset: BridgeToken, base: bigint) => { if ((await d.evm.balanceOf(asset.address)) < base) throw new Refused(`You do not hold enough ${asset.symbol}.`); };
   /** The first vault that holds the amount: a redeem is released from it, so the Canton step is not signed for a vault that could not pay. */
-  async function pickVault(asset: BridgeToken, base: bigint): Promise<Address> {
-    for (const v of d.config.vaults) if ((await d.evm.balanceOf(asset.address, v)) >= base) return v;
+  async function pickVault(asset: BridgeToken, base: bigint, prefer?: Address): Promise<Address> {
+    for (const v of prefer ? [prefer, ...d.config.vaults.filter((x) => !same(x, prefer))] : d.config.vaults) if ((await d.evm.balanceOf(asset.address, v)) >= base) return v;
     throw new Refused(`The vault does not hold enough ${asset.symbol} to release this amount.`);
   }
 
@@ -191,6 +195,8 @@ export function createMove(d: Deps): Move {
    * When the wallet returns the hash, the transaction's real nonce is saved.
    */
   async function ask(name: Step, send: () => Promise<Hex>, call?: Call): Promise<Hex> {
+    // Before every send: the wallet itself says whether a transaction of the account is still pending. Never send over one.
+    if (await pendingInWallet(ck!)) throw new Pause(STILL_WAITING);
     go({ phase: "sending-evm", step: name });
     save({ stage: "wallet", step: name, call, nonce: await d.evm.nonce() });
     let tx: Hex;
@@ -239,7 +245,9 @@ export function createMove(d: Deps): Move {
           if (other && !same(other, tx)) { tx = other; save({ tx }); go({ phase: "proving", tx }); continue; }
           legMissing = true;
         } else if (t.success === false) {
-          throw new Refused("The transaction failed on Ostia.");
+          // The transaction failed and the id is not used (or a withdrawal has none): nothing moved. Go back before the send, so the person's continue can send it again.
+          save(reset());
+          throw new Pause("The transaction failed on Ostia; nothing moved. Continue to try again.");
         } else if (makesCall(t, ck!)) {
           legMissing = true; // exactly the saved call, final and successful: the move is done, only the explorer's leg is missing
         } else {
@@ -278,7 +286,7 @@ export function createMove(d: Deps): Move {
         await mined(h, "The transaction");
       } else if (await pendingInWallet(c)) {
         // The explorer shows only final blocks, but the wallet knows its own pending sends: never send any step again over one. The record stays at this step; the transaction is matched (by its call, or by the id) once it is final.
-        throw new Pause("A transaction from this account is still waiting. This move continues once it is final. If it does not go through, speed it up or cancel it in your wallet.");
+        throw new Pause(STILL_WAITING);
       }
       save(reset());
     }
@@ -320,7 +328,11 @@ export function createMove(d: Deps): Move {
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitRedeem(ref));
         gate("Canton has your redeem. Continue to ask your wallet for the release.");
-        return last(p, "release", () => d.evm.release(c.vault, ref, p.asset.address, c.to!, p.base));
+        // The vault may have been drained since the redeem was signed (or a release from it reverted): release from one that holds the amount. The release id follows the vault, so it is worked out again and saved.
+        const vault = await pickVault(p.asset, p.base, ck!.vault);
+        let q = p;
+        if (!same(vault, ck!.vault)) { save({ vault }); q = plan(ck!); }
+        return last(q, "release", () => d.evm.release(vault, ref, p.asset.address, c.to!, p.base));
       }
       case "deposit": {
         const a = { instrument: p.asset.instrument!, amount: tenDecimals(p.twin), label: ref };
@@ -351,22 +363,32 @@ export function createMove(d: Deps): Move {
    * Runs one job at a time in this tab, and one at a time across tabs: the move's lock is held for the whole run and is never waited for. `prep` gives the record and whether the person has said go
    * to the next send. Where there are no Web Locks nothing runs.
    */
-  function run(prep: () => Promise<{ c: Checkpoint; confirmed: boolean }>): Promise<MoveState> {
+  function run(prep: () => Promise<{ c: Checkpoint; confirmed: boolean; expect?: Checkpoint }>): Promise<MoveState> {
     if (state.phase === "failed" || state.phase === "final" || state.phase === "paused") go({ phase: "idle" });
     ck = null;
     const job = (async () => {
       try {
-        const { c, confirmed } = await prep();
+        const { c, confirmed, expect } = await prep();
         ck = c;
         if (d.locks === null) throw new Pause(NO_LOCKS);
-        const held = await d.locks.request("bridge-move:" + c.ref, { ifAvailable: true }, async (lock) => {
-          if (lock === null) return false;
-          await execute(c, confirmed);
-          return true;
+        const outcome = await d.locks.request("bridge-move:" + c.ref, { ifAvailable: true }, async (lock) => {
+          if (lock === null) return "busy" as const;
+          let record = c, go_ = confirmed;
+          if (expect !== undefined) {
+            // The record is read again here, with the lock held (another tab may have moved it on since this tab last looked): a send happens only if it is still the record this tab showed.
+            const fresh = loadCheckpoint(d.store, c.ref);
+            if (fresh === null) return "gone" as const;
+            go_ = confirmed && JSON.stringify(fresh) === JSON.stringify(expect);
+            record = fresh;
+            ck = fresh;
+          }
+          await execute(record, go_);
+          return "done" as const;
         });
-        if (!held) throw new Pause("This move is being worked on in another tab or window. Wait until it stops there, then continue here.");
+        if (outcome === "gone") throw new Gone();
+        if (outcome === "busy") throw new Pause("This move is being worked on in another tab or window. Wait until it stops there, then continue here.");
       } catch (e) {
-        if (e instanceof Gone) { /* another tab finished the move or gave it up: nothing is left to do */ }
+        if (e instanceof Gone) ck = null; // another tab finished the move or gave it up: nothing is left to do
         else if (e instanceof Pause) go({ phase: "paused", note: e.message });
         else {
           const known = e instanceof Refused || e instanceof AmountError || e instanceof LockRefused;
@@ -388,8 +410,8 @@ export function createMove(d: Deps): Move {
     subscribe(fn) { subs.add(fn); return () => { subs.delete(fn); }; },
     start(input) {
       if (running || !["idle", "final", "failed"].includes(state.phase)) return Promise.reject(new Refused("Another move is not finished yet."));
-      if (keptMoves(d.store, owner()).length > 0) return Promise.reject(new Refused("An earlier move of this account is kept. Continue it, or give it up, before starting another."));
       if (d.locks === null) return Promise.reject(new Refused(NO_LOCKS));
+      if (keptMoves(d.store, owner()).length > 0) return Promise.reject(new Refused("An earlier move of this account is kept. Continue it, or give it up, before starting another."));
       return run(async () => {
         const ref = d.newRef();
         if (ref.length === 0 || ref.length > 128) throw new Refused("The move could not be given an id.");
@@ -410,12 +432,8 @@ export function createMove(d: Deps): Move {
       if (running) return running;
       const c0 = ck;
       if (!c0 || !(state.phase === "paused" || (state.phase === "failed" && state.kept))) return Promise.resolve(state);
-      return run(async () => {
-        // The record is shared by every tab: read it again. If another tab moved it on (or finished it), this tab only shows where it is; it sends only what the record it just read is waiting to send.
-        const fresh = loadCheckpoint(d.store, c0.ref);
-        if (fresh === null) throw new Gone();
-        return { c: fresh, confirmed: JSON.stringify(fresh) === JSON.stringify(c0) };
-      });
+      // The record is shared by every tab, so it is read again once the move's lock is held (in `run`): if another tab moved it on, this tab only shows where it is.
+      return run(async () => ({ c: c0, confirmed: true, expect: c0 }));
     },
     kept: () => keptMoves(d.store, owner()),
     async abandon(ref) {
