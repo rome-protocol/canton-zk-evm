@@ -82,3 +82,9 @@ GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000
 # index). tests/network_static.sh checks it is pinned by digest.
 POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
 POSTGRES_IMAGE_ID=sha256:aab18c983342019900e3a4a617c63432fd5e34449323ab04187a8e8c1ee3dbad
+# The chain package 0.5.0 is live (DevNet pins it) and was built against ostia-twin 0.1.0, so daml/build.sh builds that twin from this commit
+# (the last one whose apps/twin is 0.1.0) while the chain package is 0.5.0. The daml workflow rebuilds both on the pinned toolchain and checks
+# that the package ids are these: Canton refuses a second package of the same name and version with another id.
+TWIN_V0_1_0_COMMIT=4bde6117d2b78bc4ea24b39d11bdcab6bc190e9b
+PACKAGE_ID_TWIN_V0_1_0=c776aec6d802991f7867bd02c42ba50bb03930f44aaed8d532ef28270cba6d54
+PACKAGE_ID_V0_5_0=191b0f83dec1a72187ba273f31404c2b65360c69531543be3c6899fbf7319da5

@@ -8,6 +8,8 @@
                                         (finalized block), unless the admin has them already: a second run changes nothing and prints the existing ones. Prints the contract id and the fields
   twin.py disclosed <token> <file>      writes the TwinRules of that token as one disclosed contract, {templateId, contractId, createdEventBlob, synchronizerId}, read as the gateway
                                         party with the created-event blob, to <file> (mode 0644): the file that network/external/setup.py --twin-rules-disclosed reads
+  twin.py accept <u|v>                  the party signs a TwinAcceptance of the gateway party (the twin's admin), unless it has one already: "I accept twins", which a lock for the party
+                                        needs (the builder and the registry service check it). Prints whether it was made and the contract id
   twin.py balances <token> [u|v|<party id> ...]
                                         each party's TwinHolding total of the instrument erc20:<token> of the gateway party (U and V if none is named); the twin's supply (every
                                         holding of the instrument that the admin sees: the holdings and the amounts locked in allocations); balanceOf(vault) at the finalized block
@@ -52,11 +54,11 @@ MAX_CODE_BYTES = 0xFFFF   # what PUSH2 can say; a contract is never larger than 
 VAULT_GAS = 800_000       # 53,000 + 200 per byte of code is about 360,000 for the vault, and the transaction's own data on top
 RECEIPT_SECONDS = 600
 TWIN = "#ostia-twin:Twin.Twin:"
-TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION = TWIN + "TwinRules", TWIN + "TwinHolding", TWIN + "TwinAllocation"
+TWIN_RULES, TWIN_HOLDING, TWIN_ALLOCATION, TWIN_ACCEPTANCE = TWIN + "TwinRules", TWIN + "TwinHolding", TWIN + "TwinAllocation", TWIN + "TwinAcceptance"
 TWIN_DECIMALS = 10   # every twin has 10 decimals, like a Daml Decimal (apps/twin/README.md, "Amounts")
 TWIN_LIMIT = 10**27  # in units of 10^-10: 10^17 whole units, the most a Decimal of the twin holds
 ADMIN = "gateway"   # the Canton party that is the twin's admin; the operator's user acts for it
-COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "lock": ("operator",), "send": ("demo", "operator"), "redeem": ("demo", "operator")}   # the roles whose tokens a command reads; deploy-vault touches no Canton
+COMMAND_ROLES = {"rules": ("operator",), "disclosed": ("operator",), "balances": ("operator",), "accept": ("demo", "operator"), "lock": ("operator",), "send": ("demo", "operator"), "redeem": ("demo", "operator")}   # the roles whose tokens a command reads; deploy-vault touches no Canton
 SELECTOR_DECIMALS = "313ce567"
 READ_AT = "finalized"   # what Canton has committed; a token that is not there yet is not a token to make a twin of
 WAIT_SECONDS = 600   # the longest that a command waits for Canton to follow Ostia (a lock's mint, a release's burn)
@@ -151,6 +153,18 @@ def rules(net: canton.Network, address: str) -> dict:
     fields = found[0]["createArgument"]
     return {"created": created, "contractId": found[0]["contractId"], "admin": fields["admin"], "token": fields["token"], "name": fields["name"],
             "symbol": fields["symbol"], "decimals": int(fields["decimals"]), "instrument": "erc20:" + fields["token"]}
+
+
+def accept(net: canton.Network, who: str) -> dict:
+    """U or V signs a TwinAcceptance for the gateway party, once; a second run changes nothing."""
+    if who not in ("u", "v"):
+        raise SystemExit(f"the party that accepts is u or v, not {who!r}")
+    party, admin = net.party(who), net.party(ADMIN)
+    found = lambda: [e for e in net.template("operator", ADMIN, TWIN_ACCEPTANCE) if e["createArgument"]["party"] == party and e["createArgument"]["admin"] == admin]
+    created = not found()
+    if created:
+        net.submit("users", [who], {"CreateCommand": {"templateId": TWIN_ACCEPTANCE, "createArguments": {"party": party, "admin": admin}}})
+    return {"created": created, "party": party, "contractId": net.wait_for("the acceptance", found)[0]["contractId"]}
 
 
 def disclosed(net: canton.Network, address: str, out: str) -> dict:
@@ -367,6 +381,9 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
     answer = post_json(registry_url_of(registry_url) + "/twin/v1/lock-parts", {"receiver": party, "ref": ref, "token": token})
     if answer.get("lockId") != expected:
         raise canton.Fail(f"the registry gave the lock id {answer.get('lockId')!r}, not the {expected} that lock,{party},{ref} makes: nothing was sent")
+    acceptance = answer.get("acceptance")   # the receiver's TwinAcceptance, which the builder reads before it takes the lock
+    if not isinstance(acceptance, str) or not acceptance:
+        raise canton.Fail("the registry gave no acceptance contract for the receiver: nothing was sent")
     gateway, erc20 = evm.gateway_address(), evm.address_of("0x" + token, "the token")
     approved = send_checked(who, erc20, "approve(address,uint256)", [gateway, base], evm.APPROVE_GAS, "the approval")
     paid_tx = send_checked(who, gateway, "pay(bytes32,address,address,uint256)", [evm.id_of(expected), erc20, evm.address_of("0x" + paid, "the vault"), base], evm.PAY_GAS, "the lock payment")
@@ -382,7 +399,7 @@ def lock(net: canton.Network, who: str, address: str, amount: str, receiver: str
     # the finalized block next must see the payment, so the command returns when the block is final.
     evm.wait_finalized(paid_tx["tx"], WAIT_SECONDS)
     return {"tx": paid_tx["tx"], "block": paid_tx["block"], "approveTx": approved["tx"], "lockId": expected, "vault": "0x" + paid, "receiver": party,
-            "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
+            "acceptance": acceptance, "holding": holding["contractId"], "amount": holding["createArgument"]["amount"]}
 
 
 def holdings_of(net: canton.Network, who: str, token: str) -> list:
@@ -545,6 +562,8 @@ def main(argv: list) -> dict:
             net.check_roles(COMMAND_ROLES[cmd[0]])
         if cmd == ["rules"] and n == 2:
             return rules(net, argv[1])
+        if cmd == ["accept"] and n == 2:
+            return accept(net, argv[1])
         if cmd == ["disclosed"] and n == 3:
             return disclosed(net, argv[1], argv[2])
         if cmd == ["balances"] and n >= 2:

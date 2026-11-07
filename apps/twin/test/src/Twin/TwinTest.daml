@@ -528,3 +528,26 @@ testSixDecimalTwin = do
   length r.senderChangeCids === 1
   _ <- submit f.admin $ exerciseCmd rules6 Burn with owner = f.alice; holdingCids = r.senderChangeCids; amount = 2.5; reference = "release-6"
   pure ()
+
+-- A party accepts twins alone, the admin sees the acceptance, nobody else makes or archives it, and the party takes it back.
+testTwinAcceptance : Script ()
+testTwinAcceptance = do
+  f <- setup
+  -- the admin cannot accept for Alice, and Alice cannot accept for Bob
+  submitMustFail f.admin $ createCmd TwinAcceptance with party = f.alice; admin = f.admin
+  submitMustFail f.alice $ createCmd TwinAcceptance with party = f.bob; admin = f.admin
+  a <- submit f.alice $ createCmd TwinAcceptance with party = f.alice; admin = f.admin
+  seen <- query @TwinAcceptance f.admin
+  map (\(_, t) -> (t.party, t.admin)) seen === [(f.alice, f.admin)]
+  bobSees <- query @TwinAcceptance f.bob
+  length bobSees === 0
+  -- only the party takes it back (Withdraw, or the archive that every signatory has)
+  submitMustFail f.admin $ exerciseCmd a Withdraw
+  submitMustFail f.bob $ exerciseCmd a Withdraw
+  submit f.alice $ exerciseCmd a Withdraw
+  noneSeen <- query @TwinAcceptance f.admin
+  length noneSeen === 0
+  b <- submit f.alice $ createCmd TwinAcceptance with party = f.alice; admin = f.admin
+  submit f.alice $ archiveCmd b
+  goneAgain <- query @TwinAcceptance f.admin
+  length goneAgain === 0

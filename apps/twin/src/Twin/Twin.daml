@@ -35,6 +35,21 @@ twinMeta token name symbol decimals = Metadata with
 metaKey : Text -> Text
 metaKey k = "romeprotocol.com/" <> k
 
+-- | "I accept twins": a standing acceptance by a party that wants to receive twins of this admin, made once, when its account is
+-- opened. The template is in this package, so a party's participant can only have the contract if it has vetted the package, which
+-- is what a mint to the party needs. The builder and the registry service check it before they take a lock for the party (both read as
+-- the admin, who observes it). The party can take it back at any time (`Withdraw`, or the archive every signatory has).
+template TwinAcceptance with
+    party : Party
+    admin : Party
+  where
+    signatory party
+    observer admin
+
+    choice Withdraw : ()
+      controller party
+      do pure ()
+
 -- | A holding of the twin. Only the admin signs; the owner sees it and nothing more is needed to receive it.
 template TwinHolding with
     admin : Party

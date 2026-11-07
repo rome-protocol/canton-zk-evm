@@ -2,7 +2,7 @@
 
 The Canton twin of an ERC-20 token that an Ostia vault holds: a CIP-0056 token (token standard V1) with the instrument id `erc20:<token address>` (40 lowercase hex digits, no `0x`) and 10 decimals, administered by the twin's admin party. On DevNet the admin is the gateway party. This is the Canton side of moving an ERC-20 to Canton: the vault and the chain's legs for it are separate.
 
-The package is `ostia-twin` 0.1.0 and depends only on the Canton token standard packages in [`../../daml/dars`](../../daml/dars), as [`apps/otc`](../otc) does. It does not depend on the `canton-zk-evm` package.
+The package is `ostia-twin` 0.2.0 and depends only on the Canton token standard packages in [`../../daml/dars`](../../daml/dars), as [`apps/otc`](../otc) does. It does not depend on the `canton-zk-evm` package.
 
 ## One-to-one with an ERC-20
 
@@ -18,6 +18,7 @@ The package is `ostia-twin` 0.1.0 and depends only on the Canton token standard 
 |---|---|---|
 | `TwinHolding` | the admin (the owner observes) | an amount of the twin owned by a party |
 | `TwinAllocation` | the admin (sender, receiver and executor observe) | the sender's amount held for a settlement; also a locked `Holding` of the sender. Executing it makes the receiver's holding; withdraw and cancel give the sender's back |
+| `TwinAcceptance` | the party (the admin observes) | "I accept twins": a party signs it once, when its account is opened. It exists only on a participant that has vetted this package, but it does not by itself show that a twin the chain mints will be accepted: the receiver's participant must also have the twin package version the chain mints with (network/README.md, "A new version of the package on a chain that runs", vets both versions). The registry service looks for it before it announces a lock for the party, and the builder reads that one contract before it takes the lock. `Withdraw` (or the archive every signatory has) takes it back |
 | `TwinRules` | the admin | one per ERC-20 (its address, name, symbol and decimals): the transfer factory, the allocation factory, `Mint` and `Burn`. Wallets get it by explicit disclosure |
 
 ## Mint and burn (what the chain's `Advance` calls)
@@ -28,6 +29,10 @@ Both are non-consuming choices on `TwinRules` with the admin as the only control
 - `Burn with owner : Party; holdingCids : [ContractId Holding]; amount : Decimal; reference : Text` archives the owner's holdings of this twin (at least one; each is fetched as a `TwinHolding` of this admin and token, so an allocation, a locked amount or a contract of any other template that reports the instrument is refused; all the owner's), and returns the change (the total less `amount`) as one new holding, or `None` when nothing is left. It is refused when the holdings are worth less than `amount`.
 
 Replays are not guarded here: a second `Mint` with the same `reference` mints again. The chain's own record of the payment (the legs it consumes once) is the guard.
+
+## Accepting twins
+
+A lock mints a twin to a receiver party, and Canton refuses that mint when the receiver's participant has not vetted this package. So before a lock the receiver signs a `TwinAcceptance` naming the twins' admin (0.2.0 adds the template and nothing else; 0.1.0 contracts carry over). The admin is its only observer, so whoever reads as the admin (the builder, with `--read-as <gateway>`, and the registry service) sees every acceptance. A lock for a party with no active acceptance is refused by the registry service (409) and left out of the block by the builder.
 
 ## Amounts
 
@@ -47,6 +52,8 @@ apps/twin/test.sh    # builds, then runs the Daml Script tests in apps/twin/test
 ```
 
 CI runs it in [`twin.yml`](../../.github/workflows/twin.yml). The tests cover the instrument and metadata, the balance, a transfer completed at once (change, merging, a split, the smallest amount), allocation and execution (DvP: a single leg, the exclusive `settleBefore`, and two legs of two twins settled in one transaction, which fail together when one is withdrawn), withdraw and cancel, mint and burn by the admin alone, every refused case (including holdings of other templates that report the instrument, and a wrong expected admin on every factory choice), a 6-decimal twin, and the base-unit conversions.
+
+Two versions of the package are in use. The chain package 0.5.0 is built against `ostia-twin` 0.1.0 and mints twins as 0.1.0 contracts, while the acceptance template is in 0.2.0, so a participant that hosts twin receivers vets both. `daml/build.sh` builds 0.1.0 from its source commit (`TWIN_V0_1_0_COMMIT` in `PINS`) and `apps/twin/build.sh` builds the current source; `dist/` then holds `ostia-twin-0.1.0.dar` and `ostia-twin-0.2.0.dar`, and `network/external/setup.py` puts both on a participant (`--twin-dar`, once for each) before the chain DAR. CI checks that 0.2.0 is a valid upgrade of 0.1.0.
 
 ## Registry service
 

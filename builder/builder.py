@@ -42,6 +42,7 @@ TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
 CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
 REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
 TWIN_RULES = "#ostia-twin:Twin.Twin:TwinRules"
+ACCEPTANCE_TIMEOUT = 10   # seconds the one read of a lock's TwinAcceptance may take
 NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
@@ -64,6 +65,10 @@ class HeadMismatch(BuilderError):
 
 class ForeignHead(HeadMismatch):
     """Canton's head is a block reth does not have: nobody here can say what to build on, so the producer stops."""
+
+
+class ReaderMissing(BuilderError):
+    """--twin-registry-url is set but --read-as does not give the chain's gateway: no acceptance can be read, so a producer stops."""
 
 
 class ProvingError(BuilderError):
@@ -103,7 +108,6 @@ class Config:
     twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
     registries: dict = field(default_factory=dict)   # --registry ADMIN=URL (CZE_TOKEN_REGISTRIES): the token registry of each instrument admin whose legs get a choice context
     registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the file with the bearer token that registry wants, read again for each request
-    party_token_file: str = ""        # --party-token-file (CZE_PARTY_TOKEN_FILE): a file with the bearer token of a user that may read party details; used only for GET /v2/parties/<party>, read again for each lookup; empty: the builder's own token
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -269,8 +273,8 @@ def registry_guard(who: str):
 
 
 def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
-    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
-    or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
+    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref",
+    "acceptance"} (the contract id of the receiver's TwinAcceptance, or None when the answer names none), or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
     the headers and the body) by `deadline` seconds, by a timer and not by the socket's timeout, which a server that sends a byte now and then
     defeats; when it runs out the connection is closed under the request. The answer is read to at most REGISTRY_MAX_BODY bytes, a redirect is
     not followed, and the receiver must be a party id and the ref text of at most REGISTRY_MAX_FIELD bytes. All the requests of one reader (the
@@ -291,7 +295,10 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             raise ValueError("not {receiver, ref}")
         if not 0 < len(body["ref"].encode("utf-8")) <= REGISTRY_MAX_FIELD:   # a lone surrogate cannot be encoded: a ValueError
             raise ValueError("the ref is empty or too long")
-        return {"receiver": body["receiver"], "ref": body["ref"]}
+        accepted = body.get("acceptance")
+        if accepted is not None and (not isinstance(accepted, str) or not 0 < len(accepted.encode("utf-8")) <= REGISTRY_MAX_FIELD):
+            raise ValueError("the acceptance is not a contract id")
+        return {"receiver": body["receiver"], "ref": body["ref"], "acceptance": accepted}
 
     @registry_guard("twin registry service")
     def read(lock_id: str):
@@ -987,30 +994,14 @@ class Ledger:
         """The token standard's holdings that the builder can see: each one's contract id and view (owner, instrument, amount, lock)."""
         return [{"contractId": cid, **view} for cid, view in self.interface_views(HOLDING) if view]
 
-    def party_known(self, party: str) -> bool:
-        """Whether the participant knows the party (`GET /v2/parties/<party>`): a party it does not know cannot be a stakeholder of a contract in the
-        Advance. An error other than "no such party" is raised."""
-        own = not self.cfg.party_token_file   # the party lookup may want a token of its own: on a participant with login it needs a participant admin or identity provider admin
-        headers = self.auth if own else {"authorization": "Bearer " + party_token(self.cfg.party_token_file)}
-        request = urllib.request.Request(f"{self.cfg.ledger_url}/v2/parties/{urllib.parse.quote(party, safe='')}", headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=60) as r:
-                body = json.load(r)
-        except urllib.error.HTTPError as e:
-            e.close()
-            if e.code == 404:
-                return False
-            if own and e.code in (401, 403):
-                raise OSError(f"HTTP {e.code}; give the builder --party-token-file, a token that may read party details") from e
-            raise
-        details = body.get("partyDetails") if isinstance(body, dict) else None
-        return isinstance(details, list) and any(isinstance(d, dict) and d.get("party") == party for d in details)
-
     def head(self) -> dict:
         # Parties given with --read-as may let the builder see other builders' chains; only the ones it builds count.
         found = [c for c in self.active(CHAIN) if c.get("builder") == self.cfg.party]
         if len(found) != 1:   # the chain has exactly one state contract
             raise BuilderError(f"expected one active ZkChain contract built by {self.cfg.party}, found {len(found)}")
+        gateway = found[0]["gateway"]
+        if self.cfg.twin_registry_url and gateway not in self.readers():   # checked on the first read that succeeds: an unreachable Canton is retried as ever
+            raise ReaderMissing(f"--twin-registry-url needs the builder to read as the chain's gateway party ({gateway}): add --read-as {gateway}")
         return found[0]
 
     def advance(self, chain: dict, argument: dict, command_id: str | None = None, disclosed: list | None = None) -> dict:
@@ -1359,7 +1350,7 @@ class Canton:
         self.derived_ids = derived_ids   # package 0.5.0 or later settles only a request whose id is derived from its depositor and a label
         self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
-        self.parties: dict = {}   # party -> whether the participant knows it (a lock's receiver)
+        self.acceptances_read: set = set()   # (contract id, receiver) of the TwinAcceptance contracts that were read and count, for this block
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -1419,11 +1410,50 @@ class Canton:
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
 
-    def party_known(self, party: str) -> bool:
-        """Whether the participant knows the party; asked once a block."""
-        if party not in self.parties:
-            self.parties[party] = self.ledger.party_known(party)
-        return self.parties[party]
+    def check_acceptance(self, receiver: str, cid) -> None:
+        """Raises NoCantonSide unless `cid` is an active TwinAcceptance of `receiver` for the chain's gateway: one contract, read as the gateway, so that
+        what the block asks of the participant does not grow with what others create. The registry service's word is not believed; any failure of the
+        read (an HTTP error of any status, a timeout, an answer that cannot be used) leaves out this lock only."""
+        if not isinstance(cid, str) or not cid:
+            raise NoCantonSide("the twin registry service gave no acceptance contract for the receiver")
+        if (cid, receiver) in self.acceptances_read:
+            return
+        gateway = self.chain["gateway"]
+        flt = {gateway: {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}}
+        body = {"contractId": cid, "eventFormat": {"filtersByParty": flt, "verbose": False}}
+        try:
+            found = post_json(self.ledger.cfg.ledger_url + "/v2/events/events-by-contract-id", body, self.ledger.auth, timeout=ACCEPTANCE_TIMEOUT)
+        except urllib.error.HTTPError as e:
+            try:
+                text = e.read(4096).decode("utf-8", "replace")
+            except Exception:
+                text = ""
+            finally:
+                e.close()
+            if any(code in text for code in NO_TEMPLATE_CODES):
+                raise NoCantonSide("the twin acceptance template is not on this participant") from None
+            if e.code == 404:
+                raise NoCantonSide("the acceptance contract is not found by the participant") from None
+            raise NoCantonSide(f"the acceptance contract cannot be read: the participant answered HTTP {e.code}") from None
+        except (OSError, http.client.HTTPException) as e:   # a timeout, a refused or dropped connection
+            raise NoCantonSide(f"the acceptance contract cannot be read: {bounded_text(e)}") from None
+        except (ValueError, RecursionError):
+            raise NoCantonSide("the participant gave an answer for the acceptance contract that is not JSON") from None
+        try:
+            created = found["created"]["createdEvent"] if isinstance(found, dict) and found.get("created") else None
+            archived = isinstance(found, dict) and bool(found.get("archived"))
+            if created is None:
+                raise NoCantonSide("the acceptance contract is not found by the participant")
+            if archived:
+                raise NoCantonSide("the acceptance contract is archived")
+            template, arguments = str(created["templateId"]).split(":"), created["createArgument"]
+            if created["contractId"] != cid or template[-2:] != ["Twin.Twin", "TwinAcceptance"] or created["packageName"] != "ostia-twin":
+                raise NoCantonSide("the contract the registry service named is not a TwinAcceptance")
+            if arguments["party"] != receiver or arguments["admin"] != gateway:
+                raise NoCantonSide("the acceptance contract is not the receiver's acceptance of the chain's gateway")
+        except (KeyError, TypeError, AttributeError):
+            raise NoCantonSide("the participant gave an answer for the acceptance contract that cannot be used") from None
+        self.acceptances_read.add((cid, receiver))
 
     @functools.cached_property
     def holdings(self): return self.ledger.active_holdings()
@@ -1818,7 +1848,8 @@ def pinned_for(leg: LegEvent, canton: Canton) -> tuple:
 
 
 def lock_leg(leg: LegEvent, canton: Canton) -> dict:
-    """A lock: the twin of the token is pinned, the amount converts exactly, and the registry service has announced the parts of the id."""
+    """A lock: the twin of the token is pinned, the amount converts exactly, the registry service has announced the parts of the id, and the receiver's
+    TwinAcceptance (the contract the parts name, which the builder reads itself) is active."""
     rules, decimals = pinned_for(leg, canton)
     if twin_units(leg.amount, decimals) is None:
         raise NoCantonSide("the lock's amount is not exact in the twin's 10 decimals")
@@ -1834,12 +1865,7 @@ def lock_leg(leg: LegEvent, canton: Canton) -> dict:
         made = None
     if made != leg.id:
         raise NoCantonSide("the parts the twin registry service gave do not make the lock's id")
-    try:
-        known = canton.party_known(receiver)
-    except (OSError, ValueError, http.client.HTTPException) as e:
-        raise NoCantonSide(f"the participant cannot say whether the lock's receiver is a Canton party: {e}") from e
-    if not known:
-        raise NoCantonSide("the lock's receiver is not a known Canton party")
+    canton.check_acceptance(receiver, parts.get("acceptance"))
     return {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
 
 
@@ -2881,18 +2907,6 @@ def registry_token(path: str) -> str:
     return token
 
 
-def party_token(path: str) -> str:
-    """The bearer token in the party token file, read now (a token that is renewed in its file needs no restart). A file that cannot be read or does not
-    hold one token is a ValueError, which leaves the lock out for this block. The token is never printed."""
-    try:
-        token = Path(path).read_text().strip()
-    except (OSError, ValueError) as e:
-        raise ValueError("the party token file cannot be read") from e
-    if not token or any(c in token for c in "\r\n\0"):
-        raise ValueError("the party token file does not hold one token")
-    return token
-
-
 def on_this_machine(url) -> bool:
     """Whether a registry URL's host is this machine: localhost, 127.0.0.1 or ::1, or a name under .localhost (RFC 6761) whose every address is loopback.
     A name that does not resolve, or resolves to any other address, is not."""
@@ -3193,6 +3207,9 @@ class Producer:
                     self.control, self.hunt, self.proof_kept = None, None, set()
                 else:
                     self.proving_failed(e, now)
+            if isinstance(e, ReaderMissing):   # a wrong --read-as: retrying cannot help, so the producer ends, with its status naming why
+                self.fatal = str(e)
+                self.stop.set()
             self.fail(failure_report(e))
             return
         failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
@@ -3792,7 +3809,7 @@ class Pipeline(Producer):
                     self.control, self.hunt, self.proof_kept = None, None, set()
                 else:
                     self.proving_failed(e, now)
-            if isinstance(e, ForeignHead):   # nothing here knows what to build on: the producer ends, with its status naming why
+            if isinstance(e, (ForeignHead, ReaderMissing)):   # nothing here knows what to build on, or the --read-as is wrong: the producer ends, with its status naming why
                 self.fatal = str(e)
                 self.stop.set()
             self.fail(failure_report(e))
@@ -4204,7 +4221,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--registry-token-file", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
                     help="a file with the bearer token that the registry of ADMIN wants (repeatable, also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated); sent to that registry only")
     ap.add_argument("--party-token-file", metavar="FILE", default=os.environ.get("CZE_PARTY_TOKEN_FILE", ""),
-                    help="a file with the bearer token of a user that may read party details (also CZE_PARTY_TOKEN_FILE); used only to ask the participant whether a lock's receiver is a Canton party (GET /v2/parties/<party>), read again for each lookup. On a participant with login that lookup needs a participant admin or identity provider admin; default: the builder's own token")
+                    help="no longer used (also CZE_PARTY_TOKEN_FILE): a lock's receiver is checked by its TwinAcceptance, not by a party lookup; the option is still accepted so that start scripts keep working")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -4300,12 +4317,6 @@ def main() -> int:
         if cfg.registries and args.unlabelled_deposits:
             raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
         cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
-        if args.party_token_file:
-            try:
-                party_token(args.party_token_file)
-            except ValueError as e:
-                raise BuilderError(f"the party token file {args.party_token_file} must hold one token that can be read") from e
-            cfg.party_token_file = args.party_token_file
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
