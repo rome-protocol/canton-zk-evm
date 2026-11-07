@@ -63,8 +63,41 @@ export function plainWords(e: unknown): string {
 /** A message a wallet or a helper wrote as text (not an error): shown only when it reads as a plain sentence, else the general one. */
 export function plainText(message: string | null | undefined): string | null {
   if (!message) return null;
-  const sentence = message.length <= 140 && /^[A-Z0-9][^{}\[\]<>_\\]*[.!?]$/.test(message) && !/0x[0-9a-f]{4}|\b[A-Z]{3,}_[A-Z]|\bat \S+:\d+|Error:/.test(message);
+  const sentence = message.length <= 140 && /^[A-Z0-9][^{}\[\]<>_\\]*[.!?]$/.test(message) && !/0x[0-9a-f]{4}|\b[A-Z]{3,}_[A-Z]|\bat \S+:\d+|Error:|\b(?:EIP|ERC)-\d+/.test(message);
   return sentence ? message : GENERIC;
+}
+
+/** What the moves library says in its own sentences, where a sentence names a part of the bridge, in words for the person. The first match wins. */
+const MOVE_SENTENCES: [RegExp, string][] = [
+  [/reject|denied|declin/i, "You declined it in your wallet."],
+  [/not a Canton party id/, "That Canton account is not valid."],
+  [/Wrapping the chain's coin/, "Moving this coin is not set up here. Nothing was moved."],
+  [/does not hold enough .* to release/, "The bridge cannot pay out this much right now. Try a smaller amount."],
+  [/registry gave a lock id|deposit's id is not/, "The bridge sent back something that is not what was asked for, so nothing was sent. Try again."],
+  [/Web Locks/, "This browser cannot run the bridge. Use a current browser."],
+  [/another wallet account or Canton party/, "This move was started with another account. Switch back to it to continue, or give it up."],
+  [/earlier move of this account is kept/, "An earlier move is not finished. Continue it, or give it up, before starting another."],
+  [/could not be given an id/, GENERIC],
+  [/has not accepted twins/, "Your Canton account has not accepted this token yet. Open your Canton account first."],
+  [/twin registry/, "The bridge could not be reached right now. Try again in a moment."],
+  [/approval did not give/, "The approval did not cover the amount. Continue to try again."],
+  [/Your (?:lock|redeem|deposit|withdrawal) is saved\. Continue to sign it on Canton/, "Your move is saved. Continue to sign it on Canton."],
+  [/Your (?:lock|redeem|deposit|withdrawal) is saved\. Continue to allocate/, "Your move is saved. Continue to sign it on Canton."],
+  [/Your (?:lock|redeem|deposit|withdrawal) is saved\./, "Your move is saved. Continue to ask your wallet."],
+  [/tokens are allocated on Canton/, "Continue to sign the second step on Canton."],
+  [/Canton has your redeem/, "Canton has it. Continue to release it on Ostia."],
+  [/Canton has your deposit/, "Canton has it. Continue to claim it on Ostia."],
+  [/made no leg of this move/, "That transaction was not this move, so it has not happened on Ostia yet. Continue to send it again."],
+  [/final on Ostia, but the explorer does not show the leg/, "The move is final on Ostia. The explorer has not shown it yet. Continue to look again. Nothing is sent."],
+  [/already on Ostia, and the explorer/, "This move is already on Ostia. The explorer has not shown it yet. Reload this page to keep waiting."],
+];
+const NAMES_A_PART = /\b(?:party|allocat\w*|vault|gateway|registry|nonce|leg|hash|contract|calldata|0x[0-9a-f]{4})\b|\b(?:EIP|ERC)-\d+|[_{}\[\]<>\\]/i;
+
+/** A sentence of the moves library (a pause, a refusal, or the reason a move stopped), in plain words: a known one in its own words, another only when it names no part of the bridge, else the general one. */
+export function moveWords(text: string | null | undefined): string {
+  if (!text) return GENERIC;
+  for (const [pattern, words] of MOVE_SENTENCES) if (pattern.test(text)) return words;
+  return text.length <= 260 && /^[A-Z0-9][^]*[.!?]$/.test(text) && !NAMES_A_PART.test(text) ? text : GENERIC;
 }
 
 /** The page's own refusals (a code from `CODES`): thrown by the page, never by the service. */

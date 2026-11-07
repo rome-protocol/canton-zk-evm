@@ -31,7 +31,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
 
-  # The Bridge page in a real browser (explorer/e2e/bridge-account.test.ts): the pages are built with the bridge's settings, and a wallet that signs with a fixed key opens an account on a fake
+  # The Bridge page in a real browser (explorer/e2e/bridge-account.test.ts, then bridge-moves.test.ts, which move a token each way through the card): the pages are built with the bridge's settings, and a wallet that signs with a fixed key opens an account on a fake
   # account service, at the width of a phone. It runs in the pinned browser image, with the playwright-core of explorer/test/l4 (the same exact version the image's browsers belong to).
   # The last step lists the size of each script, gzipped: the Bridge's own and the signing code's are separate from the first page's.
   bridge-page:
@@ -50,7 +50,7 @@ jobs:
             -e VITE_CHAIN_ID=770101 -e VITE_CANTON_PARTICIPANT="PAR::operator::1220$(printf '05%.0s' $(seq 32))" -e VITE_SITE_ORIGIN=http://127.0.0.1:4173 \
             --network host -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_BROWSER_IMAGE" \
             sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && npm run build \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts \
+              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-moves.test.ts \
               && for f in dist/assets/*.js; do echo \"\$(gzip -9c \"\$f\" | wc -c) \$f\"; done | sort -n | tail -n 12"
 
   # The verifier's sandbox, for real: a compile runs in a container of the pinned image (SOLC_SANDBOX_IMAGE, Debian slim: the official compilers need glibc's shared libraries) with no network, a read-only filesystem,

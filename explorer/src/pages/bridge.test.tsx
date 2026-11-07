@@ -8,6 +8,17 @@ const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn() }))
 const closed = vi.fn();
 const opened = () => ({ party: PARTY, close: closed });
 vi.mock("../bridge/account.ts", () => mocks);
+// The chain's tokens and the move's machinery are the card's own tests (bridge-card.test.tsx): here they are fixed answers.
+vi.mock("../bridge/evm/config.ts", () => ({
+  loadBridgeConfig: async () => ({
+    chain: { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } }, gateway: "0x" + "22".repeat(20), vault: "0x" + "33".repeat(20), vaults: ["0x" + "33".repeat(20)], registryUrl: "https://registry.example", wrapper: null,
+    twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }], wrapped: [],
+  }),
+}));
+vi.mock("../bridge/session.ts", () => ({
+  ostiaAdapter: () => ({ account: "0xe3", native: async () => 5n * 10n ** 18n, balanceOf: async () => 20n * 10n ** 18n }),
+  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [] }),
+}));
 
 const PARTY = "bridge::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
 const env = { VITE_CHAIN_OPERATOR: "operator::1220" + "01".repeat(32), VITE_CHAIN_CONFIRMER: "confirmer::1220" + "02".repeat(32), VITE_CHAIN_GATEWAY: "gateway::1220" + "03".repeat(32), VITE_CHAIN_BUILDER: "builder::1220" + "04".repeat(32), VITE_CHAIN_ID: "770101", VITE_CANTON_PARTICIPANT: "PAR::p::1220" + "05".repeat(32), VITE_SITE_ORIGIN: ORIGIN };
@@ -21,9 +32,11 @@ function wallet() {
 }
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
 const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
+const openSheet = async () => userEvent.click(await screen.findByRole("button", { name: "Open my Canton account" }));
 const signIn = async () => {
   renderApp("/bridge");
   await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+  await openSheet();
   await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
 };
 
@@ -40,6 +53,7 @@ describe("the Bridge page", () => {
     mocks.openAccount.mockResolvedValue(opened());
     renderApp("/bridge");
     await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await openSheet();
     expect(await screen.findByText(ORIGIN)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
@@ -71,10 +85,21 @@ describe("the Bridge page", () => {
     expect(await screen.findByText("Ready")).toBeInTheDocument();
   });
 
+  it("says in plain words when the browser has no wallet, without naming a standard", async () => {
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) }));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("No wallet was found in this browser. Install MetaMask, then open this page again.");
+    expect(alert.textContent).not.toMatch(/EIP|ERC/);
+  });
+
   it("shows the page's own origin beside the sign-in", async () => {
     setUp();
     renderApp("/bridge");
     await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await openSheet();
     expect(await screen.findByText(location.origin)).toBeInTheDocument();
   });
 
@@ -120,6 +145,7 @@ describe("the Bridge page", () => {
     act(() => handlers.accountsChanged!([addr(0xe4)]));
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
     expect(closed).toHaveBeenCalledTimes(1);   // its key is dropped and nothing more is done for it
+    await openSheet();   // another wallet account is another Canton account: its sheet starts closed
     expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
   });
 
@@ -132,6 +158,7 @@ describe("the Bridge page", () => {
     expect(await screen.findByText("Copied")).toBeInTheDocument();
     act(() => handlers.accountsChanged!([addr(0xe4)]));
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    await openSheet();
     await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Copied")).toBeNull();

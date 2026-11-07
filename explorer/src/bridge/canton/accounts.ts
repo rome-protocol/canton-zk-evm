@@ -136,7 +136,7 @@ export class AccountsClient {
   }
   /** The context for the account to accept the transfer `instruction` (a transfer offered to it) at the registry `admin`. */
   acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {
-    return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party }, key);
+    return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party, meta: {}, excludeDebugFields: true }, key);
   }
   /** Test Canton Coin for the account: an offer to accept, or done. A 404 means the faucet is off here. */
   faucet(key: CantonKey, party: string): Promise<{ transferInstructionCid?: string; completed?: boolean }> {

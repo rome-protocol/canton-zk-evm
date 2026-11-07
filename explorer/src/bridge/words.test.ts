@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AccountsError } from "./canton/accounts.ts";
 import { UnexpectedTransaction } from "./canton/sign.ts";
 import { UnexpectedOnboarding } from "./canton/topology.ts";
-import { GENERIC, PageError, plainText, plainWords } from "./words.ts";
+import { GENERIC, PageError, moveWords, plainText, plainWords } from "./words.ts";
 
 const TECHNICAL = /party|allocation|vault|contract id|choiceContext|already_accepted|too_many_open|waiting_for_signature|account_key_unknown|no_choice_context|\b[45]\d\d\b|Error:|\bat \S+:\d+|0x[0-9a-f]{4}|[{}]/i;
 const conflict = (code: string) => new AccountsError("conflict", 409, "words the service wrote", undefined, code);
@@ -46,5 +46,39 @@ describe("plain words for what the person can see", () => {
     for (const odd of ["execution reverted: 0x08c379a0", "Error: boom", "{\"code\":-32000}", "no punctuation here", "internal_error.", "x".repeat(200) + "."]) expect(plainText(odd), odd).toBe(GENERIC);
     expect(plainText(null)).toBeNull();
     expect(plainText("")).toBeNull();
+  });
+});
+
+describe("the page's sentences about wallets and moves", () => {
+  it("sends a sentence that names an EIP or an ERC to the general one", () => {
+    expect(plainText("No wallet was found in this browser. Open this page in a browser with an EIP-1193 wallet.")).toBe(GENERIC);
+    expect(plainText("This token follows ERC-20.")).toBe(GENERIC);
+    expect(plainText("No wallet was found in this browser. Install MetaMask, then open this page again.")).toBe("No wallet was found in this browser. Install MetaMask, then open this page again.");
+  });
+  it("puts every sentence the moves library says in words with no part of the bridge named", () => {
+    const said = [
+      "The bridge does not move this token.", "This wrapped token does not have 10 decimals, so the bridge will not move it.", "The receiver is not a Canton party id (a name, then ::1220 and 64 hex digits).",
+      "Wrapping the chain's coin is not set up for this deployment, so nothing was wrapped.", "You do not hold enough TKA.", "The vault does not hold enough TKA to release this amount.",
+      "The registry gave a lock id that is not the one this lock makes. Nothing was sent.", "A transaction from this account is still waiting. This move continues once it is final. If it does not go through, speed it up or cancel it in your wallet.",
+      "This browser cannot run the bridge: it has no Web Locks, which keep a second tab or window from working on the same move. Use a current browser.",
+      "This move was started with another wallet account or Canton party. Switch back to it to continue it, or give it up.", "An earlier move of this account is kept. Continue it, or give it up, before starting another.",
+      "Another move is not finished yet.", "The move could not be given an id.", "Your lock is saved. Continue to ask your wallet.", "The approval failed on Ostia. Nothing else was sent. Continue to try again.",
+      "The approval did not give the gateway the amount (a replaced approval, or a lower one). Check the allowance in your wallet. Continue to try again.",
+      "Your redeem is saved. Continue to sign it on Canton.", "Canton has your redeem. Continue to ask your wallet for the release.", "Your deposit is saved. Continue to allocate the tokens on Canton.",
+      "The tokens are allocated on Canton. Continue to send the deposit request.", "Canton has your deposit. Continue to ask your wallet for the claim.", "Your withdrawal is saved. Continue to ask your wallet.",
+      "The transaction failed on Ostia; nothing moved. Continue to try again.", "That transaction made no leg of this move, so the move has not happened on Ostia. Continue to send it again.",
+      "This move is being worked on in another tab or window. Wait until it stops there, then continue here.", "This move is already on Ostia, and the explorer has not shown its transaction yet. Reload this page to keep waiting.",
+      "The move is final on Ostia, but the explorer does not show the leg yet. Continue to look again; nothing is sent.", "Canton has not shown this step yet. Continue to look again; nothing is signed twice.",
+      "The transaction was replaced or dropped, and the explorer has not shown another one for this move. Continue to look again; nothing is sent until the wallet is asked.", "Waiting for the block took too long. Reload this page to keep waiting.",
+      "You do not hold enough of this token on Canton.", "This deposit's id is not the one its label makes. Nothing was signed.", "The twin registry cannot be reached right now.",
+      "The receiver has not accepted twins yet. Its Canton party must accept twins once before a lock can be made for it.", "User rejected the request.", "Type an amount such as 12 or 12.5.",
+    ];
+    for (const text of said) expect(moveWords(text), text).not.toMatch(/\b(party|allocat\w*|vault|gateway|registry|Web Locks|nonce|leg|hash|contract|twins?|redeem|lock)\b|ERC|EIP|0x/i);
+    expect(moveWords("User rejected the request.")).toBe("You declined it in your wallet.");
+    expect(moveWords("You do not hold enough TKA.")).toBe("You do not hold enough TKA.");
+    expect(moveWords("Canton has your redeem. Continue to ask your wallet for the release.")).toBe("Canton has it. Continue to release it on Ostia.");
+  });
+  it("gives the general sentence for anything else", () => {
+    for (const odd of ["execution reverted: 0x08c379a0", "Error: boom", "{\"code\":-32000}", "no punctuation here", null, undefined, "", "The leg 0xabcd is missing."]) expect(moveWords(odd), String(odd)).toBe(GENERIC);
   });
 });

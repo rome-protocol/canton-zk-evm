@@ -98,7 +98,7 @@ describe("the account service client", () => {
     await c.faucet(key, PARTY);
     const calls = f.mock.calls as unknown as [string, RequestInit][];
     expect(calls.map((x) => x[0])).toEqual(["/accounts/v1/registry/DSO::1220aa/allocation-factory", "/accounts/v1/registry/DSO::1220aa/transfer-instruction/00cd/accept-context", "/accounts/v1/faucet"]);
-    expect(calls.map((x) => JSON.parse(x[1].body as string))).toEqual([{ choiceArguments: { expectedAdmin: "DSO::1220aa" }, excludeDebugFields: true, party: PARTY }, { party: PARTY }, { party: PARTY }]);
+    expect(calls.map((x) => JSON.parse(x[1].body as string))).toEqual([{ choiceArguments: { expectedAdmin: "DSO::1220aa" }, excludeDebugFields: true, party: PARTY }, { party: PARTY, meta: {}, excludeDebugFields: true }, { party: PARTY }]);
     for (const [url, init] of calls) expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "POST", url, init.body as string)).toBe(true);
   });
   it("reads the accept context from the top level of the registry's answer, as the token standard's ChoiceContext", () => {

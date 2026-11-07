@@ -24,3 +24,17 @@ export function parseAmount(text: string, decimals: number): { base: bigint; twi
   const twin = decimals >= CANTON_DECIMALS ? base / 10n ** BigInt(decimals - CANTON_DECIMALS) : base * 10n ** BigInt(CANTON_DECIMALS - decimals);
   return { base, twin };
 }
+
+/** A base-unit amount as the exact decimal text, with no trailing zeros: 20000000000000000000n of 18 decimals is "20", 1500000n of 6 is "1.5". Nothing is rounded. */
+export function showUnits(base: bigint, decimals: number): string {
+  const unit = 10n ** BigInt(decimals);
+  const fraction = (base % unit).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return fraction === "" ? (base / unit).toString() : `${base / unit}.${fraction}`;
+}
+
+/** The most of `base` the bridge moves, as text to type into the amount: cut down (never up) to the finest step it moves (10 decimals). Empty when there is none. */
+export function maxText(base: bigint, decimals: number): string {
+  const step = decimals > CANTON_DECIMALS ? 10n ** BigInt(decimals - CANTON_DECIMALS) : 1n;
+  const cut = base - (base % step);
+  return cut <= 0n ? "" : showUnits(cut, decimals);
+}
