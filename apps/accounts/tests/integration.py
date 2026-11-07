@@ -85,7 +85,7 @@ class AccountsOnCanton(unittest.TestCase):
             self.assertEqual(service("/accounts/v1/topology", {"publicKey": public})[1], {"party": party, "exists": True})   # the same key: the same account
             self.assertEqual(service(f"/accounts/v1/holdings/{party}", key=key), (200, {"party": party, "holdings": []}))
             self.assertEqual(service(f"/accounts/v1/allocations/{party}", key=key), (200, {"party": party, "allocations": []}))
-            self.assertEqual(service(f"/accounts/v1/open/{party}", key=key), (200, {"party": party, "depositRequests": [], "redeemRequests": []}))
+            self.assertEqual(service(f"/accounts/v1/open/{party}", key=key), (200, {"party": party, "depositRequests": [], "redeemRequests": [], "twinAcceptance": None, "withdrawalAcceptance": None}))
 
             # The service's user has the right to act as this party, and no more than that: no admin right.
             _, rights = call("GET", f"{LEDGER}/v2/users/{USER}/rights", bearer=propose.role_token("admin"))
@@ -222,8 +222,10 @@ class AccountsOnCanton(unittest.TestCase):
             fixture("create-twin-acceptance", twin, made_twin)
             self.assertEqual(execute_twin()[0], 200)
 
-            # What the page reads to resume: the allocation by its contract id, the open requests by theirs.
-            opened = until("the open requests", lambda: (lambda o: o if o["depositRequests"] and o["redeemRequests"] else None)(service(f"/accounts/v1/open/{party}", key=key)[1]))
+            # What the page reads to resume: the allocation by its contract id, the open requests and the acceptances by theirs.
+            opened = until("the open requests", lambda: (lambda o: o if o["depositRequests"] and o["redeemRequests"] and o["twinAcceptance"] and o["withdrawalAcceptance"] else None)(service(f"/accounts/v1/open/{party}", key=key)[1]))
+            self.assertEqual(opened["withdrawalAcceptance"]["contractId"], acceptance["contractId"])   # the acceptances, by their contract ids
+            self.assertEqual(opened["twinAcceptance"]["arguments"]["party"], party)
             self.assertEqual((opened["depositRequests"][0]["arguments"]["allocation"], opened["redeemRequests"][0]["arguments"]["ref"]), (allocation["contractId"], "redeem-1"))
             print("FIXTURE " + json.dumps({"name": "answers", "party": party, "allocations": service(f"/accounts/v1/allocations/{party}", key=key)[1], "open": opened}, sort_keys=True), flush=True)
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make

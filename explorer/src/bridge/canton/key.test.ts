@@ -101,8 +101,8 @@ describe("the Canton key from a wallet signature", () => {
     // the other forms of the wallet's signature make the same key
     expect(hex((await openKey({ request: asked(flipped(walletSignature)) }, account.address)).publicKey)).toBe(hex(key.publicKey));
     // a wallet that signs as another address, or gives no signature, makes no key
-    await expect(openKey({ request: asked(walletSignature) }, privateKeyToAccount(`0x${"cd".repeat(32)}`).address)).rejects.toThrow("another address");
-    await expect(openKey({ request: asked(await account.signTypedData({ domain: KEY_TYPED_DATA.domain, types: { Open: [{ name: "statement", type: "string" }] }, primaryType: "Open", message: { statement: "another words" } })) }, account.address)).rejects.toThrow("another address");
+    await expect(openKey({ request: asked(walletSignature) }, privateKeyToAccount(`0x${"cd".repeat(32)}`).address)).rejects.toMatchObject({ code: "wrong_signer", message: expect.stringContaining("another address") });
+    await expect(openKey({ request: asked(await account.signTypedData({ domain: KEY_TYPED_DATA.domain, types: { Open: [{ name: "statement", type: "string" }] }, primaryType: "Open", message: { statement: "another words" } })) }, account.address)).rejects.toMatchObject({ code: "wrong_signer" });
     await expect(openKey({ request: vi.fn(async () => null) }, account.address)).rejects.toThrow("no signature");
   });
   it("asks again on a first account, and refuses a wallet that does not sign the same way twice", async () => {
@@ -111,7 +111,7 @@ describe("the Canton key from a wallet signature", () => {
     await expect(confirmKey({ request }, account.address, key)).resolves.toBeUndefined();
     expect(request).toHaveBeenCalledTimes(1);
     const other = await keyFromSignature(SIGNATURE);   // the key the first signature made, where the second made another
-    await expect(confirmKey({ request: asked(walletSignature) }, account.address, other)).rejects.toThrow(DIFFERENT_SIGNATURES);
+    await expect(confirmKey({ request: asked(walletSignature) }, account.address, other)).rejects.toMatchObject({ code: "wallet_not_deterministic", message: DIFFERENT_SIGNATURES });
     expect(DIFFERENT_SIGNATURES).toContain("does not sign the same way twice");
   });
   it("has no use of browser storage anywhere in the library, and each signing function has one caller", () => {
