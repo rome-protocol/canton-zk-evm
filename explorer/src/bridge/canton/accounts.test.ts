@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { AccountsClient, AccountsError, retryAfterSeconds } from "./accounts.ts";
+import { AccountsClient, AccountsError, registryChoice, retryAfterSeconds } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { partyOf } from "./topology.ts";
 
@@ -87,6 +87,23 @@ describe("the account service client", () => {
       expect(error).toMatchObject({ kind, status, message: "no", retryAfter: 12, code: "C", detail: "d" });
     }
     expect(await client(vi.fn(async () => { throw new TypeError("offline"); })).holdings(key, PARTY).catch((e) => e)).toMatchObject({ kind: "network", message: "offline" });
+  });
+  it("asks the registry through the service, each request signed, with the account named in the body", async () => {
+    const f = vi.fn(async () => answer(200, { factoryId: "f1", choiceContext: { choiceContextData: { values: {} }, disclosedContracts: [] } }));
+    const c = client(f);
+    await c.allocationFactory(key, "DSO::1220aa", PARTY, { expectedAdmin: "DSO::1220aa" });
+    await c.acceptContext(key, "DSO::1220aa", "00cd", PARTY);
+    await c.faucet(key, PARTY);
+    const calls = f.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map((x) => x[0])).toEqual(["/accounts/v1/registry/DSO::1220aa/allocation-factory", "/accounts/v1/registry/DSO::1220aa/transfer-instruction/00cd/accept-context", "/accounts/v1/faucet"]);
+    expect(calls.map((x) => JSON.parse(x[1].body as string))).toEqual([{ choiceArguments: { expectedAdmin: "DSO::1220aa" }, excludeDebugFields: true, party: PARTY }, { party: PARTY }, { party: PARTY }]);
+    for (const [url, init] of calls) expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "POST", url, init.body as string)).toBe(true);
+  });
+  it("reads the context and the disclosed contracts of a registry answer, nested in the choice context or beside it", () => {
+    const disclosed = { templateId: "t", contractId: "c", createdEventBlob: "b", synchronizerId: "s" };
+    expect(registryChoice({ choiceContext: { choiceContextData: { values: { a: 1 } }, disclosedContracts: [disclosed] } })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [disclosed] });
+    expect(registryChoice({ choiceContext: { values: { a: 1 } }, disclosedContracts: [disclosed] })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [disclosed] });
+    expect(registryChoice({ choiceContext: { values: {} } })).toEqual({ context: { values: {} }, disclosedContracts: [] });
   });
   it("reads Retry-After as seconds or as a date", () => {
     expect(retryAfterSeconds("30")).toBe(30);

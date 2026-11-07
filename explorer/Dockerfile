@@ -26,6 +26,15 @@ RUN npm ci --ignore-scripts
 COPY PINS /repo/PINS
 COPY gateway/Vault.bin-runtime /repo/gateway/Vault.bin-runtime
 ARG BRIDGE_WTROME_ADDRESS=
+# The rest of the Bridge page's build settings (explorer/README.md, "The Bridge page's settings"): none is a secret, and an empty one is not set.
+ARG VITE_CHAIN_OPERATOR=
+ARG VITE_CHAIN_CONFIRMER=
+ARG VITE_CHAIN_GATEWAY=
+ARG VITE_CHAIN_BUILDER=
+ARG VITE_CHAIN_ID=
+ARG VITE_CANTON_PARTICIPANT=
+ARG VITE_ACCOUNTS_URL=
+ARG VITE_SITE_ORIGIN=
 COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts ./
 COPY explorer/src ./src
 COPY explorer/canton-proto ./canton-proto

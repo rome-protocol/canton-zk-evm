@@ -1,6 +1,7 @@
 // The Canton commands the Bridge page makes, each with the intent that `signPrepared` holds the service's prepared transaction to: the command itself (its
 // arguments are the intent, in the order of the Daml fields) and what its transaction may be. Fields are in the order the Daml declares them.
 import type { Command, DisclosedContract } from "./accounts.ts";
+import type { Chain } from "./env.ts";
 import { hex } from "./key.ts";
 
 export interface Intent {
@@ -17,23 +18,7 @@ export interface Intent {
 }
 export interface Built { command: Command; intent: Intent; disclosedContracts: DisclosedContract[] }
 
-/** The participant that hosts every account (`VITE_CANTON_PARTICIPANT`: its id as the Ledger API says it, PAR::name::fingerprint): an account is onboarded only onto it. */
-export function participantFromEnv(env: Record<string, string | undefined>): string {
-  const participant = env.VITE_CANTON_PARTICIPANT;
-  if (!participant) throw new Error("VITE_CANTON_PARTICIPANT is not set");
-  return participant;
-}
-
-/** The chain's parties and id, from the page's configuration (`VITE_CHAIN_*`): never written into the code. */
-export interface Chain { operator: string; confirmer: string; gateway: string; builder: string; chainId: number }
-export function chainFromEnv(env: Record<string, string | undefined>): Chain {
-  const need = (name: string): string => {
-    const value = env[name];
-    if (!value) throw new Error(`${name} is not set`);
-    return value;
-  };
-  return { operator: need("VITE_CHAIN_OPERATOR"), confirmer: need("VITE_CHAIN_CONFIRMER"), gateway: need("VITE_CHAIN_GATEWAY"), builder: need("VITE_CHAIN_BUILDER"), chainId: Number(need("VITE_CHAIN_ID")) };
-}
+export { chainFromEnv, participantFromEnv, type Chain } from "./env.ts";
 
 const CHAIN = { packageName: "canton-zk-evm", module: "Zk.Chain" };
 const TWIN = { packageName: "ostia-twin", module: "Twin.Twin" };
@@ -104,5 +89,18 @@ export function allocate(party: string, c: Chain, a: Allocation, factory: { cont
     command: { ExerciseCommand: { templateId: id({ packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }), contractId: factory.contractId, choice: "AllocationFactory_Allocate", choiceArgument: args } },
     intent: { party, kind: "exercise", template: { packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }, interface: ALLOCATION_FACTORY, choice: "AllocationFactory_Allocate", contractId: factory.contractId, args, ignore: ["extraArgs.context"], implementation: a.implementation ?? implementationOf(a.instrumentId), ledgerTimes: true },   // the standard's deadlines are the transaction's ledger time bounds
     disclosedContracts: factory.disclosedContracts,
+  };
+}
+
+const TRANSFER_INSTRUCTION = { module: "Splice.Api.Token.TransferInstructionV1", entity: "TransferInstruction" };
+/** The token standard's `TransferInstruction_Accept`: the account takes a transfer offered to it (test Canton Coin from the faucet). The context and the contracts are the registry's. The
+ * transaction may carry the offer's deadline as a ledger time bound. `implementation` is the package of the instrument (Canton Coin's by default). */
+export function acceptTransfer(party: string, instruction: string, registry: { context: object; disclosedContracts: DisclosedContract[] }, implementation = "splice-amulet"): Built {
+  const args = { extraArgs: { context: registry.context, meta: { values: {} } } };
+  const template = { packageName: "splice-api-token-transfer-instruction-v1", ...TRANSFER_INSTRUCTION };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: instruction, choice: "TransferInstruction_Accept", choiceArgument: args } },
+    intent: { party, kind: "exercise", template, interface: TRANSFER_INSTRUCTION, choice: "TransferInstruction_Accept", contractId: instruction, args, ignore: ["extraArgs.context"], implementation, ledgerTimes: true },
+    disclosedContracts: registry.disclosedContracts,
   };
 }

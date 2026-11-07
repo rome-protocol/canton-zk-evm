@@ -25,6 +25,7 @@ const Address = page(() => import("./pages/Address.tsx"), "Address");
 const Addresses = page(() => import("./pages/Addresses.tsx"), "Addresses");
 const Contract = page(() => import("./pages/Contract.tsx"), "Contract");
 const Contracts = page(() => import("./pages/Contracts.tsx"), "Contracts");
+const Bridge = page(() => import("./pages/Bridge.tsx"), "Bridge");
 const Blocks = page(() => import("./pages/Blocks.tsx"), "Blocks");
 const Block = page(() => import("./pages/Block.tsx"), "Block");
 const CantonUpdate = page(() => import("./pages/Canton.tsx"), "CantonUpdate");
@@ -58,6 +59,7 @@ export function App() {
           <Route path="/canton/:updateId" element={<CantonUpdate />} />
           <Route path="/swaps" element={<Swaps />} />
           <Route path="/swap/:id" element={<SwapPage />} />
+          <Route path="/bridge" element={<Bridge />} />
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/addresses" element={<Addresses />} />
           <Route path="/contracts" element={<Contracts />} />

@@ -15,6 +15,14 @@ export interface AllocationView {
   holdingCids: string[];
 }
 export interface OpenRequest { contractId: string; arguments: Record<string, unknown> }
+/** A token registry's answer, through the service: the choice context (the registry's, not pinned by the page) and the contracts the transaction discloses. The token standard nests both in `choiceContext`. */
+export interface RegistryAnswer { choiceContext: unknown; disclosedContracts?: DisclosedContract[] }
+/** The context and the disclosed contracts of a registry answer, wherever it puts them. */
+export function registryChoice(a: RegistryAnswer): { context: object; disclosedContracts: DisclosedContract[] } {
+  const c = (a.choiceContext ?? {}) as { choiceContextData?: object; disclosedContracts?: DisclosedContract[] };
+  const nested = "choiceContextData" in c;
+  return { context: nested ? c.choiceContextData! : c, disclosedContracts: a.disclosedContracts ?? (nested ? c.disclosedContracts : undefined) ?? [] };
+}
 
 const KINDS: Record<number, AccountsErrorKind> = { 400: "bad-request", 401: "unauthorized", 403: "forbidden", 404: "not-found", 409: "conflict", 422: "refused", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
 export type AccountsErrorKind = "bad-request" | "unauthorized" | "forbidden" | "not-found" | "conflict" | "refused" | "rate-limited" | "unavailable" | "server" | "network";
@@ -103,6 +111,19 @@ export class AccountsClient {
   /** The account's open deposit and redeem requests, by contract id: where a page resumes. */
   async openRequests(key: CantonKey, party: string): Promise<{ depositRequests: OpenRequest[]; redeemRequests: OpenRequest[] }> {
     return this.send("GET", `/accounts/v1/open/${party}`, undefined, key);
+  }
+
+  /** The token standard's allocation factory of the registry `admin`: `choiceArguments` is the choice's argument as the account will sign it, with an empty context. */
+  allocationFactory(key: CantonKey, admin: string, party: string, choiceArguments: object): Promise<RegistryAnswer & { factoryId: string }> {
+    return this.send("POST", `/accounts/v1/registry/${admin}/allocation-factory`, { choiceArguments, excludeDebugFields: true, party }, key);
+  }
+  /** The context for the account to accept the transfer `instruction` (a transfer offered to it) at the registry `admin`. */
+  acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<RegistryAnswer> {
+    return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party }, key);
+  }
+  /** Test Canton Coin for the account: an offer to accept, or done. A 404 means the faucet is off here. */
+  faucet(key: CantonKey, party: string): Promise<{ transferInstructionCid?: string; completed?: boolean }> {
+    return this.send("POST", "/accounts/v1/faucet", { party }, key);
   }
 
   /** The account of this key. The party is the page's own (the key's fingerprint), never the service's word. A found account is returned. A new account is made only from a topology that is

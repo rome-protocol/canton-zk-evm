@@ -12,14 +12,7 @@ export const OSTIA_CHAIN_ID = 770101;   // PINS CHAIN_ID: the wallet must be on 
 export const KEY_INFO = "ostia-bridge canton-key v1";
 export const DIFFERENT_SIGNATURES = "this wallet does not sign the same way twice, so it cannot hold a Canton account here";
 
-/** The site's origin, from the page's configuration (`VITE_SITE_ORIGIN`: the scheme and the host of the site, as `location.origin` says it, with no path). */
-export function originFromEnv(env: Record<string, string | undefined>): string {
-  const origin = env.VITE_SITE_ORIGIN ?? "";
-  let parsed: URL | null = null;
-  try { parsed = new URL(origin); } catch { /* not a URL */ }
-  if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== origin) throw new Error("VITE_SITE_ORIGIN is not set to an origin (the scheme and the host)");
-  return origin;
-}
+export { originFromEnv } from "./env.ts";
 
 /** The words of the signature request. They are fixed: the signature is the Canton key, so a change of these words, of the domain below or of KEY_INFO makes another key for every
  * user and strands their accounts. They must never change for this deployment. The page shows its own origin beside the request, outside the signed text. They do not bind the
