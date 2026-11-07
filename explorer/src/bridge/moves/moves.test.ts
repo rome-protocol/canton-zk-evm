@@ -8,7 +8,7 @@ import { createMove, type CantonAdapter, type Deps } from "./moves.ts";
 import { depositIdOf, loadCheckpoint, lockIdOf, releaseIdOf, transition, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
-const [ME, GATEWAY, VAULT, TKA, WTROME, WCC] = [addr("1"), addr("2"), addr("cd"), addr("a"), addr("b"), addr("c")];
+const [ME, GATEWAY, VAULT, TKA, WTROME, WCC] = [addr("1"), addr("2"), ("0x" + "cd".repeat(20)) as Address, addr("a"), addr("b"), addr("c")];
 const PARTY = "alice::1220" + "ab".repeat(32);
 const config: BridgeConfig = {
   chain: { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } },
