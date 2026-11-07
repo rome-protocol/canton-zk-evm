@@ -984,8 +984,11 @@ class Ledger:
             except urllib.error.HTTPError as e:
                 if not number:
                     raise
-                e.close()   # a later page that fails is never read as "no such template": the list is unreadable
-                raise PageFailed(f"page {number + 1} answered HTTP {e.code}") from None
+                try:
+                    why = bounded_text(e.read(300).decode("utf-8", "replace"))
+                finally:
+                    e.close()   # a later page that fails is never read as "no such template": the list is unreadable
+                raise PageFailed(f"page {number + 1} answered HTTP {e.code}: {why}") from None
             found += [e["contractEntry"]["JsActiveContract"]["createdEvent"] for e in page["activeContracts"] if "JsActiveContract" in e["contractEntry"]]
             if not page.get("nextPageToken"):
                 return found
