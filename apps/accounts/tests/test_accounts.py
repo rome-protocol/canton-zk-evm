@@ -1,5 +1,5 @@
 """The accounts service against a fake JSON Ledger API. Run: python3 -m unittest discover -s apps/accounts/tests -v (pytest collects them too)."""
-import base64, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
+import base64, calendar, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -462,7 +462,7 @@ class Hardening(Case):
     def put_prepared(self, i, template=ACCEPT):
         """An entry as an earlier prepare would have made it."""
         tx = base64.b64encode(b"tx%d" % i).decode()
-        self.service.prepared.put(hashlib.sha256(tx.encode()).hexdigest(), {"party": PARTY, "version": "V", "hash": b"hash", "cost": 1000, "template": template}, "x", PARTY)
+        self.service.prepared.put(hashlib.sha256(tx.encode()).hexdigest(), {"party": PARTY, "version": "V", "hash": b"hash", "cost": 1000, "template": template, "record_by": int(time.time()) + 630}, "x", PARTY)
         return {"preparedTransaction": tx, "preparedTransactionHash": "aGFzaA=="}
 
     def test_five_executes_at_once_make_one_acceptance(self):
@@ -520,6 +520,61 @@ class Hardening(Case):
         topology(OTHER_KEY, "2001:db8:2:3::1")   # another /48
         self.assertEqual(A.pending_owner(A.client_key("203.0.113.7")), "203.0.113.7")
         self.assertNotEqual(A.client_key("2001:db8:1:2::1"), A.client_key("2001:db8:1:3::1"))
+
+    # round 5: the caps are checked before the participant is asked
+
+    def test_a_client_over_its_caps_makes_no_ledger_call(self):
+        self.start(topologies=A.Pending(per_owner=1), prepared=A.Pending(per_owner=1, per_group=1), open_limits={})
+        self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[0], 200)
+        self.ledger.calls.clear()
+        self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})[0], 503)
+        self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[0], 200)   # the key that has its blob is answered from it
+        self.assertEqual(self.ledger.calls, [])
+        self.make_account()
+        self.assertEqual(self.prepare()[0], 200)
+        self.ledger.calls.clear()
+        self.assertEqual(self.prepare()[0], 503)   # the client's cap and the account's, both full
+        self.assertEqual(self.ledger.calls, [])
+        pending = A.Pending(per_owner=2)
+        pending.room("x"); pending.put("a", 1, "x"); pending.put("b", 1, "x")
+        with self.assertRaises(A.HttpError):
+            pending.room("x")
+        pending.room("y")
+        self.assertEqual(len(pending.items), 2)   # room adds nothing
+
+    def test_an_unusable_key_is_checked_only_when_it_has_no_blob(self):
+        self.start(topologies=A.Pending(per_owner=1))
+        self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})
+        with unittest.mock.patch.object(A.ed25519, "usable_key", side_effect=AssertionError("checked again")):
+            self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[0], 200)
+            self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})[0], 503)   # at the cap: no key check either
+
+    def test_prepare_execute_and_holdings_have_a_rate_per_account(self):
+        self.start(account_rate=A.Limiter(3, 60), open_limits={})
+        self.make_account()
+        self.assertEqual([self.prepare()[0] for _ in range(3)], [200, 200, 200])
+        calls = len(self.ledger.calls)
+        status, _, headers = self.prepare()
+        self.assertEqual(status, 429)
+        self.assertTrue(headers["retry-after"])
+        self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{PARTY}")[0], 429)   # one rate for the three
+        self.assertEqual(len(self.ledger.calls), calls)
+        self.assertEqual(self.req("GET", "/accounts/v1/holdings/other")[0], 404)   # another party is no one's rate: unsigned junk does not use it up
+        self.assertEqual(self.service.account_rate.hits.get("other"), None)
+
+    def test_a_client_network_has_a_rate_over_its_64s(self):
+        self.start(network_rate=A.Limiter(3, 60))
+        get = lambda ip: self.service.handle("GET", "/accounts/v1/holdings/x", None, ip)
+        for ip in ("2001:db8:1:1::1", "2001:db8:1:2::1", "2001:db8:1:3::1"):   # three /64s of one /48
+            with self.assertRaises(A.HttpError) as e:
+                get(ip)
+            self.assertEqual(e.exception.status, 404)
+        with self.assertRaises(A.HttpError) as e:
+            get("2001:db8:1:4::1")
+        self.assertEqual(e.exception.status, 429)
+        with self.assertRaises(A.HttpError) as e:
+            get("2001:db8:2:1::1")   # another /48
+        self.assertEqual(e.exception.status, 404)
 
     # round 3: budgets and verifies
 
@@ -580,7 +635,7 @@ class Hardening(Case):
 
     # round 4: what has no answer yet, and creates with no limit
 
-    def test_an_execute_that_got_no_answer_counts_as_open_for_two_minutes(self):
+    def test_an_execute_that_got_no_answer_counts_as_open_until_its_max_record_time(self):
         self.make_account()
         _, p, _ = self.prepare()
         self.ledger.fail["/v2/interactive-submission/executeAndWait"] = (503, {})
@@ -588,7 +643,12 @@ class Hardening(Case):
         del self.ledger.fail["/v2/interactive-submission/executeAndWait"]
         self.assertEqual(self.prepare()[0], 409)   # the ledger shows none open, the unanswered execute is counted
         self.assertEqual(len(self.calls_to("/prepare")), 1)
-        later = time.monotonic() + A.IN_FLIGHT_TTL + 1
+        sent = self.calls_to("/prepare")[0][2]["maxRecordTime"]
+        self.assertAlmostEqual(calendar.timegm(time.strptime(sent, "%Y-%m-%dT%H:%M:%SZ")), time.time() + A.PENDING_TTL + A.RECORD_MARGIN, delta=5)
+        later = time.monotonic() + A.IN_FLIGHT_TTL + 1   # past the old guess, but not past the end time
+        self.service.in_flight.clock = lambda: later
+        self.assertEqual(self.prepare()[0], 409)
+        later = time.monotonic() + A.PENDING_TTL + A.RECORD_MARGIN + 5
         self.service.in_flight.clock = lambda: later
         self.assertEqual(self.prepare()[0], 200)
 
