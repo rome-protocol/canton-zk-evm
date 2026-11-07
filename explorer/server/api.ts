@@ -226,15 +226,18 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const final = await chain.tx(hash);
     const tr = tracker?.state(hash);
     if (final) {
-      const transfer = await transferOf(final.input, final.to);
+      // What the indexer wrote with the transaction (its legs, its lifecycle) is read once its row has been seen: it writes them in one database transaction, so they
+      // are there by then, and read side by side with the row they could be from before it. The rest of what is read here does not depend on each other either: at
+      // most three connections at once, and a 404 or a transaction still waiting costs the one read it did.
+      const [transfer, legs, lifecycle] = await Promise.all([transferOf(final.input, final.to), chain.txLegs(hash, BLOCK_LEGS), lifecycleOf(hash)]);
       const toToken = transfer?.symbol ?? (final.to ? (await tokenOf(final.to))?.symbol ?? null : null);
       return ok({
-        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle: await lifecycleOf(hash),
+        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle,
         block: pick(final.block, FIELDS.txBlock),
         from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
         gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
         input: final.input, logs: final.logs.map((l) => pick(l, FIELDS.log)), transfer, toToken, created: final.created,
-        legs: (await chain.txLegs(hash, BLOCK_LEGS)).map(legOf),
+        legs: legs.map(legOf),
       });
     }
     // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.

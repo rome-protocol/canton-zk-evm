@@ -87,8 +87,8 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     if (a.status !== 200) return a;
     const body = a.body as { status: string; number: number; canton: Record<string, unknown> | null };
     const final = body.status === "final";
-    const extras = final ? await rest.blockExtras(body.number) : undefined;
-    const derived = final && body.number <= (await rest.deriveCursor());
+    const [extras, cursor] = final ? await Promise.all([rest.blockExtras(body.number), rest.deriveCursor()]) : ([undefined, 0] as const);
+    const derived = final && body.number <= cursor;
     // The record's hex is kept apart (/record): a block's page is small.
     const canton = body.canton && pick(body.canton, F.cantonSummary);
     return cached(ok(pick({ ...body, canton, legsCount: extras?.legsCount ?? null, derived, lifecycle: extras?.lifecycle ? pick(extras.lifecycle, F.blockLifecycle) : null } as Record<string, unknown>, F.blockDetail)), "composite");
@@ -153,15 +153,19 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
 
   async function oneTx(hash: string, q: URLSearchParams): Promise<Answer> {
     if (q.get("raw") === "1") return rawReceipt(hash);
-    const a = await transaction(hash);
+    // The answer and the transaction's place are read side by side: the place is one read of an index, all that a 404 or a transaction still waiting adds. The rest is read
+    // only for a final transaction (the cursor and the fee caps, then the trace), so a route holds at most four connections at once (the answer's three and the place), then two, then one.
+    const [a, placed] = await Promise.all([transaction(hash), HASH.test(hash) ? rest.placeOf(hash) : undefined]);
     if (a.status !== 200) return a;
     const body = a.body as { status: string };
-    const here = body.status === "final" ? await finalTx(hash) : undefined;
-    const derived = !!here?.derived;
+    // A transaction the indexer wrote between the two reads is final in the answer and not yet in its place: read the place again.
+    const at = body.status === "final" ? placed ?? (await rest.placeOf(hash)) : undefined;
+    // The derive cursor only grows, so one read of it beside the fee caps is at worst a moment older, and says "not derived yet" a moment longer.
+    const [cursor, caps] = await Promise.all([at ? rest.deriveCursor() : 0, at ? rest.feeCapsOf(at) : { maxFeePerGas: null, maxPriorityFeePerGas: null }]);
+    const derived = !!at && at.block <= cursor;
     // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
-    const trace = derived && here ? await rest.traceOf(here.at) : undefined;
-    const caps = here ? await rest.feeCapsOf(here.at) : { maxFeePerGas: null, maxPriorityFeePerGas: null };
-    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: here?.at.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
+    const trace = derived && at ? await rest.traceOf(at) : undefined;
+    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: at?.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
   }
 
   /** The receipt of a final transaction as reth gave it: a chain fact that never changes. */

@@ -17,7 +17,7 @@ on:
     inputs:
       l2_transactions: { description: "L2: transactions in the seeded database", default: "10000000" }
       l2_seconds: { description: "L2: seconds of load", default: "600" }
-      l3_minutes: { description: "L3: minutes of the flood of blocks (the design's is 30)", default: "30" }
+      l3_minutes: { description: "L3: minutes of the flood of blocks (the design's is 30; the flood spends about 0.154 ETH a minute of the sender's 9.9 ETH, so 60 or more fails at the start)", default: "30" }
       l4_repeat: { description: "L4: cold runs of each page", default: "5" }
 
 permissions:
