@@ -23,6 +23,7 @@ DEFAULT_ALLOW = (
 CHAIN_CREATES = DEFAULT_ALLOW[:2]   # these creates name the chain's parties as observers: they are checked against the configured ones
 CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
 ACCEPTANCE, DEPOSIT = CHAIN_CREATES
+TWIN_ACCEPTANCE = "#ostia-twin:Twin.Twin:TwinAcceptance"   # not on the built-in list: a deployment that serves twins allows it (--allow, with --open-limit TEMPLATE=1)
 ALLOW_ENTRY = re.compile(r"#[a-z0-9][a-z0-9-]*:[A-Za-z0-9_.]+:[A-Za-z0-9_]+(#[A-Za-z0-9_]+)?\Z")
 HOLDING = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
 ALLOCATION = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
@@ -61,9 +62,20 @@ SLOW_VERIFY_WARNING = ("WARNING: the cryptography package is not installed: sign
 
 
 class HttpError(Exception):
-    def __init__(self, status: int, message: str, **extra):
+    """An answer that is not a success. With `stable` (a 409 always has one) the body is {"error": stable, "message": message}: a client acts on the code, a person reads the
+    message. Without it the body is {"error": message}. `extra` fields are added to the body either way."""
+    def __init__(self, status: int, message: str, stable: str = None, **extra):
         super().__init__(message)
-        self.status, self.message, self.extra = status, message, extra
+        self.status, self.message, self.stable, self.extra = status, message, stable, extra
+
+
+class NotSent(HttpError):
+    """A call to an outside server that failed before one byte of the request was written: it cannot have done anything there."""
+
+
+def conflict(code: str, message: str) -> HttpError:
+    """A 409. `code` is stable (the README lists them): a client may switch on it."""
+    return HttpError(409, message, code)
 
 
 def b64(value, name: str, sizes: tuple) -> bytes:
@@ -173,23 +185,32 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
     """One POST of JSON to a server this service does not trust (a token registry, the validator's wallet), with the bearer token in `bearer_file` when given. Over http the
     connected peer must be this machine, checked before anything is sent; a redirect is not followed (any status but 200 is a 502); the answer is read to at most
     RELAY_MAX_ANSWER bytes, the whole call within OUTSIDE_DEADLINE seconds (a timer shuts the connection), and must be a JSON object. The token and the answer's text are never logged."""
-    url, bearer = urllib.parse.urlsplit(base), read_token(bearer_file) if bearer_file else None
+    started, sent = time.monotonic(), False   # the deadline runs from here: it covers the connect and the read
+    url = urllib.parse.urlsplit(base)
+    try:
+        bearer = read_token(bearer_file) if bearer_file else None
+    except HttpError as e:
+        raise NotSent(e.status, e.message) from None
     hold = watchdog = r = None
     conn = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=OUTSIDE_DEADLINE)
     try:
         conn.connect()
         sock = conn.sock   # the connection closes it once the response is under way
+        left = OUTSIDE_DEADLINE - (time.monotonic() - started)   # what the connect left of the deadline
+        if left <= 0:
+            raise OSError("the deadline passed")
         hold = socket.socket(fileno=os.dup(sock.fileno()))   # a second handle on the connection: at the deadline it ends whatever read is waiting
 
         def cut():
             with contextlib.suppress(OSError):
                 hold.shutdown(socket.SHUT_RDWR)
-        watchdog = threading.Timer(OUTSIDE_DEADLINE, cut)
+        watchdog = threading.Timer(left, cut)
         watchdog.daemon = True
         watchdog.start()
         if url.scheme != "https" and not is_loopback_address(sock.getpeername()[0]):
             raise OSError("not on this machine")
         headers = {"content-type": "application/json", "accept": "application/json", "user-agent": USER_AGENT, **({"authorization": f"Bearer {bearer}"} if bearer else {})}
+        sent = True   # from here the server may have acted on it, whatever comes of the call
         conn.request("POST", url.path.rstrip("/") + path, json.dumps(payload).encode(), headers)
         r = conn.getresponse()
         if r.status != 200:
@@ -211,7 +232,7 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
         raise
     except (OSError, http.client.HTTPException, ValueError, RecursionError) as e:
         print(f"{what}: {path}: {type(e).__name__}" + (f": {e}"[:100] if isinstance(e, OSError) else ""), file=sys.stderr)   # a socket's message only, never the answer's text
-        raise HttpError(502, f"{what} could not be used") from None
+        raise (HttpError if sent else NotSent)(502, f"{what} could not be used") from None
     finally:
         if watchdog:
             watchdog.cancel()
@@ -220,6 +241,19 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
         if r:
             r.close()
         conn.close()
+
+
+def private_file(path: str, option: str, what: str) -> None:
+    """SystemExit unless `path` is a regular file that only its owner can read (mode 0600 or stricter) and holds one token."""
+    try:
+        mode = os.stat(path).st_mode
+        if not stat.S_ISREG(mode):
+            sys.exit(f"{option} {path} is not a file")
+        if mode & 0o077:
+            sys.exit(f"{option} {path} must be readable by its owner only (mode 0600): it is {what}")
+        read_token(path)
+    except (OSError, HttpError) as e:
+        sys.exit(f"{option} {path}: {getattr(e, 'message', 'cannot be read')}")
 
 
 def parse_registries(items, token_items) -> dict:
@@ -235,10 +269,7 @@ def parse_registries(items, token_items) -> dict:
         admin, _, path = item.partition("=")
         if admin not in found:
             sys.exit(f"--registry-token-file for {admin!r}, which has no --registry")
-        try:
-            read_token(path)
-        except HttpError as e:
-            sys.exit(f"--registry-token-file {path}: {e.message}")
+        private_file(path, "--registry-token-file", "the registry's token")
         found[admin] = (found[admin][0], path)
     return found
 
@@ -246,7 +277,8 @@ def parse_registries(items, token_items) -> dict:
 class Faucet:
     """DevNet only: the validator's own party sends `amount` Canton Coin to an account, through the validator's wallet API (`POST <url>/v0/wallet/token-standard/transfers`, with
     the validator's token, which is admin-level). An account has one a day, so has a client (an IPv4 address, an IPv6 /48), and `per_day` is the total of the day. A grant is
-    counted when it is asked for: one that fails still counts."""
+    counted when it is asked for: one that fails still counts, except one that failed before anything was sent to the wallet (the token could not be read, the connection could
+    not be made): that cannot have made a transfer, so it is given back. A failure after the request was written, a timeout, or any answer at all is not: the transfer may exist."""
     def __init__(self, amount: str, url: str, bearer_file: str, per_day: int = 200):
         self.amount, self.url, self.bearer_file, self.lock = amount, url, bearer_file, threading.Lock()
         self.per_account, self.per_client, self.total = Limiter(1, DAY), Limiter(1, DAY), Limiter(per_day, DAY)
@@ -263,7 +295,13 @@ class Faucet:
                 limiter.hit(key)
         request = {"receiver_party_id": party, "amount": self.amount, "description": "DevNet faucet", "expires_at": int((time.time() + 3600) * 1_000_000),
                    "tracking_id": "faucet-" + str(uuid.uuid4())}
-        output = outside_post(self.url, "/v0/wallet/token-standard/transfers", request, self.bearer_file, "the validator's wallet").get("output")
+        try:
+            output = outside_post(self.url, "/v0/wallet/token-standard/transfers", request, self.bearer_file, "the validator's wallet").get("output")
+        except NotSent:
+            with self.lock:
+                for limiter, key in items:
+                    limiter.refund(key)
+            raise
         # The answer is Splice 0.10.0's `TransferInstructionResultResponse` (wallet-internal.yaml, createTokenStandardTransfer): `output` is a oneOf with no discriminator field,
         # {transfer_instruction_cid} when pending, {receiver_holding_cids: [...]} when completed, {dummy} when failed.
         output = output if isinstance(output, dict) else {}
@@ -283,13 +321,7 @@ def faucet_from(amount, url, bearer_file, per_day: int):
         sys.exit("--faucet-amount is more than zero with at most 10 decimals; --faucet-per-day is at least 1")
     if not url or not bearer_file:
         sys.exit("--faucet-amount needs --faucet-url (the validator's API root) and --faucet-token-file")
-    try:
-        mode = os.stat(bearer_file).st_mode
-        if not stat.S_ISREG(mode) or mode & 0o077:
-            sys.exit(f"--faucet-token-file {bearer_file} must be a file readable by its owner only (mode 0600): it is the validator's admin token")
-        read_token(bearer_file)
-    except (OSError, HttpError) as e:
-        sys.exit(f"--faucet-token-file {bearer_file}: {getattr(e, 'message', 'cannot be read')}")
+    private_file(bearer_file, "--faucet-token-file", "the validator's admin token")
     return Faucet(amount if "." in amount else amount + ".0", outside_url(url, "--faucet-url"), bearer_file, per_day)
 
 
@@ -398,6 +430,15 @@ class Limiter:
         with self.lock:
             q, now = self._room(key, weight, True)
             q.append((now, weight))
+
+    def refund(self, key: str, weight: int = 1) -> None:
+        """Take back the latest `hit` of this weight on this key (the hit of a request that is known to have done nothing)."""
+        with self.lock:
+            q = self.hits.get(key) or ()
+            for i in range(len(q) - 1, -1, -1):
+                if q[i][1] == weight:
+                    del q[i]
+                    break
 
     def prune(self) -> None:
         with self.lock:
@@ -583,7 +624,7 @@ class Accounts:
             if party in self.parties:
                 return self.parties.key(party)
             if self.holds(party):   # the user can act as it, the state file has no line for it: the Ledger API does not give a party's key
-                raise HttpError(409, "this service holds that account but not its key: register it again (topology, then allocate, with the same key)")
+                raise conflict("account_key_unknown", "this service holds that account but not its key: register it again (topology, then allocate, with the same key)")
         raise HttpError(404, "this service did not make that account")
 
     def authenticate(self, party, method: str, path: str, raw: bytes, header, ip: str = "") -> None:
@@ -799,7 +840,9 @@ class Accounts:
         flt = {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}}]}
         page = self.ledger.call("POST", "/v2/state/active-contracts-page", {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": limit})
         if len(page.get("activeContracts") or []) + self.in_flight.count((party, template)) >= limit:   # an execute that got no answer may still commit
-            raise HttpError(409, f"this account has {limit} open already: only {limit} at a time")
+            if template.rpartition(":")[2].endswith("Acceptance"):   # a standing acceptance: the account has it already
+                raise conflict("already_accepted", "this account already has this acceptance")
+            raise conflict("too_many_open", f"this account has {limit} open already: only {limit} at a time")
 
     def prepare(self, body: dict, ip: str) -> dict:
         party = self.known(body.get("party"))
@@ -818,7 +861,7 @@ class Accounts:
         with self.account_lock(party) if limited else contextlib.nullcontext():
             if limited:
                 if any(v["template"] == template for v in self.prepared.values(party)):
-                    raise HttpError(409, "this account has a transaction of that kind waiting for its signature: execute it first (or wait for it to expire)")
+                    raise conflict("waiting_for_signature", "this account has a transaction of that kind waiting for its signature: execute it first (or wait for it to expire)")
                 self.open_contracts(party, template)
             made = self.ledger.call("POST", "/v2/interactive-submission/prepare", request)
             tx, version = made["preparedTransaction"], made["hashingSchemeVersion"]
@@ -897,12 +940,16 @@ class Accounts:
                                                 if isinstance(v, dict) and ((v.get("allocation") or {}).get("transferLeg") or {}).get("sender") == party]}
 
     def open(self, party: str) -> dict:
-        """The party's open DepositRequests and RedeemRequests (those the service allows it to create), by contract id, with their arguments."""
-        out = {"party": party, "depositRequests": [], "redeemRequests": []}
-        for template, key, owner in ((DEPOSIT, "depositRequests", "depositor"), (REDEEM, "redeemRequests", "holder")):
+        """The party's open DepositRequests and RedeemRequests (those the service allows it to create), by contract id, with their arguments; and its two standing acceptances,
+        `twinAcceptance` and `withdrawalAcceptance`: {"contractId", "arguments"}, or null when it has none (or the service does not allow it to make one). Each template is read
+        in pages of one snapshot (one offset for all its pages), bounded as every read is."""
+        out = {"party": party, "depositRequests": [], "redeemRequests": [], "twinAcceptance": None, "withdrawalAcceptance": None}
+        for template, key, owner, many in ((DEPOSIT, "depositRequests", "depositor", True), (REDEEM, "redeemRequests", "holder", True),
+                                           (TWIN_ACCEPTANCE, "twinAcceptance", "party", False), (ACCEPTANCE, "withdrawalAcceptance", "party", False)):
             if template in self.allow:
                 found = self.active(party, {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}, "open requests")
-                out[key] = [{"contractId": e["contractId"], "arguments": e["createArgument"]} for e in found if (e.get("createArgument") or {}).get(owner) == party]
+                mine = [{"contractId": e["contractId"], "arguments": e["createArgument"]} for e in found if (e.get("createArgument") or {}).get(owner) == party]
+                out[key] = mine if many else mine[0] if mine else None
         return out
 
 
@@ -945,7 +992,7 @@ def make_server(service: Accounts, host: str, port: int, ip_header: str = None, 
                 ip = client_address(self.client_address[0], ",".join(self.headers.get_all(ip_header, [])) if ip_header else "", proxies, trusted)
                 status, out = 200, service.handle(method, urllib.parse.urlsplit(self.path).path, body, ip, raw, self.headers.get("X-Account-Signature"))
             except HttpError as e:
-                status, out = e.status, {"error": e.message, **{k: v for k, v in e.extra.items() if v is not None and k != "retryAfter"}}
+                status, out = e.status, {**({"error": e.stable, "message": e.message} if e.stable else {"error": e.message}), **{k: v for k, v in e.extra.items() if v is not None and k != "retryAfter"}}
                 if "retryAfter" in e.extra:
                     headers["retry-after"] = str(e.extra["retryAfter"])
             except Exception as e:

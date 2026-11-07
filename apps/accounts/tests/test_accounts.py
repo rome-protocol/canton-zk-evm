@@ -350,6 +350,38 @@ class Hardening(Case):
         self.ledger.open[DEPOSIT] = 4
         self.assertEqual(self.prepare(DEPOSIT)[0], 200)
 
+    def test_each_conflict_has_its_own_stable_code_and_a_message(self):
+        self.make_account()
+        self.ledger.open[ACCEPT] = 1
+        status, out, _ = self.prepare()   # the account has this acceptance
+        self.assertEqual((status, out), (409, {"error": "already_accepted", "message": "this account already has this acceptance"}))
+        self.ledger.open[DEPOSIT] = 3
+        status, out, _ = self.prepare(DEPOSIT)   # the limit of a request that may be made again
+        self.assertEqual((status, out["error"]), (409, "too_many_open"))
+        self.assertIn("3 open already", out["message"])
+        self.ledger.open.clear()
+        self.assertEqual(self.prepare()[0], 200)   # one waits for its signature
+        status, out, _ = self.prepare()
+        self.assertEqual((status, out["error"]), (409, "waiting_for_signature"))
+        self.assertIn("execute it first", out["message"])
+        self.service.prepared.items.clear()
+        _, p, _ = self.prepare()   # sent after another acceptance was made: the same answer as at the prepare
+        self.ledger.open[ACCEPT] = 1
+        status, out, _ = self.req("POST", "/accounts/v1/execute", self.execute_body(p))
+        self.assertEqual((status, out["error"]), (409, "already_accepted"))
+
+    def test_the_twin_acceptance_is_an_acceptance_too(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.TWIN_ACCEPTANCE), open_limits={ACCEPT: 1, DEPOSIT: 3, A.TWIN_ACCEPTANCE: 1})
+        self.make_account()
+        self.ledger.open[A.TWIN_ACCEPTANCE] = 1
+        status, out, _ = self.prepare(A.TWIN_ACCEPTANCE, party=PARTY, admin=CHAIN["gateway"])
+        self.assertEqual((status, out["error"]), (409, "already_accepted"))
+
+    def test_other_errors_keep_the_plain_shape(self):
+        self.make_account()
+        status, out, _ = self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": []})
+        self.assertEqual((status, list(out)), (400, ["error"]))
+
     def test_the_open_contracts_are_counted_again_when_the_transaction_is_sent(self):
         self.make_account()
         _, p, _ = self.prepare()
@@ -720,13 +752,57 @@ class AllocationsAndOpen(Case):
                                A.REDEEM: [{"contractId": "r1", "createArgument": {"holder": PARTY, "ref": "y"}}]}
         status, out, _ = self.req("GET", f"/accounts/v1/open/{PARTY}")
         self.assertEqual((status, out), (200, {"party": PARTY, "depositRequests": [{"contractId": "d1", "arguments": {"depositor": PARTY, "label": "x"}}],
-                                              "redeemRequests": [{"contractId": "r1", "arguments": {"holder": PARTY, "ref": "y"}}]}))
+                                              "redeemRequests": [{"contractId": "r1", "arguments": {"holder": PARTY, "ref": "y"}}], "twinAcceptance": None, "withdrawalAcceptance": None}))
+
+    def test_the_two_acceptances_are_listed_with_their_contract_ids_or_null(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.TWIN_ACCEPTANCE), open_limits={ACCEPT: 1, DEPOSIT: 3, A.TWIN_ACCEPTANCE: 1})
+        self.make_account()
+        out = self.req("GET", f"/accounts/v1/open/{PARTY}")[1]   # none made
+        self.assertEqual((out["twinAcceptance"], out["withdrawalAcceptance"]), (None, None))
+        stranger = "other::1220" + "99" * 32
+        self.ledger.created = {A.TWIN_ACCEPTANCE: [{"contractId": "t0", "createArgument": {"party": stranger}}, {"contractId": "t1", "createArgument": {"party": PARTY, "admin": "g"}}],
+                               ACCEPT: [{"contractId": "w1", "createArgument": {"party": PARTY, "chainId": "1"}}]}
+        status, out, _ = self.req("GET", f"/accounts/v1/open/{PARTY}")
+        self.assertEqual(status, 200)
+        self.assertEqual(out["twinAcceptance"], {"contractId": "t1", "arguments": {"party": PARTY, "admin": "g"}})   # another party's is not the account's
+        self.assertEqual(out["withdrawalAcceptance"], {"contractId": "w1", "arguments": {"party": PARTY, "chainId": "1"}})
+        self.ledger.created = {A.TWIN_ACCEPTANCE: [{"contractId": "t1", "createArgument": {"party": PARTY}}]}   # only the twin one
+        out = self.req("GET", f"/accounts/v1/open/{PARTY}")[1]
+        self.assertEqual((out["twinAcceptance"]["contractId"], out["withdrawalAcceptance"]), ("t1", None))
+
+    def paged_twin(self, pages):
+        """The twin acceptance is served in pages: `pages(n)` is the n-th page's (items, whether another follows). Returns the bodies of the reads."""
+        self.start(allow=(*A.DEFAULT_ALLOW, A.TWIN_ACCEPTANCE), open_limits={ACCEPT: 1, DEPOSIT: 3, A.TWIN_ACCEPTANCE: 1})
+        self.make_account()
+        reads, original = [], self.ledger.answer
+
+        def answer(method, path, body):
+            if path.endswith("/active-contracts-page") and A.TWIN_ACCEPTANCE in json.dumps(body):
+                reads.append(body)
+                items, more = pages(len(reads))
+                page = {"activeAtOffset": 7, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": c, "createArgument": {"party": PARTY}}}}} for c in items]}
+                return 200, {**page, **({"nextPageToken": str(len(reads))} if more else {})}
+            return original(method, path, body)
+        self.ledger.answer = answer
+        return reads
+
+    def test_an_acceptance_is_read_in_pages_of_one_snapshot(self):
+        reads = self.paged_twin(lambda n: ([] if n < 3 else ["t-late"], n < 3))
+        status, out, _ = self.req("GET", f"/accounts/v1/open/{PARTY}")
+        self.assertEqual((status, out["twinAcceptance"]["contractId"]), (200, "t-late"))   # found on the third page
+        self.assertEqual([r.get("pageToken") for r in reads], [None, "1", "2"])
+        self.assertEqual([r.get("activeAtOffset") for r in reads], [None, 7, 7])   # the offset the first page gave, for every page after it
+
+    def test_the_read_of_an_acceptance_stops_at_the_existing_page_limit(self):
+        reads = self.paged_twin(lambda n: ([], True))   # a list that never ends
+        status, _, _ = self.req("GET", f"/accounts/v1/open/{PARTY}")
+        self.assertEqual((status, len(reads)), (500, A.HOLDINGS_PAGES))
 
     def test_a_template_the_service_does_not_allow_is_not_read(self):
         self.make_account()
         self.ledger.created = {DEPOSIT: []}
-        self.assertEqual(self.req("GET", f"/accounts/v1/open/{PARTY}")[1], {"party": PARTY, "depositRequests": [], "redeemRequests": []})
-        self.assertEqual(len(self.calls_to("/active-contracts-page")), 1)
+        self.assertEqual(self.req("GET", f"/accounts/v1/open/{PARTY}")[1], {"party": PARTY, "depositRequests": [], "redeemRequests": [], "twinAcceptance": None, "withdrawalAcceptance": None})
+        self.assertEqual(len(self.calls_to("/active-contracts-page")), 2)   # the deposit requests and the withdrawal acceptance, the two it allows
 
     def test_both_need_the_account_signature_and_an_account_the_service_made(self):
         self.make_account()
@@ -847,7 +923,8 @@ class StateAndRights(Case):
         self.ledger.rights.append(PARTY)   # a party the file does not have: held, key unknown
         status, out, _ = self.holdings()
         self.assertEqual(status, 409)
-        self.assertIn("register it again", out["error"])
+        self.assertEqual(out["error"], "account_key_unknown")
+        self.assertIn("register it again", out["message"])
         self.assertEqual(self.service.rights, {PARTY})   # the read on the miss; a CanReadAs right is not a held party
         self.assertEqual(self.req("GET", "/accounts/v1/holdings/stranger::1220" + "99" * 32)[0], 404)
 
@@ -1045,6 +1122,19 @@ class OutsideCase(Case):
         self.outside.server.shutdown()
         super().tearDown()
 
+    def on_connect(self, before=None, fail=None):
+        """Patch the connect of a call to the fake outside server only (the test's own requests to the service connect as always): `before` runs first, `fail` is raised instead."""
+        connect, port = A.http.client.HTTPConnection.connect, int(self.outside.url.rsplit(":", 1)[1])
+
+        def patched(conn):
+            if conn.port == port:
+                if fail:
+                    raise fail
+                if before:
+                    before()
+            connect(conn)
+        return unittest.mock.patch.object(A.http.client.HTTPConnection, "connect", patched)
+
     def with_registry(self, **kw):
         self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, **kw)
         self.assertEqual(self.make_account()[0], 200)
@@ -1120,6 +1210,24 @@ class RegistryRelay(OutsideCase):
         self.assertEqual((status, out["error"], out["registryStatus"]), (502, "the token registry answered HTTP 302", 302))
         self.assertEqual(other.calls, [])
         other.server.shutdown()
+
+    def test_the_deadline_covers_the_connect_and_the_read_together(self):
+        self.with_registry()
+        self.outside.delay = 0.6   # each part is inside the deadline, the two together are not
+        started = time.monotonic()
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 1.0), self.on_connect(before=lambda: time.sleep(0.6)):
+            status, out, _ = self.factory()
+        self.assertEqual((status, out), (502, {"error": "the token registry could not be used"}))
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.outside.delay = 0.1   # in time: it passes
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 1.0), self.on_connect(before=lambda: time.sleep(0.6)):
+            self.assertEqual(self.factory()[0], 200)
+
+    def test_a_connect_that_used_the_whole_deadline_sends_nothing(self):
+        self.with_registry()
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.2), self.on_connect(before=lambda: time.sleep(0.3)):
+            self.assertEqual(self.factory()[0], 502)
+        self.assertEqual(self.outside.calls, [])
 
     def test_an_answer_that_is_not_a_json_object_is_refused(self):
         self.with_registry()
@@ -1269,6 +1377,57 @@ class Faucets(OutsideCase):
             self.assertEqual(self.ask()[0], 502)
         self.assertEqual(len(self.outside.calls), 1)   # only the redirected try reached it
 
+    def test_a_failure_before_anything_was_sent_gives_the_allowance_back(self):
+        self.with_faucet()
+        os.remove(self.bearer_file)   # the token cannot be read: nothing is sent
+        self.assertEqual(self.ask()[0], 502)
+        self.assertEqual(self.outside.calls, [])
+        self.assertEqual([len(q) for q in (*self.service.faucet.per_account.hits.values(), *self.service.faucet.per_client.hits.values(), *self.service.faucet.total.hits.values())], [0, 0, 0])
+        with open(self.bearer_file, "w") as f:
+            f.write(HANDLE + "\n")
+        os.chmod(self.bearer_file, 0o600)
+        self.outside.answer = COMPLETED
+        self.assertEqual(self.ask()[0], 200)   # the same account asks again the same day
+        self.assertEqual(self.ask()[0], 429)   # and now it has had its one
+
+    def test_a_connection_that_cannot_be_made_or_a_peer_that_is_not_this_machine_gives_it_back(self):
+        self.outside.answer = COMPLETED
+        self.with_faucet()
+        with self.on_connect(fail=ConnectionRefusedError()):
+            self.assertEqual(self.ask()[0], 502)
+        with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
+            self.assertEqual(self.ask()[0], 502)
+        self.assertEqual(self.outside.calls, [])
+        self.assertEqual(self.ask()[0], 200)   # neither of them used the day's one
+
+    def test_a_failure_after_the_request_was_sent_keeps_the_allowance(self):
+        self.with_faucet(per_day=100)
+        for status, raw in ((500, b"{}"), (404, b"{}"), (200, b"not json"), (200, b'{"output": {"dummy": {}}}')):   # an answer, of any kind, may follow a transfer
+            self.outside.status, self.outside.raw = status, raw
+            self.faucet_reset()
+            self.assertEqual(self.ask()[0], 502, (status, raw))
+            self.assertEqual(self.ask()[0], 429, (status, raw))   # still counted
+        self.outside.status, self.outside.raw, self.outside.delay = 200, None, 0.3   # no answer in time: unknown
+        self.faucet_reset()
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.1):
+            self.assertEqual(self.ask()[0], 502)
+        self.assertEqual(self.ask()[0], 429)
+
+    def test_a_request_that_died_while_it_was_written_is_unknown_too(self):
+        with unittest.mock.patch.object(A, "outside_post", side_effect=A.HttpError(502, "the validator's wallet could not be used")):
+            f = A.Faucet("20.0", "https://wallet.example", self.bearer_file)
+            with self.assertRaises(A.HttpError):
+                f.grant("p1", "1.1.1.1")
+            with self.assertRaises(A.HttpError) as e:
+                f.grant("p1", "1.1.1.1")
+            self.assertEqual(e.exception.status, 429)
+        with unittest.mock.patch.object(A, "outside_post", side_effect=A.NotSent(502, "x")):   # and one that was not sent is given back
+            f = A.Faucet("20.0", "https://wallet.example", self.bearer_file)
+            for _ in range(3):
+                with self.assertRaises(A.HttpError) as e:
+                    f.grant("p1", "1.1.1.1")
+                self.assertEqual(e.exception.status, 502)
+
     def test_the_faucets_limits_are_swept(self):
         self.with_faucet()
         self.service.faucet.per_account.hit("x")
@@ -1322,6 +1481,25 @@ class OutsideConfig(unittest.TestCase):
                 f.write(content)
             with self.assertRaises(SystemExit, msg=content):
                 A.parse_registries([f"{ADMIN}=https://v.example"], [f"{ADMIN}={self.bearer_file}"])
+
+    def test_a_registry_token_file_is_for_its_owner_only(self):
+        item, registry = [f"{ADMIN}={self.bearer_file}"], [f"{ADMIN}=https://v.example"]
+        for mode in (0o600, 0o400):
+            os.chmod(self.bearer_file, mode)
+            self.assertEqual(A.parse_registries(registry, item)[ADMIN][1], self.bearer_file)
+        for mode in (0o644, 0o640, 0o604, 0o660, 0o606, 0o666):
+            os.chmod(self.bearer_file, mode)
+            with self.assertRaises(SystemExit, msg=oct(mode)) as e:
+                A.parse_registries(registry, item)
+            self.assertIn("readable by its owner only", str(e.exception))
+            self.assertIn(self.bearer_file, str(e.exception))
+
+    def test_the_service_does_not_start_with_a_registry_token_readable_by_others(self):
+        os.chmod(self.bearer_file, 0o644)
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), self.assertRaises(SystemExit) as e:
+            A.main(["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--registry", f"{ADMIN}=https://v.example",
+                    "--registry-token-file", f"{ADMIN}={self.bearer_file}"])
+        self.assertIn("mode 0600", str(e.exception))
 
     def test_the_faucet_needs_its_options_and_a_token_file_for_its_owner_only(self):
         ok = A.faucet_from("20", "https://validator.example/api/validator/", self.bearer_file, 200)
