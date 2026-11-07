@@ -19,7 +19,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@canton-network/core-ledger-proto": "1.14.0",
+    "@canton-network/core-tx-visualizer": "1.14.0",
     "@ethereum-sourcify/lib-sourcify": "3.7.4",
+    "@noble/ed25519": "3.2.0",
     "@tanstack/react-query": "5.104.1",
     "pg": "8.23.1",
     "react": "19.3.0",
