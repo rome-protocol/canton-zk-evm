@@ -51,6 +51,7 @@ describe("plain words for what the person can see", () => {
 
 describe("the page's sentences about wallets and moves", () => {
   it("sends a sentence that names an EIP or an ERC to the general one", () => {
+    expect(moveWords("The current chain of the wallet (id: 1) does not match the target chain for the transaction.")).toBe("Your wallet is not on Ostia. Switch it to Ostia, then continue.");
     expect(plainText("No wallet was found in this browser. Open this page in a browser with an EIP-1193 wallet.")).toBe(GENERIC);
     expect(plainText("This token follows ERC-20.")).toBe(GENERIC);
     expect(plainText("No wallet was found in this browser. Install MetaMask, then open this page again.")).toBe("No wallet was found in this browser. Install MetaMask, then open this page again.");

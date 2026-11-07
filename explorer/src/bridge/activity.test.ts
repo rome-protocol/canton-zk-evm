@@ -43,6 +43,20 @@ describe("the moves of an account", () => {
   });
 });
 
+describe("the transaction of a row", () => {
+  it("is the move's own, never the approval or the wrap that came before it", () => {
+    const lock: Checkpoint["input"] = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY };
+    const wallet = { ref: "r", account: ME, party: PARTY, vault: VAULT, tx: TX };
+    for (const step of ["approve", "wrap"] as const) {
+      const e = entryOf({ ...wallet, input: lock, stage: "wallet", step });
+      expect(e.tx).toBeNull();
+      expect(seedOf(e).sent).toBe(false);
+    }
+    expect(entryOf({ ...wallet, input: lock, stage: "wallet", step: "pay" }).tx).toBe(TX);
+    expect(entryOf({ ...wallet, input: redeem, stage: "sent" }).tx).toBe(TX);
+  });
+});
+
 describe("writing a move down when it ends", () => {
   it("remembers the move with its transaction and block when the move is final, and not before", () => {
     const store = memory();

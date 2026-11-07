@@ -156,11 +156,11 @@ describe("the four moves on the card", () => {
     saveCheckpoint(store, { input: { kind: "redeem", asset: TKA, amount: "3" }, ref: "ref-1", account: ME, party: PARTY, vault: VAULT, to: ME, stage: "evm", at: Date.now() });
     const m = fakeSession({ store, legs: (ref) => [leg({ kind: "payment", legId: releaseIdOf(VAULT, ref) }, TKA)] });
     show({}, m);
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Release on Ostia" })).toBeEnabled();
     expect(screen.getByRole("status")).toHaveTextContent("Canton has it. Continue to release it on Ostia.");
     expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("3");
     expect(screen.getByRole("button", { name: /^From token TKA on Canton$/ })).toBeInTheDocument();
-    await press("Continue");
+    await press("Release on Ostia");
     await done();
     expect(m.evm.calls.map((c) => c.name)).toEqual(["release"]);
   });
@@ -254,5 +254,62 @@ describe("the card on a phone", () => {
     expect(css).toMatch(/\.bridge-page \.amt textarea[^}]*overflow-wrap: anywhere/);
     expect(css).toMatch(/@media \(max-width: 480px\) \{[^}]*\.bridge-page \.amt \{ flex: 1 1 100%/);
     expect(css).not.toMatch(/\.amt[^{]*\{[^}]*overflow: hidden[^}]*max-height|\.amt[^{]*\{[^}]*(?<!-)height: \d/);
+  });
+});
+
+describe("what the card does around a move", () => {
+  const kept = () => {
+    const store = memoryStore();
+    saveCheckpoint(store, { input: { kind: "redeem", asset: TKA, amount: "3" }, ref: "ref-1", account: ME, party: PARTY, vault: VAULT, to: ME, stage: "evm", at: Date.now() });
+    return fakeSession({ store, legs: (ref) => [leg({ kind: "payment", legId: releaseIdOf(VAULT, ref) }, TKA)] });
+  };
+  it("puts the wallet on Ostia before it continues a kept move, and sends nothing when it cannot", async () => {
+    const m = kept();
+    const ensureChain = vi.fn(async () => "Your wallet is not on Ostia yet.");
+    show({ ensureChain }, m);
+    await userEvent.click(await screen.findByRole("button", { name: "Release on Ostia" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your wallet is not on Ostia yet.");
+    expect(ensureChain).toHaveBeenCalledTimes(1);
+    expect(m.evm.calls).toEqual([]);
+  });
+  it("does not take a second press while the wallet is being put on Ostia", async () => {
+    let go: (why: null) => void = () => {};
+    const ensureChain = vi.fn(() => new Promise<null>((r) => { go = r; }));
+    const m = fakeSession({ legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, TKA)] });
+    show({ ensureChain }, m);
+    await tka();
+    await type("1");
+    await press("Move to Canton");
+    expect(screen.getByRole("button", { name: "Move to Canton" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveAttribute("readonly");
+    await press("Move to Canton");
+    expect(ensureChain).toHaveBeenCalledTimes(1);
+    go(null);
+    await done();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("fills in Max as an amount the button takes, for a token that has fewer than ten decimals", async () => {
+    const six = { ...config, twins: [{ address: TKA, symbol: "TKA", decimals: 6 }, ...config.twins.slice(1)] };
+    show({ config: six }, fakeSession({ legs: () => [], cantonBalance: 123456789012n }));
+    await choose("From", /^TKA on canton$/);
+    await screen.findByText("12.3456789012");   // Canton holds ten decimals
+    await press("Max");
+    expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("12.345678");
+    expect(await screen.findByRole("button", { name: "Move to Ostia" })).toBeEnabled();
+  });
+  it("says the chain's own coin comes back wrapped", async () => {
+    show();
+    await press("Swap direction");
+    expect(screen.getByText("Release tROME on Ostia (it arrives wrapped)")).toBeInTheDocument();
+  });
+  it("drops the balance of the old token when the token changes, until the new one is read", async () => {
+    const e = fakeEvm();
+    const real = e.evm.balanceOf;
+    e.evm.balanceOf = (t, h) => (t === WTROME ? new Promise(() => {}) : real(t, h));
+    show({}, fakeSession({ legs: () => [], evm: e }));
+    await tka();
+    expect(await screen.findAllByText("20")).toHaveLength(2);
+    await choose("From", /^tROME on ostia$/);
+    expect(screen.queryAllByText("20")).toHaveLength(0);
   });
 });

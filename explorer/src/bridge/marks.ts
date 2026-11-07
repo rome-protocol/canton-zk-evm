@@ -1,7 +1,6 @@
 // The three marks of a move on Ostia (Sent, Proven, Final), read from the explorer's own answer for the move's transaction: its state, its proof and its block. No timer decides a mark.
 import type { Hex } from "viem";
-import { ApiError, bridgeReads, type ApiTx } from "../api.ts";
-import { timeoutSignal } from "../timeout.ts";
+import type { ApiTx } from "../api.ts";
 
 export interface Marks {
   /** The transaction was sent: the wallet gave its hash, or the explorer has it. */
@@ -36,8 +35,3 @@ export function marksOf(tx: ApiTx | null, sent: boolean): Marks {
 export const merge = (a: Marks, b: Marks): Marks => ({
   sent: a.sent || b.sent, proven: a.proven || b.proven, final: a.final || b.final, block: b.block ?? a.block, updateId: b.updateId ?? a.updateId,
 });
-
-/** The explorer's answer for a transaction; null while it has not seen it. */
-export async function readTx(hash: Hex): Promise<ApiTx | null> {
-  try { return await bridgeReads.tx(hash, timeoutSignal()!); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
-}

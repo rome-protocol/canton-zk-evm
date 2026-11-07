@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
-import { continueWords, openOnCanton, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
+import { continueWords, openOnCanton, rememberUpdate, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
 import { noteOf, waitWords } from "../bridge/card.ts";
 import type { OpenState } from "../bridge/canton/accounts.ts";
-import { readTx } from "../bridge/marks.ts";
 import type { MoveState, StoreLike } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import type { Pair } from "../bridge/tokens.ts";
@@ -25,6 +24,10 @@ export interface ActivityProps {
   chainName: string;
   onConnect(): void;
   onOpenAccount(): void;
+  /** What the wallet or the page says of connecting, in plain words. */
+  connectNote?: string | null;
+  /** Puts the wallet on Ostia; says why not, in words, when it cannot. */
+  ensureChain?(): Promise<string | null>;
   read?: (hash: Hex) => Promise<ApiTx | null>;
   /** How often an unfinished move's transaction is looked up again (ms). */
   pollMs?: number;
@@ -35,7 +38,10 @@ const RUNNING = ["signing-canton", "waiting-canton", "sending-evm", "proving"];
 function Row({ e, props, state, live, onCanton, busy, onContinue }: {
   e: Entry; props: ActivityProps; state: MoveState; live: boolean; onCanton: boolean; busy: boolean; onContinue(e: Entry): void;
 }) {
-  const marks = useMarks(e.tx, seedOf(e), props.read, props.pollMs);
+  // A finished move whose block and update are known is not looked up again.
+  const known = e.done && e.block !== null && !!e.updateId;
+  const marks = useMarks(known ? null : e.tx, seedOf(e), props.read, props.pollMs);
+  useEffect(() => { if (e.done && !e.updateId && marks.updateId) rememberUpdate(props.store, e.ref, marks.updateId); }, [marks.updateId]);   // eslint-disable-line react-hooks/exhaustive-deps
   const note = live ? noteOf(state) : null;
   const running = live && RUNNING.includes(state.phase);
   const where = running ? waitWords(state) ?? "" : note ? note.text : e.done ? "" : standing(e, props.chainName, onCanton);
@@ -84,15 +90,21 @@ export function Activity(props: ActivityProps) {
     setBusy(true); setProblem(null);
     try {
       // A move already picked up here goes on at once; one that is not is picked up first (that only reads and waits, and never asks the wallet), then goes on.
+      // The wallet goes to Ostia before the move goes on (resume only reads; proceed asks the wallet).
       const paused = (s: MoveState) => s.phase === "paused" || (s.phase === "failed" && s.kept);
       const now = e.ref === liveRef && paused(session.move.state) ? session.move.state : await session.move.resume(e.ref);
-      const end = paused(now) ? await session.move.proceed() : now;
+      let end = now;
+      if (paused(now)) {
+        const why = await props.ensureChain?.();
+        if (why) { setProblem(why); return; }
+        end = await session.move.proceed();
+      }
       if (end.phase === "failed" && !end.kept) setProblem(moveWords(end.reason));   // a failed move that is kept says it in its own row
     } catch (x) { setProblem(moveWords(x instanceof Error ? x.message : null)); }
     finally { setBusy(false); setStamp((n) => n + 1); }
-  }, [session, busy, liveRef]);
+  }, [session, busy, liveRef, props.ensureChain]);
 
-  if (!account) return <section className="card" aria-label="Activity"><p className="muted">Connect MetaMask to see your moves.</p><button type="button" className="btn go" onClick={props.onConnect}>Connect MetaMask</button></section>;
+  if (!account) return <section className="card" aria-label="Activity"><p className="muted">Connect MetaMask to see your moves.</p><button type="button" className="btn go" onClick={props.onConnect}>Connect MetaMask</button>{props.connectNote && <p className="small bad" role="alert">{props.connectNote}</p>}</section>;
   const going = RUNNING.includes(state.phase);
   return (
     <section className="card activity" aria-label="Activity">

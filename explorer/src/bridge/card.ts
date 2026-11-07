@@ -19,6 +19,8 @@ export interface ButtonInput {
   move: MoveState;
   /** A failed move whose record is kept can be continued. */
   kept?: boolean;
+  /** What the button says for a paused or kept move: the step it carries on with ("Release on Ostia"). */
+  continueLabel?: string;
 }
 
 /** What a move that is running says while it waits. Null when no move is running. */
@@ -27,7 +29,7 @@ export function progressWords(s: MoveState, symbol: string): string | null {
     case "signing-canton": return "Signing on Canton…";
     case "waiting-canton": return "Waiting for Canton…";
     case "sending-evm":
-      return s.step === "prepare" ? "Getting ready…" : s.step === "wrap" ? `Confirm wrapping ${symbol} in your wallet…` : s.step === "approve" ? `Confirm approving ${symbol} in your wallet…` : "Confirm in your wallet…";
+      return s.step === "prepare" ? "Getting ready…" : s.step === "wrap" ? `Wrap ${symbol} in your wallet, then wait for it to be final…` : s.step === "approve" ? `Approve ${symbol} in your wallet, then wait for it to be final…` : "Confirm in your wallet…";
     case "proving": return "Sent. Waiting for the block to be final…";
     default: return null;
   }
@@ -48,7 +50,7 @@ export function waitWords(s: MoveState): string | null {
 export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction; disabled: boolean } {
   const running = progressWords(i.move, i.symbol);
   if (running !== null) return { label: running, action: "none", disabled: true };
-  if (i.move.phase === "paused" || (i.move.phase === "failed" && i.move.kept)) return { label: "Continue", action: "continue", disabled: false };
+  if (i.move.phase === "paused" || (i.move.phase === "failed" && i.move.kept)) return { label: i.continueLabel ?? "Continue", action: "continue", disabled: false };
   // The wallet and the Canton account come first: they do not need the bridge's tokens.
   if (!i.connected) return { label: "Connect MetaMask", action: "connect", disabled: false };
   if (!i.accountReady) return { label: "Open my Canton account", action: "open", disabled: false };

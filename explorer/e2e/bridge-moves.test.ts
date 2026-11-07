@@ -8,12 +8,13 @@ import { privateKeyToAccount } from "viem/accounts";
 import { fromBase64 } from "../src/bridge/canton/key.ts";
 import { partyOf } from "../src/bridge/canton/topology.ts";
 import { lockIdOf } from "../src/bridge/moves/state.ts";
-import { freshChain, preparedRedeem, rpcResult, sendTransaction, TKA, twinsOverview, txAnswer, UPDATE_ID, VAULT } from "./bridge-fakes.ts";
+import { allocationFactory, CC_ADMIN, CC_HOLDING, freshChain, GATEWAY, preparedAllocation, preparedDeposit, preparedRedeem, rpcResult, sendTransaction, TKA, twinsOverview, txAnswer, UPDATE_ID, VAULT, WCC, WTROME, type Extra } from "./bridge-fakes.ts";
 
 /**
  * Moves through the Bridge page's card, in a real browser at 360 px: the built pages (BRIDGE_E2E_DIST, as for bridge-account.test.ts), the same wallet that signs with a fixed key, and a fake
- * account service, now with a chain behind it (a gateway, a vault and one ERC-20 with a Canton twin: e2e/bridge-fakes.ts). One move goes from Ostia to Canton (approve, pay in) and one from Canton
- * back to Ostia (the page signs the redeem with the account's key, then releases it in the wallet). Runs only when BRIDGE_E2E_DIST is set (the `bridge-page` job of
+ * account service, now with a chain behind it (a gateway, a vault and one ERC-20 with a Canton twin, and when a test asks for them wCC and the wrapped coin: e2e/bridge-fakes.ts). All four moves run: Ostia to
+ * Canton (approve, pay in; for the chain's own coin a wrap first), Canton back to Ostia (the page signs the redeem with the account's key, then releases it in the wallet), Canton Coin to Ostia (the page signs
+ * the allocation and the deposit request, then the claim is made in the wallet) and wCC back to Canton (one withdrawal). Runs only when BRIDGE_E2E_DIST is set (the `bridge-page` job of
  * .github/workflows/explorer.yml does, after bridge-account.test.ts: both listen on the same port, the one the pages are built for).
  */
 const dist = process.env.BRIDGE_E2E_DIST;
@@ -32,13 +33,17 @@ const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = "
 describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`);
   let chain = freshChain();
-  const seen = { redeemRef: "", executed: 0, signedOk: false, signRequests: 0, rejectSends: 0 };
-  const service = { has: { twin: false, withdrawal: false }, redeemOpen: false, prepared: null as null | { hash: string } };
+  const seen = { redeemRef: "", depositId: "", executed: 0, verified: 0, signedOk: false, signRequests: 0, rejectSends: 0, factoryAsked: 0 };
+  const ALLOCATION = "00" + "dd".repeat(40);   // the contract id the participant gives the allocation
+  const service = {
+    has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {} as Extra,
+    prepared: null as null | { hash: string; kind: "redeem" | "allocation" | "deposit" }, label: "", allocated: false, depositOpen: false,
+  };
   let server: Server, browser: any, party = "", publicKey: Uint8Array = new Uint8Array();
   beforeEach(() => {
     chain = freshChain();
-    Object.assign(seen, { redeemRef: "", executed: 0, signedOk: false, signRequests: 0, rejectSends: 0 });
-    Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, prepared: null });
+    Object.assign(seen, { redeemRef: "", depositId: "", executed: 0, verified: 0, signedOk: false, signRequests: 0, rejectSends: 0, factoryAsked: 0 });
+    Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {}, prepared: null, label: "", allocated: false, depositOpen: false });
   });
 
   beforeAll(async () => {
@@ -47,7 +52,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       const json = (status: number, answer: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(answer)); };
       if (path === "/api/status") return json(200, STATUS);
       if (path === "/api/faucet") return json(200, { on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0, balanceBlock: 1 });
-      if (path === "/api/twins") return json(200, twinsOverview(`${ORIGIN}/twin-registry`));
+      if (path === "/api/twins") return json(200, twinsOverview(`${ORIGIN}/twin-registry`, service.extra));
       if (path.startsWith("/api/tx/")) { const t = txAnswer(chain, decodeURIComponent(path.slice(8))); return t ? json(200, t) : json(404, { error: "Not found." }); }
       if (path === "/rpc") {
         const call = JSON.parse(await body(req));
@@ -64,14 +69,31 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
         party = await partyOf(publicKey);
         return json(200, { party, exists: true });
       }
+      if (/^\/accounts\/v1\/registry\/[^/]+\/allocation-factory$/.test(path)) {
+        seen.factoryAsked++;
+        return json(200, allocationFactory());
+      }
       if (path === "/accounts/v1/prepare") {
         const text = await body(req);
-        const command = JSON.parse(text).commands[0].CreateCommand;
+        const first = JSON.parse(text).commands[0];
+        if (first.ExerciseCommand) {   // the allocation of Canton Coin for a deposit: the account locks it for the gateway
+          const prepared = await preparedAllocation(party, first.ExerciseCommand, "splice-amulet");
+          service.label = first.ExerciseCommand.choiceArgument.allocation.settlement.settlementRef.id;
+          service.prepared = { hash: prepared.preparedTransactionHash, kind: "allocation" };
+          return json(200, prepared);
+        }
+        const command = first.CreateCommand;
         const entity = command.templateId.split(":").pop();
         if (entity === "RedeemRequest") {
           seen.redeemRef = command.createArguments.ref;
           const prepared = await preparedRedeem(party, command.createArguments);
-          service.prepared = { hash: prepared.preparedTransactionHash };
+          service.prepared = { hash: prepared.preparedTransactionHash, kind: "redeem" };
+          return json(200, prepared);
+        }
+        if (entity === "DepositRequest") {
+          seen.depositId = command.createArguments.depositId;
+          const prepared = await preparedDeposit(party, command.createArguments);
+          service.prepared = { hash: prepared.preparedTransactionHash, kind: "deposit" };
           return json(200, prepared);
         }
         if (entity === "TwinAcceptance") service.has.twin = true;
@@ -81,17 +103,29 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (path === "/accounts/v1/execute") {
         const { partySignatures } = JSON.parse(await body(req));
         const key = createPublicKey({ key: Buffer.concat([SPKI_ED25519, publicKey]), format: "der", type: "spki" });
-        seen.signedOk = verify(null, Buffer.from(service.prepared!.hash, "base64"), key, Buffer.from(partySignatures[0].signature, "base64"));   // the account's own key signed the hash the page computed
+        const ok = verify(null, Buffer.from(service.prepared!.hash, "base64"), key, Buffer.from(partySignatures[0].signature, "base64"));   // the account's own key signed the hash the page computed
         seen.executed++;
-        service.redeemOpen = seen.signedOk;
+        if (ok) seen.verified++;
+        seen.signedOk = seen.verified === seen.executed;   // every command the page executed carried the account's own signature of the hash
+        const kind = service.prepared!.kind;
+        if (ok && kind === "redeem") service.redeemOpen = true;
+        if (ok && kind === "allocation") service.allocated = true;
+        if (ok && kind === "deposit") service.depositOpen = true;
         return json(200, { updateId: "1220" + "ef".repeat(32) });
       }
       if (path === `/accounts/v1/open/${party}`) {
         const held = (on: boolean) => (on ? { contractId: "00aa", arguments: {} } : null);
-        return json(200, { party, depositRequests: [], redeemRequests: service.redeemOpen ? [{ contractId: "00bb", arguments: { ref: seen.redeemRef } }] : [], twinAcceptance: held(service.has.twin), withdrawalAcceptance: held(service.has.withdrawal) });
+        return json(200, { party, depositRequests: service.depositOpen ? [{ contractId: "00bc", arguments: { depositId: seen.depositId } }] : [], redeemRequests: service.redeemOpen ? [{ contractId: "00bb", arguments: { ref: seen.redeemRef } }] : [], twinAcceptance: held(service.has.twin), withdrawalAcceptance: held(service.has.withdrawal) });
       }
       if (path === `/accounts/v1/holdings/${party}`) {
-        return json(200, { holdings: [{ contractId: "00" + "ee".repeat(40), instrumentId: { admin: GATEWAY_PARTY, id: `erc20:${TKA.slice(2)}` }, amount: "20.0000000000", locked: false }] });
+        return json(200, { holdings: [
+          { contractId: "00" + "ee".repeat(40), instrumentId: { admin: GATEWAY_PARTY, id: `erc20:${TKA.slice(2)}` }, amount: "20.0000000000", locked: false },
+          { contractId: CC_HOLDING, instrumentId: { admin: CC_ADMIN, id: "Amulet" }, amount: "20.0000000000", locked: false },
+        ] });
+      }
+      if (path === `/accounts/v1/allocations/${party}`) {
+        const none = !service.allocated;
+        return json(200, { allocations: none ? [] : [{ contractId: ALLOCATION, holdingCids: [CC_HOLDING], allocation: { settlement: { settlementRef: { id: service.label } }, transferLegId: "leg-" + service.label, transferLeg: { sender: party, receiver: GATEWAY_PARTY, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } } }] });
       }
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
       let file = join(resolve(dist!), path);
@@ -134,6 +168,11 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
   }
+  /** Opens the token picker of a field and takes a token of it (named as the picker names it, "CC on canton"). */
+  async function pick(page: any, field: "From" | "To", name: RegExp) {
+    await page.getByRole("button", { name: new RegExp(`^${field} token`) }).click();
+    await page.getByRole("dialog").getByRole("button", { name }).click();
+  }
   const noSideways = (page: any) => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
 
   it("moves a token from Ostia to Canton: approve, then pay in, two pop-ups, then final", async () => {
@@ -172,6 +211,65 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.close();
   }, 150_000);
 
+  it("moves Canton Coin to Ostia: the page signs the allocation and the deposit request, one claim in the wallet, then final", async () => {
+    service.extra = { wrapped: true };
+    const page = await open("/bridge");
+    await signedIn(page);
+    await pick(page, "From", /^CC on canton$/);
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
+    expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
+    await page.getByRole("button", { name: "Move to Ostia" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
+    expect(seen.factoryAsked).toBe(1);   // the registry's allocation factory was asked once, through the account service
+    expect(seen.executed).toBe(2);   // the allocation, then the deposit request
+    expect(seen.signedOk).toBe(true);   // both signed by the account's own key, over the hash the page computed
+    expect(seen.signRequests).toBe(1);   // the wallet signed once (the key); the page made the two Canton signatures with no pop-up
+    const sent = [...chain.sent.values()];
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to.toLowerCase()).toBe(GATEWAY.toLowerCase());   // the claim
+    expect(sent[0]!.leg).toMatchObject({ kind: "deposit", erc20: WCC });
+    expect(sent[0]!.leg!.legId.replace(/^0x/, "").toLowerCase()).toBe(seen.depositId.replace(/^0x/, "").toLowerCase());
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 150_000);
+
+  it("moves wCC back to Canton: one withdrawal in the wallet, then final", async () => {
+    service.extra = { wrapped: true };
+    const page = await open("/bridge");
+    await signedIn(page);
+    await pick(page, "From", /^wCC on ostia$/);
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
+    expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    const sent = [...chain.sent.values()];
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to.toLowerCase()).toBe(GATEWAY.toLowerCase());
+    expect(sent[0]!.leg).toMatchObject({ kind: "withdrawal", erc20: WCC, amount: String(5n * 10n ** 10n) });
+    expect(seen.executed).toBe(0);   // nothing is signed on Canton: the gateway pays out to the account's acceptance
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 120_000);
+
+  it("moves the chain's own coin to Canton: wrap, approve, pay, three pop-ups, then final", async () => {
+    service.extra = { wrapper: true };
+    const page = await open("/bridge");
+    await signedIn(page);
+    await pick(page, "From", /^tROME on ostia$/);
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
+    expect(await page.getByText("About 30 s · 3 MetaMask pop-ups").count()).toBe(1);
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    const sent = [...chain.sent.values()];
+    expect(sent.map((t) => t.to.toLowerCase())).toEqual([WTROME, WTROME, GATEWAY.toLowerCase()]);   // the wrap, the approval, the payment
+    expect(sent[0]!.value).toBe(5n * 10n ** 17n);   // only what was missing is wrapped
+    expect(chain.allowance).toBe(205n * 10n ** 17n);
+    expect(sent[2]!.leg).toEqual(expect.objectContaining({ kind: "payment", legId: chain.lastLock!.lockId }));
+    expect(chain.lastLock!.receiver).toBe(party);
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 120_000);
+
   it("shows the move on its way under the card: Sent, Proven, then Final once the block is final, and lists it in Activity with its links", async () => {
     chain.hold = true;   // the explorer shows the block proven and not yet final on Canton
     const page = await open("/bridge");
@@ -185,8 +283,8 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await bar.getByRole("link", { name: "block 36512" }).getAttribute("href")).toBe("/block/36512");
     expect(await noSideways(page)).toBe(true);
     chain.hold = false;   // the block is final on Canton
-    await bar.getByRole("listitem", { name: "Final: done" }).waitFor({ timeout: 60_000 });
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    expect(await bar.count()).toBe(0);   // the bar is only for a move on its way; the card says it is final
     await page.getByRole("tab", { name: "Activity" }).click();
     const row = page.getByRole("region", { name: "Activity" }).getByRole("listitem").filter({ hasText: "1.5 TKA to Canton" });
     await row.waitFor();
@@ -204,7 +302,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
     seen.rejectSends = 1;   // the wallet turns the release down: the redeem is on Canton, the release is not sent
     await page.getByRole("button", { name: "Move to Ostia" }).click();
-    await page.getByRole("button", { name: "Continue" }).waitFor({ timeout: 90_000 });
+    await page.getByRole("button", { name: "Release on Ostia" }).waitFor({ timeout: 90_000 });   // the card names the step it carries on with
     expect(chain.sent.size).toBe(0);
     expect(seen.executed).toBe(1);
 

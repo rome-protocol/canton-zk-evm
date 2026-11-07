@@ -28,7 +28,7 @@ export function useWallet(chain: Chain | undefined) {
   }, []);
   const connect = useCallback(async () => {
     const w = injected();
-    if (!w) return setError("No wallet was found in this browser. Open this page in a browser with an EIP-1193 wallet.");
+    if (!w) return setError("No wallet was found in this browser. Install MetaMask, then open this page again.");
     try {
       const accounts = (await w.request({ method: "eth_requestAccounts" })) as string[];
       setAccount(accounts[0]?.toLowerCase() ?? null);

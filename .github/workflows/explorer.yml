@@ -47,7 +47,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -e VITE_CHAIN_OPERATOR="operator::1220$(printf '01%.0s' $(seq 32))" -e VITE_CHAIN_CONFIRMER="confirmer::1220$(printf '02%.0s' $(seq 32))" \
             -e VITE_CHAIN_GATEWAY="gateway::1220$(printf '03%.0s' $(seq 32))" -e VITE_CHAIN_BUILDER="builder::1220$(printf '04%.0s' $(seq 32))" \
-            -e VITE_CHAIN_ID=770101 -e VITE_CANTON_PARTICIPANT="PAR::operator::1220$(printf '05%.0s' $(seq 32))" -e VITE_SITE_ORIGIN=http://127.0.0.1:4173 \
+            -e BRIDGE_WTROME_ADDRESS="0x$(printf 'b1%.0s' $(seq 20))" -e VITE_CHAIN_ID=770101 -e VITE_CANTON_PARTICIPANT="PAR::operator::1220$(printf '05%.0s' $(seq 32))" -e VITE_SITE_ORIGIN=http://127.0.0.1:4173 \
             --network host -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_BROWSER_IMAGE" \
             sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && npm run build \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-moves.test.ts \

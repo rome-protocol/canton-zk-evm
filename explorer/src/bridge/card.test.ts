@@ -23,10 +23,11 @@ describe("the move button", () => {
   it("shows the move's progress while it runs, and offers Continue for a move that is paused or failed and kept", () => {
     for (const [move, words] of [
       [{ phase: "signing-canton" }, "Signing on Canton…"], [{ phase: "waiting-canton", ref: "r" }, "Waiting for Canton…"], [{ phase: "proving", tx: "0x00" }, "Sent. Waiting for the block to be final…"],
-      [{ phase: "sending-evm", step: "approve" }, "Confirm approving TKA in your wallet…"], [{ phase: "sending-evm", step: "wrap" }, "Confirm wrapping TKA in your wallet…"], [{ phase: "sending-evm", step: "pay" }, "Confirm in your wallet…"],
+      [{ phase: "sending-evm", step: "approve" }, "Approve TKA in your wallet, then wait for it to be final…"], [{ phase: "sending-evm", step: "wrap" }, "Wrap TKA in your wallet, then wait for it to be final…"], [{ phase: "sending-evm", step: "pay" }, "Confirm in your wallet…"],
     ] as const) expect(buttonOf({ ...base, move })).toEqual({ label: words, action: "none", disabled: true });
     expect(progressWords({ phase: "idle" }, "TKA")).toBeNull();
     expect(buttonOf({ ...base, move: { phase: "paused", note: "x" } })).toEqual({ label: "Continue", action: "continue", disabled: false });
+    expect(buttonOf({ ...base, move: { phase: "paused", note: "x" }, continueLabel: "Release on Ostia" }).label).toBe("Release on Ostia");
     expect(buttonOf({ ...base, move: { phase: "failed", reason: "x", from: "proving", kept: true } }).action).toBe("continue");
     expect(buttonOf({ ...base, move: { phase: "failed", reason: "x", from: "proving", kept: false } }).action).toBe("move");
   });

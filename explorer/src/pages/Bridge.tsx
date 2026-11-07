@@ -178,7 +178,7 @@ export function Bridge() {
       )}
       {settings && tab === "activity" && (
         <div className="panel" role="tabpanel" id="bridge-panel-activity" aria-labelledby="bridge-tab-activity">
-          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} onOpenAccount={() => setSheet(true)} />
+          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} connectNote={walletNote} onOpenAccount={() => setSheet(true)} ensureChain={ensureChain} />
         </div>
       )}
       {!ready && note(rome)}

@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
-import { marksOf, merge, NO_MARKS, readTx, type Marks } from "../bridge/marks.ts";
+import { marksOf, merge, NO_MARKS, type Marks } from "../bridge/marks.ts";
+import { explorerTx } from "../bridge/moves/moves.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 
@@ -21,7 +22,7 @@ export function useMoveState(session: Session | null): MoveState {
  * The marks of the transaction `hash`, from the explorer's own answer, looked up again every few seconds until it is final. A mark that was reached stays. `seed` is what is already known
  * (a finished move is final in its block) so nothing flickers before the first answer. `read` is the explorer's answer for a transaction.
  */
-export function useMarks(hash: Hex | null, seed: Marks | null = null, read: (hash: Hex) => Promise<ApiTx | null> = readTx, everyMs = 3000): Marks {
+export function useMarks(hash: Hex | null, seed: Marks | null = null, read: (hash: Hex) => Promise<ApiTx | null> = explorerTx, everyMs = 3000): Marks {
   const start = seed ?? { ...NO_MARKS, sent: hash !== null };
   const [marks, setMarks] = useState<Marks>(start);
   const known = useRef(seed);

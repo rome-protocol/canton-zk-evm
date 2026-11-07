@@ -10,7 +10,7 @@ export function stepsOf(kind: MoveKind, symbol: string, native: boolean, chainNa
       ...(native ? [{ text: `Wrap ${symbol}`, by: "wallet" as const }] : []),
       { text: `Approve ${symbol}`, by: "wallet" }, { text: `Pay ${symbol} in`, by: "wallet" }, { text: "Canton shows it in your account", by: "auto" },
     ];
-    case "redeem": return [{ text: `Sign the move back on Canton`, by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Release ${symbol} on ${chainName}`, by: "wallet" }];
+    case "redeem": return [{ text: `Sign the move back on Canton`, by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Release ${symbol} on ${chainName}${native ? " (it arrives wrapped)" : ""}`, by: "wallet" }];
     case "deposit": return [{ text: "Sign the deposit on Canton (two signatures)", by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Claim ${symbol} on ${chainName}`, by: "wallet" }];
     case "withdraw": return [{ text: `Withdraw ${symbol} to Canton`, by: "wallet" }, { text: "Canton shows it in your account", by: "auto" }];
   }

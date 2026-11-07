@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
 import { AmountError, maxText, parseAmount, showUnits } from "../bridge/amounts.ts";
+import { continueWords, entryOf } from "../bridge/activity.ts";
 import { amountSize, buttonOf, noteOf, progressWords } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
@@ -86,8 +87,11 @@ export function MoveCard(p: MoveCardProps) {
     const id = setInterval(() => setTick((n) => n + 1), 15_000);
     return () => clearInterval(id);
   }, []);
+  // The balances of another token are not this token's: they are dropped when the token changes, until the new ones are read.
+  const lastKey = useRef<string | undefined>(pair?.key);
   useEffect(() => {
     if (!pair) return;
+    if (lastKey.current !== pair.key) { lastKey.current = pair.key; setBal(EMPTY); }
     let live = true;
     const hold = <T,>(f: Promise<T>) => f.then((v) => v as T | null, () => null);
     (async () => {
@@ -109,31 +113,33 @@ export function MoveCard(p: MoveCardProps) {
   const tokenDecimals = (s: Side) => (!pair ? 18 : s === "ostia" ? pair.ostia.decimals : pair.canton.decimals);
 
   const to = from === "ostia" ? "Canton" : p.chainName;
+  const keptNow = move.phase === "paused" || (move.phase === "failed" && move.kept) ? session?.kept()[0] : undefined;
   const button = buttonOf({
     connected: p.account !== null, accountReady: session !== null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
-    to, move, kept: move.phase === "failed" && move.kept,
+    to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
   });
   const kind = pair ? moveOf(pair, from) : null;
-  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native && from === "ostia", p.chainName) : [];
+  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native, p.chainName) : [];
   const pops = popups(steps), signs = kind ? cantonSignatures(kind) : 0;
   const note = noteOf(move);
   const running = progressWords(move, symbols?.from ?? "") !== null || starting;
 
   const press = useCallback(async () => {
+    if (starting) return;
     setProblem(null);
     if (button.action === "connect") return p.onConnect();
     if (button.action === "open") return p.onOpenAccount();
     if (!session || !pair) return;
     try {
-      if (button.action === "continue") { await session.move.proceed(); return; }
-      if (button.action !== "move") return;
+      if (button.action !== "continue" && button.action !== "move") return;
       setStarting(true);
       const why = await p.ensureChain();
       if (why) return setProblem(why);
+      if (button.action === "continue") { await session.move.proceed(); return; }
       await session.move.start(inputOf(pair, from, text.trim(), session.party));
     } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); }
     finally { setStarting(false); }
-  }, [button.action, session, pair, from, text, p]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [button.action, session, pair, from, text, p, starting]);   // eslint-disable-line react-hooks/exhaustive-deps
   const giveUp = async () => { try { await session?.move.abandon(); setText(""); } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); } };
 
   const pick = (t: Token, field: "from" | "to") => {
@@ -141,6 +147,12 @@ export function MoveCard(p: MoveCardProps) {
     const side: Side = field === "from" ? t.side : t.side === "ostia" ? "canton" : "ostia";
     setSel({ pair: t.pair, from: side });
     setText("");
+  };
+  // What Max fills in must be an amount the button takes: on the Canton side the balance is cut to the digits the Ostia token has (Canton holds ten).
+  const maxFor = (b: bigint, s: Side) => {
+    if (s === "ostia" || !pair) return maxText(b, tokenDecimals(s));
+    const d = Math.min(pair.ostia.decimals, 10);
+    return maxText(b - (b % 10n ** BigInt(10 - d)), 10);
   };
   const flip = () => setSel({ pair: pair?.key ?? null, from: from === "ostia" ? "canton" : "ostia" });
 
@@ -165,7 +177,7 @@ export function MoveCard(p: MoveCardProps) {
         </div>
         <p className="bal small muted">
           Balance <span className="num">{shown(balance, s)}</span>
-          {field === "from" && balance !== null && !locked && maxText(balance, tokenDecimals(s)) !== "" && <> · <button type="button" className="link-b" onClick={() => edit(maxText(balance, tokenDecimals(s)))}>Max</button></>}
+          {field === "from" && balance !== null && !locked && maxFor(balance, s) !== "" && <> · <button type="button" className="link-b" onClick={() => edit(maxFor(balance, s))}>Max</button></>}
         </p>
       </div>
     );
@@ -178,7 +190,7 @@ export function MoveCard(p: MoveCardProps) {
       {!pair ? (
         <>
           <p className="muted">{p.configState === "failed" ? "The bridge is not available on this chain yet." : "Looking up the tokens…"}</p>
-          <button type="button" className="btn go" disabled={button.disabled} onClick={press}>{button.label}</button>
+          <button type="button" className="btn go" disabled={button.disabled || starting} onClick={press}>{button.label}</button>
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
         </>
       ) : (
@@ -187,7 +199,7 @@ export function MoveCard(p: MoveCardProps) {
           <button type="button" className="flip" aria-label="Swap direction" disabled={locked} onClick={flip}><Icon name="swap" size={16} /></button>
           {side("to")}
           {parsed.error && <p className="small bad" role="status">{parsed.error}</p>}
-          <button type="button" className="btn go" disabled={button.disabled} onClick={press}>{button.label}</button>
+          <button type="button" className="btn go" disabled={button.disabled || starting} onClick={press}>{button.label}</button>
           {button.action === "continue" && <button type="button" className="link-b give-up" onClick={giveUp}>Give this move up</button>}
           {note && <p className={`small ${note.bad ? "bad" : "muted"}`} role={note.bad ? "alert" : "status"}>{note.text}</p>}
           {problem && <p className="small bad" role="alert">{problem}</p>}

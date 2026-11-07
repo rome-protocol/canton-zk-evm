@@ -68,13 +68,16 @@ describe("the bar under the card", () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(read.mock.calls.length).toBe(calls);   // it stops looking once the move is final
   });
-  it("shows all three marks when the move ends, and goes away when a move is paused or failed", async () => {
+  it("shows the marks while the move waits for its block, and goes away when the move is final, paused or failed", async () => {
     const { session, set } = driven(ck({ input: redeem, stage: "sent", tx: TX }));
-    render(<MemoryRouter><MoveBar session={session} pairs={pairs} chainName="Ostia" read={async () => null} pollMs={10} /></MemoryRouter>);
-    await set({ phase: "final", tx: TX, block: 42 });
+    render(<MemoryRouter><MoveBar session={session} pairs={pairs} chainName="Ostia" read={async () => answer({ status: "proving", block: IN_BLOCK, lifecycle: lifecycle("2026-11-07T10:00:07Z") })} pollMs={10} /></MemoryRouter>);
+    await set({ phase: "proving", tx: TX });
     expect(await screen.findByRole("region", { name: "Move on its way" })).toHaveTextContent("3 TKA to Ostia");
-    expect(marks()).toEqual(["Sent: done", "Proven: done", "Final: done"]);
-    expect(screen.getByRole("link", { name: "block 42" })).toHaveAttribute("href", "/block/42");
+    await waitFor(() => expect(marks()).toEqual(["Sent: done", "Proven: done", "Final: waiting"]));
+    await set({ phase: "final", tx: TX, block: 42 });
+    expect(screen.queryByRole("region", { name: "Move on its way" })).toBeNull();   // the card says it is final
+    await set({ phase: "proving", tx: TX });
+    expect(await screen.findByRole("region", { name: "Move on its way" })).toBeInTheDocument();
     await set({ phase: "paused", note: "x" });
     expect(screen.queryByRole("region", { name: "Move on its way" })).toBeNull();
   });
@@ -115,6 +118,31 @@ describe("the Activity list", () => {
     expect(within(done!).getByRole("link", { name: "Ostia block 36512" })).toHaveAttribute("href", "/block/36512");
     expect(await within(done!).findByRole("link", { name: "Canton update" })).toHaveAttribute("href", "/canton/1220abcd");
     expect(within(open!).queryByRole("link")).toBeNull();
+  });
+  it("does not read an approval as the move: a lock waiting on its approval shows no block and no Final", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, ck({ ref: "lock-1", input: { kind: "lock", asset: TKA, amount: "2", receiver: PARTY }, stage: "wallet", step: "approve", tx: TX }));
+    const read = vi.fn(async () => answer({ status: "final", success: true, block: { ...IN_BLOCK, updateId: "1220abcd" } }));
+    show({ store, read });
+    const [row] = rows();
+    expect(within(row!).getAllByRole("listitem").map((l) => l.getAttribute("aria-label"))).toEqual(["Sent: waiting", "Proven: waiting", "Final: waiting"]);
+    expect(within(row!).queryByRole("link")).toBeNull();
+    expect(within(row!).getByText("Your wallet was asked. Check it, then continue.")).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(read).not.toHaveBeenCalled();
+  });
+  it("looks at a finished move once for its Canton update, and not again once it is written down", async () => {
+    const store = memoryStore();
+    remember(store, { ...entryOf(ck({ ref: "done-1", input: redeem, stage: "sent" })), tx: TX, block: 7 });
+    const read = vi.fn(async () => answer({ status: "final", success: true, block: { number: 7, hash: null, updateId: "1220abcd" } }));
+    show({ store, read });
+    expect(await screen.findByRole("link", { name: "Canton update" })).toHaveAttribute("href", "/canton/1220abcd");
+    cleanup();
+    read.mockClear();
+    show({ store, read });   // the tab opens again
+    expect(screen.getByRole("link", { name: "Canton update" })).toHaveAttribute("href", "/canton/1220abcd");
+    await new Promise((r) => setTimeout(r, 40));
+    expect(read).not.toHaveBeenCalled();
   });
   it("shows no other account's moves", async () => {
     const store = memoryStore();
@@ -171,6 +199,20 @@ describe("the Activity list", () => {
     expect(screen.queryByRole("button", { name: /Release on Ostia|Continue/ })).toBeNull();
     expect(rows()).toHaveLength(1);
     expect(within(rows()[0]!).getAllByRole("listitem").map((l) => l.getAttribute("aria-label"))).toEqual(["Sent: done", "Proven: done", "Final: done"]);
+  });
+  it("puts the wallet on Ostia before a row's move goes on, and sends nothing when it cannot", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, ck({ ref: "ref-1", input: redeem, to: ME, stage: "evm" }));
+    const made = fakeSession({ store, legs: () => [] });
+    const ensureChain = vi.fn(async () => "Your wallet is not on Ostia yet.");
+    show({ store, session: made.session, ensureChain });
+    await userEvent.click(await screen.findByRole("button", { name: "Release on Ostia" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your wallet is not on Ostia yet.");
+    expect(made.evm.calls).toEqual([]);
+  });
+  it("says why connecting did not work, under its button", () => {
+    show({ account: null, connectNote: "No wallet was found in this browser. Install MetaMask, then open this page again." });
+    expect(screen.getByRole("alert")).toHaveTextContent("Install MetaMask");
   });
   it("continues one move at a time: while one runs, no other row can be continued", async () => {
     const store = memoryStore();

@@ -3,7 +3,7 @@
 import type { Address, Hex } from "viem";
 import type { OpenState } from "./canton/accounts.ts";
 import type { Marks } from "./marks.ts";
-import { depositIdOf, keptMoves, STAGES, type Checkpoint, type MoveKind, type MoveState, type StoreLike } from "./moves/state.ts";
+import { depositIdOf, keptMoves, STAGES, type Checkpoint, type MoveKind, type MoveState, type Step, type StoreLike } from "./moves/state.ts";
 import type { Pair } from "./tokens.ts";
 
 /** One move, finished or not, as the Activity list and the bar under the card show it. */
@@ -20,6 +20,8 @@ export interface Entry {
   /** The transaction that made the move on Ostia, once it was sent. */
   tx: Hex | null;
   block: number | null;
+  /** The Canton update that holds the block, once it was read (so a finished row is not looked up again). */
+  updateId?: string | null;
   done: boolean;
   /** Where an unfinished move stopped (null for a finished one). */
   stage: Checkpoint["stage"] | null;
@@ -28,7 +30,11 @@ export interface Entry {
 const HISTORY = "bridge-history", LIMIT = 50;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-export const entryOf = (c: Checkpoint, tx: Hex | null = c.tx ?? null): Entry =>
+const OWN_STEPS: Step[] = ["pay", "release", "claim", "withdraw"];
+/** The transaction that made the move: the record's `tx` only when it is the move's own (not the approval or the wrap that came before it). */
+const ownTx = (c: Checkpoint): Hex | null => (c.stage === "sent" || (c.step !== undefined && OWN_STEPS.includes(c.step)) ? c.tx ?? null : null);
+
+export const entryOf = (c: Checkpoint, tx: Hex | null = ownTx(c)): Entry =>
   ({ ref: c.ref, kind: c.input.kind, asset: c.input.asset, amount: c.input.amount, account: c.account, party: c.party, at: c.at ?? Date.now(), tx, block: null, done: false, stage: c.stage });
 
 const isEntry = (e: unknown): e is Entry => {
@@ -42,6 +48,14 @@ export function finished(store: StoreLike | null): Entry[] {
 /** Writes down a move that ended: `tx` and `block` are the transaction that made it and the block it is final in. The list keeps the latest 50. */
 export function remember(store: StoreLike | null, e: Entry): void {
   try { store?.setItem(HISTORY, JSON.stringify([{ ...e, done: true, stage: null }, ...finished(store).filter((x) => x.ref !== e.ref)].slice(0, LIMIT))); } catch { /* the move is final either way; it just is not listed after a reload */ }
+}
+
+/** Writes down the Canton update of a finished move, once it is read, so the list does not ask the explorer for it again. */
+export function rememberUpdate(store: StoreLike | null, ref: string, updateId: string): void {
+  try {
+    const l = finished(store);
+    if (l.some((x) => x.ref === ref)) store?.setItem(HISTORY, JSON.stringify(l.map((x) => (x.ref === ref ? { ...x, updateId } : x))));
+  } catch { /* it is read again the next time */ }
 }
 
 /** The moves of a wallet account, newest first: those kept and not finished, and those that finished. A finished move is listed once. */
@@ -59,7 +73,7 @@ export function track(move: { subscribe(fn: (s: MoveState) => void): () => void;
   let last: Entry | null = null;
   return move.subscribe((s) => {
     const k = move.kept()[0];
-    if (k) last = entryOf(k, s.phase === "proving" || s.phase === "final" ? s.tx : k.tx ?? null);
+    if (k) last = entryOf(k, s.phase === "proving" || s.phase === "final" ? s.tx : ownTx(k));
     if (s.phase === "final" && last) { remember(store, { ...last, tx: s.tx, block: s.block }); last = null; }
   });
 }
@@ -107,4 +121,4 @@ export function whatMoved(e: Entry, pairs: Pair[], chainName: string): string {
 }
 
 /** The marks a row starts from before the explorer is asked: a finished move is final in its block. */
-export const seedOf = (e: Entry): Marks => ({ sent: e.tx !== null, proven: e.done, final: e.done, block: e.block, updateId: null });
+export const seedOf = (e: Entry): Marks => ({ sent: e.tx !== null, proven: e.done, final: e.done, block: e.block, updateId: e.updateId ?? null });
