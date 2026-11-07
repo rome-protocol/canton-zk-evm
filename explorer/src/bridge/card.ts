@@ -33,6 +33,17 @@ export function progressWords(s: MoveState, symbol: string): string | null {
   }
 }
 
+/** The short line the bar and the Activity rows say while a move waits, with no token named. Null when no move is running. */
+export function waitWords(s: MoveState): string | null {
+  switch (s.phase) {
+    case "signing-canton": return "Signing on Canton…";
+    case "waiting-canton": return "Waiting for Canton…";
+    case "sending-evm": return "Confirm in your wallet…";
+    case "proving": return "Sent. Waiting for the block to be final…";
+    default: return null;
+  }
+}
+
 /** The button of the card: its words, what pressing it does, and whether it can be pressed. */
 export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction; disabled: boolean } {
   const running = progressWords(i.move, i.symbol);

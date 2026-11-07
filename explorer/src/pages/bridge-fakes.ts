@@ -6,6 +6,8 @@ import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { createMove, type CantonAdapter, type LocksLike } from "../bridge/moves/moves.ts";
 import { lockIdOf, type StoreLike } from "../bridge/moves/state.ts";
+import { track } from "../bridge/activity.ts";
+import type { OpenState } from "../bridge/canton/accounts.ts";
 import type { Session } from "../bridge/session.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -74,14 +76,18 @@ export function fakeCanton(): CantonAdapter & { calls: string[] } {
 }
 
 /** A session on the real move library: `legs` is what the explorer shows as final for the move's transaction. */
-export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint } = { legs: () => [] }) {
+export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint; open?: OpenState; tx?: (hash: Hex) => ApiTx } = { legs: () => [] }) {
   const evm = o.evm ?? fakeEvm();
   const canton = o.canton ?? fakeCanton();
   const store = o.store ?? memoryStore();
   const move = createMove({
     config, evm: evm.evm, canton, registry: { lockParts: async (a) => ({ lockId: lockIdOf(a.receiver, a.ref), vaults: [VAULT] }) }, store, locks: memoryLocks(), sleep: async () => {}, newRef: () => "ref-1", maxPolls: 5,
-    api: { tx: async () => finalTx(o.legs("ref-1")) }, leg: async () => null, sentSince: async () => [],
+    api: { tx: async (h) => o.tx?.(h) ?? finalTx(o.legs("ref-1")) }, leg: async () => null, sentSince: async () => [],
   });
-  const session: Session = { move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept() };
+  const stop = track(move, store);
+  const session: Session = {
+    move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
+    open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
+  };
   return { session, evm, canton, store, move };
 }

@@ -8,7 +8,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { fromBase64 } from "../src/bridge/canton/key.ts";
 import { partyOf } from "../src/bridge/canton/topology.ts";
 import { lockIdOf } from "../src/bridge/moves/state.ts";
-import { freshChain, preparedRedeem, rpcResult, sendTransaction, TKA, twinsOverview, txAnswer, VAULT } from "./bridge-fakes.ts";
+import { freshChain, preparedRedeem, rpcResult, sendTransaction, TKA, twinsOverview, txAnswer, UPDATE_ID, VAULT } from "./bridge-fakes.ts";
 
 /**
  * Moves through the Bridge page's card, in a real browser at 360 px: the built pages (BRIDGE_E2E_DIST, as for bridge-account.test.ts), the same wallet that signs with a fixed key, and a fake
@@ -32,12 +32,12 @@ const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = "
 describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`);
   let chain = freshChain();
-  const seen = { redeemRef: "", executed: 0, signedOk: false, signRequests: 0 };
+  const seen = { redeemRef: "", executed: 0, signedOk: false, signRequests: 0, rejectSends: 0 };
   const service = { has: { twin: false, withdrawal: false }, redeemOpen: false, prepared: null as null | { hash: string } };
   let server: Server, browser: any, party = "", publicKey: Uint8Array = new Uint8Array();
   beforeEach(() => {
     chain = freshChain();
-    Object.assign(seen, { redeemRef: "", executed: 0, signedOk: false, signRequests: 0 });
+    Object.assign(seen, { redeemRef: "", executed: 0, signedOk: false, signRequests: 0, rejectSends: 0 });
     Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, prepared: null });
   });
 
@@ -118,6 +118,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
         delete types.EIP712Domain;
         return wallet.signTypedData({ domain, types, primaryType, message });
       }
+      if (method === "eth_sendTransaction" && seen.rejectSends > 0) { seen.rejectSends--; throw new Error("User rejected the request."); }
       if (method === "eth_sendTransaction") return sendTransaction(chain, { ...params[0], from: wallet.address });
       return rpcResult(chain, wallet.address, method, params ?? []);
     });
@@ -127,6 +128,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   }
   /** Connects, opens the Canton account from the wallet, and waits until the card asks for an amount. */
   async function signedIn(page: any) {
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();   // the card is drawn with its tokens, so the page does not move under the click
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
@@ -169,6 +171,63 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 150_000);
+
+  it("shows the move on its way under the card: Sent, Proven, then Final once the block is final, and lists it in Activity with its links", async () => {
+    chain.hold = true;   // the explorer shows the block proven and not yet final on Canton
+    const page = await open("/bridge");
+    await signedIn(page);
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    const bar = page.getByRole("region", { name: "Move on its way" });
+    await bar.getByRole("listitem", { name: "Proven: done" }).waitFor({ timeout: 60_000 });
+    expect(await bar.getByRole("listitem", { name: "Sent: done" }).count()).toBe(1);
+    expect(await bar.getByRole("listitem", { name: "Final: waiting" }).count()).toBe(1);
+    expect(await bar.getByRole("link", { name: "block 36512" }).getAttribute("href")).toBe("/block/36512");
+    expect(await noSideways(page)).toBe(true);
+    chain.hold = false;   // the block is final on Canton
+    await bar.getByRole("listitem", { name: "Final: done" }).waitFor({ timeout: 60_000 });
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    await page.getByRole("tab", { name: "Activity" }).click();
+    const row = page.getByRole("region", { name: "Activity" }).getByRole("listitem").filter({ hasText: "1.5 TKA to Canton" });
+    await row.waitFor();
+    expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
+    expect(await row.getByRole("link", { name: "Ostia block 36512" }).getAttribute("href")).toBe("/block/36512");
+    expect(await row.getByRole("link", { name: "Canton update" }).getAttribute("href")).toBe("/canton/" + UPDATE_ID);
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 150_000);
+
+  it("keeps a move that stopped, lists it in Activity after a reload, and continues it from its row", async () => {
+    const page = await open("/bridge");
+    await signedIn(page);
+    await page.getByRole("button", { name: "Swap direction" }).click();
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
+    seen.rejectSends = 1;   // the wallet turns the release down: the redeem is on Canton, the release is not sent
+    await page.getByRole("button", { name: "Move to Ostia" }).click();
+    await page.getByRole("button", { name: "Continue" }).waitFor({ timeout: 90_000 });
+    expect(chain.sent.size).toBe(0);
+    expect(seen.executed).toBe(1);
+
+    await page.reload({ waitUntil: "load" });
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
+    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("tab", { name: "Activity" }).click();
+    const activity = page.getByRole("region", { name: "Activity" });
+    const row = activity.getByRole("listitem").filter({ hasText: "5 TKA to Ostia" });
+    await row.waitFor();
+    expect(await row.getByRole("listitem", { name: "Sent: waiting" }).count()).toBe(1);
+    expect(await noSideways(page)).toBe(true);
+    await row.getByRole("button", { name: "Open my Canton account to continue" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await row.getByRole("button", { name: "Release on Ostia" }).click();
+    await row.getByRole("link", { name: "Ostia block 36512" }).waitFor({ timeout: 90_000 });
+    expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
+    const sent = [...chain.sent.values()];
+    expect(sent).toHaveLength(1);   // the release was sent once, after the person continued
+    expect(sent[0]!.to.toLowerCase()).toBe(VAULT);
+    expect(seen.executed).toBe(1);   // the redeem was not signed again
+    await page.close();
+  }, 180_000);
 
   it("keeps a long amount whole at 360 px: no sideways scroll, and the field holds every digit", async () => {
     const page = await open("/bridge");

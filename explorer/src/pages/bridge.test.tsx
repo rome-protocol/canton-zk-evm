@@ -17,7 +17,7 @@ vi.mock("../bridge/evm/config.ts", () => ({
 }));
 vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => 5n * 10n ** 18n, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
-  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [] }),
+  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
 }));
 
 const PARTY = "bridge::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
@@ -46,6 +46,18 @@ describe("the Bridge page", () => {
     renderApp("/bridge");
     expect(await screen.findByText("The bridge is not set up on this site yet.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Bridge" })).toHaveClass("active");
+  });
+
+  it("has a Move tab and an Activity tab: Activity lists the account's moves, and the card is still there when the tab changes back", async () => {
+    setUp();
+    renderApp("/bridge");
+    expect(await screen.findByRole("tab", { name: "Move" })).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(screen.getByRole("region", { name: "Activity" })).toHaveTextContent("Connect MetaMask to see your moves.");
+    expect(screen.queryByRole("region", { name: "Move tokens" })).toBeNull();   // the card is hidden, not gone
+    await userEvent.click(screen.getByRole("tab", { name: "Move" }));
+    expect(screen.getByRole("region", { name: "Move tokens" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Activity" })).toBeNull();
   });
 
   it("asks to connect, shows the site's origin beside the sign-in, and then shows the account as Ready with a short id", async () => {

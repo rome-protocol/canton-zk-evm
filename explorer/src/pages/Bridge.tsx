@@ -15,7 +15,11 @@ import { GENERIC, PageError, plainText, plainWords } from "../bridge/words.ts";
 import type { Account } from "../bridge/account.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
+import { moveStore } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
+import { pairsOf } from "../bridge/tokens.ts";
+import { Activity } from "./Activity.tsx";
+import { MoveBar } from "./MoveBar.tsx";
 import { MoveCard } from "./MoveCard.tsx";
 import "./bridge.css";
 
@@ -55,6 +59,7 @@ export function Bridge() {
   const [cfg, setCfg] = useState<Config>({ s: "loading" });
   const [evm, setEvm] = useState<EvmAdapter | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [tab, setTab] = useState<"move" | "activity">("move");
   // Another wallet account is another Canton account: the one that was open is let go (its key is dropped, and nothing is signed or sent for it any more), and whatever was on its way
   // for it is ignored when it ends. `epoch` counts the wallet's accounts: work that began under an earlier count is the old account's.
   const epoch = useRef(0);
@@ -81,6 +86,8 @@ export function Bridge() {
   }, [settings]);
   // The wallet's account on Ostia, for balances; and, once the Canton account is open, the move's machinery.
   const config = cfg.s === "ready" ? cfg.config : null;
+  const pairs = useMemo(() => (config && settings ? pairsOf(config, settings.chain.gateway) : []), [config, settings]);
+  const store = useMemo(moveStore, []);
   const opened = phase.s === "ready" ? phase.account : null;
   useEffect(() => {
     const w = injected();
@@ -91,9 +98,9 @@ export function Bridge() {
   }, [config, wallet.account]);
   useEffect(() => {
     if (!config || !evm || !opened) { setSession(null); return; }
-    let live = true;
-    import("../bridge/session.ts").then((m) => { if (live) setSession(m.createSession({ evm, account: opened, config })); }, () => {});
-    return () => { live = false; };
+    let live = true, made: Session | null = null;
+    import("../bridge/session.ts").then((m) => { if (live) { made = m.createSession({ evm, account: opened, config }); setSession(made); } }, () => {});
+    return () => { live = false; made?.close(); };
   }, [config, evm, opened]);
 
   const wait = unready(st, "Looking up the chain…");
@@ -153,11 +160,26 @@ export function Bridge() {
     <div className="bridge-page">
       <div className="ptitle"><h1>Bridge</h1><span className="muted psub">Move tokens between {chain.chainName} and Canton</span></div>
       {settings && (
-        <MoveCard
-          config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} chainName={chain.chainName}
-          onConnect={connect} connectNote={walletNote} onOpenAccount={() => setSheet(true)} ensureChain={ensureChain}
-          faucet={info === null || info.on ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null}
-        />
+        <div className="tabs" role="tablist" aria-label="Bridge">
+          {(["move", "activity"] as const).map((t) => (
+            <button key={t} type="button" role="tab" id={`bridge-tab-${t}`} aria-selected={tab === t} aria-controls={`bridge-panel-${t}`} onClick={() => setTab(t)}>{t === "move" ? "Move" : "Activity"}</button>
+          ))}
+        </div>
+      )}
+      {settings && (
+        <div className="panel" role="tabpanel" id="bridge-panel-move" aria-labelledby="bridge-tab-move" hidden={tab !== "move"}>
+          <MoveCard
+            config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} chainName={chain.chainName}
+            onConnect={connect} connectNote={walletNote} onOpenAccount={() => setSheet(true)} ensureChain={ensureChain}
+            faucet={info === null || info.on ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null}
+          />
+          <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
+        </div>
+      )}
+      {settings && tab === "activity" && (
+        <div className="panel" role="tabpanel" id="bridge-panel-activity" aria-labelledby="bridge-tab-activity">
+          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} onOpenAccount={() => setSheet(true)} />
+        </div>
       )}
       {!ready && note(rome)}
       {settings && showSheet && (

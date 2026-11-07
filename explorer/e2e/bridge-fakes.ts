@@ -26,8 +26,12 @@ export interface Chain {
   /** Transactions the wallet sent, by hash: what they were, and the leg each made. */
   sent: Map<string, Sent>;
   lastLock: { receiver: string; ref: string; lockId: string } | null;
+  /** While true the explorer shows a transaction in a block that is proven and not yet final on Canton; when it is false the block is final. */
+  hold: boolean;
 }
-export const freshChain = (): Chain => ({ allowance: 0n, nonce: 7, sent: new Map(), lastLock: null });
+export const freshChain = (): Chain => ({ allowance: 0n, nonce: 7, sent: new Map(), lastLock: null, hold: false });
+/** The Canton update that holds block 36512, as the explorer's answers name it. */
+export const UPDATE_ID = "1220" + "ee".repeat(32);
 
 const hashOf = (n: number) => "0x" + n.toString(16).padStart(64, "0");
 
@@ -96,12 +100,16 @@ export const twinsOverview = (registryService: string) => ({
   twins: [{ [ERC20]: TKA, symbol: "TKA", name: "Test token A", decimals: 18, supply: "0", vaultBalance: "0", matched: true, locks: 0, releases: 0, through: 1 }], canton: [], legs: [],
 });
 
-/** The explorer's /api/tx/{hash} for a transaction the wallet sent: final in block 36512, with the leg it made. */
+/** The explorer's /api/tx/{hash} for a transaction the wallet sent: final in block 36512, with the leg it made (or, while the chain holds it back, in that block with its proof done and Canton not yet final). */
 export function txAnswer(c: Chain, hash: string) {
   const t = c.sent.get(hash);
   if (!t) return null;
+  if (c.hold) {
+    const lifecycle = { state: "proving", reason: null, acceptedAt: null, acceptedVia: null, includedAt: null, attempts: 1, leftOutReason: null, proofStartedAt: "2026-11-07T10:00:00.000Z", proofEndedAt: "2026-11-07T10:00:07.000Z", submittedAt: null, committedAt: null, finalAt: null, finalBlock: null, timeToFinalMs: null };
+    return { hash, status: "proving", state: "proving", success: null, from: t.from, to: t.to, input: t.data, value: "0", nonce: t.nonce, lifecycle, block: { number: 36512, hash: null, updateId: null }, legs: [] };
+  }
   const legs = t.leg ? [{ block: 36512, legIndex: 0, txIndex: 0, logIndex: 0, kind: t.leg.kind, legId: t.leg.legId, [ERC20]: TKA, account: t.from, amount: "0", txHash: hash, updateId: null, canton: null }] : [];
-  return { hash, status: "final", success: true, from: t.from, to: t.to, input: t.data, value: "0", nonce: t.nonce, block: { number: 36512, hash: hashOf(36512), updateId: null }, legs };
+  return { hash, status: "final", success: true, from: t.from, to: t.to, input: t.data, value: "0", nonce: t.nonce, block: { number: 36512, hash: hashOf(36512), updateId: UPDATE_ID }, legs };
 }
 
 const FIXTURES = JSON.parse(readFileSync(new URL("../src/bridge/canton/fixtures.json", import.meta.url), "utf8")) as { name: string; preparedTransaction: string }[];

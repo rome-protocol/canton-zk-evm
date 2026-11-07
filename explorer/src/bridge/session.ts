@@ -1,8 +1,10 @@
 // What the move card runs on once the Canton account is open: the library's move, built from the wallet, the account and this build's bridge configuration. The Bridge page loads this file
 // only when it needs it, so none of it is in the page's first script.
 import { cantonAdapter } from "./adapter.ts";
+import { track } from "./activity.ts";
 import type { Account } from "./account.ts";
 import { holdingsOf } from "./balances.ts";
+import type { OpenState } from "./canton/accounts.ts";
 import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
@@ -19,6 +21,10 @@ export interface Session {
   cantonBalance(instrument: { admin: string; id: string }): Promise<bigint>;
   /** The moves kept in this browser for this account, newest first. */
   kept(): Checkpoint[];
+  /** What the account service says is open for the account (GET /accounts/v1/open): its redeem and deposit requests. One signed look, so it is asked for once, not on a timer. */
+  open(): Promise<OpenState>;
+  /** Stops the session's watching of its move (the list of finished moves). */
+  close(): void;
 }
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -31,8 +37,10 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
     config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince,
     store, locks: webLocks(), sleep, newRef: randomRef,
   });
+  const stop = track(move, store);
   return {
-    move, evm, party: account.party,
+    move, evm, party: account.party, close: stop,
+    open: () => account.client.openRequests(account.key, account.party),
     cantonBalance: async (instrument) => holdingsOf(await account.client.holdings(account.key, account.party), instrument),
     kept: () => keptMoves(store, { account: evm.account, party: account.party }),
   };
