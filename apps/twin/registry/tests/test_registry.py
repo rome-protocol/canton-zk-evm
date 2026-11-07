@@ -51,12 +51,16 @@ class Fake:
                     fake.pages.append(body)
                     if fake.page_status:
                         return self.reply({"code": "DOWN"}, fake.page_status)
-                    start = int(body.get("pageToken") or 0)
-                    if body.get("pageToken") and body.get("activeAtOffset") != 7:   # every page is read at the offset of the first
-                        return self.reply({"code": "BAD_OFFSET"}, 400)
-                    out = {"activeContracts": shown(events[start:start + body["maxPageSize"]]), "activeAtOffset": 7}
+                    named = str(body.get("activeAtOffset"))   # "None": the request names no offset
+                    start = 0
+                    if body.get("pageToken"):   # a page token only works with the offset (named or not) of the request it came from, as the real participant's does
+                        at, token_named = str(body["pageToken"]).split("|")
+                        if named != token_named:
+                            return self.reply({"code": "INVALID_ACS_PAGE_TOKEN"}, 400)
+                        start = int(at)
+                    out = {"activeContracts": shown(events[start:start + body["maxPageSize"]]), "activeAtOffset": body.get("activeAtOffset", 7)}
                     if start + body["maxPageSize"] < len(events):
-                        out["nextPageToken"] = str(start + body["maxPageSize"])
+                        out["nextPageToken"] = f"{start + body['maxPageSize']}|{named}"
                     return self.reply(out)
                 if template == R.ACCEPTANCE:   # a list of everything: the participant refuses one over its limit
                     return self.reply({"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"}, 413)
@@ -316,6 +320,7 @@ class RegistryTest(unittest.TestCase):
         self.fake.pages.clear()
         self.registry.refresh_acceptances()
         self.assertEqual(len(self.fake.pages), 3)   # 2 + 2 + 1, at page size 2
+        self.assertEqual({q["activeAtOffset"] for q in self.fake.pages}, {7})   # every page names the ledger end that was read first
         self.assertEqual(self.registry.acceptances, {p: f"acc-{i}" for i, p in enumerate(parties)})
         self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": parties[4], "ref": "r"})[1]["acceptance"], "acc-4")
         self.assertEqual(self.call("/healthz")[1]["acceptances"], 5)

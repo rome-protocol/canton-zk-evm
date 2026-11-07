@@ -281,4 +281,7 @@ replaced=$(evm replace u); echo "$replaced" | jq -c .
 [ "$(jq '.txs | length' <<<"$replaced")" -ge 1 ] || fail "the payment was not waiting in the pool: nothing was replaced ($replaced)"
 commit "the block with the replacement"
 
+step "(c) the registry service's index of acceptances, past one page: U's acceptance is on the third page of the service's read"
+"$PY" "$ROOT/tests/demo_paged_twin_acceptances.py" "$REGISTRY_URL" || fail "the registry service did not name U's acceptance from the third page of its read"
+
 echo "the twins ran end to end: locked, sent and redeemed, supply equal to the vault's balance throughout, and the payments with no twin or no parts were left out"

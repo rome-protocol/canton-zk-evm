@@ -35,6 +35,7 @@ These files pin what the one-block producer does today. A later change to the bu
   entries carry the block `number`.
 - Support for several provers changes nothing in these files, which run with one prover.
 - A payment with no `DvpTerms` (or a deposit with no `DepositRequest`) reads the venue trades (or the funded claims) before it is left out, so `skipped` has one more read of `VenueTrade`.
+- Every list read of Canton's contracts is a page of at most 200 (`maxPageSize`); a list of up to 200 is one request, so each `active-contracts` call in these files only gained `"maxPageSize": 200`.
 - Work that only adds new behaviour beside the one-block path changes nothing in these files.
 
 Any other change in a file means the one-block producer behaves differently, which is a defect to fix in the code, not a reason to regenerate.

@@ -245,6 +245,25 @@ class Twins(tb.LegCase):
         with mock.patch.object(b, "ACCEPTANCE_TIMEOUT", 0.2):
             self.assert_left_out(s, t, "cannot be read")
 
+    def test_long_lists_of_redeem_requests_and_rules_are_read_in_pages_and_the_right_contract_is_found(self):
+        spam_redeems = [(f"spam-{i}", {**REDEEM[1], "ref": f"spam-{i}"}) for i in range(450)]
+        s, t = self.setup_twin(RELEASE, redeems=[*spam_redeems, REDEEM])
+        self.build(s)
+        self.assertEqual(self.attached(s, "ReleaseLeg")["releaseRequest"], "redeem-1")
+        self.assertEqual(s.ledger.unpaged, [])
+        spam_rules = [(f"rules-spam-{i}", {**RULES_ARGS[1], "token": f"{i:040x}"}) for i in range(450)]
+        s, t = self.setup_twin(LOCK, rules=[*spam_rules, RULES_ARGS])
+        self.build(s)
+        self.assertEqual(self.attached(s, "LockLeg")["lockRules"], RULES)
+        self.assertEqual(s.ledger.unpaged, [])
+
+    def test_a_list_of_redeem_requests_or_rules_that_cannot_be_read_leaves_only_those_legs_out(self):
+        for leg, name, words in ((RELEASE, "RedeemRequest", "redeem requests"), (LOCK, "TwinRules", "twin rules")):
+            for failure in (413, 500):
+                s, t = self.setup_twin(leg, redeems=[REDEEM])
+                s.ledger.list_failure = {name: failure}
+                self.assert_left_out(s, t, f"{words} cannot be read", f"HTTP {failure}")
+
     def test_a_participant_that_has_not_uploaded_the_acceptance_template_leaves_the_lock_out(self):
         s, t = self.setup_twin(LOCK)
         s.ledger.no_acceptance_template = True

@@ -73,9 +73,11 @@ class Ledger:
 
     def active_pages(self, template: str, party: str, size: int):
         """The created event of each active contract of a template that `party` sees, one page of at most `size` at a time (the participant refuses a
-        list longer than its limit). Every page is read at the offset of the first."""
+        list longer than its limit). Every page is read at the ledger end that one request gave, named in each request: the participant refuses a page
+        token used with another offset than the first request named."""
+        offset = http_json(self.url + "/v2/state/ledger-end", None, self.auth)["offset"]
         flt = {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}}]}
-        body = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": size}
+        body = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "activeAtOffset": offset, "maxPageSize": size}
         while True:
             out = http_json(self.url + "/v2/state/active-contracts-page", body, self.auth)
             for e in out["activeContracts"]:
@@ -83,7 +85,7 @@ class Ledger:
                     yield e["contractEntry"]["JsActiveContract"]["createdEvent"]
             if not out.get("nextPageToken"):
                 return
-            body = {**body, "activeAtOffset": out["activeAtOffset"], "pageToken": out["nextPageToken"]}
+            body = {**body, "pageToken": out["nextPageToken"]}
 
 
 class Ostia:
