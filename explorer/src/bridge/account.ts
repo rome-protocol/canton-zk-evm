@@ -68,7 +68,8 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
   progress("Opening your account.");
   const party = await client.open(key, s.participant, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
   still();
-  const send = oneAtATime((built) => submit(client, key, party, built));
+  // The check is made when a command starts, not when it is handed in: a command that waited its turn is not signed after the account was let go.
+  const send = oneAtATime((built) => (account.closed || !current() ? Promise.reject(closedError()) : submit(client, key, party, built)));
   const account: Account = {
     key, party, client, chain: s.chain, closed: false,
     submit: async (built) => { if (account.closed || !current()) throw closedError(); return send(built); },
@@ -89,7 +90,7 @@ export async function getTestCoin(a: Pick<Account, "key" | "party" | "client" | 
     let offered: Awaited<ReturnType<AccountsClient["faucet"]>>;
     try { offered = await a.client.faucet(a.key, a.party); } catch (e) { if (e instanceof AccountsError && e.kind === "not-found") return "off"; throw e; }
     if (offered.completed) return "done";
-    if (!offered.transferInstructionCid) throw new Error("The faucet did not offer any Canton Coin.");
+    if (!offered.transferInstructionCid) throw new PageError("faucet_no_offer", "The faucet did not offer any Canton Coin.");
     a.offer = offered.transferInstructionCid;
   }
   const offer = a.offer;
@@ -99,8 +100,9 @@ export async function getTestCoin(a: Pick<Account, "key" | "party" | "client" | 
     open();
     await a.submit(acceptTransfer(a.party, offer, registry));
   } catch (e) {
-    // An offer the registry or the ledger no longer knows (gone, taken, or past its time) is let go, so the next call asks for a new one. Any other failure keeps it.
-    if (e instanceof AccountsError && (e.kind === "not-found" || e.kind === "refused")) a.offer = undefined;
+    // An offer the registry or the ledger no longer knows (gone, taken, or past its time) is let go, so the next call asks for a new one. The service relays a registry 404 as a 502 that
+    // carries the registry's status. Any other failure keeps the offer.
+    if (e instanceof AccountsError && (e.kind === "not-found" || e.kind === "refused" || (e.kind === "unavailable" && e.registryStatus === 404))) a.offer = undefined;
     throw e;
   }
   a.offer = undefined;

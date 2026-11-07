@@ -97,7 +97,7 @@ describe("the Bridge page", () => {
       .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x') at accounts.ts:41"))
       .mockResolvedValue(opened());
     await signIn();
-    expect(await screen.findByRole("alert")).toHaveTextContent("A step for your account is already waiting for your signature. Finish it first.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("A step for your account from a moment ago is still open. Try again in 10 minutes.");
     await userEvent.click(screen.getByRole("button", { name: "Sign in MetaMask" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Nothing was lost. Try again in a moment."));
     expect(screen.getByRole("alert").textContent).not.toMatch(/TypeError|Cannot read|accounts\.ts|waiting_for_signature/);

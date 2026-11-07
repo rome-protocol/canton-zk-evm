@@ -29,7 +29,7 @@ function coinWords(r: CoinResult, amount: string): string {
 /** The Canton Coin registry's name, as the explorer's own list of Canton tokens gives it. */
 async function coinAdmin(): Promise<string> {
   const admin = (await bridgeReads.twins(timeoutSignal()!)).canton.find((c) => c.instrumentId === "Amulet")?.instrumentAdmin;
-  if (!admin) throw new Error("This site does not list Canton Coin yet.");
+  if (!admin) throw new PageError("no_canton_coin", "This site does not list Canton Coin yet.");
   return admin;
 }
 

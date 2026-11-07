@@ -5,6 +5,7 @@ import { recoverTypedDataAddress } from "viem";
 import type { Eip1193 } from "../../wallet.ts";
 import { bytesFromHex, hex, sameBytes } from "./bytes.ts";
 import { verifyOnboarding, type TopologyAnswer } from "./topology.ts";
+import { PageError } from "../words.ts";
 
 export { base64, bytesFromHex, fromBase64, hex, sameBytes } from "./bytes.ts";
 
@@ -110,7 +111,7 @@ async function walletSignature(wallet: Eip1193, address: string): Promise<string
   if (typeof given !== "string") throw new Error("the wallet gave no signature");
   const signature = normaliseSignature(given);
   const signer = await recoverTypedDataAddress({ domain: typed.domain, types: { Open: [{ name: "statement", type: "string" }] }, primaryType: "Open", message: typed.message, signature });
-  if (signer.toLowerCase() !== address.toLowerCase()) throw new Error("the signature is not the connected account's: the wallet signed as another address");
+  if (signer.toLowerCase() !== address.toLowerCase()) throw new PageError("wrong_signer", "the signature is not the connected account's: the wallet signed as another address");
   return signature;
 }
 
@@ -122,5 +123,5 @@ export async function openKey(wallet: Eip1193, address: string): Promise<CantonK
 /** On the first account: asks again, and refuses if the wallet signs another way (a wallet that is not deterministic would make another key each time, and lose the account). */
 export async function confirmKey(wallet: Eip1193, address: string, key: CantonKey): Promise<void> {
   const again = await keyFromSignature(await walletSignature(wallet, address));
-  if (!sameBytes(again.publicKey, key.publicKey)) throw new Error(DIFFERENT_SIGNATURES);
+  if (!sameBytes(again.publicKey, key.publicKey)) throw new PageError("wallet_not_deterministic", DIFFERENT_SIGNATURES);
 }

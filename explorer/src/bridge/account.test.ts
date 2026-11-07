@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { AccountsError } from "./canton/accounts.ts";
+import { AccountsClient, AccountsError } from "./canton/accounts.ts";
 import type { Built } from "./canton/commands.ts";
+import { keyFromSignature } from "./canton/key.ts";
 import { getTestCoin, oneAtATime, openAccount, optIn } from "./account.ts";
 
 vi.mock("./canton/key.ts", async (original) => ({ ...(await original<typeof import("./canton/key.ts")>()), openKey: vi.fn(async () => ({ publicKey: new Uint8Array(32) })), confirmKey: vi.fn(async () => {}) }));
@@ -138,7 +139,7 @@ describe("test Canton Coin", () => {
   it("says the faucet is off on a 404, and passes on any other refusal", async () => {
     await expect(getTestCoin(account(async () => { throw new AccountsError("not-found", 404, "no faucet") }).a, "DSO::1220cc")).resolves.toBe("off");
     await expect(getTestCoin(account(async () => { throw new AccountsError("rate-limited", 429, "later") }).a, "DSO::1220cc")).rejects.toMatchObject({ kind: "rate-limited" });
-    await expect(getTestCoin(account(async () => ({})).a, "DSO::1220cc")).rejects.toThrow(/did not offer/);
+    await expect(getTestCoin(account(async () => ({})).a, "DSO::1220cc")).rejects.toMatchObject({ code: "faucet_no_offer" });
   });
   it("retries a failed accept with the offer it already got, and does not ask the faucet again", async () => {
     let tries = 0;
@@ -157,6 +158,17 @@ describe("test Canton Coin", () => {
     const { a } = account(async () => ({ transferInstructionCid: "00ab" }), async () => { throw new AccountsError("not-found", 404, "gone"); });
     await expect(getTestCoin(a, "DSO::1220cc")).rejects.toMatchObject({ kind: "not-found" });
     expect(a.offer).toBeUndefined();
+  });
+  it("lets an offer go when the service relays a registry 404 (a 502 with the registry's status), but keeps it on any other 502 or 503", async () => {
+    const relayed = (status: number, body: unknown) => async () => { const c = new AccountsClient("", (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch); return c.acceptContext(await keyFromSignature("0x" + "11".repeat(32) + "22".repeat(32) + "1b"), "DSO::1220cc", "00ab", PARTY); };
+    const gone = account(async () => ({ transferInstructionCid: "00ab" }), relayed(502, { error: "the token registry answered HTTP 404", registryStatus: 404 }));
+    await expect(getTestCoin(gone.a, "DSO::1220cc")).rejects.toMatchObject({ kind: "unavailable", registryStatus: 404 });
+    expect(gone.a.offer).toBeUndefined();
+    for (const [status, body] of [[502, { error: "the token registry answered HTTP 500", registryStatus: 500 }], [502, { error: "unreachable" }], [503, { error: "busy" }]] as const) {
+      const kept = account(async () => ({ transferInstructionCid: "00ab" }), relayed(status, body));
+      await expect(getTestCoin(kept.a, "DSO::1220cc")).rejects.toMatchObject({ kind: "unavailable" });
+      expect(kept.a.offer, String(status)).toBe("00ab");
+    }
   });
   it("does nothing for an account that was let go", async () => {
     const { a, client, submitted } = account(async () => ({ transferInstructionCid: "00ab" }));
@@ -198,5 +210,20 @@ describe("opening the account", () => {
     account.close();
     await expect(account.submit({ command: { CreateCommand: { templateId: "t", createArguments: {} } }, intent: {} as never, disclosedContracts: [] })).rejects.toMatchObject({ code: "account_closed" });
     expect(client.prepare).not.toHaveBeenCalled();
+  });
+  it("does not start a command that waited its turn when the account is let go while the one before it runs", async () => {
+    const client = fake([open(true, true)]) as any;
+    const account = await openAccount({} as never, "0x1", settings, () => {}, client);
+    let release: () => void = () => {};
+    client.prepare = vi.fn(() => new Promise((_, reject) => { release = () => reject(new Error("stopped")); }));
+    const cmd = (n: string) => ({ command: { CreateCommand: { templateId: n, createArguments: {} } }, intent: {} as never, disclosedContracts: [] });
+    const first = account.submit(cmd("one")).catch((e) => e);
+    const second = account.submit(cmd("two")).catch((e) => e);
+    await vi.waitFor(() => expect(client.prepare).toHaveBeenCalled());
+    account.close();
+    release();
+    await first;
+    expect(await second).toMatchObject({ code: "account_closed" });
+    expect(client.prepare).toHaveBeenCalledTimes(1);
   });
 });

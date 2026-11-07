@@ -46,7 +46,9 @@ export class AccountsError extends Error {
   readonly retryAfter?: number;
   readonly code?: string;
   readonly detail?: unknown;
-  constructor(kind: AccountsErrorKind, status: number, message: string, retryAfter?: number, code?: string, detail?: unknown) {
+  /** On a 502 the service relayed from the token registry: the status the registry itself answered. */
+  readonly registryStatus?: number;
+  constructor(kind: AccountsErrorKind, status: number, message: string, retryAfter?: number, code?: string, detail?: unknown, registryStatus?: number) {
     super(message);
     this.name = "AccountsError";
     this.kind = kind;
@@ -54,6 +56,7 @@ export class AccountsError extends Error {
     this.retryAfter = retryAfter;
     this.code = code;
     this.detail = detail;
+    this.registryStatus = registryStatus;
   }
 }
 
@@ -89,7 +92,7 @@ export class AccountsClient {
     // A 409 answers {error: <stable code>, message: <words>}; every other error answers {error: <message>} (a 422 adds `code` and `detail`).
     const conflict = r.status === 409 && typeof answer?.error === "string";
     const message = conflict && typeof answer?.message === "string" ? answer.message : typeof answer?.error === "string" ? answer.error : `the account service answered ${r.status}`;
-    throw new AccountsError(KINDS[r.status] ?? "server", r.status, message, retryAfterSeconds(r.headers.get("Retry-After"), this.clock()), conflict ? answer.error : answer?.code, answer?.detail);
+    throw new AccountsError(KINDS[r.status] ?? "server", r.status, message, retryAfterSeconds(r.headers.get("Retry-After"), this.clock()), conflict ? answer.error : answer?.code, answer?.detail, typeof answer?.registryStatus === "number" ? answer.registryStatus : undefined);
   }
 
   /** `<unix seconds>.<base64 signature>` over "accounts-v1", the method, the path, the body's sha256 and the seconds, on five lines. */

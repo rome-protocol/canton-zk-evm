@@ -7,15 +7,19 @@ export const GENERIC = "Something went wrong. Nothing was lost. Try again in a m
 const CONFLICTS: Record<string, string> = {
   already_accepted: "Your account already has this set up.",
   too_many_open: "Your account already has as many of these open as it may. Wait for them to finish, then try again.",
-  waiting_for_signature: "A step for your account is already waiting for your signature. Finish it first.",
+  waiting_for_signature: "A step for your account from a moment ago is still open. Try again in 10 minutes.",
   account_key_unknown: "The bridge no longer knows this account's key. Sign in again to set it up again.",
 };
 /** The other errors the page's own code raises, by the code it gives them. */
 const CODES: Record<string, string> = {
-  no_choice_context: "The token registry's answer was incomplete, so nothing was signed. Try again in a moment.",
+  no_choice_context: "Canton did not send everything this step needs, so nothing was signed. Try again in a moment.",
   acceptances_missing: "Your account is not set up yet. Try signing in again in a moment.",
   origin_mismatch: "This page is not at the address this bridge is set up for, so signing is turned off here. Open the bridge from its own address.",
   account_closed: "Your wallet account changed. Sign in again with the account you want to use.",
+  wallet_not_deterministic: "This wallet signs differently each time, so it cannot hold a Canton account here. Use another wallet.",
+  wrong_signer: "Your wallet signed with a different account. Pick the connected account in your wallet and try again.",
+  no_canton_coin: "This site does not offer Canton Coin yet.",
+  faucet_no_offer: "The faucet did not send Canton Coin. Try again later.",
 };
 /** An answer of the account service, by its kind. */
 const KINDS: Record<string, string> = {

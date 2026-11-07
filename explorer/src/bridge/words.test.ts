@@ -25,8 +25,12 @@ describe("plain words for what the person can see", () => {
     expect(plainWords(new AccountsError("refused", 422, "DAML_FAILURE: stack", undefined, "INVALID_ARGUMENT"))).not.toMatch(/DAML|INVALID/);
   });
   it("has a sentence for the page's own refusals and for what the checks refuse", () => {
-    for (const code of ["no_choice_context", "acceptances_missing", "origin_mismatch", "account_closed"] as const) expect(plainWords(new PageError(code, "raw")), code).not.toMatch(TECHNICAL);
+    for (const code of ["no_choice_context", "acceptances_missing", "origin_mismatch", "account_closed", "wallet_not_deterministic", "wrong_signer", "no_canton_coin", "faucet_no_offer"] as const) expect(plainWords(new PageError(code, "raw")), code).not.toMatch(TECHNICAL);
     expect(plainWords(new PageError("origin_mismatch", "x"))).toMatch(/address/);
+    expect(plainWords(new PageError("wallet_not_deterministic", "x"))).toBe("This wallet signs differently each time, so it cannot hold a Canton account here. Use another wallet.");
+    expect(plainWords(new PageError("wrong_signer", "x"))).toBe("Your wallet signed with a different account. Pick the connected account in your wallet and try again.");
+    expect(plainWords(new PageError("no_canton_coin", "x"))).toBe("This site does not offer Canton Coin yet.");
+    expect(plainWords(new PageError("faucet_no_offer", "x"))).toBe("The faucet did not send Canton Coin. Try again later.");
     expect(plainWords(new UnexpectedTransaction("node 3 is missing"))).not.toMatch(/node|missing/);
     expect(plainWords(new UnexpectedOnboarding("the key is not yours"))).not.toMatch(/key/);
     expect(plainWords(new AccountsError("server", 200, "the registry's answer has no choiceContextData", undefined, "no_choice_context"))).not.toMatch(/choiceContext/);
