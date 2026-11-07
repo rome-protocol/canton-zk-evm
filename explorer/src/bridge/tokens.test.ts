@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BridgeConfig } from "./evm/config.ts";
 import { cantonSignatures, popups, stepsOf } from "./moves/steps.ts";
-import { factsOf, groupsOf, inputOf, moveOf, pairsOf, search } from "./tokens.ts";
+import { arrivesAs, factsOf, groupsOf, inputOf, moveOf, pairsOf, search } from "./tokens.ts";
 
 const a = (c: string) => ("0x" + c.repeat(40)) as `0x${string}`;
 const config: BridgeConfig = {
@@ -37,6 +37,20 @@ describe("the pairs this build supports", () => {
     expect(factsOf(g.canton[1]!, pairs, "Ostia")).toEqual([{ label: "Token id", value: `erc20:${"aa".repeat(20)}` }, { label: "Decimals", value: "10" }, { label: "Twin of", value: "TKA on Ostia" }]);
     expect(factsOf(g.ostia[2]!, pairs, "Ostia")[2]).toEqual({ label: "Twin of", value: "CC on Canton (wrapped here)" });
     expect(factsOf(g.ostia[0]!, pairs, "Ostia")[0]!.label).toBe("Wrapped form's address");
+  });
+});
+
+describe("what a token arrives as", () => {
+  it("is its own name, except the chain's coin coming back from Canton, which arrives as its wrapped form", () => {
+    const coin = pairs.find((p) => p.native)!, twin = pairs.find((p) => p.erc20 === a("a"))!, cc = pairs.find((p) => p.kind === "wrapped")!;
+    expect([coin.ostia.symbol, coin.wrapped]).toEqual(["tROME", "WtROME"]);
+    expect([arrivesAs(coin, "ostia"), arrivesAs(coin, "canton")]).toEqual(["tROME", "WtROME"]);
+    expect([arrivesAs(twin, "ostia"), arrivesAs(twin, "canton"), twin.wrapped]).toEqual(["TKA", "TKA", null]);
+    expect([arrivesAs(cc, "ostia"), arrivesAs(cc, "canton")]).toEqual(["CC", "wCC"]);
+  });
+  it("is named in the redeem step of the chain's coin", () => {
+    expect(stepsOf("redeem", "tROME", true, "Ostia", "WtROME").map((s) => s.text)).toContain("Release WtROME on Ostia");
+    expect(stepsOf("redeem", "TKA", false, "Ostia", null).map((s) => s.text)).toContain("Release TKA on Ostia");
   });
 });
 

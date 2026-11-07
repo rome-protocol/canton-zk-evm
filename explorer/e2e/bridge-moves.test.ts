@@ -25,6 +25,7 @@ const STATUS = {
   chainId: 770101, chainName: "Ostia", networkName: "DevNet", coin: { symbol: "tROME", decimals: 18 }, pins: { programVK: "0x" + "cd".repeat(32), rootC: "0x" + "cd".repeat(32), file: "session.txt" },
   ok: true, starting: false, problems: [], evm: true, canton: true, final: null, proving: null, latest: [], signers: null, faucet: { on: true }, publicRpc: true, indexHead: 1, indexLag: 0, deriveCursor: 1, chainInstance: "i1",
 };
+const ERC20_FIELD = "tok" + "en";   // the redeem request names its ERC-20 with the token standard word
 const GATEWAY_PARTY = "gateway::1220" + "03".repeat(32);   // the build's settings (the job sets VITE_CHAIN_GATEWAY to this)
 const SETTINGS = { operator: "operator::1220" + "01".repeat(32), confirmer: "confirmer::1220" + "02".repeat(32), gateway: GATEWAY_PARTY, builder: "builder::1220" + "04".repeat(32) };
 
@@ -115,7 +116,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       }
       if (path === `/accounts/v1/open/${party}`) {
         const held = (on: boolean) => (on ? { contractId: "00aa", arguments: {} } : null);
-        return json(200, { party, depositRequests: service.depositOpen ? [{ contractId: "00bc", arguments: { depositId: seen.depositId } }] : [], redeemRequests: service.redeemOpen ? [{ contractId: "00bb", arguments: { ref: seen.redeemRef } }] : [], twinAcceptance: held(service.has.twin), withdrawalAcceptance: held(service.has.withdrawal) });
+        return json(200, { party, depositRequests: service.depositOpen ? [{ contractId: "00bc", arguments: { depositId: seen.depositId } }] : [], redeemRequests: service.redeemOpen ? [{ contractId: "00bb", arguments: { holder: party, [ERC20_FIELD]: TKA.slice(2), amount: "5.0000000000", recipient: wallet.address.slice(2).toLowerCase(), ref: seen.redeemRef } }] : [], twinAcceptance: held(service.has.twin), withdrawalAcceptance: held(service.has.withdrawal) });
       }
       if (path === `/accounts/v1/holdings/${party}`) {
         return json(200, { holdings: [
@@ -190,6 +191,41 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 120_000);
+
+  it("takes a comma as the decimal point: 1,5 is 1.5, and the move goes through", async () => {
+    const page = await open("/bridge");
+    await signedIn(page);
+    const field = page.getByRole("textbox", { name: "Amount to move" });
+    expect(await field.getAttribute("inputmode")).toBe("decimal");
+    await field.fill("1,5");
+    expect(await field.inputValue()).toBe("1.5");
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    expect(chain.allowance).toBe(15n * 10n ** 17n);
+    await field.fill("1,000,5");
+    expect(await page.getByRole("button", { name: "Enter an amount" }).isDisabled()).toBe(true);
+    await page.close();
+  }, 120_000);
+
+  it("lists a redeem that Canton has open and this browser has no record of (started on another device), and carries it on: one release, nothing signed again", async () => {
+    service.redeemOpen = true;
+    seen.redeemRef = "other-device-1";
+    const page = await open("/bridge");
+    await signedIn(page);
+    await page.getByRole("tab", { name: "Activity" }).click();
+    const row = page.getByRole("region", { name: "Activity" }).getByRole("listitem").filter({ hasText: "5 TKA to Ostia" });
+    await row.waitFor();
+    expect(await row.getByText("Started in another browser. Canton has it. Release it on Ostia.").count()).toBe(1);
+    expect(await noSideways(page)).toBe(true);
+    await row.getByRole("button", { name: "Release on Ostia" }).click();
+    await row.getByRole("link", { name: "Ostia block 36512" }).waitFor({ timeout: 90_000 });
+    expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
+    const sent = [...chain.sent.values()];
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to.toLowerCase()).toBe(VAULT);
+    expect(seen.executed).toBe(0);   // the request was already on Canton: nothing was signed here
+    await page.close();
+  }, 150_000);
 
   it("moves the token back from Canton to Ostia: the page signs the redeem with the account's key, then one release in the wallet", async () => {
     const page = await open("/bridge");

@@ -17,7 +17,7 @@ function show(over: Partial<MoveCardProps> = {}, made?: Made) {
   const m = made ?? fakeSession({ legs: () => [] });
   const props: MoveCardProps = {
     config, configState: "ready", gateway: GATEWAY_PARTY, account: ME, evm: m.evm.evm, session: m.session, chainName: "Ostia", onConnect: vi.fn(), connectNote: null, onOpenAccount: vi.fn(),
-    ensureChain: async () => null, faucet: { label: "Get 1 tROME", busy: false, onGet: vi.fn() }, ...over,
+    ensureChain: async () => null, faucet: { label: "Get 1 tROME", busy: false, onGet: vi.fn() }, accountOpen: (over.session === undefined ? m.session : over.session) !== null, ...over,
   };
   render(<MemoryRouter><MoveCard {...props} /></MemoryRouter>);
   return { props, made: m };
@@ -55,6 +55,39 @@ describe("the button walks the steps", () => {
     await type("1.00000000001");
     expect(screen.getByRole("status")).toHaveTextContent("use at most 10 decimals");
     expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
+  });
+  it("takes a comma as the decimal point (a keypad set to a comma-decimal language has no point), and refuses thousands separators", async () => {
+    show();
+    await type("1,5");
+    expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("1.5");
+    expect(await screen.findByRole("button", { name: "Move to Canton" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveAttribute("inputmode", "decimal");
+    await userEvent.clear(screen.getByRole("textbox", { name: "Amount to move" }));
+    await type("1.5");
+    expect(await screen.findByRole("button", { name: "Move to Canton" })).toBeEnabled();
+    for (const bad of ["1,000,5", "1,000.5", "1.000,5"]) {
+      await userEvent.clear(screen.getByRole("textbox", { name: "Amount to move" }));
+      await type(bad);
+      expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("Type an amount such as 12 or 12.5.");
+    }
+  });
+  it("starts the move with the amount as a point-decimal, when it was typed with a comma", async () => {
+    const { made } = show();
+    await type("1,5");
+    await press("Move to Canton");
+    await waitFor(() => expect(made.store.map.get("bridge-move:ref-1")).toBeDefined());
+    expect(JSON.parse(made.store.map.get("bridge-move:ref-1")!).input.amount).toBe("1.5");
+  });
+  it("says the bridge is not available, on the button too, when its setup failed and the Canton account is open", () => {
+    show({ config: null, configState: "failed", evm: null, session: null, accountOpen: true });
+    expect(screen.getByText("The bridge is not available on this chain yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not available here" })).toBeDisabled();
+  });
+  it("says it is getting ready, not 'Open my Canton account', after sign-in while the move's machinery is built", () => {
+    show({ session: null, accountOpen: true });
+    expect(screen.getByRole("button", { name: "Getting ready…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Open my Canton account" })).toBeNull();
   });
   it("shows the balance with a Max that fills the amount, and refuses more than the balance", async () => {
     show();
@@ -330,7 +363,15 @@ describe("what the card does around a move", () => {
   it("says the chain's own coin comes back wrapped", async () => {
     show();
     await press("Swap direction");
-    expect(screen.getByText("Release tROME on Ostia (it arrives wrapped)")).toBeInTheDocument();
+    expect(screen.getByText("Release WtROME on Ostia")).toBeInTheDocument();
+  });
+  it("names what arrives when the chain's own coin comes back from Canton: WtROME on the To side, and only the wrapped balance there", async () => {
+    show();
+    await press("Swap direction");
+    expect(screen.getByRole("button", { name: "To token WtROME on Ostia" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "From token tROME on Canton" })).toBeInTheDocument();
+    const balance = (side: "from" | "to") => document.querySelector(`.side.${side} .bal .num`)!.textContent;
+    await waitFor(() => expect(balance("to")).toBe("20"));   // the fake wallet holds 20 of the wrapped form, and the same 20 as gas: only the wrapped 20 is the To balance
   });
   it("drops the balance of the old token when the token changes, until the new one is read", async () => {
     const e = fakeEvm();

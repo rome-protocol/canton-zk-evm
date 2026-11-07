@@ -21,6 +21,8 @@ export interface ButtonInput {
   kept?: boolean;
   /** What the button says for a paused or kept move: the step it carries on with ("Release on Ostia"). */
   continueLabel?: string;
+  /** The Canton account is open but the move's machinery is not built yet. */
+  preparing?: boolean;
 }
 
 /** What a move that is running says while it waits. Null when no move is running. */
@@ -56,6 +58,7 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   if (!i.accountReady) return { label: "Open my Canton account", action: "open", disabled: false };
   if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };
   if (i.config === "failed") return { label: "Not available here", action: "none", disabled: true };
+  if (i.preparing) return { label: "Getting ready…", action: "none", disabled: true };
   if (i.amount !== "ok") return { label: "Enter an amount", action: "none", disabled: true };
   if (i.enough === false) return { label: `Not enough ${i.symbol}`, action: "none", disabled: true };
   return { label: `Move to ${i.to}`, action: "move", disabled: false };

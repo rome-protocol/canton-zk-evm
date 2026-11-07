@@ -11,6 +11,8 @@ export interface Pair {
   kind: "twin" | "wrapped";
   /** The chain's own coin: it is wrapped (WtROME) as it moves. */
   native: boolean;
+  /** For the chain's coin, the symbol of its wrapped form (WtROME): what arrives on the chain when the coin comes back from Canton. Null for every other token. */
+  wrapped: string | null;
   /** The ERC-20 on Ostia: the twin, or the wrapped token. For the chain's coin, its wrapped form. */
   erc20: Address;
   ostia: { symbol: string; decimals: number };
@@ -30,15 +32,18 @@ export function pairsOf(config: BridgeConfig, gateway: string): Pair[] {
   const twins = config.twins.map((t): Pair => {
     const native = config.wrapper !== null && t.address === config.wrapper;
     const symbol = native ? config.chain.coin.symbol : t.symbol;
-    return { key: `twin:${t.address}`, kind: "twin", native, erc20: t.address, ostia: { symbol, decimals: t.decimals }, canton: { symbol, admin: gateway, id: `erc20:${bare(t.address)}`, decimals: 10 } };
+    return { key: `twin:${t.address}`, kind: "twin", native, wrapped: native ? t.symbol : null, erc20: t.address, ostia: { symbol, decimals: t.decimals }, canton: { symbol, admin: gateway, id: `erc20:${bare(t.address)}`, decimals: 10 } };
   });
   twins.sort((a, b) => Number(b.native) - Number(a.native));
   const wrapped = config.wrapped.filter((w) => w.instrument).map((w): Pair => ({
-    key: `wrapped:${w.address}`, kind: "wrapped", native: false, erc20: w.address, ostia: { symbol: w.symbol, decimals: w.decimals },
+    key: `wrapped:${w.address}`, kind: "wrapped", native: false, wrapped: null, erc20: w.address, ostia: { symbol: w.symbol, decimals: w.decimals },
     canton: { symbol: cantonName(w.symbol, w.instrument!.id), admin: w.instrument!.admin, id: w.instrument!.id, decimals: 10 },
   }));
   return [...twins, ...wrapped];
 }
+
+/** What a token is called where it arrives: the chain's own coin coming back from Canton arrives as its wrapped form. */
+export const arrivesAs = (pair: Pair, from: Side): string => (from === "ostia" ? pair.canton.symbol : pair.wrapped ?? pair.ostia.symbol);
 
 /** The picker's two groups, in order. */
 export function groupsOf(pairs: Pair[]): { ostia: Token[]; canton: Token[] } {

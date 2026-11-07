@@ -1,15 +1,16 @@
 // What the move card runs on once the Canton account is open: the library's move, built from the wallet, the account and this build's bridge configuration. The Bridge page loads this file
 // only when it needs it, so none of it is in the page's first script.
 import { cantonAdapter } from "./adapter.ts";
+import { depositRecord, redeemRecord } from "./adopt.ts";
 import { track } from "./activity.ts";
 import type { Account } from "./account.ts";
 import { holdingsOf } from "./balances.ts";
-import type { OpenState } from "./canton/accounts.ts";
+import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
 import { createMove, explorerLeg, explorerSentSince, explorerTx, randomRef, webLocks, type Move } from "./moves/moves.ts";
-import { keptMoves, moveStore, type Checkpoint } from "./moves/state.ts";
+import { keptMoves, moveStore, saveCheckpoint, type Checkpoint } from "./moves/state.ts";
 
 export interface Session {
   /** Where the page and the moves meet: the card starts, continues and gives up moves here, and the in-flight bar and the Activity list read it. */
@@ -23,6 +24,11 @@ export interface Session {
   kept(): Checkpoint[];
   /** What the account service says is open for the account (GET /accounts/v1/open): its redeem and deposit requests. One signed look, so it is asked for once, not on a timer. */
   open(): Promise<OpenState>;
+  /**
+   * Keeps a record here for a redeem or a deposit that Canton lists as open but this browser has no record of (it was started in another browser), so the move can be carried on like any kept
+   * move. Returns the record's ref, or null when this build cannot carry it on (its token is not one the bridge moves, or its allocation is gone). It never signs, sends or asks the wallet.
+   */
+  adopt(kind: "redeem" | "deposit", request: OpenRequest): Promise<string | null>;
   /** Stops the session's watching of its move (the list of finished moves). */
   close(): void;
 }
@@ -43,5 +49,13 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
     open: () => account.client.openRequests(account.key, account.party),
     cantonBalance: async (instrument) => holdingsOf(await account.client.holdings(account.key, account.party), instrument),
     kept: () => keptMoves(store, { account: evm.account, party: account.party }),
+    async adopt(kind, request) {
+      const o = { account: evm.account, party: account.party, config };
+      const record = kind === "redeem" ? redeemRecord(request, o) : await depositRecord(request, { ...o, allocations: () => account.client.allocations(account.key, account.party) });
+      if (record === null) return null;
+      // A record that is kept already is the person's own: it is never overwritten.
+      if (!keptMoves(store).some((c) => c.ref === record.ref)) saveCheckpoint(store, record);
+      return record.ref;
+    },
   };
 }

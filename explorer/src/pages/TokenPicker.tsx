@@ -10,12 +10,16 @@ export function TokenPicker({ pairs, chainName, selected, onPick, onClose }: { p
   const [query, setQuery] = useState("");
   const title = useId();
   const box = useRef<HTMLInputElement>(null);
+  // The search box is focused once, when the picker opens. The card draws again every few seconds (balances) and hands a new onClose each time: that must not pull the focus back, which would
+  // reopen a phone's keyboard and close an open token note.
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => { box.current?.focus(); }, []);
   useEffect(() => {
-    box.current?.focus();
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") close.current(); };
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+  }, []);
   const groups = groupsOf(pairs);
   const shown = [{ name: `On ${chainName}`, rows: search(groups.ostia, pairs, query) }, { name: "On Canton", rows: search(groups.canton, pairs, query) }];
   const none = shown.every((g) => g.rows.length === 0);

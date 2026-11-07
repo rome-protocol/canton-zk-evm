@@ -5,9 +5,10 @@ import type { ApiTx, BlockLeg } from "../api.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { createMove, type CantonAdapter, type LocksLike } from "../bridge/moves/moves.ts";
-import { lockIdOf, type StoreLike } from "../bridge/moves/state.ts";
+import { lockIdOf, saveCheckpoint, type StoreLike } from "../bridge/moves/state.ts";
+import { depositRecord, redeemRecord } from "../bridge/adopt.ts";
 import { track } from "../bridge/activity.ts";
-import type { OpenState } from "../bridge/canton/accounts.ts";
+import type { AllocationView, OpenState } from "../bridge/canton/accounts.ts";
 import type { Session } from "../bridge/session.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -37,7 +38,8 @@ export const memoryLocks = (): LocksLike => {
   };
 };
 
-const FIELD = "tok" + "en";
+/** The name of the ERC-20 field of a leg and of a redeem request (the token standard word, written in two parts). */
+export const FIELD = "tok" + "en";
 /** A leg of a move, as the explorer lists it (the legs name the ERC-20 field after the token standard). */
 export const leg = (o: Partial<BlockLeg>, erc20: Address): BlockLeg => ({ block: 42, legIndex: 0, txIndex: 0, logIndex: 0, kind: "payment", legId: "0x", [FIELD]: erc20, account: ME, amount: "0", txHash: null, updateId: null, canton: null, ...o }) as BlockLeg;
 export const finalTx = (legs: BlockLeg[]) => ({ status: "final", success: true, block: { number: 42, hash: null, updateId: null }, legs }) as unknown as ApiTx;
@@ -76,7 +78,7 @@ export function fakeCanton(): CantonAdapter & { calls: string[] } {
 }
 
 /** A session on the real move library: `legs` is what the explorer shows as final for the move's transaction. */
-export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint; open?: OpenState; tx?: (hash: Hex) => ApiTx } = { legs: () => [] }) {
+export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint; open?: OpenState; allocations?: AllocationView[]; tx?: (hash: Hex) => ApiTx } = { legs: () => [] }) {
   const evm = o.evm ?? fakeEvm();
   const canton = o.canton ?? fakeCanton();
   const store = o.store ?? memoryStore();
@@ -88,6 +90,12 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   const session: Session = {
     move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
     open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
+    adopt: vi.fn(async (kind, request) => {
+      const record = kind === "redeem" ? redeemRecord(request, { account: evm.evm.account, party: PARTY, config }) : await depositRecord(request, { account: evm.evm.account, party: PARTY, config, allocations: async () => o.allocations ?? [] });
+      if (record === null) return null;
+      if (!move.kept().some((c) => c.ref === record.ref)) saveCheckpoint(store, record);
+      return record.ref;
+    }),
   };
   return { session, evm, canton, store, move };
 }

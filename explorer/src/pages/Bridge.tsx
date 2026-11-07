@@ -175,7 +175,7 @@ export function Bridge() {
       {settings && (
         <div className="panel" role="tabpanel" id="bridge-panel-move" aria-labelledby="bridge-tab-move" hidden={tab !== "move"}>
           <MoveCard
-            config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} chainName={chain.chainName}
+            config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
             faucet={info === null || info.on ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null}
           />

@@ -12,6 +12,12 @@ describe("the move button", () => {
     expect(buttonOf(base)).toEqual({ label: "Move to Canton", action: "move", disabled: false });
     expect(buttonOf({ ...base, to: "Ostia" }).label).toBe("Move to Ostia");
   });
+  it("waits, in words, while the machinery of an opened account is built; and says the bridge is not available when its setup failed", () => {
+    expect(buttonOf({ ...base, preparing: true })).toEqual({ label: "Getting ready…", action: "none", disabled: true });
+    expect(buttonOf({ ...base, preparing: true, config: "failed" }).label).toBe("Not available here");
+    expect(buttonOf({ ...base, preparing: true, config: "loading" }).label).toBe("Looking up the bridge…");
+    expect(buttonOf({ ...base, preparing: true, accountReady: false }).label).toBe("Open my Canton account");
+  });
   it("says so when the balance does not cover the amount, and waits while the bridge is looked up", () => {
     expect(buttonOf({ ...base, enough: false })).toEqual({ label: "Not enough TKA", action: "none", disabled: true });
     expect(buttonOf({ ...base, enough: null }).label).toBe("Move to Canton");   // a balance not known yet does not stop the move: the move checks it itself

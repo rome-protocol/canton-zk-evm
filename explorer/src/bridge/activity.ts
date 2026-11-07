@@ -1,9 +1,10 @@
 // The moves of a wallet account, for the Activity list: the ones kept in this browser that are not finished, and the ones that finished (a short list the page keeps when a move ends).
 // A record holds no key and no secret.
 import type { Address, Hex } from "viem";
-import type { OpenState } from "./canton/accounts.ts";
+import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { Marks } from "./marks.ts";
 import { depositIdOf, keptMoves, STAGES, type Checkpoint, type MoveKind, type MoveState, type Step, type StoreLike } from "./moves/state.ts";
+import { typedAmount } from "./adopt.ts";
 import type { Pair } from "./tokens.ts";
 
 /** One move, finished or not, as the Activity list and the bar under the card show it. */
@@ -25,6 +26,8 @@ export interface Entry {
   done: boolean;
   /** Where an unfinished move stopped (null for a finished one). */
   stage: Checkpoint["stage"] | null;
+  /** Canton lists this move as open, but this browser has no record of it: it was started in another browser. */
+  elsewhere?: boolean;
 }
 
 const HISTORY = "bridge-history", LIMIT = 50;
@@ -95,6 +98,31 @@ export function openOnCanton(e: Entry, open: Pick<OpenState, "redeemRequests" | 
   return false;
 }
 
+/** An open request of the account that no row here accounts for: a move started in another browser. `request` is what Canton lists; `canContinue` is false where this build cannot carry it on. */
+export interface Elsewhere { entry: Entry; kind: "redeem" | "deposit"; request: OpenRequest; canContinue: boolean }
+
+/**
+ * The account's open requests on Canton with no row here, newest-unknown first. A redeem names its token and amount (and can be carried on where the bridge moves that token); a deposit names
+ * neither until its allocation is read, so its row says only that a deposit is open.
+ */
+export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequests">, rows: Entry[], o: { account: Address; party: string; pairs: Pair[] }): Elsewhere[] {
+  const out: Elsewhere[] = [];
+  const base = { account: o.account, party: o.party, at: 0, tx: null, block: null, done: false, stage: "canton" as const, elsewhere: true };
+  for (const r of open.redeemRequests) {
+    const ref = r.arguments.ref, erc20 = r.arguments.token, amount = r.arguments.amount, holder = r.arguments.holder;
+    if (typeof ref !== "string" || (typeof holder === "string" && holder !== o.party) || rows.some((e) => e.kind === "redeem" && e.ref === ref)) continue;
+    const asset = (typeof erc20 === "string" ? `0x${erc20.replace(/^0x/, "").toLowerCase()}` : "0x") as Address;
+    const known = o.pairs.some((p) => p.kind === "twin" && same(p.erc20, asset));
+    out.push({ kind: "redeem", request: r, canContinue: known && typeof amount === "string", entry: { ...base, ref, kind: "redeem", asset, amount: typeof amount === "string" ? typedAmount(amount) : "" } });
+  }
+  for (const r of open.depositRequests) {
+    const label = r.arguments.label, depositor = r.arguments.depositor;
+    if (typeof label !== "string" || (typeof depositor === "string" && depositor !== o.party) || rows.some((e) => e.kind === "deposit" && openOnCanton(e, { redeemRequests: [], depositRequests: [r] }))) continue;
+    out.push({ kind: "deposit", request: r, canContinue: true, entry: { ...base, ref: label, kind: "deposit", asset: "0x" as Address, amount: "" } });
+  }
+  return out;
+}
+
 const AFTER_CANTON: Checkpoint["stage"][] = ["evm", "wallet", "sent"];
 /** Where an unfinished move stands, in words. `onCanton`: the account service lists the move's request as open (so Canton has it even when the record has not caught up). */
 export function standing(e: Entry, chainName: string, onCanton = false): string {
@@ -119,12 +147,13 @@ export function continueWords(e: Entry, chainName: string, onCanton = false): st
   return `Continue to ${e.kind === "lock" || e.kind === "withdraw" ? "Canton" : chainName}`;
 }
 
-/** What moved, in words: "5 CC to Ostia" ("tokens" where this build no longer lists the token). */
+/** What moved, in words: "5 CC to Ostia" ("tokens" where this build no longer lists the token; "Tokens to Ostia" where the amount is not known). */
 export function whatMoved(e: Entry, pairs: Pair[], chainName: string): string {
   const pair = pairs.find((p) => same(p.erc20, e.asset));
   const toCanton = e.kind === "lock" || e.kind === "withdraw";
-  const symbol = pair ? (toCanton ? pair.ostia.symbol : pair.canton.symbol) : "tokens";
-  return `${e.amount} ${symbol} to ${toCanton ? "Canton" : chainName}`;
+  // What arrives is named: the chain's own coin coming back from Canton arrives as its wrapped form.
+  const symbol = pair ? (toCanton ? pair.ostia.symbol : pair.wrapped ?? pair.canton.symbol) : "tokens";
+  return `${e.amount === "" ? "Tokens" : `${e.amount} ${symbol}`} to ${toCanton ? "Canton" : chainName}`;
 }
 
 /** The marks a row starts from before the explorer is asked: a finished move is final in its block. */

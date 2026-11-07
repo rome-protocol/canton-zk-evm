@@ -11,7 +11,7 @@ import { pairsOf } from "../bridge/tokens.ts";
 import { depositIdOf, releaseIdOf, saveCheckpoint, type Checkpoint, type MoveState } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import { Activity, type ActivityProps } from "./Activity.tsx";
-import { config, fakeEvm, finalTx, fakeSession, GATEWAY_PARTY, leg, ME, memoryStore, PARTY, TKA, VAULT, WCC } from "./bridge-fakes.ts";
+import { CC_ADMIN, config, FIELD, fakeEvm, finalTx, fakeSession, GATEWAY_PARTY, leg, ME, memoryStore, PARTY, TKA, VAULT, WCC, WTROME } from "./bridge-fakes.ts";
 import { MoveBar } from "./MoveBar.tsx";
 
 afterEach(cleanup);
@@ -179,15 +179,135 @@ describe("the Activity list", () => {
     expect(await screen.findByText("Signed on Canton. Waiting for Canton to show it.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue to Ostia" })).toBeEnabled();
   });
-  it("does not ask the account service when no move waits for Canton", async () => {
+  it("asks the account service once when the list is shown, not on a timer", async () => {
     const store = memoryStore();
     saveCheckpoint(store, ck({ input: redeem, stage: "evm" }));
     const { session } = fakeSession({ store, legs: () => [] });
     show({ store, session });
     await screen.findByRole("button", { name: "Release on Ostia" });
-    expect(session.open).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(session.open).toHaveBeenCalledTimes(1);
   });
 
+  describe("a move that Canton has open and this browser has no record of (started on another device)", () => {
+    const bare = (a: string) => a.slice(2);
+    const request = (o: Record<string, unknown> = {}) => ({ contractId: "00aa", arguments: { holder: PARTY, [FIELD]: bare(TKA), amount: "3.0000000000", recipient: bare(ME), ref: "other-1", ...o } });
+    const openWith = (redeems: unknown[], deposits: unknown[] = []) => ({ redeemRequests: redeems, depositRequests: deposits, twinAcceptance: null, withdrawalAcceptance: null }) as never;
+    it("is listed with what it moves, says another browser started it, and carries on from its row: one release, asked of the wallet once", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], open: openWith([request()]), tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "other-1") }, TKA)]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      expect(within(row).getByText("Started in another browser. Canton has it. Release it on Ostia.")).toBeInTheDocument();
+      expect(within(row).queryByText(/UTC/)).toBeNull();   // its time is not known
+      await userEvent.click(within(row).getByRole("button", { name: "Release on Ostia" }));
+      await waitFor(() => expect(made.evm.calls.map((c) => c.name)).toEqual(["release"]));
+      expect(made.evm.calls[0]!.args).toContain(ME);   // released to the recipient the request names
+      await waitFor(() => expect(finished(store).map((e) => [e.ref, e.amount])).toEqual([["other-1", "3"]]));
+      expect(await screen.findAllByRole("listitem").then((l) => l.filter((x) => x.classList.contains("act-row")))).toHaveLength(1);   // the record kept now is the row; the other-device row is gone
+    });
+    it("is not listed twice when this browser keeps its record, or has written it down as done", async () => {
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "other-1", input: { ...redeem, amount: "3" }, to: ME, stage: "canton" }));
+      remember(store, { ...entryOf(ck({ ref: "done-2", input: redeem, stage: "sent" })), tx: TX, block: 7 });
+      const { session } = fakeSession({ store, legs: () => [], open: openWith([request(), request({ ref: "done-2" })]) });
+      show({ store, session });
+      await waitFor(() => expect(session.open).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rows()).toHaveLength(2);
+      expect(screen.queryByText(/another browser/)).toBeNull();
+    });
+    it("is a plain row without a button where this build does not move the token", async () => {
+      const store = memoryStore();
+      const { session } = fakeSession({ store, legs: () => [], open: openWith([request({ [FIELD]: "ee".repeat(20) })]) });
+      show({ store, session });
+      expect(await screen.findByText(/Started in another browser\. Canton has it/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+    });
+    it("names the chain's own coin that comes back as its wrapped form", async () => {
+      const store = memoryStore();
+      const { session } = fakeSession({ store, legs: () => [], open: openWith([request({ [FIELD]: bare(WTROME) })]) });
+      show({ store, session });
+      expect(await screen.findByText("3 WtROME to Ostia")).toBeInTheDocument();
+    });
+    it("lists an open deposit with no amount, and claims it when its allocation is there", async () => {
+      const store = memoryStore();
+      const id = depositIdOf(PARTY, "dep-1").slice(2);
+      const deposits = [{ contractId: "00bb", arguments: { depositor: PARTY, depositId: id, label: "dep-1", recipient: bare(ME) } }];
+      const allocations = [{ contractId: "00cc", allocation: { settlement: { settlementRef: { id: "dep-1" } }, transferLegId: "l", transferLeg: { sender: PARTY, receiver: "g", amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } }, holdingCids: [] }];
+      const made = fakeSession({ store, legs: () => [], open: openWith([], deposits), allocations, tx: () => finalTx([leg({ kind: "deposit", legId: depositIdOf(PARTY, "dep-1") }, WCC)]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("Tokens to Ostia")).closest("li")!;
+      expect(within(row).getByText("Started in another browser. Canton has it. Claim it on Ostia.")).toBeInTheDocument();
+      await userEvent.click(within(row).getByRole("button", { name: "Claim on Ostia" }));
+      await waitFor(() => expect(made.evm.calls.map((c) => c.name)).toEqual(["claim"]));
+      await waitFor(() => expect(finished(store).map((e) => [e.ref, e.amount])).toEqual([["dep-1", "5"]]));
+    });
+    it("says in plain words that a deposit cannot be finished here when its allocation is gone, and sends nothing", async () => {
+      const store = memoryStore();
+      const deposits = [{ contractId: "00bb", arguments: { depositor: PARTY, depositId: depositIdOf(PARTY, "dep-1").slice(2), label: "dep-1" } }];
+      const made = fakeSession({ store, legs: () => [], open: openWith([], deposits) });
+      show({ store, session: made.session });
+      await userEvent.click(await screen.findByRole("button", { name: "Claim on Ostia" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("This move cannot be finished here. Open the bridge in the browser that started it.");
+      expect(made.evm.calls).toEqual([]);
+      expect(made.session.kept()).toEqual([]);
+    });
+    it("is not shown for another account's request", async () => {
+      const store = memoryStore();
+      const { session } = fakeSession({ store, legs: () => [], open: openWith([request({ holder: "bob::1220" + "cd".repeat(32) })]) });
+      show({ store, session });
+      await waitFor(() => expect(session.open).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.getByText(/No moves yet/)).toBeInTheDocument();
+    });
+  });
+
+  describe("looking at a transaction", () => {
+    it("is one look for a transaction that the bar and a row of the list both show", async () => {
+      const read = vi.fn(async () => answer({ status: "proving", block: IN_BLOCK, lifecycle: lifecycle(null) }));
+      const hash = ("0x" + "cd".repeat(32)) as Hex;
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash }));
+      const session = { move: { state: { phase: "proving", tx: hash }, current: "r9", subscribe: () => () => {} }, kept: () => [ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash })], open: async () => ({ redeemRequests: [], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), party: PARTY } as unknown as Session;
+      render(<MemoryRouter><MoveBar session={session} pairs={pairs} chainName="Ostia" read={read} pollMs={20} /><Activity account={ME} session={session} store={store} pairs={pairs} chainName="Ostia" onConnect={vi.fn()} onOpenAccount={vi.fn()} read={read} pollMs={20} /></MemoryRouter>);
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(2));
+      const hashes = read.mock.calls.map((c) => (c as unknown[])[0]);
+      expect(new Set(hashes).size).toBe(1);
+      // with two watchers on a 20 ms timer, 150 ms is about 8 looks of one poll, not 16
+      const before = read.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 100));
+      expect(read.mock.calls.length - before).toBeLessThanOrEqual(7);
+    });
+    it("stops looking at a transaction reported replaced, and says so in a plain sentence", async () => {
+      const read = vi.fn(async () => answer({ status: "replaced" }));
+      const store = memoryStore();
+      remember(store, { ...entryOf(ck({ ref: "gone-1", input: redeem, stage: "sent" })), done: false, tx: ("0x" + "ef".repeat(32)) as Hex, block: null });
+      saveCheckpoint(store, ck({ ref: "gone-2", input: redeem, to: ME, stage: "sent", tx: ("0x" + "ef".repeat(32)) as Hex, at: NOW + 1 }));
+      show({ store, read });
+      expect(await screen.findByText("This transaction was replaced, so it will not go through. Check your wallet.")).toBeInTheDocument();
+      const calls = read.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 80));
+      expect(read.mock.calls.length).toBe(calls);
+    });
+    it("says a dropped transaction was dropped", async () => {
+      const read = vi.fn(async () => answer({ status: "dropped" }));
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "gone-3", input: redeem, to: ME, stage: "sent", tx: ("0x" + "ab".repeat(32)) as Hex }));
+      show({ store, read });
+      expect(await screen.findByText(/was dropped before it reached a block/)).toBeInTheDocument();
+    });
+    it("counts a block that is final on Canton but not yet indexed as Final", async () => {
+      const read = vi.fn(async () => answer({ status: "unindexed", success: true, block: { number: 9, hash: null, updateId: "1220aa" } }));
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "u-1", input: redeem, to: ME, stage: "sent", tx: ("0x" + "ab".repeat(32)) as Hex }));
+      show({ store, read });
+      expect(await screen.findByRole("listitem", { name: "Final: done" })).toBeInTheDocument();
+      // an unindexed answer is not the last word: it is looked at again until the explorer indexes it
+      const calls = read.mock.calls.length;
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(calls));
+    });
+  });
   it("continues an unfinished move from its row: the release is asked of the wallet once, and the row becomes a finished one with its block", async () => {
     const store = memoryStore();
     saveCheckpoint(store, ck({ ref: "ref-1", input: redeem, to: ME, stage: "evm" }));

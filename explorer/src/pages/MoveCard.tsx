@@ -10,7 +10,7 @@ import type { BridgeConfig } from "../bridge/evm/config.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
 import { popups, stepsOf, cantonSignatures } from "../bridge/moves/steps.ts";
 import type { Session } from "../bridge/session.ts";
-import { inputOf, moveOf, pairsOf, type Pair, type Side, type Token } from "../bridge/tokens.ts";
+import { arrivesAs, inputOf, moveOf, pairsOf, type Pair, type Side, type Token } from "../bridge/tokens.ts";
 import { moveWords } from "../bridge/words.ts";
 import { TokenPicker } from "./TokenPicker.tsx";
 
@@ -22,8 +22,10 @@ export interface MoveCardProps {
   /** The wallet's account on Ostia, or null while the wallet is not connected. */
   account: string | null;
   evm: EvmAdapter | null;
-  /** The move's machinery, once the Canton account is open. */
+  /** The move's machinery, once the Canton account is open and the bridge's setup is read. */
   session: Session | null;
+  /** The Canton account is open (the machinery may still be getting built). */
+  accountOpen: boolean;
   chainName: string;
   onConnect(): void;
   /** What the wallet or the page says of connecting, in plain words. */
@@ -37,8 +39,9 @@ export interface MoveCardProps {
   onMoved?(): void;
 }
 
-interface Balances { ostia: bigint | null; canton: bigint | null; gas: bigint | null }
-const EMPTY: Balances = { ostia: null, canton: null, gas: null };
+/** `ostia` is what the From side can spend (for the chain's own coin, the coin and its wrapped form together); `wrapped` is only what the token itself holds, which is what a move back from Canton adds to. */
+interface Balances { ostia: bigint | null; wrapped: bigint | null; canton: bigint | null; gas: bigint | null }
+const EMPTY: Balances = { ostia: null, wrapped: null, canton: null, gas: null };
 /** What a move of the chain's own coin leaves unspent, for the fees of its steps (a hundredth of a coin). */
 const gasReserve = (decimals: number) => 10n ** BigInt(Math.max(decimals - 2, 0));
 
@@ -66,7 +69,7 @@ export function MoveCard(p: MoveCardProps) {
 
   const pair: Pair | undefined = pairs.find((x) => x.key === sel.pair) ?? pairs[0];
   const from = sel.from;
-  const symbols = pair ? { from: from === "ostia" ? pair.ostia.symbol : pair.canton.symbol, to: from === "ostia" ? pair.canton.symbol : pair.ostia.symbol } : null;
+  const symbols = pair ? { from: from === "ostia" ? pair.ostia.symbol : pair.canton.symbol, to: arrivesAs(pair, from) } : null;
 
   // The move's state, and a move that was kept (after a reload) is picked up: the card shows what is on its way and offers to continue it.
   useEffect(() => {
@@ -99,7 +102,7 @@ export function MoveCard(p: MoveCardProps) {
       const [held, gas] = evm ? await Promise.all([hold(evm.balanceOf(pair.erc20)), hold(evm.native())]) : [null, null];
       const ostia = held === null ? null : pair.native && gas !== null ? held + (gas > gasReserve(config!.chain.coin.decimals) ? gas - gasReserve(config!.chain.coin.decimals) : 0n) : held;
       const canton = session ? await hold(session.cantonBalance({ admin: pair.canton.admin, id: pair.canton.id })) : null;
-      if (live) setBal({ ostia, canton, gas });
+      if (live) setBal({ ostia, wrapped: held, canton, gas });
     })();
     return () => { live = false; };
   }, [pair?.key, evm, session, tick]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -116,11 +119,11 @@ export function MoveCard(p: MoveCardProps) {
   const to = from === "ostia" ? "Canton" : p.chainName;
   const keptNow = move.phase === "paused" || (move.phase === "failed" && move.kept) ? recordOf(session?.kept() ?? [], session?.move.current) : undefined;
   const button = buttonOf({
-    connected: p.account !== null, accountReady: session !== null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
+    connected: p.account !== null, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
     to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
   });
   const kind = pair ? moveOf(pair, from) : null;
-  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native, p.chainName) : [];
+  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native, p.chainName, pair.wrapped) : [];
   const pops = popups(steps), signs = kind ? cantonSignatures(kind) : 0;
   const note = noteOf(move);
   const running = progressWords(move, symbols?.from ?? "") !== null || starting;
@@ -160,13 +163,14 @@ export function MoveCard(p: MoveCardProps) {
 
   const chip = (side: Side): string => (side === "ostia" ? (p.account ? short(p.account, 6, 4) : "Not connected") : session ? short(session.party, 10, 4) : "Not opened");
   const shown = (b: bigint | null, side: Side) => (b === null ? "–" : showUnits(b, tokenDecimals(side)));
-  const edit = (t: string) => { setText(t); setProblem(null); };
+  // A keypad set to a comma-decimal language offers only the comma: one comma and no point is read as the decimal point. Anything else (two commas, a comma and a point) is left for the amount check to refuse.
+  const edit = (t: string) => { setText(/^[^.,]*,[^.,]*$/.test(t) ? t.replace(",", ".") : t); setProblem(null); };
   const locked = running || move.phase === "paused" || (move.phase === "failed" && move.kept);
 
   const side = (field: "from" | "to") => {
     const s: Side = field === "from" ? from : from === "ostia" ? "canton" : "ostia";
     const tok = symbols ? (field === "from" ? symbols.from : symbols.to) : "";
-    const balance = s === "ostia" ? bal.ostia : bal.canton;
+    const balance = s === "ostia" ? (field === "to" && pair?.native ? bal.wrapped : bal.ostia) : bal.canton;
     const where = s === "ostia" ? `on ${p.chainName}` : "on Canton";
     return (
       <div className={`side ${field}`}>
