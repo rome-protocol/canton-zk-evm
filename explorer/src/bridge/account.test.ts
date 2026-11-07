@@ -62,6 +62,13 @@ describe("opting in", () => {
     const late = optable([open(false, false), open(true, false), open(true, true)], async () => "u");
     await expect(optIn(late.a, nowait, 4)).resolves.toBeUndefined();   // a read that lags behind the ledger catches up
   });
+  it("stops reading, and signs nothing more, once the wallet's account is no longer the one being opened", async () => {
+    let live = true;
+    const client = { openRequests: vi.fn(async () => { live = false; return open(true, true); }) };
+    const a = { key, party: PARTY, chain, client: client as never, submit: vi.fn(async () => "u") };
+    await expect(optIn(a, nowait, 8, () => live)).rejects.toMatchObject({ code: "account_closed" });
+    expect(client.openRequests).toHaveBeenCalledTimes(1);
+  });
   it("stops on any other refusal", async () => {
     const submit = vi.fn(async () => { throw new AccountsError("forbidden", 403, "not on the list"); });
     await expect(optIn(optable([open(false, false)], submit).a, nowait)).rejects.toMatchObject({ kind: "forbidden" });

@@ -43,8 +43,8 @@ export function oneAtATime(run: (built: Built) => Promise<string>): (built: Buil
 
 /** The account's two standing acceptances, made once: of Ostia tokens (twins) and of withdrawals. The account is read first, and only a missing one is made. A service that says the account has one
  * (`already_accepted`) is taken at its word. The account is set up only when a second read shows both. */
-export async function optIn(a: Pick<Account, "key" | "party" | "chain" | "client" | "submit">, sleep: (ms: number) => Promise<void> = sleepFor, looks = 8): Promise<void> {
-  const read = async () => { const o = await a.client.openRequests(a.key, a.party); return { twin: Boolean(o.twinAcceptance), withdrawal: Boolean(o.withdrawalAcceptance) }; };
+export async function optIn(a: Pick<Account, "key" | "party" | "chain" | "client" | "submit">, sleep: (ms: number) => Promise<void> = sleepFor, looks = 8, current: () => boolean = () => true): Promise<void> {
+  const read = async () => { if (!current()) throw closedError(); const o = await a.client.openRequests(a.key, a.party); return { twin: Boolean(o.twinAcceptance), withdrawal: Boolean(o.withdrawalAcceptance) }; };
   const have = await read();
   for (const [has, built] of [[have.twin, twinAcceptance(a.party, a.chain)], [have.withdrawal, withdrawalAcceptance(a.party, a.chain)]] as const) {
     if (has) continue;
@@ -76,7 +76,7 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
     close: () => { account.closed = true; },
   };
   progress("Setting up your account.");
-  await optIn(account);
+  await optIn(account, sleepFor, 8, () => !account.closed && current());
   still();
   return account;
 }

@@ -36,7 +36,7 @@ const KINDS: Record<string, string> = {
 /** Errors that carry their own words, written in plain English by the page (a move that stopped for the person). */
 const OWN_WORDS = new Set(["Refused", "Waited"]);
 
-const wait = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} seconds` : `${Math.round(seconds / 60)} minutes`);
+const wait = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} seconds` : seconds < 5400 ? `${Math.round(seconds / 60)} minutes` : `${Math.round(seconds / 3600)} hours`);
 
 /** One error, in plain words. */
 export function plainWords(e: unknown): string {

@@ -22,6 +22,7 @@ describe("plain words for what the person can see", () => {
     }
     expect(plainWords(new AccountsError("rate-limited", 429, "slow", 30))).toBe("Too many requests just now. Wait 30 seconds and try again.");
     expect(plainWords(new AccountsError("rate-limited", 429, "slow", 300))).toBe("Too many requests just now. Wait 5 minutes and try again.");
+    expect(plainWords(new AccountsError("rate-limited", 429, "x", 86400))).toBe("Too many requests just now. Wait 24 hours and try again.");
     expect(plainWords(new AccountsError("refused", 422, "DAML_FAILURE: stack", undefined, "INVALID_ARGUMENT"))).not.toMatch(/DAML|INVALID/);
   });
   it("has a sentence for the page's own refusals and for what the checks refuse", () => {
