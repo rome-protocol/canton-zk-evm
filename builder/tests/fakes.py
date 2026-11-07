@@ -631,16 +631,17 @@ class FakeLedger:
                         if not isinstance(size, int) or not 0 < size <= LIST_LIMIT:
                             return self._reply(400, {"code": "INVALID_ARGUMENT"})
                         offset = body.get("activeAtOffset", LEDGER_END)   # none given: the ledger end, which the answer names
+                        named = str(body.get("activeAtOffset"))   # "None": the request names no offset
                         shape = hashlib.sha256(json.dumps(body.get("eventFormat"), sort_keys=True).encode()).hexdigest()[:16]
                         start = 0
-                        if body.get("pageToken"):   # a page token only works at the offset and with the event format of the page it came from
-                            at, token_offset, token_shape = str(body["pageToken"]).split("|")
-                            if (str(body.get("activeAtOffset")), token_shape) != (token_offset, shape):
+                        if body.get("pageToken"):   # a page token only works with the offset (named or not) and the event format of the request it came from, as the real participant's does
+                            at, token_named, token_shape = str(body["pageToken"]).split("|")
+                            if (named, token_shape) != (token_named, shape):
                                 return self._reply(400, {"code": "INVALID_ARGUMENT", "cause": "the page token does not fit this request"})
                             start = int(at)
                         out = {"activeAtOffset": offset, "activeContracts": found[start:start + size]}
                         if start + size < len(found):
-                            out["nextPageToken"] = f"{start + size}|{offset}|{shape}"
+                            out["nextPageToken"] = f"{start + size}|{named}|{shape}"
                         return self._reply(200, out)
                     except OSError:   # the builder gave up on a slow answer
                         return

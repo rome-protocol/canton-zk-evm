@@ -72,7 +72,7 @@ class Golden(Loop):
         r.engine_calls = Tee(self.calls, "engine", lambda c: c)
         l.submitted = Tee(self.calls, "ledger", lambda body: ["submit-and-wait", body])
         l.queries = Tee(self.calls, "ledger", lambda body: ["active-contracts", body])
-        l.gets = Tee(self.calls, "ledger", lambda path: ["get", path])   # the ledger end before the submit, and /traffic
+        l.gets = Tee(self.calls, "ledger", lambda path: ["get", path])   # the ledger end before each read of the contracts, and /traffic
         l.completion_queries = Tee(self.calls, "ledger", lambda c: ["completions", *c])
         real_run = b.run
         def run(cmd, *args):   # the prover's input tool

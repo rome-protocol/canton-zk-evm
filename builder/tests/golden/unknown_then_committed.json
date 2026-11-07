@@ -7,8 +7,14 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
+    "activeAtOffset": 42,
     "eventFormat": {
      "filtersByParty": {
       "builder::1220aa": {
@@ -273,8 +279,14 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
+    "activeAtOffset": 42,
     "eventFormat": {
      "filtersByParty": {
       "builder::1220aa": {

@@ -970,17 +970,23 @@ class Ledger:
 
     def _created(self, identifier_filter: dict) -> list:
         """The created events of the active contracts the builder can see that match the filter. Read LIST_PAGE at a time, so that a list anyone can
-        make long is never refused for its length: the first page at the ledger end the participant picks, every later page at the offset it answered
-        with. The whole read may take LIST_TOTAL seconds."""
+        make long is never refused for its length: every page at the ledger end the first was read at (the participant refuses a page token
+        used with any other offset than the one the first request named). The whole read, the ledger end included, may take LIST_TOTAL seconds."""
+        deadline = time.monotonic() + LIST_TOTAL
+        left = lambda: deadline - time.monotonic()
+        if left() <= 0:
+            raise TimeoutError(f"the list took longer than {LIST_TOTAL} s")
+        request = urllib.request.Request(self.cfg.ledger_url + "/v2/state/ledger-end", headers=self.auth)
+        with urllib.request.urlopen(request, timeout=min(LIST_TIMEOUT, left())) as r:
+            offset = json.load(r)["offset"]
         filters = {p: {"cumulative": [{"identifierFilter": identifier_filter}]} for p in self.readers()}
-        body = {"eventFormat": {"filtersByParty": filters, "verbose": False}, "maxPageSize": LIST_PAGE}
-        found, deadline = [], time.monotonic() + LIST_TOTAL
+        body = {"eventFormat": {"filtersByParty": filters, "verbose": False}, "activeAtOffset": offset, "maxPageSize": LIST_PAGE}
+        found = []
         for number in range(LIST_MAX_PAGES):
-            left = deadline - time.monotonic()
-            if left <= 0:
+            if left() <= 0:
                 raise TimeoutError(f"the list took longer than {LIST_TOTAL} s")
             try:
-                page = post_json(self.cfg.ledger_url + "/v2/state/active-contracts-page", body, self.auth, timeout=min(LIST_TIMEOUT, left))
+                page = post_json(self.cfg.ledger_url + "/v2/state/active-contracts-page", body, self.auth, timeout=min(LIST_TIMEOUT, left()))
             except urllib.error.HTTPError as e:
                 if not number:
                     raise
@@ -992,7 +998,7 @@ class Ledger:
             found += [e["contractEntry"]["JsActiveContract"]["createdEvent"] for e in page["activeContracts"] if "JsActiveContract" in e["contractEntry"]]
             if not page.get("nextPageToken"):
                 return found
-            body = {**body, "activeAtOffset": page["activeAtOffset"], "pageToken": page["nextPageToken"]}
+            body = {**body, "pageToken": page["nextPageToken"]}
         raise ValueError(f"the list is longer than {LIST_MAX_PAGES} pages of {LIST_PAGE}")
 
     def active(self, template: str) -> list:

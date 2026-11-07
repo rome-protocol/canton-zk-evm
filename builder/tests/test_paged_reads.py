@@ -75,8 +75,7 @@ class PagedReads(tb.LegCase):
                 pages = self.reads(s, attr)
                 self.assertEqual(len(pages), -(-(MANY + len(real)) // b.LIST_PAGE))
                 self.assertEqual({q["maxPageSize"] for q in pages}, {b.LIST_PAGE})
-                self.assertNotIn("activeAtOffset", pages[0])   # the first page is read at the ledger end the participant picks...
-                self.assertEqual({q["activeAtOffset"] for q in pages[1:]}, {LEDGER_END})   # ...and every later page at the offset it answered with
+                self.assertEqual({q["activeAtOffset"] for q in pages}, {LEDGER_END})   # every page is read at the ledger end the first was read at
                 self.assertEqual([(q.get("pageToken") or "0").split("|")[0] for q in pages], ["0", "200", "400"][:len(pages)])
 
     def test_a_block_reads_a_list_of_10000_contracts_in_50_requests_and_every_other_list_in_one(self):
@@ -87,7 +86,7 @@ class PagedReads(tb.LegCase):
         # the chain, the token, the acceptances in 50 pages, the holdings: nothing else, and nothing is read twice
         self.assertEqual(len(s.ledger.queries), 1 + 1 + 50 + 1)
         self.assertEqual(s.ledger.unpaged, [])
-        self.assertLessEqual(s.ledger.gets.count("/v2/state/ledger-end"), 1)   # no list asks for the ledger end first: only the submit does
+        self.assertLess(s.ledger.gets.count("/v2/state/ledger-end"), 10)   # one for each list (and the submit), never one for each page
 
     def test_two_passes_of_one_block_read_each_list_once(self):
         s = self.setup({ALICE: [], BOB: []})
