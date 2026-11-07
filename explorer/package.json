@@ -5,6 +5,9 @@
   "license": "Apache-2.0",
   "description": "A block explorer and faucet for Ostia, a Canton zkEVM.",
   "type": "module",
+  "config": {
+    "protocVersion": "36.2"
+  },
   "engines": {
     "node": ">=22.18"
   },

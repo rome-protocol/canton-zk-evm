@@ -113,9 +113,10 @@ export class AccountsClient {
     if (found.party !== party) throw new AccountsError("server", 200, `the account service names ${found.party}, not this key's account ${party}`);
     if (found.exists) return party;
     if (!found.multiHash || !found.blob || !Array.isArray(found.topologyTransactions)) throw new AccountsError("server", 200, "the topology has no multi-hash, blob or transactions");
-    const multiHash = await verifyOnboarding({ party: found.party, multiHash: found.multiHash, topologyTransactions: found.topologyTransactions }, key.publicKey, participant);
+    const answer = { party: found.party, multiHash: found.multiHash, topologyTransactions: found.topologyTransactions };
+    await verifyOnboarding(answer, key.publicKey, participant);   // the check comes before the wallet is asked again; signOnboarding runs it again, so nothing is signed without it
     await confirm?.();
-    const made = await this.allocate(found.blob, await signOnboarding(key, multiHash));
+    const made = await this.allocate(found.blob, await signOnboarding(key, answer, participant));
     if (made.party !== party) throw new AccountsError("server", 200, `the account service made ${made.party}, not this key's account ${party}`);
     return party;
   }

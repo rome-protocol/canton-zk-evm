@@ -23,6 +23,7 @@ COPY explorer/package.json explorer/package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts ./
 COPY explorer/src ./src
+COPY explorer/canton-proto ./canton-proto
 COPY explorer/public ./public
 COPY --from=wasm /repo/explorer/public/verify ./public/verify
 RUN npm run build

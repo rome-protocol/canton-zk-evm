@@ -9,7 +9,7 @@ import { CryptoKeyFormat, SigningKeySpec, type SigningKeysWithThreshold } from "
 import { Enums_ParticipantPermission, Enums_TopologyChangeOp, TopologyTransaction as TopologyTransactionV30 } from "../../../canton-proto/gen/com/digitalasset/canton/protocol/v30/topology.ts";
 import { PartyToParticipant_HostingParticipant_HostingState, TopologyTransaction as TopologyTransactionV31 } from "../../../canton-proto/gen/com/digitalasset/canton/protocol/v31/topology.ts";
 import { UntypedVersionedMessage } from "../../../canton-proto/gen/com/digitalasset/canton/version/v1/untyped_versioned_message.ts";
-import { bytesFromHex, fromBase64, hex, sameBytes } from "./key.ts";
+import { bytesFromHex, fromBase64, hex, sameBytes } from "./bytes.ts";
 
 const PURPOSE = { topologyTransaction: 11, publicKeyFingerprint: 12, multiTopologyTransaction: 55 };   // Canton's hash purposes
 const SPKI_ED25519 = bytesFromHex("302a300506032b6570032100");   // the DER prefix of an Ed25519 public key (SubjectPublicKeyInfo); the 32 raw bytes follow

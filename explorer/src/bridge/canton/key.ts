@@ -3,6 +3,10 @@
 // general signing method: the raw signer is private to this module.
 import { recoverTypedDataAddress } from "viem";
 import type { Eip1193 } from "../../wallet.ts";
+import { bytesFromHex, hex, sameBytes } from "./bytes.ts";
+import { verifyOnboarding, type TopologyAnswer } from "./topology.ts";
+
+export { base64, bytesFromHex, fromBase64, hex, sameBytes } from "./bytes.ts";
 
 export const OSTIA_CHAIN_ID = 770101;   // PINS CHAIN_ID: the wallet must be on this chain, or it refuses to sign typed data for it
 export const KEY_INFO = "ostia-bridge canton-key v1";
@@ -17,18 +21,19 @@ export function originFromEnv(env: Record<string, string | undefined>): string {
   return origin;
 }
 
-/** The words of the signature request name the site, so a person reads where it is meant to be signed. They do not bind the signature to the site: a wallet shows
- * no origin of the page that asks, so a page of another site can ask for the same words. The mainnet account needs a sign-in-with-origin message (the wallet
- * puts the asking origin in it) or a passkey, which only the real site can use. */
-export const statement = (origin: string): string => `Open my Canton account on Ostia at ${origin}. This signature is your Canton key; sign it only on ${origin}.`;
+/** The words of the signature request. They are fixed: the signature is the Canton key, so a change of these words, of the domain below or of KEY_INFO makes another key for every
+ * user and strands their accounts. They must never change for this deployment. The page shows its own origin beside the request, outside the signed text. They do not bind the
+ * signature to the site: a wallet shows no origin of the page that asks, so a page of another site can ask for the same words. The mainnet account needs a sign-in-with-origin
+ * message (the wallet puts the asking origin in it) or a passkey, which only the real site can use. */
+export const STATEMENT = "Open my Canton account on Ostia. This signature is your Canton key: sign it only on the Ostia bridge page you trust.";
 
 /** The EIP-712 request: a signature of it is bound to the name "Ostia bridge" and the chain, so a signature asked for by another site is another one. */
-export const keyTypedData = (origin: string) => ({
+export const KEY_TYPED_DATA = {
   types: { EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }], Open: [{ name: "statement", type: "string" }] },
   primaryType: "Open" as const,
   domain: { name: "Ostia bridge", version: "1", chainId: OSTIA_CHAIN_ID },
-  message: { statement: statement(origin) },
-});
+  message: { statement: STATEMENT },
+};
 
 /** An Ed25519 key's public half. What it signs, it signs through `signOnboarding`, `signVerifiedTransaction` and `signRequest`. */
 export interface CantonKey {
@@ -41,10 +46,9 @@ const sign = (key: CantonKey, message: Uint8Array): Promise<Uint8Array> => {
   return signer(message);
 };
 
-/** The account's onboarding: the multi-hash of its topology (34 bytes: Canton's hash format, 0x12 0x20 and a SHA-256). The caller checks the topology; only that format is signed. */
-export function signOnboarding(key: CantonKey, multiHash: Uint8Array): Promise<Uint8Array> {
-  if (multiHash.length !== 34 || multiHash[0] !== 0x12 || multiHash[1] !== 0x20) throw new Error("an onboarding signs a 34-byte multi-hash (0x12 0x20 and a SHA-256)");
-  return sign(key, multiHash);
+/** The account's onboarding. It checks the account service's answer itself (`verifyOnboarding`: this key's party, on this participant, and nothing else), and signs the multi-hash it computed. */
+export async function signOnboarding(key: CantonKey, answer: TopologyAnswer, participant: string): Promise<Uint8Array> {
+  return sign(key, await verifyOnboarding(answer, key.publicKey, participant));
 }
 /** A prepared transaction's hash (32 bytes). Only `signPrepared` (sign.ts) calls this, with a hash it computed itself from a transaction it checked. */
 export function signVerifiedTransaction(key: CantonKey, hash: Uint8Array): Promise<Uint8Array> {
@@ -56,16 +60,6 @@ export function signRequest(key: CantonKey, message: string): Promise<Uint8Array
   if (!message.startsWith("accounts-v1\n")) throw new Error("a request message starts with accounts-v1");
   return sign(key, new TextEncoder().encode(message));
 }
-
-export const bytesFromHex = (hex: string): Uint8Array => {
-  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
-  if (!/^(?:[0-9a-fA-F]{2})*$/.test(h)) throw new Error("not hex");
-  return Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16));
-};
-export const hex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-export const base64 = (b: Uint8Array): string => btoa(String.fromCharCode(...b));
-export const fromBase64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-export const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;   // the order of secp256k1
 
@@ -117,8 +111,8 @@ export async function keyFromSignature(signature: string, useWebCrypto = true): 
 }
 
 /** One signature from the wallet (no gas, nothing sent), in its normal form, and checked to be the connected address's: the signer is recovered from it. */
-async function walletSignature(wallet: Eip1193, address: string, origin: string): Promise<string> {
-  const typed = keyTypedData(origin);
+async function walletSignature(wallet: Eip1193, address: string): Promise<string> {
+  const typed = KEY_TYPED_DATA;
   const given = await wallet.request({ method: "eth_signTypedData_v4", params: [address, JSON.stringify(typed)] });
   if (typeof given !== "string") throw new Error("the wallet gave no signature");
   const signature = normaliseSignature(given);
@@ -128,12 +122,12 @@ async function walletSignature(wallet: Eip1193, address: string, origin: string)
 }
 
 /** Asks the wallet for the one signature and makes the key. The signature is not kept. */
-export async function openKey(wallet: Eip1193, address: string, origin: string): Promise<CantonKey> {
-  return keyFromSignature(await walletSignature(wallet, address, origin));
+export async function openKey(wallet: Eip1193, address: string): Promise<CantonKey> {
+  return keyFromSignature(await walletSignature(wallet, address));
 }
 
 /** On the first account: asks again, and refuses if the wallet signs another way (a wallet that is not deterministic would make another key each time, and lose the account). */
-export async function confirmKey(wallet: Eip1193, address: string, origin: string, key: CantonKey): Promise<void> {
-  const again = await keyFromSignature(await walletSignature(wallet, address, origin));
+export async function confirmKey(wallet: Eip1193, address: string, key: CantonKey): Promise<void> {
+  const again = await keyFromSignature(await walletSignature(wallet, address));
   if (!sameBytes(again.publicKey, key.publicKey)) throw new Error(DIFFERENT_SIGNATURES);
 }

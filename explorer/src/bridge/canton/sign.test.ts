@@ -112,7 +112,7 @@ describe("the node table is one tree, and the node the page checks is the node t
   const intent = withdrawalAcceptance(PARTY, chain).intent;
   const verify = async (p: Prepared, i: Intent) => verifies(p.preparedTransactionHash, await sign(i, p));
 
-  it("refuses a table that uses a node id twice (the reviewer's attack: a harmless node first, the real one after it)", async () => {
+  it("refuses a table that uses a node id twice (a harmless node in front of the real one with the same id is refused)", async () => {
     // The hasher keeps the LAST node of an id, the page used to check the FIRST. The harmless node is the acceptance create; the real one the archive exercise with the same id.
     const real = decode(archived);
     const harmless = structuredClone(decode(acceptance).transaction!.nodes.find((n) => n.nodeId === decode(acceptance).transaction!.roots[0])!);

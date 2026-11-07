@@ -57,7 +57,7 @@ export const withdrawalAcceptance = (party: string, c: Chain): Built =>
 /** "I accept twins": the account's standing acceptance of twins of the gateway's tokens (made once). The twin's admin is the gateway party. */
 export const twinAcceptance = (party: string, c: Chain): Built => create(party, { ...TWIN, entity: "TwinAcceptance" }, { party, admin: c.gateway });
 
-/** The deposit request that names the allocation made before it (the allocation's contract id, read from the account's holdings). `label` makes the deposit id. */
+/** The deposit request that names the allocation made before it (the allocation's contract id, read from `GET /accounts/v1/allocations/{party}`, not from the holdings). `label` makes the deposit id. */
 export async function depositRequest(party: string, c: Chain, allocation: string, recipient: string, label: string): Promise<Built> {
   const depositId = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`deposit,${party},${label}`))));
   return create(party, { ...CHAIN, entity: "DepositRequest" }, {

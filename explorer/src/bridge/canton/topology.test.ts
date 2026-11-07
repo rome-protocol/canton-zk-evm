@@ -4,7 +4,7 @@ import { Enums_ParticipantPermission, TopologyTransaction as V30 } from "../../.
 import { PartyToParticipant_HostingParticipant_HostingState, TopologyTransaction as V31 } from "../../../canton-proto/gen/com/digitalasset/canton/protocol/v31/topology.ts";
 import { UntypedVersionedMessage } from "../../../canton-proto/gen/com/digitalasset/canton/version/v1/untyped_versioned_message.ts";
 import { AccountsClient, AccountsError } from "./accounts.ts";
-import { base64, fromBase64, hex, keyFromSignature } from "./key.ts";
+import { base64, fromBase64, hex, keyFromSignature, signOnboarding, type CantonKey } from "./key.ts";
 import { fingerprintOf, partyOf, topologyMultiHash, UnexpectedOnboarding, verifyOnboarding } from "./topology.ts";
 
 // Two real topology answers of the pinned Canton 3.7.1, printed by apps/accounts/tests/integration.py: one on protocol version 36 (messages of version 30, in a wrapper of version 30) and one on
@@ -138,7 +138,18 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
     expect(sent.blob).toBe("blob");
     expect(await verifies(k.publicKey, fromBase64(multiHash), fromBase64(sent.signature))).toBe(true);
   });
-  it("signs nothing for a multi-hash the service names that is not the hash of the transaction (a prepared transaction's hash, the reviewer's attack)", async () => {
+  it("signOnboarding checks the answer itself: it signs the multi-hash of this key's onboarding, and nothing else", async () => {
+    const k = await key;
+    const { party, tx, multiHash } = await run(k.publicKey);
+    const answerOf = (over: Record<string, unknown> = {}) => ({ party, topologyTransactions: [tx], multiHash, ...over });
+    expect(await verifies(k.publicKey, fromBase64(multiHash), await signOnboarding(k, answerOf(), fx.participant))).toBe(true);
+    await expect(signOnboarding(k, answerOf({ multiHash: archived.preparedTransactionHash }), fx.participant)).rejects.toThrow(UnexpectedOnboarding);   // a transaction's hash is not an onboarding
+    await expect(signOnboarding(k, answerOf({ multiHash: base64(new Uint8Array([0x12, 0x20, ...other(32)])) }), fx.participant)).rejects.toThrow(/not the hash/);
+    await expect(signOnboarding(k, answerOf(), OTHER_PARTICIPANT)).rejects.toThrow(/not hosted/);
+    await expect(signOnboarding(k, answerOf({ party: "bridge::1220" + "ee".repeat(32) }), fx.participant)).rejects.toThrow(/the party is/);
+    await expect(signOnboarding({ publicKey: k.publicKey } as CantonKey, answerOf(), fx.participant)).rejects.toThrow("not a key made by this library");   // a look-alike has no signer
+  });
+  it("signs nothing for a multi-hash the service names that is not the hash of the transaction (a prepared transaction's hash in place of the topology's multi-hash is refused)", async () => {
     const k = await key;
     const { party, tx } = await run(k.publicKey);
     const sentTo: string[] = [];

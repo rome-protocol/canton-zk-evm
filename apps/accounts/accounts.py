@@ -38,7 +38,7 @@ IN_FLIGHT_TTL = 120      # seconds an execute that got no answer counts as open 
 PENDING_PER_ACCOUNT = 5  # prepared transactions one account may have waiting for its signature
 PENDING_TTL = 600        # seconds a topology or a prepared transaction can be signed and sent back
 RECORD_MARGIN = 30       # seconds added to PENDING_TTL for the latest time the participant may record a prepared transaction (`maxRecordTime`)
-ACCOUNT_RATE = 30        # prepare, execute and holdings requests per account in a minute
+ACCOUNT_RATE = 30        # prepare, execute, holdings, allocations and open requests per account in a minute
 NETWORK_RATE = 300       # requests per client network (an IPv4 address, an IPv6 /48) in a minute
 HOLDINGS_PAGE, HOLDINGS_PAGES = 100, 50
 DAY = 86400
@@ -775,7 +775,7 @@ def main(argv=None):
                    "that names no other party); every allowed create needs one; repeat")
     p.add_argument("--accounts-per-day", type=int, default=3, help="accounts made per client address in 24 hours")
     p.add_argument("--requests-per-minute", type=int, default=60, help="requests per client address in a minute")
-    p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute and holdings requests per account in a minute")
+    p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute, holdings, allocations and open requests per account in a minute")
     p.add_argument("--requests-per-network-minute", type=int, default=NETWORK_RATE, help="requests per client network (an IPv4 address, an IPv6 /48) in a minute")
     p.add_argument("--chain-parties", help="a JSON file {\"operator\": ..., \"confirmer\": ..., \"gateway\": ..., \"builder\": ...}: the chain's parties, the only observers a create may name")
     for field in CHAIN_FIELDS:
