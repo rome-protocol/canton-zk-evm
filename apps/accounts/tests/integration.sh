@@ -89,7 +89,12 @@ env = dict(line.strip().split("=", 1) for line in open(sys.argv[1]) if "=" in li
 json.dump({f: env[f.upper() + "_PARTY"] for f in ("operator", "confirmer", "gateway", "builder")}, open(sys.argv[2], "w"))
 PY
 
-python3 "$ROOT/apps/accounts/accounts.py" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
+# The built-in list, and the Archive of the acceptance besides: the test prepares one exercise on a contract of the account's own, for a fixture.
+ALLOW=(--allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance' --allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance#Archive' --allow '#canton-zk-evm:Zk.Chain:DepositRequest'
+  --allow '#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate'
+  --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer'
+  --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept')
+python3 "$ROOT/apps/accounts/accounts.py" "${ALLOW[@]}" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
   --state-file "$WORK/accounts.jsonl" --listen 127.0.0.1:18081 > "$WORK/service.log" 2>&1 & pids+=($!)
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18081/healthz > /dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:18081/healthz > /dev/null || fail "the service did not come up"

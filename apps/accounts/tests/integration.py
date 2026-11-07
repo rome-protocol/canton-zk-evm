@@ -127,6 +127,18 @@ class AccountsOnCanton(unittest.TestCase):
             status, refused = service(f"/accounts/v1/holdings/{party}")
             self.assertEqual(status, 401, refused)
 
+            # An exercise on the account's own contract: the Archive of its acceptance, prepared and not executed. The three prepared transactions are printed as fixtures
+            # for the explorer's check of what a page signs (explorer/src/bridge/canton/fixtures.json): each with the command asked for and the service's hash.
+            [acceptance] = [c for c in builder.active("WithdrawalAcceptance") if c["party"] == party]
+            archive = {"ExerciseCommand": {"templateId": ACCEPTANCE, "contractId": acceptance["contractId"], "choice": "Archive", "choiceArgument": {}}}
+            status, prepared_archive = service("/accounts/v1/prepare", {"party": party, "commands": [archive]}, key)
+            self.assertEqual(status, 200, prepared_archive)
+            create_deposit = {"CreateCommand": {"templateId": "#canton-zk-evm:Zk.Chain:DepositRequest", "createArguments": deposit}}
+            create_acceptance = {"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}
+            for name, command, made in (("create-acceptance", create_acceptance, prepared), ("create-deposit-request", create_deposit, prepared_deposit), ("exercise-archive", archive, prepared_archive)):
+                print("FIXTURE " + json.dumps({"name": name, "party": party, "command": command, "preparedTransaction": made["preparedTransaction"],
+                                               "preparedTransactionHash": made["preparedTransactionHash"], "hashingSchemeVersion": made["hashingSchemeVersion"]}, sort_keys=True), flush=True)
+
             status, holdings = service(f"/accounts/v1/holdings/{party}", key=key)
             self.assertEqual((status, holdings), (200, {"party": party, "holdings": []}))
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make
