@@ -54,7 +54,7 @@ RELAY_MAX_BODY = 64 * 1024       # bytes of a relayed request, as JSON
 OUTSIDE_DEADLINE = 15            # seconds a call to a registry or the wallet may take in all
 USER_AGENT = "Rome Protocol rome@romeprotocol.com"
 FAUCET_AMOUNT = re.compile(r"[0-9]{1,15}(\.[0-9]{1,10})?\Z")   # Canton Coin has 10 decimals
-SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the 3.7.1 OpenAPI spec leaves the format a free string and names no value; RAW is what the pinned Canton accepts
+SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the pinned Canton's OpenAPI spec (3.7.2, unchanged from 3.7.1) leaves the format a free string and names no value; RAW is what the pinned Canton accepts
 
 
 SLOW_VERIFY_WARNING = ("WARNING: the cryptography package is not installed: signatures are checked in pure Python (about 5 ms each), so a flood of requests costs "

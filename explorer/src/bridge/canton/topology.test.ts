@@ -7,7 +7,7 @@ import { AccountsClient, AccountsError } from "./accounts.ts";
 import { base64, fromBase64, hex, keyFromSignature, signOnboarding, type CantonKey } from "./key.ts";
 import { fingerprintOf, partyOf, topologyMultiHash, UnexpectedOnboarding, verifyOnboarding } from "./topology.ts";
 
-// Two real topology answers of the pinned Canton 3.7.1, printed by apps/accounts/tests/integration.py: one on protocol version 36 (messages of version 30, in a wrapper of version 30) and one on
+// Two real topology answers of Canton 3.7.1 (the pin when they were printed), printed by apps/accounts/tests/integration.py: one on protocol version 36 (messages of version 30, in a wrapper of version 30) and one on
 // protocol version 37 (messages of version 31, in a wrapper of version 31). Each is one PartyToParticipant, with the party's key in it.
 interface Real { name: string; party: string; publicKey: string; participant: string; protocolVersion: number; multiHash: string; topologyTransactions: string[] }
 const fixtures = JSON.parse(readFileSync(new URL("./fixtures.json", import.meta.url), "utf8")) as Record<string, any>[];
