@@ -211,7 +211,7 @@ describe("the allocation's transaction, from the real Canton", () => {
     const text = (s: string): Value => ({ sum: { oneofKind: "text", text: s } });
     values.sum = { oneofKind: "textMap", textMap: { entries: [{ key: "a", value: text("x") }, { key: "a", value: text("x") }] } };
     const intent = structuredClone(made.intent) as Intent & { args: { allocation: { settlement: { meta: { values: Record<string, string> } } } } };
-    intent.args.allocation.settlement.meta.values = { a: "x", b: "y" };   // two entries, both asked for: the key `a` twice and `b` never must not pass
+    intent.args.allocation.settlement.meta = { values: { a: "x", b: "y" } };   // two entries, both asked for: the key `a` twice and `b` never must not pass
     expect(() => checkIntent(tx, intent, now)).toThrow(/key twice/);
     values.sum = { oneofKind: "textMap", textMap: { entries: [{ key: "a", value: text("x") }, { key: "b", value: text("y") }] } };
     expect(() => checkIntent(tx, intent, now)).not.toThrow();
