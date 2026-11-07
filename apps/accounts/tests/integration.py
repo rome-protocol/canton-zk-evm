@@ -114,6 +114,15 @@ class AccountsOnCanton(unittest.TestCase):
             status, again = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}]}, key)
             self.assertEqual(status, 409, again)
 
+            # A DepositRequest names a contract id as its allocation, and a real one (the chain's own, which is longer than 128 characters) passes the service's checks and
+            # the participant's prepare. The test stops at prepare: the create does not fetch the allocation, and no allocation of a test holding is made here.
+            self.assertGreater(len(chain["contractId"]), 128)
+            label = "integration"
+            deposit = {k: arguments[k] for k in ("chainId", "operator", "confirmer", "gateway", "builder")}
+            deposit.update(depositor=party, depositId=hashlib.sha256(f"deposit,{party},{label}".encode()).hexdigest(), recipient="ab" * 20, allocation=chain["contractId"], label=label)
+            status, prepared_deposit = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": "#canton-zk-evm:Zk.Chain:DepositRequest", "createArguments": deposit}}]}, key)
+            self.assertEqual(status, 200, prepared_deposit)
+
             # An account-scoped call without the account's signature is refused.
             status, refused = service(f"/accounts/v1/holdings/{party}")
             self.assertEqual(status, 401, refused)

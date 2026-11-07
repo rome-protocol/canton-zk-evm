@@ -60,10 +60,11 @@ B = (_x(_BY, 0), _BY, 1, _x(_BY, 0) * _BY % P)             # the base point
 
 
 def usable_key(public: bytes) -> bool:
-    """Whether `public` is a point of the curve whose order is not 1, 2, 4 or 8: for such a key [8]A is the identity, and it would accept signatures that
-    anyone can make."""
+    """Whether `public` is a point of the curve of prime order Q: [8]A is not the identity (a key of order 1, 2, 4 or 8 accepts signatures that anyone can make)
+    and [Q]A is (a key with a small-order part, "mixed order", is refused too)."""
     a = decode(public) if len(public) == 32 else None
-    return a is not None and encode(mul(8, a)) != encode((0, 1, 1, 0))
+    identity = encode((0, 1, 1, 0))
+    return a is not None and encode(mul(8, a)) != identity and encode(mul(Q, a)) == identity
 
 
 def verify(public: bytes, message: bytes, signature: bytes) -> bool:

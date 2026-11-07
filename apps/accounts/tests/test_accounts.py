@@ -160,6 +160,12 @@ class TopologyAndAllocate(Case):
         self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})
         self.assertEqual(self.calls_to("/generate-topology")[0][2]["protocolVersion"], 36)
 
+    def test_a_key_with_a_small_order_part_is_refused(self):
+        e = A.ed25519
+        mixed = base64.b64encode(e.encode(e._add(e.B, (0, e.P - 1, 1, 0)))).decode()   # the base point plus the point of order 2
+        self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": mixed})[0], 400)
+        self.assertEqual(self.calls_to("/generate-topology"), [])
+
     def test_bad_keys_and_hints_are_refused(self):
         for body in ({}, {"publicKey": "not base64!"}, {"publicKey": base64.b64encode(b"short").decode()},
                      {"publicKey": base64.b64encode(bytes(44)).decode()}, {"publicKey": KEY, "partyHint": "other"}):
@@ -482,12 +488,20 @@ class Hardening(Case):
 
     # round 3: text in creates, and the account's room
 
-    def test_long_text_in_a_chain_create_is_refused(self):
+    def test_long_label_and_ref_and_big_arguments_are_refused_but_contract_ids_are_not(self):
         self.make_account()
         self.assertEqual(self.prepare(label="x" * 129)[0], 400)
         self.assertEqual(self.prepare(DEPOSIT, label={"ref": ["x" * 129]})[0], 400)
+        self.assertEqual(self.prepare(DEPOSIT, extra="y" * 2100)[0], 400)   # the whole of the arguments is at most 2 KiB
         self.assertEqual(self.calls_to("/prepare"), [])
         self.assertEqual(self.prepare(DEPOSIT, label="x" * 128)[0], 200)
+
+    def test_a_real_contract_id_is_no_text_to_cap(self):
+        self.make_account()
+        cid = "00" + "ab" * 32 + "ca12" + "1220" + "cd" * 32   # a Canton contract id: 138 characters
+        self.assertEqual(len(cid), 138)
+        self.assertEqual(self.prepare(DEPOSIT, allocation=cid)[0], 200)
+        self.assertEqual(self.prepare(ACCEPT, holdings=[cid, cid, cid])[0], 200)   # a list of contract ids, as a redeem request has
 
     def test_one_account_may_have_only_so_many_prepared_waiting(self):
         self.start()
@@ -534,22 +548,65 @@ class Hardening(Case):
             self.assertEqual(bad(), 429)
             self.assertEqual(len(calls), verified)
 
-    def test_a_failing_party_and_a_failing_client_are_each_limited(self):
+    def test_failed_verifies_count_per_client_and_junk_for_a_party_does_not_lock_its_owner(self):
         self.start(failures=A.Limiter(1, 60))
         self.make_account()
         other = "bridge::1220" + "ee" * 32
         self.service.parties.parties[other] = public_key(OTHER_SEED)
         path = "/accounts/v1/holdings/x"
 
-        def status(party, ip):
+        def status(party, ip, header=None):
             try:
-                self.service.authenticate(party, "GET", path, b"", f"{int(time.time())}.{SIG}", ip)
+                self.service.authenticate(party, "GET", path, b"", header or f"{int(time.time())}.{SIG}", ip)
+                return 200
             except A.HttpError as e:
                 return e.status
-        self.assertEqual(status(PARTY, "198.51.100.1"), 401)
-        self.assertEqual(status(PARTY, "198.51.100.2"), 429)   # the party has failed enough, from whoever
-        self.assertEqual(status(other, "198.51.100.1"), 429)   # the client has failed enough, for whichever party
+        self.assertEqual(status(PARTY, "198.51.100.1"), 401)   # junk for the victim's party from one client
+        self.assertEqual(status(PARTY, "198.51.100.1"), 429)
+        self.assertEqual(status(other, "198.51.100.1"), 429)   # that client has failed enough, for whichever party
+        self.assertEqual(status(PARTY, "198.51.100.2", self.account_signature("GET", path, b"")), 200)   # the owner, from another client, is not hindered
         self.assertEqual(status(other, "198.51.100.3"), 401)
+        v6 = A.client_key
+        self.assertEqual(status(other, v6("2001:db8:1:2::1")), 401)
+        self.assertEqual(status(other, v6("2001:db8:1:3::1")), 429)   # another /64 of the same /48
+        self.assertEqual(status(other, v6("2001:db8:2:2::1")), 401)
+
+    def test_a_start_without_the_cryptography_package_warns(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A.ed25519, "Ed25519PublicKey", None), \
+                unittest.mock.patch.object(A, "make_server", side_effect=SystemExit("stop")), unittest.mock.patch("sys.stderr") as err:
+            with self.assertRaises(SystemExit):
+                A.main(["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(d, "s")])
+        self.assertIn(A.SLOW_VERIFY_WARNING, "".join(c.args[0] for c in err.write.call_args_list))
+
+    # round 4: what has no answer yet, and creates with no limit
+
+    def test_an_execute_that_got_no_answer_counts_as_open_for_two_minutes(self):
+        self.make_account()
+        _, p, _ = self.prepare()
+        self.ledger.fail["/v2/interactive-submission/executeAndWait"] = (503, {})
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0], 502)
+        del self.ledger.fail["/v2/interactive-submission/executeAndWait"]
+        self.assertEqual(self.prepare()[0], 409)   # the ledger shows none open, the unanswered execute is counted
+        self.assertEqual(len(self.calls_to("/prepare")), 1)
+        later = time.monotonic() + A.IN_FLIGHT_TTL + 1
+        self.service.in_flight.clock = lambda: later
+        self.assertEqual(self.prepare()[0], 200)
+
+    def test_a_refused_execute_is_not_counted_as_open(self):
+        self.make_account()
+        _, p, _ = self.prepare()
+        self.ledger.fail["/v2/interactive-submission/executeAndWait"] = (400, {"code": "INVALID_ARGUMENT", "cause": "no"})
+        self.assertEqual(self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0], 422)
+        self.assertEqual(self.prepare()[0], 200)
+
+    def test_a_create_with_no_open_limit_names_the_account_alone(self):
+        thing = "#other:Mod:Thing"
+        self.start(allow=[*A.DEFAULT_ALLOW, thing], open_limits={ACCEPT: 1, DEPOSIT: 3, thing: None})
+        self.make_account()
+        create = lambda arguments: self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"CreateCommand": {"templateId": thing, "createArguments": arguments}}]})[0]
+        self.assertEqual(create({"owner": PARTY, "note": "hi"}), 200)
+        for arguments in ({"observers": [CHAIN["operator"]]}, {"owner": CHAIN["builder"]}):
+            self.assertEqual(create(arguments), 403, arguments)
 
 
 class Holdings(Case):

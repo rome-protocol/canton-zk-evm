@@ -29,16 +29,23 @@ PARTY = re.compile(r"[A-Za-z0-9_-]{1,64}::1220[0-9a-f]{64}\Z")   # hint::fingerp
 HINT = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 SPKI_ED25519 = bytes.fromhex("302a300506032b6570032100")   # the DER prefix of an Ed25519 public key; 32 raw key bytes follow
 MAX_BODY = 512 * 1024
-MAX_TEXT = 128           # the longest text in a create that names the chain's parties
+MAX_TEXT = 128           # the longest `label` or `ref` in a create (contract ids and party ids are longer and are not capped)
+TEXT_FIELDS = ("label", "ref")
+MAX_ARGUMENTS = 2048     # bytes of a create's arguments, as JSON
+IN_FLIGHT_TTL = 120      # seconds an execute that got no answer from the participant counts as open
 PENDING_PER_ACCOUNT = 5  # prepared transactions one account may have waiting for its signature
 PENDING_TTL = 600        # seconds a topology or a prepared transaction can be signed and sent back
 HOLDINGS_PAGE, HOLDINGS_PAGES = 100, 50
 DAY = 86400
 AUTH_WINDOW = 60         # seconds of clock difference an account signature may have
-FAILED_VERIFIES = 10     # signatures that fail to verify, per account and per client in a minute, before the service stops verifying for them
+FAILED_VERIFIES = 10     # signatures that fail to verify, per client in a minute, before the service stops verifying for that client
 HEALTH_TTL = 5           # seconds /healthz is answered from the last check
 TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
 SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the 3.7.1 OpenAPI spec leaves the format a free string and names no value; RAW is what the pinned Canton accepts
+
+
+SLOW_VERIFY_WARNING = ("WARNING: the cryptography package is not installed: signatures are checked in pure Python (about 5 ms each), so a flood of requests costs "
+                       "the service CPU. A deployment must install it.")
 
 
 class HttpError(Exception):
@@ -204,6 +211,26 @@ class Limiter:
             self.hits = {k: q for k, q in self.hits.items() if q and q[-1][0] > now - self.window}
 
 
+class InFlight:
+    """Executes of a limited template that got no answer (a timeout, a 5xx) and may still commit: (account, template) is counted as open for `ttl` seconds."""
+    def __init__(self, ttl: float = IN_FLIGHT_TTL, clock=time.monotonic):
+        self.ttl, self.clock, self.marks, self.lock = ttl, clock, {}, threading.Lock()
+
+    def add(self, key) -> None:
+        with self.lock:
+            self.marks.setdefault(key, []).append(self.clock() + self.ttl)
+
+    def count(self, key) -> int:
+        with self.lock:
+            now = self.clock()
+            return sum(t > now for t in self.marks.get(key, ()))
+
+    def prune(self) -> None:
+        with self.lock:
+            now = self.clock()
+            self.marks = {k: live for k, v in self.marks.items() if (live := [t for t in v if t > now])}
+
+
 class Replays:
     """The account signatures seen inside the time window: (party, seconds, signature) is accepted once."""
     def __init__(self, wall=time.time):
@@ -278,7 +305,8 @@ class Accounts:
         self.traffic, self.max_traffic = traffic or Limiter(50_000_000, DAY), max_traffic
         self.new_total = new_total or Limiter(200, DAY)   # new accounts a day, all clients: the participant's party and rights quotas are finite
         self.budget_lock = threading.Lock()   # the budgets are checked and charged as one step
-        self.failures = failures or Limiter(FAILED_VERIFIES, 60)   # signatures that failed, per account ("party:") and per client ("client:")
+        self.failures = failures or Limiter(FAILED_VERIFIES, 60)   # signatures that failed, per client
+        self.in_flight = InFlight()
         self.account_locks, self.account_locks_guard = {}, threading.Lock()
         self.secret = secrets.token_bytes(32)
         self.clock, self.wall, self.replays = time.monotonic, time.time, Replays()
@@ -315,16 +343,14 @@ class Accounts:
         with self.account_locks_guard:
             return self.account_locks.setdefault(party, threading.Lock())
 
-    def proves(self, key: bytes, message: bytes, signature: bytes, party: str, ip: str) -> bool:
-        """Whether the signature verifies. Verifying costs the service CPU, so a party or a client with FAILED_VERIFIES failures in a minute is refused (429)
-        before anything is verified."""
-        names = ("party:" + party, "client:" + ip)
-        for name in names:
-            self.failures.check(name)
+    def proves(self, key: bytes, message: bytes, signature: bytes, ip: str) -> bool:
+        """Whether the signature verifies. Verifying costs the service CPU whichever party is named, so a client (an IPv6 /48) with FAILED_VERIFIES failures in a
+        minute is refused (429) before anything is verified. Failures are not counted per party: anyone can name a party, and that would lock its owner out."""
+        name = pending_owner(ip)
+        self.failures.check(name)
         if ed25519.verify(key, message, signature):
             return True
-        for name in names:
-            self.failures.hit(name)
+        self.failures.hit(name)
         return False
 
     def known(self, party) -> str:
@@ -379,7 +405,7 @@ class Accounts:
             raise HttpError(401, "the account's signature is not valid for this request, or is too old")
         if self.replays.used(party, seconds, signature):
             raise HttpError(401, "this signature was used already")
-        if not self.proves(key, message, signature, party, ip):
+        if not self.proves(key, message, signature, ip):
             raise HttpError(401, "the account's signature is not valid for this request, or is too old")
         if not self.replays.add(party, seconds, signature):
             raise HttpError(401, "this signature was used already")
@@ -406,7 +432,7 @@ class Accounts:
 
     def sweep(self) -> None:
         """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
-        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.topologies, self.prepared, self.replays):
+        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.in_flight, self.topologies, self.prepared, self.replays):
             part.prune()
 
     def start_sweeper(self, every: float = 30) -> threading.Thread:
@@ -484,7 +510,7 @@ class Accounts:
         party, fingerprint, transactions, multi_hash, raw = found
         if party in self.parties:
             return {"party": party, "created": False}
-        if not self.proves(raw, base64.b64decode(multi_hash), base64.b64decode(signature), party, ip):
+        if not self.proves(raw, base64.b64decode(multi_hash), base64.b64decode(signature), ip):
             raise HttpError(401, "the signature is not the key's signature of the multi-hash")
         if self.holds(party):   # the participant has this party for the service's user, the state file lost its line: the key is proved, so the line is written again
             self.parties.add(party, raw)
@@ -517,21 +543,26 @@ class Accounts:
         return commands
 
     def check_create(self, party: str, template: str, arguments) -> None:
-        """A create names other parties as observers, and they see it and are sent it: so only the chain's own parties may be named, and the account itself."""
+        """A create names other parties as observers, and they see it and are sent it: so only the chain's own parties may be named, and the account itself (for a
+        create with no open limit, the account alone). `label` and `ref` are short, and the whole of the arguments is small; contract ids and party ids are not capped."""
         if not isinstance(arguments, dict):
             raise HttpError(400, "a CreateCommand has createArguments")
-        chained = template in CHAIN_CREATES or any(field in arguments for field in CHAIN_FIELDS)
+        if len(json.dumps(arguments, separators=(",", ":"))) > MAX_ARGUMENTS:
+            raise HttpError(400, f"the createArguments are longer than {MAX_ARGUMENTS} bytes")
         for field in CHAIN_FIELDS:
             if (template in CHAIN_CREATES or field in arguments) and (not self.chain.get(field) or arguments.get(field) != self.chain[field]):
                 raise HttpError(403, f"{field} is not the chain's {field}")
-        stack, allowed = [arguments], {party, *self.chain.values()}
+        unlimited = self.open_limits.get(template, 1) is None   # a template that was set to `none` is one with no limit; one that was not set is not
+        stack, allowed = [(arguments, False)], {party} if unlimited else {party, *self.chain.values()}
         while stack:
-            value = stack.pop()
-            if isinstance(value, (dict, list)):
-                stack.extend(value.values() if isinstance(value, dict) else value)
+            value, free = stack.pop()
+            if isinstance(value, dict):
+                stack.extend((v, free or k in TEXT_FIELDS) for k, v in value.items())
+            elif isinstance(value, list):
+                stack.extend((v, free) for v in value)
             elif isinstance(value, str):
-                if chained and len(value) > MAX_TEXT and value not in allowed:   # a create the chain's parties see carries no long text
-                    raise HttpError(400, f"a text in this create is longer than {MAX_TEXT} characters")
+                if free and len(value) > MAX_TEXT:
+                    raise HttpError(400, f"a label or ref in this create is longer than {MAX_TEXT} characters")
                 if "::" in value and value not in allowed:
                     raise HttpError(403, "a party that is neither the account nor the chain's is named")
 
@@ -542,7 +573,7 @@ class Accounts:
             return
         flt = {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}}]}
         page = self.ledger.call("POST", "/v2/state/active-contracts-page", {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": limit})
-        if len(page.get("activeContracts") or []) >= limit:
+        if len(page.get("activeContracts") or []) + self.in_flight.count((party, template)) >= limit:   # an execute that got no answer may still commit
             raise HttpError(409, f"this account has {limit} open already: only {limit} at a time")
 
     def prepare(self, body: dict, ip: str) -> dict:
@@ -583,7 +614,7 @@ class Accounts:
         found = self.prepared.get(key)   # only what this service prepared, for this party, is executed: the list of allowed commands holds
         if found is None or found["party"] != party:
             raise HttpError(404, "no such prepared transaction for this account, or it has expired: prepare it again")
-        if not self.proves(self.parties.key(party), found["hash"], raw_signature, party, ip):   # a wrong signature costs the participant nothing
+        if not self.proves(self.parties.key(party), found["hash"], raw_signature, ip):   # a wrong signature costs the participant nothing
             raise HttpError(401, "the signature is not this account's signature of the transaction's hash")
 
         def take():   # the one attempt: the entry is gone before anything is sent, whatever comes of it
@@ -598,10 +629,15 @@ class Accounts:
             if limited:
                 self.open_contracts(party, found["template"])
             found = self.spend(ip, party, found["cost"], take=take)   # an over-budget execute leaves the entry in place and charges nothing
-            done = self.ledger.call("POST", "/v2/interactive-submission/executeAndWait", {
-                "preparedTransaction": tx, "submissionId": str(uuid.uuid4()), "userId": self.user, "hashingSchemeVersion": found["version"],
-                "deduplicationPeriod": {"Empty": {}},
-                "partySignatures": {"signatures": [{"party": party, "signatures": [self.signature(signature, party.split("::")[1])]}]}})
+            try:
+                done = self.ledger.call("POST", "/v2/interactive-submission/executeAndWait", {
+                    "preparedTransaction": tx, "submissionId": str(uuid.uuid4()), "userId": self.user, "hashingSchemeVersion": found["version"],
+                    "deduplicationPeriod": {"Empty": {}},
+                    "partySignatures": {"signatures": [{"party": party, "signatures": [self.signature(signature, party.split("::")[1])]}]}})
+            except HttpError as e:
+                if limited and e.status == 502:   # no answer (a timeout, a 5xx): the transaction may commit later, so the next count includes it
+                    self.in_flight.add((party, found["template"]))
+                raise
         return {"updateId": done["updateId"]}
 
     def holdings(self, party: str) -> dict:
@@ -746,6 +782,8 @@ def main(argv=None):
         service.load_rights(force=True)
     except HttpError as e:
         print(f"the ledger user's rights could not be read now ({e.message}); they are read again when an account is missed", file=sys.stderr)
+    if ed25519.Ed25519PublicKey is None:
+        print(SLOW_VERIFY_WARNING, file=sys.stderr)
     service.start_sweeper()
     make_server(service, host or "127.0.0.1", int(port), a.client_ip_header, a.trusted_proxies, trusted).serve_forever()
 

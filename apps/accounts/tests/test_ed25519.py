@@ -104,6 +104,11 @@ class Keys(unittest.TestCase):
         self.assertFalse(E.usable_key(b"\xff" * 32))   # not a point
         self.assertFalse(E.usable_key(bytes(31)))
 
+    def test_a_key_of_mixed_order_is_not_usable(self):
+        mixed = E.encode(E._add(E.B, (0, E.P - 1, 1, 0)))   # B plus the point of order 2: on the curve, and [Q]A is not the identity
+        self.assertIsNotNone(E.decode(mixed))
+        self.assertFalse(E.usable_key(mixed))
+
 
 if __name__ == "__main__":
     unittest.main()
