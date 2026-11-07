@@ -38,10 +38,11 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   const running = progressWords(i.move, i.symbol);
   if (running !== null) return { label: running, action: "none", disabled: true };
   if (i.move.phase === "paused" || (i.move.phase === "failed" && i.move.kept)) return { label: "Continue", action: "continue", disabled: false };
-  if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };
-  if (i.config === "failed") return { label: "Not available here", action: "none", disabled: true };
+  // The wallet and the Canton account come first: they do not need the bridge's tokens.
   if (!i.connected) return { label: "Connect MetaMask", action: "connect", disabled: false };
   if (!i.accountReady) return { label: "Open my Canton account", action: "open", disabled: false };
+  if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };
+  if (i.config === "failed") return { label: "Not available here", action: "none", disabled: true };
   if (i.amount !== "ok") return { label: "Enter an amount", action: "none", disabled: true };
   if (i.enough === false) return { label: `Not enough ${i.symbol}`, action: "none", disabled: true };
   return { label: `Move to ${i.to}`, action: "move", disabled: false };

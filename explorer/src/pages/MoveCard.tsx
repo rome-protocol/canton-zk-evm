@@ -175,7 +175,13 @@ export function MoveCard(p: MoveCardProps) {
   if (move.phase === "final" && text === "") extra = <p className="small ok" role="status">Done. It is final in <Link to={`/block/${move.block}`}>block {move.block}</Link>.</p>;
   return (
     <section className="card move" aria-label="Move tokens">
-      {!pair ? <p className="muted">{p.configState === "failed" ? "The bridge is not available on this chain yet." : "Looking up the tokens…"}</p> : (
+      {!pair ? (
+        <>
+          <p className="muted">{p.configState === "failed" ? "The bridge is not available on this chain yet." : "Looking up the tokens…"}</p>
+          <button type="button" className="btn go" disabled={button.disabled} onClick={press}>{button.label}</button>
+          {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
+        </>
+      ) : (
         <>
           {side("from")}
           <button type="button" className="flip" aria-label="Swap direction" disabled={locked} onClick={flip}><Icon name="swap" size={16} /></button>

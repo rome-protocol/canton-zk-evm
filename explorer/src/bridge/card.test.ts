@@ -17,6 +17,8 @@ describe("the move button", () => {
     expect(buttonOf({ ...base, enough: null }).label).toBe("Move to Canton");   // a balance not known yet does not stop the move: the move checks it itself
     expect(buttonOf({ ...base, config: "loading" })).toMatchObject({ label: "Looking up the bridge…", disabled: true });
     expect(buttonOf({ ...base, config: "failed" })).toMatchObject({ label: "Not available here", disabled: true });
+    expect(buttonOf({ ...base, config: "failed", connected: false, accountReady: false }).label).toBe("Connect MetaMask");   // the account does not need the bridge's tokens
+    expect(buttonOf({ ...base, config: "loading", accountReady: false }).label).toBe("Open my Canton account");
   });
   it("shows the move's progress while it runs, and offers Continue for a move that is paused or failed and kept", () => {
     for (const [move, words] of [

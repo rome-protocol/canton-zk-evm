@@ -86,7 +86,7 @@ export function Bridge() {
     const w = injected();
     if (!config || !w || !wallet.account) { setEvm(null); return; }
     let live = true;
-    import("../bridge/session.ts").then((m) => { if (live) setEvm(m.ostiaAdapter(w, wallet.account!, config.chain)); }, () => {});
+    import("../bridge/evm/ostia.ts").then((m) => { if (live) setEvm(m.ostiaAdapter(w, wallet.account!, config.chain)); }, () => {});
     return () => { live = false; };
   }, [config, wallet.account]);
   useEffect(() => {

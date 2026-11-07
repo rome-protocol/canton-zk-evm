@@ -1,20 +1,13 @@
 // What the move card runs on once the Canton account is open: the library's move, built from the wallet, the account and this build's bridge configuration. The Bridge page loads this file
 // only when it needs it, so none of it is in the page's first script.
-import type { Address } from "viem";
-import type { Eip1193 } from "../wallet.ts";
 import { cantonAdapter } from "./adapter.ts";
 import type { Account } from "./account.ts";
 import { holdingsOf } from "./balances.ts";
-import { explorerRead, viemAdapter, type EvmAdapter } from "./evm/adapter.ts";
+import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
 import { createMove, explorerLeg, explorerSentSince, explorerTx, randomRef, webLocks, type Move } from "./moves/moves.ts";
 import { keptMoves, moveStore, type Checkpoint } from "./moves/state.ts";
-
-/** The wallet's account on Ostia: reads go to the explorer's own /rpc, and every send is the wallet's. */
-export function ostiaAdapter(wallet: Eip1193, address: string, chain: BridgeConfig["chain"]): EvmAdapter {
-  return viemAdapter({ wallet, account: address as Address, chain, read: explorerRead });
-}
 
 export interface Session {
   /** Where the page and the moves meet: the card starts, continues and gives up moves here, and the in-flight bar and the Activity list read it. */

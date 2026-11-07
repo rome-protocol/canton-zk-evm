@@ -15,8 +15,8 @@ vi.mock("../bridge/evm/config.ts", () => ({
     twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }], wrapped: [],
   }),
 }));
+vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => 5n * 10n ** 18n, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
-  ostiaAdapter: () => ({ account: "0xe3", native: async () => 5n * 10n ** 18n, balanceOf: async () => 20n * 10n ** 18n }),
   createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [] }),
 }));
 
