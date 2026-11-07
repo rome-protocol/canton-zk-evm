@@ -172,13 +172,21 @@ def refuse_constant(name: str):
 def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) -> dict:
     """One POST of JSON to a server this service does not trust (a token registry, the validator's wallet), with the bearer token in `bearer_file` when given. Over http the
     connected peer must be this machine, checked before anything is sent; a redirect is not followed (any status but 200 is a 502); the answer is read to at most
-    RELAY_MAX_ANSWER bytes within OUTSIDE_DEADLINE seconds, and must be a JSON object. The token and the answer's text are never logged."""
+    RELAY_MAX_ANSWER bytes, the whole call within OUTSIDE_DEADLINE seconds (a timer shuts the connection), and must be a JSON object. The token and the answer's text are never logged."""
     url, bearer = urllib.parse.urlsplit(base), read_token(bearer_file) if bearer_file else None
-    end = time.monotonic() + OUTSIDE_DEADLINE
+    hold = watchdog = r = None
     conn = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=OUTSIDE_DEADLINE)
     try:
         conn.connect()
-        sock = conn.sock   # the connection lets go of it once the response is under way
+        sock = conn.sock   # the connection closes it once the response is under way
+        hold = socket.socket(fileno=os.dup(sock.fileno()))   # a second handle on the connection: at the deadline it ends whatever read is waiting
+
+        def cut():
+            with contextlib.suppress(OSError):
+                hold.shutdown(socket.SHUT_RDWR)
+        watchdog = threading.Timer(OUTSIDE_DEADLINE, cut)
+        watchdog.daemon = True
+        watchdog.start()
         if url.scheme != "https" and not is_loopback_address(sock.getpeername()[0]):
             raise OSError("not on this machine")
         headers = {"content-type": "application/json", "accept": "application/json", "user-agent": USER_AGENT, **({"authorization": f"Bearer {bearer}"} if bearer else {})}
@@ -188,13 +196,12 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
             raise HttpError(502, f"{what} answered HTTP {r.status}", registryStatus=r.status)
         chunks, size = [], 0
         while True:
-            sock.settimeout(max(end - time.monotonic(), 0.1))
             chunk = r.read1(8192)
             if not chunk:
                 break
             size += len(chunk)
-            if size > RELAY_MAX_ANSWER or time.monotonic() > end:
-                raise ValueError("the answer is too long or too slow")
+            if size > RELAY_MAX_ANSWER:
+                raise ValueError("the answer is too long")
             chunks.append(chunk)
         answer = json.loads(b"".join(chunks), parse_constant=refuse_constant)
         if not isinstance(answer, dict):
@@ -206,6 +213,12 @@ def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) ->
         print(f"{what}: {path}: {type(e).__name__}" + (f": {e}"[:100] if isinstance(e, OSError) else ""), file=sys.stderr)   # a socket's message only, never the answer's text
         raise HttpError(502, f"{what} could not be used") from None
     finally:
+        if watchdog:
+            watchdog.cancel()
+        if hold:
+            hold.close()
+        if r:
+            r.close()
         conn.close()
 
 
