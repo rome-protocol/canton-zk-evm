@@ -21,7 +21,7 @@ function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promi
   const client = {
     holdings: vi.fn(async () => ledger.holdings),
     allocations: vi.fn(async () => ledger.allocations),
-    openRequests: vi.fn(async () => ({ redeemRequests: ledger.redeemRequests, depositRequests: ledger.depositRequests })),
+    openRequests: vi.fn(async () => ({ redeemRequests: ledger.redeemRequests, depositRequests: ledger.depositRequests, twinAcceptance: null, withdrawalAcceptance: null })),
     allocationFactory: vi.fn(over.allocationFactory ?? (async () => ({ factoryId: "factory-1", choiceContext: { choiceContextData: { values: { rules: 1 } }, disclosedContracts: [DISCLOSED] } }))),
   };
   const sleeps: number[] = [];
@@ -103,7 +103,7 @@ describe("the Canton adapter", () => {
     });
     it("looks again after a refusal that passes, and stops on any other error", async () => {
       const { adapter, client } = setup();
-      client.openRequests.mockRejectedValueOnce(new AccountsError("rate-limited", 429, "slow down")).mockResolvedValue({ redeemRequests: [{ contractId: "r", arguments: { ref: "ref-1" } }], depositRequests: [] });
+      client.openRequests.mockRejectedValueOnce(new AccountsError("rate-limited", 429, "slow down")).mockResolvedValue({ redeemRequests: [{ contractId: "r", arguments: { ref: "ref-1" } }], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null });
       await expect(adapter.waitRedeem("ref-1")).resolves.toBeUndefined();
       client.openRequests.mockRejectedValue(new AccountsError("forbidden", 403, "no"));
       await expect(adapter.waitRedeem("ref-1")).rejects.toMatchObject({ kind: "forbidden" });

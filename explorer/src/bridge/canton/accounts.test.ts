@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { AccountsClient, AccountsError, registryChoice, retryAfterSeconds } from "./accounts.ts";
+import { AccountsClient, AccountsError, acceptChoice, factoryChoice, retryAfterSeconds } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { partyOf } from "./topology.ts";
 
@@ -80,12 +80,14 @@ describe("the account service client", () => {
     for (const [url, init] of calls) expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "GET", url, "")).toBe(true);
   });
   it("types each refusal, and carries Retry-After and the participant's answer", async () => {
-    const kinds: [number, string][] = [[400, "bad-request"], [401, "unauthorized"], [403, "forbidden"], [404, "not-found"], [409, "conflict"], [422, "refused"], [429, "rate-limited"], [502, "unavailable"], [503, "unavailable"], [500, "server"]];
+    const kinds: [number, string][] = [[400, "bad-request"], [401, "unauthorized"], [403, "forbidden"], [404, "not-found"], [422, "refused"], [429, "rate-limited"], [502, "unavailable"], [503, "unavailable"], [500, "server"]];
     for (const [status, kind] of kinds) {
       const error = await client(vi.fn(async () => answer(status, { error: "no", code: "C", detail: "d" }, { "Retry-After": "12" }))).holdings(key, PARTY).catch((e) => e);
       expect(error).toBeInstanceOf(AccountsError);
       expect(error).toMatchObject({ kind, status, message: "no", retryAfter: 12, code: "C", detail: "d" });
     }
+    const conflict = await client(vi.fn(async () => answer(409, { error: "already_accepted", message: "the account has this acceptance open" }))).holdings(key, PARTY).catch((e) => e);   // a 409's `error` is the stable code
+    expect(conflict).toMatchObject({ kind: "conflict", status: 409, code: "already_accepted", message: "the account has this acceptance open" });
     expect(await client(vi.fn(async () => { throw new TypeError("offline"); })).holdings(key, PARTY).catch((e) => e)).toMatchObject({ kind: "network", message: "offline" });
   });
   it("asks the registry through the service, each request signed, with the account named in the body", async () => {
@@ -99,11 +101,22 @@ describe("the account service client", () => {
     expect(calls.map((x) => JSON.parse(x[1].body as string))).toEqual([{ choiceArguments: { expectedAdmin: "DSO::1220aa" }, excludeDebugFields: true, party: PARTY }, { party: PARTY }, { party: PARTY }]);
     for (const [url, init] of calls) expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "POST", url, init.body as string)).toBe(true);
   });
-  it("reads the context and the disclosed contracts of a registry answer, nested in the choice context or beside it", () => {
+  it("reads the accept context from the top level of the registry's answer, as the token standard's ChoiceContext", () => {
     const disclosed = { templateId: "t", contractId: "c", createdEventBlob: "b", synchronizerId: "s" };
-    expect(registryChoice({ choiceContext: { choiceContextData: { values: { a: 1 } }, disclosedContracts: [disclosed] } })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [disclosed] });
-    expect(registryChoice({ choiceContext: { values: { a: 1 } }, disclosedContracts: [disclosed] })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [disclosed] });
-    expect(registryChoice({ choiceContext: { values: {} } })).toEqual({ context: { values: {} }, disclosedContracts: [] });
+    expect(acceptChoice({ choiceContextData: { values: { a: 1 } }, disclosedContracts: [disclosed] })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [disclosed] });
+    expect(acceptChoice({ choiceContextData: { values: {} } })).toEqual({ context: { values: {} }, disclosedContracts: [] });
+  });
+  it("refuses an accept context that has no top-level choiceContextData, even when one is nested", () => {
+    const bare = { values: { a: 1 } };
+    for (const bad of [{}, { choiceContext: { choiceContextData: bare } }, bare, { choiceContextData: "x" }, { choiceContextData: null }, null, undefined, { choiceContextData: {}, disclosedContracts: "x" }]) {
+      expect(() => acceptChoice(bad)).toThrow(/choiceContextData|disclosedContracts/);
+    }
+    expect(() => acceptChoice({})).toThrowError(expect.objectContaining({ code: "no_choice_context" }));
+  });
+  it("reads the allocation factory's context from its choiceContext, and refuses a factory answer without choiceContextData", () => {
+    expect(factoryChoice({ choiceContext: { choiceContextData: { values: { a: 1 } }, disclosedContracts: [] } })).toEqual({ context: { values: { a: 1 } }, disclosedContracts: [] });
+    expect(() => factoryChoice({ choiceContext: { values: {} } })).toThrow(/choiceContextData/);
+    expect(() => factoryChoice({})).toThrow(/choiceContextData/);
   });
   it("reads Retry-After as seconds or as a date", () => {
     expect(retryAfterSeconds("30")).toBe(30);

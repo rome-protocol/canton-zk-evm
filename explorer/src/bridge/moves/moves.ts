@@ -12,7 +12,7 @@ import {
 } from "./state.ts";
 
 /**
- * The Canton side, built by the account slice: the user's own key signs, and each wait ends when the command is on the ledger.
+ * The Canton side, built from the account library: the user's own key signs, and each wait ends when the command is on the ledger.
  * Every amount is an exact 10-decimal string ("1.5000000000"). `ref` and `label` are random and at most 128 characters. A call that is made again for the same ref, label or
  * deposit id after a reload must do nothing twice: the move never signs twice on purpose, but it cannot know whether a reload came before or after a command reached the ledger.
  */

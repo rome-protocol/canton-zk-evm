@@ -1,7 +1,7 @@
 // The Canton side of a move, on the account service: what `createMove` asks of `CantonAdapter`, built from the account library. Every call looks at the ledger first and does
 // nothing again for a ref, a label or a deposit id that is already there: a reload may come before or after a command reached the ledger, and the move cannot tell which.
 import type { Address, Hex } from "viem";
-import { AccountsError, registryChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
+import { AccountsError, factoryChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
 import { allocate, depositRequest, redeemRequest, type Allocation, type Built, type Chain } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
 import { Refused, Waited, type CantonAdapter } from "./moves/moves.ts";
@@ -69,7 +69,7 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
       };
       const asked = allocate(d.party, d.chain, a, { contractId: "", context: { values: {} }, disclosedContracts: [] });
       const factory = await d.client.allocationFactory(d.key, instrument.admin, d.party, asked.intent.args);
-      await d.submit(allocate(d.party, d.chain, a, { contractId: factory.factoryId, ...registryChoice(factory) }));
+      await d.submit(allocate(d.party, d.chain, a, { contractId: factory.factoryId, ...factoryChoice(factory) }));
     },
     async signDeposit({ label, depositId, recipient }) {
       if (depositIdOf(d.party, label).toLowerCase() !== depositId.toLowerCase()) throw new Refused("This deposit's id is not the one its label makes. Nothing was signed.");

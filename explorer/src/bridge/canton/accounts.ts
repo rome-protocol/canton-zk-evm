@@ -15,14 +15,26 @@ export interface AllocationView {
   holdingCids: string[];
 }
 export interface OpenRequest { contractId: string; arguments: Record<string, unknown> }
-/** A token registry's answer, through the service: the choice context (the registry's, not pinned by the page) and the contracts the transaction discloses. The token standard nests both in `choiceContext`. */
-export interface RegistryAnswer { choiceContext: unknown; disclosedContracts?: DisclosedContract[] }
-/** The context and the disclosed contracts of a registry answer, wherever it puts them. */
-export function registryChoice(a: RegistryAnswer): { context: object; disclosedContracts: DisclosedContract[] } {
-  const c = (a.choiceContext ?? {}) as { choiceContextData?: object; disclosedContracts?: DisclosedContract[] };
-  const nested = "choiceContextData" in c;
-  return { context: nested ? c.choiceContextData! : c, disclosedContracts: a.disclosedContracts ?? (nested ? c.disclosedContracts : undefined) ?? [] };
+/** What `GET /accounts/v1/open` says: the open requests, and the account's two standing acceptances (null when the account has none). */
+export interface OpenState { depositRequests: OpenRequest[]; redeemRequests: OpenRequest[]; twinAcceptance: OpenRequest | null; withdrawalAcceptance: OpenRequest | null }
+/** The token standard's `ChoiceContext`: the registry's context for a choice and the contracts the transaction discloses. The registry's accept-context answer is exactly this, at its top level. */
+export interface ChoiceContext { choiceContextData: object; disclosedContracts?: DisclosedContract[] }
+/** The allocation factory's answer: the factory and its `ChoiceContext` (the token standard's `FactoryWithChoiceContext`). */
+export interface FactoryAnswer { factoryId: string; choiceContext: ChoiceContext }
+export type Choice = { context: object; disclosedContracts: DisclosedContract[] };
+
+const isObject = (x: unknown): x is object => typeof x === "object" && x !== null && !Array.isArray(x);
+/** The context and the disclosed contracts of a `ChoiceContext`: `choiceContextData` must be there (an object), or nothing is built from the answer. */
+export function choiceOf(c: unknown): Choice {
+  const answer = c as { choiceContextData?: unknown; disclosedContracts?: unknown } | null;
+  if (!isObject(c) || !isObject(answer?.choiceContextData)) throw new AccountsError("server", 200, "the registry's answer has no choiceContextData", undefined, "no_choice_context");
+  if (answer!.disclosedContracts !== undefined && !Array.isArray(answer!.disclosedContracts)) throw new AccountsError("server", 200, "the registry's disclosedContracts is not a list", undefined, "no_choice_context");
+  return { context: answer!.choiceContextData as object, disclosedContracts: (answer!.disclosedContracts ?? []) as DisclosedContract[] };
 }
+/** The accept-context answer is a `ChoiceContext` itself: read from its top level (and never from a nested `choiceContext`). */
+export const acceptChoice = (answer: unknown): Choice => choiceOf(answer);
+/** The factory's choice context, which the token standard nests under `choiceContext`. */
+export const factoryChoice = (answer: { choiceContext?: unknown }): Choice => choiceOf(answer?.choiceContext);
 
 const KINDS: Record<number, AccountsErrorKind> = { 400: "bad-request", 401: "unauthorized", 403: "forbidden", 404: "not-found", 409: "conflict", 422: "refused", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
 export type AccountsErrorKind = "bad-request" | "unauthorized" | "forbidden" | "not-found" | "conflict" | "refused" | "rate-limited" | "unavailable" | "server" | "network";
@@ -74,8 +86,10 @@ export class AccountsClient {
     catch (e) { throw new AccountsError("network", 0, e instanceof Error ? e.message : "the account service could not be reached"); }
     const answer = await r.json().catch(() => ({}));
     if (r.ok) return answer;
-    const message = typeof answer?.error === "string" ? answer.error : `the account service answered ${r.status}`;
-    throw new AccountsError(KINDS[r.status] ?? "server", r.status, message, retryAfterSeconds(r.headers.get("Retry-After"), this.clock()), answer?.code, answer?.detail);
+    // A 409 answers {error: <stable code>, message: <words>}; every other error answers {error: <message>} (a 422 adds `code` and `detail`).
+    const conflict = r.status === 409 && typeof answer?.error === "string";
+    const message = conflict && typeof answer?.message === "string" ? answer.message : typeof answer?.error === "string" ? answer.error : `the account service answered ${r.status}`;
+    throw new AccountsError(KINDS[r.status] ?? "server", r.status, message, retryAfterSeconds(r.headers.get("Retry-After"), this.clock()), conflict ? answer.error : answer?.code, answer?.detail);
   }
 
   /** `<unix seconds>.<base64 signature>` over "accounts-v1", the method, the path, the body's sha256 and the seconds, on five lines. */
@@ -108,17 +122,17 @@ export class AccountsClient {
   async allocations(key: CantonKey, party: string): Promise<AllocationView[]> {
     return (await this.send("GET", `/accounts/v1/allocations/${party}`, undefined, key)).allocations;
   }
-  /** The account's open deposit and redeem requests, by contract id: where a page resumes. */
-  async openRequests(key: CantonKey, party: string): Promise<{ depositRequests: OpenRequest[]; redeemRequests: OpenRequest[] }> {
+  /** The account's open deposit and redeem requests, by contract id (where a page resumes), and its two acceptances. */
+  async openRequests(key: CantonKey, party: string): Promise<OpenState> {
     return this.send("GET", `/accounts/v1/open/${party}`, undefined, key);
   }
 
   /** The token standard's allocation factory of the registry `admin`: `choiceArguments` is the choice's argument as the account will sign it, with an empty context. */
-  allocationFactory(key: CantonKey, admin: string, party: string, choiceArguments: object): Promise<RegistryAnswer & { factoryId: string }> {
+  allocationFactory(key: CantonKey, admin: string, party: string, choiceArguments: object): Promise<FactoryAnswer> {
     return this.send("POST", `/accounts/v1/registry/${admin}/allocation-factory`, { choiceArguments, excludeDebugFields: true, party }, key);
   }
   /** The context for the account to accept the transfer `instruction` (a transfer offered to it) at the registry `admin`. */
-  acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<RegistryAnswer> {
+  acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {
     return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party }, key);
   }
   /** Test Canton Coin for the account: an offer to accept, or done. A 404 means the faucet is off here. */

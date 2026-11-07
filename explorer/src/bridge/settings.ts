@@ -4,14 +4,18 @@ import { chainFromEnv, originFromEnv, participantFromEnv, type Chain } from "./c
 export interface Settings {
   chain: Chain;
   participant: string;
-  /** The account service's origin for `AccountsClient` ("" for this site): its endpoints are always under /accounts/v1. */
+  /** The base of the account service's requests for `AccountsClient`: always "", this site (its endpoints are under /accounts/v1). */
   accountsBase: string;
   /** The site's origin, shown beside the sign-in so a person can check where they are. */
   origin: string;
 }
 
-/** `VITE_ACCOUNTS_URL` is the address of the service's /accounts path: "/accounts" (the default) is this site's own, and a full address names another origin. The trailing /accounts is the client's own. */
-export const accountsBase = (url = "/accounts"): string => url.replace(/\/+$/, "").replace(/\/accounts$/, "");
+/** `VITE_ACCOUNTS_URL` names the service's /accounts path on this site ("/accounts", the default): the page asks the site it was loaded from, so no cross-origin request is made. An address with another
+ * origin is refused. The result is the base of the client's requests: "" (the client's own paths start with /accounts/v1). */
+export function accountsBase(url = "/accounts"): string {
+  if (url.replace(/\/+$/, "") !== "/accounts") throw new Error("VITE_ACCOUNTS_URL must be /accounts, a path on this site");
+  return "";
+}
 
 /** Throws when a setting the page needs is missing: the page then says the bridge is not set up here. */
 export function settingsFromEnv(env: Record<string, string | undefined>): Settings {
