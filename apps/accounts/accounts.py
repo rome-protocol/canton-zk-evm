@@ -7,7 +7,7 @@ See README.md.
 The service holds a Ledger API token and no key of any party. An account is an external party: its key is made by its owner, and only that key can
 sign for it. The service generates the topology and the transactions to be signed, hands them out, and submits what comes back signed.
 """
-import argparse, base64, binascii, collections, contextlib, hashlib, hmac, ipaddress, json, os, re, secrets, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, binascii, collections, contextlib, hashlib, hmac, http.client, ipaddress, json, os, re, secrets, socket, stat, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ed25519
@@ -46,6 +46,13 @@ AUTH_WINDOW = 60         # seconds of clock difference an account signature may 
 FAILED_VERIFIES = 10     # signatures that fail to verify, per client in a minute, before the service stops verifying for that client
 HEALTH_TTL = 5           # seconds /healthz is answered from the last check
 TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
+RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context)\Z")
+CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
+RELAY_MAX_ANSWER = 1024 * 1024   # bytes of a registry's or the wallet's answer that are read
+RELAY_MAX_BODY = 64 * 1024       # bytes of a relayed request, as JSON
+OUTSIDE_DEADLINE = 15            # seconds a call to a registry or the wallet may take in all
+USER_AGENT = "Rome Protocol rome@romeprotocol.com"
+FAUCET_AMOUNT = re.compile(r"[0-9]{1,15}(\.[0-9]{1,10})?\Z")   # Canton Coin has 10 decimals
 SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the 3.7.1 OpenAPI spec leaves the format a free string and names no value; RAW is what the pinned Canton accepts
 
 
@@ -110,6 +117,164 @@ def client_address(peer: str, header: str, n: int, trusted) -> str:
     except ValueError:
         pass
     return peer
+
+
+def is_loopback_address(address: str) -> bool:
+    """Whether an IP address (a zone after % is ignored) is loopback, an IPv4 loopback in its IPv6-mapped form included."""
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return ip.is_loopback or (ip.version == 6 and ip.ipv4_mapped is not None and ip.ipv4_mapped.is_loopback)
+
+
+def on_this_machine(url) -> bool:
+    """Whether a parsed URL's host is this machine: localhost, 127.0.0.1 or ::1, or a name under .localhost (RFC 6761) whose every address is loopback."""
+    host = url.hostname
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if not host or not host.endswith(".localhost"):
+        return False
+    try:
+        found = {a[4][0] for a in socket.getaddrinfo(host, url.port or 80)}
+        return bool(found) and all(is_loopback_address(a) for a in found)
+    except (OSError, ValueError):
+        return False
+
+
+def outside_url(url: str, what: str) -> str:
+    """A URL that this service sends requests to: http or https, no query, fragment or user; https, or on this machine (checked again on each connection). SystemExit otherwise."""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        parts.port
+    except ValueError:
+        sys.exit(f"{what}: the port is not a port")
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+        sys.exit(f"{what}: an http or https URL with no query and no user or password")
+    if parts.scheme != "https" and not on_this_machine(parts):
+        sys.exit(f"{what}: https, or a server on this machine (a token is not sent in the clear)")
+    return url.rstrip("/")
+
+
+def read_token(path: str) -> str:
+    """The one token in the file, read now. Never printed."""
+    try:
+        with open(path) as f:
+            bearer = f.read().strip()
+    except OSError:
+        raise HttpError(502, "a token file could not be read") from None
+    if not bearer or any(c in bearer for c in "\r\n\0 "):
+        raise HttpError(502, "a token file does not hold one token")
+    return bearer
+
+
+def refuse_constant(name: str):
+    raise ValueError(f"{name} is not JSON")
+
+
+def outside_post(base: str, path: str, payload: dict, bearer_file, what: str) -> dict:
+    """One POST of JSON to a server this service does not trust (a token registry, the validator's wallet), with the bearer token in `bearer_file` when given. Over http the
+    connected peer must be this machine, checked before anything is sent; a redirect is not followed (any status but 200 is a 502); the answer is read to at most
+    RELAY_MAX_ANSWER bytes within OUTSIDE_DEADLINE seconds, and must be a JSON object. The token and the answer's text are never logged."""
+    url, bearer = urllib.parse.urlsplit(base), read_token(bearer_file) if bearer_file else None
+    end = time.monotonic() + OUTSIDE_DEADLINE
+    conn = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=OUTSIDE_DEADLINE)
+    try:
+        conn.connect()
+        sock = conn.sock   # the connection lets go of it once the response is under way
+        if url.scheme != "https" and not is_loopback_address(sock.getpeername()[0]):
+            raise OSError("not on this machine")
+        headers = {"content-type": "application/json", "accept": "application/json", "user-agent": USER_AGENT, **({"authorization": f"Bearer {bearer}"} if bearer else {})}
+        conn.request("POST", url.path.rstrip("/") + path, json.dumps(payload).encode(), headers)
+        r = conn.getresponse()
+        if r.status != 200:
+            raise HttpError(502, f"{what} answered HTTP {r.status}", registryStatus=r.status)
+        chunks, size = [], 0
+        while True:
+            sock.settimeout(max(end - time.monotonic(), 0.1))
+            chunk = r.read1(8192)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > RELAY_MAX_ANSWER or time.monotonic() > end:
+                raise ValueError("the answer is too long or too slow")
+            chunks.append(chunk)
+        answer = json.loads(b"".join(chunks), parse_constant=refuse_constant)
+        if not isinstance(answer, dict):
+            raise ValueError("the answer is not an object")
+        return answer
+    except HttpError:
+        raise
+    except (OSError, http.client.HTTPException, ValueError, RecursionError) as e:
+        print(f"{what}: {path}: {type(e).__name__}", file=sys.stderr)
+        raise HttpError(502, f"{what} could not be used") from None
+    finally:
+        conn.close()
+
+
+def parse_registries(items, token_items) -> dict:
+    """{instrument admin: (URL, token file or None)} from `ADMIN=URL` and `ADMIN=FILE` items. The URL is the root of the registry's token standard API
+    (`<URL>/registry/...`); for Canton Coin the validator's scan proxy. SystemExit when one is not right."""
+    found = {}
+    for item in items or []:
+        admin, _, url = item.partition("=")
+        if not PARTY.match(admin) or admin in found:
+            sys.exit(f"--registry {item!r}: ADMIN=URL, ADMIN a party id, one registry for each")
+        found[admin] = (outside_url(url, f"--registry {item!r}"), None)
+    for item in token_items or []:
+        admin, _, path = item.partition("=")
+        if admin not in found:
+            sys.exit(f"--registry-token-file for {admin!r}, which has no --registry")
+        try:
+            read_token(path)
+        except HttpError as e:
+            sys.exit(f"--registry-token-file {path}: {e.message}")
+        found[admin] = (found[admin][0], path)
+    return found
+
+
+class Faucet:
+    """DevNet only: the validator's own party sends `amount` Canton Coin to an account, through the validator's wallet API (`POST <url>/v0/wallet/token-standard/transfers`, with
+    the validator's token, which is admin-level). An account has one a day, so has a client (an IPv4 address, an IPv6 /48), and `per_day` is the total of the day. A grant is
+    counted when it is asked for: one that fails still counts."""
+    def __init__(self, amount: str, url: str, bearer_file: str, per_day: int = 200):
+        self.amount, self.url, self.bearer_file, self.lock = amount, url, bearer_file, threading.Lock()
+        self.per_account, self.per_client, self.total = Limiter(1, DAY), Limiter(1, DAY), Limiter(per_day, DAY)
+
+    def limiters(self) -> tuple:
+        return self.per_account, self.per_client, self.total
+
+    def grant(self, party: str, client: str) -> dict:
+        items = [(self.per_account, party), (self.per_client, client), (self.total, "all")]
+        with self.lock:   # checked and charged as one step, so that two requests at once cannot both pass
+            for limiter, key in items:
+                limiter.check(key)
+            for limiter, key in items:
+                limiter.hit(key)
+        request = {"receiver_party_id": party, "amount": self.amount, "description": "DevNet faucet", "expires_at": int((time.time() + 3600) * 1_000_000),
+                   "tracking_id": "faucet-" + str(uuid.uuid4())}
+        output = outside_post(self.url, "/v0/wallet/token-standard/transfers", request, self.bearer_file, "the validator's wallet").get("output")
+        kind, cid = (output.get("output_type"), output.get("transfer_instruction_cid")) if isinstance(output, dict) else (None, None)
+        if kind == "completed":
+            return {"completed": True}
+        if kind == "pending" and isinstance(cid, str) and CONTRACT_ID.match(cid):
+            return {"transferInstructionCid": cid}
+        raise HttpError(502, "the validator's wallet did not make the transfer")
+
+
+def faucet_from(amount, url, bearer_file, per_day: int):
+    """The faucet the options ask for, or None when --faucet-amount is not given. SystemExit when it is not right, or the token file can be read by others."""
+    if amount is None:
+        return None
+    if not FAUCET_AMOUNT.match(amount) or not float(amount) > 0 or per_day < 1:
+        sys.exit("--faucet-amount is more than zero with at most 10 decimals; --faucet-per-day is at least 1")
+    if not url or not bearer_file:
+        sys.exit("--faucet-amount needs --faucet-url (the validator's API root) and --faucet-token-file")
+    try:
+        mode = os.stat(bearer_file).st_mode
+        if not stat.S_ISREG(mode) or mode & 0o077:
+            sys.exit(f"--faucet-token-file {bearer_file} must be a file readable by its owner only (mode 0600): it is the validator's admin token")
+        read_token(bearer_file)
+    except (OSError, HttpError) as e:
+        sys.exit(f"--faucet-token-file {bearer_file}: {getattr(e, 'message', 'cannot be read')}")
+    return Faucet(amount if "." in amount else amount + ".0", outside_url(url, "--faucet-url"), bearer_file, per_day)
 
 
 class Ledger:
@@ -308,7 +473,7 @@ class Accounts:
                  creates: Limiter = None, rate: Limiter = None, topologies: Pending = None, prepared: Pending = None, chain: dict = None,
                  open_limits: dict = None, per_account: Limiter = None, per_client: Limiter = None, overall: Limiter = None, traffic: Limiter = None,
                  max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0, failures: Limiter = None, account_rate: Limiter = None,
-                 network_rate: Limiter = None):
+                 network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None):
         self.ledger, self.user, self.parties, self.allow, self.hint = ledger, user, parties, set(allow), hint
         self.synchronizer, self.topology_version = synchronizer, topology_version
         self.creates, self.rate = creates or Limiter(3, DAY), rate or Limiter(60, 60)
@@ -322,6 +487,7 @@ class Accounts:
         self.new_total = new_total or Limiter(200, DAY)   # new accounts a day, all clients: the participant's party and rights quotas are finite
         self.budget_lock = threading.Lock()   # the budgets are checked and charged as one step
         self.failures = failures or Limiter(FAILED_VERIFIES, 60)   # signatures that failed, per client
+        self.registries, self.faucet = registries or {}, faucet   # token registries by instrument admin: (URL, token file); the DevNet faucet, or None
         self.in_flight = InFlight()
         self.account_locks, self.account_locks_guard = {}, threading.Lock()
         self.secret = secrets.token_bytes(32)
@@ -448,7 +614,8 @@ class Accounts:
 
     def sweep(self) -> None:
         """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
-        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.account_rate, self.network_rate, self.in_flight, self.topologies, self.prepared, self.replays):
+        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.account_rate, self.network_rate, self.in_flight, self.topologies, self.prepared, self.replays,
+                     *(self.faucet.limiters() if self.faucet else ())):
             part.prune()
 
     def start_sweeper(self, every: float = 30) -> threading.Thread:
@@ -472,17 +639,23 @@ class Accounts:
         self.rate.hit(ip)
         self.network_rate.hit(pending_owner(ip))   # a /48 holds many /64s, each with a rate of its own
         if method == "POST":
-            route = {"/accounts/v1/topology": self.topology, "/accounts/v1/allocate": self.allocate, "/accounts/v1/prepare": self.prepare,
-                     "/accounts/v1/execute": self.execute}.get(path)
-            if route:
+            routes = {"/accounts/v1/topology": self.topology, "/accounts/v1/allocate": self.allocate, "/accounts/v1/prepare": self.prepare,
+                      "/accounts/v1/execute": self.execute, **({"/accounts/v1/faucet": self.grant} if self.faucet else {})}
+            route, relay = routes.get(path), RELAY_PATH.fullmatch(path)
+            if route or relay:
                 body = body if isinstance(body, dict) else {}
+                party = None
                 if route in (self.prepare, self.execute):   # the party the request is about must have signed it
                     sigs = body.get("partySignatures")
                     first = sigs[0] if isinstance(sigs, list) and sigs else None
                     party = body.get("party") if route == self.prepare else first.get("party") if isinstance(first, dict) else None
-                    if isinstance(party, str):
-                        self.authenticate(party, method, path, raw, auth, ip)
-                        self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
+                elif relay or route == self.grant:
+                    party = body.get("party")
+                if isinstance(party, str):
+                    self.authenticate(party, method, path, raw, auth, ip)
+                    self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
+                if relay:
+                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body)
                 return route(body, ip)
         elif method == "GET":
             m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open)/([^/]+)", path)
@@ -492,6 +665,22 @@ class Accounts:
                 self.account_rate.hit(party)
                 return getattr(self, m.group(1))(party)
         raise HttpError(404, "no such route")
+
+    def relay(self, admin: str, instruction, body: dict) -> dict:
+        """Read-only relay to the token standard's off-chain API of the registry of `admin`: the allocation factory, or (for a transfer instruction's contract id) the choice
+        context of its acceptance. The body goes on without `party`, the answer as it is."""
+        self.known(body.get("party"))
+        if admin not in self.registries:
+            raise HttpError(404, "this service has no registry for that instrument admin")
+        payload = {k: v for k, v in body.items() if k != "party"}
+        if len(json.dumps(payload, separators=(",", ":"))) > RELAY_MAX_BODY:
+            raise HttpError(400, f"the request is longer than {RELAY_MAX_BODY} bytes")
+        url, bearer_file = self.registries[admin]
+        path = f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept" if instruction else "/registry/allocation-instruction/v1/allocation-factory"
+        return outside_post(url, path, payload, bearer_file, "the token registry")
+
+    def grant(self, body: dict, ip: str) -> dict:
+        return self.faucet.grant(self.known(body.get("party")), pending_owner(ip))
 
     def topology(self, body: dict, ip: str) -> dict:
         raw = b64(body.get("publicKey"), "publicKey (an Ed25519 key)", (32, 44))
@@ -791,6 +980,13 @@ def main(argv=None):
     p.add_argument("--max-pending-per-client", type=int, default=10, help="topologies, and prepared transactions, waiting for a signature for one client address (an IPv6 /48) (each)")
     p.add_argument("--max-pending-per-account", type=int, default=PENDING_PER_ACCOUNT, help="prepared transactions waiting for a signature for one account")
     p.add_argument("--accounts-per-day-total", type=int, default=200, help="new accounts in 24 hours, all clients together")
+    p.add_argument("--registry", action="append", metavar="ADMIN=URL", help="the token registry of an instrument admin (https, or a server on this machine): its allocation factory and accept choice contexts "
+                   "are relayed to the accounts; the root of its token standard API, for Canton Coin the validator's scan proxy; repeat")
+    p.add_argument("--registry-token-file", action="append", metavar="ADMIN=FILE", help="the file with the bearer token that registry wants, read again for each request; repeat")
+    p.add_argument("--faucet-amount", help="DevNet ONLY: Canton Coin that the validator's party sends an account when it asks (once a day each); off when not given")
+    p.add_argument("--faucet-url", help="the validator's API root for the faucet (https, or a server on this machine), such as https://validator/api/validator")
+    p.add_argument("--faucet-token-file", help="the validator's admin-level token for the faucet: a file with mode 0600, read again for each grant")
+    p.add_argument("--faucet-per-day", type=int, default=200, help="faucet grants in 24 hours, all accounts together")
     p.add_argument("--client-ip-header", help="the header in which the reverse proxy puts the client's address, such as X-Forwarded-For")
     p.add_argument("--trusted-proxies", type=int, default=1, help="proxies in front of the service: the client's address is this many entries from the right of --client-ip-header")
     p.add_argument("--trusted-proxy-addresses", default="127.0.0.1,::1", help="comma-separated addresses or networks of the proxies; the header is read only from a peer among them")
@@ -816,13 +1012,15 @@ def main(argv=None):
         sys.exit(f"--trusted-proxy-addresses: {e}")
     if a.trusted_proxies < 1:
         sys.exit("--trusted-proxies is at least 1")
+    registries = parse_registries(a.registry, a.registry_token_file)
+    faucet = faucet_from(a.faucet_amount, a.faucet_url, a.faucet_token_file, a.faucet_per_day)
     host, _, port = a.listen.rpartition(":")
     service = Accounts(Ledger(a.ledger_url, a.token_file, token), a.user_id, Parties(a.state_file), allow, a.party_hint, a.synchronizer_id, a.topology_protocol_version,
                        Limiter(a.accounts_per_day, DAY), Limiter(a.requests_per_minute, 60), Pending(limit=a.max_pending_topologies, per_owner=a.max_pending_per_client),
                        Pending(limit=a.max_pending_prepared, per_owner=a.max_pending_per_client, per_group=a.max_pending_per_account), chain, open_limits,
                        Limiter(a.executes_per_account_day, DAY), Limiter(a.executes_per_client_day, DAY), Limiter(a.executes_per_day, DAY),
                        Limiter(a.traffic_per_day, DAY), a.max_transaction_traffic, Limiter(a.accounts_per_day_total, DAY),
-                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60))
+                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), registries=registries, faucet=faucet)
     try:
         service.load_rights(force=True)
     except HttpError as e:
