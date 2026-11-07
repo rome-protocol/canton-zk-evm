@@ -25,16 +25,18 @@ Every answer is JSON; an error is `{"error": "..."}` with 400 (a bad request), 4
 
 | Endpoint | Request | Answer |
 |---|---|---|
-| `POST /accounts/v1/topology` | `{"publicKey", "partyHint"?}`: the Ed25519 key, as 32 raw bytes or in DER (SubjectPublicKeyInfo, 44 bytes). The hint is optional and must be the service's own (`bridge`) | `{"party", "exists": false, "multiHash", "blob"}`: sign the bytes that `multiHash` stands for (decode the base64) and send the signature with the blob. If this key has an account already: `{"party", "exists": true}` |
+| `POST /accounts/v1/topology` | `{"publicKey", "partyHint"?}`: the Ed25519 key, as 32 raw bytes or in DER (SubjectPublicKeyInfo, 44 bytes). The hint is optional and must be the service's own (`bridge`) | `{"party", "exists": false, "multiHash", "topologyTransactions", "blob"}`: `topologyTransactions` are the base64 topology transactions the participant generated and `multiHash` is the hash of them. A client that does not trust the service decodes them, checks they are this key's onboarding, recomputes `multiHash` and signs only if it is the same; the signature (of the decoded `multiHash`) goes back with the blob. If this key has an account already: `{"party", "exists": true}` |
 | `POST /accounts/v1/allocate` | `{"blob", "signature"}`: the signature (64 bytes) over the multi-hash | `{"party", "created"}`. The blob is the service's own: it names what the service generated, and it lives ten minutes in memory |
 | `POST /accounts/v1/prepare` | `{"party", "commands", "disclosedContracts"?}` | `{"party", "preparedTransaction", "preparedTransactionHash", "hashingSchemeVersion"}`: sign the bytes of the hash |
 | `POST /accounts/v1/execute` | `{"preparedTransaction", "partySignatures": [{"party", "signature"}]}` | `{"updateId"}`, after the participant committed it |
 | `GET /accounts/v1/holdings/{party}` | | `{"party", "holdings": [{"contractId", "instrumentId": {"admin", "id"}, "amount", "locked"}]}`: the CIP-0056 `Holding` interface's view of the party's active contracts, all pages of one snapshot, only the views whose `owner` is the party |
+| `GET /accounts/v1/allocations/{party}` | | `{"party", "allocations": [{"contractId", "allocation", "holdingCids"}]}`: the `Allocation` interface's view of the party's active contracts whose leg the party sends, so a client finds the contract id the participant committed |
+| `GET /accounts/v1/open/{party}` | | `{"party", "depositRequests": [{"contractId", "arguments"}], "redeemRequests": [...]}`: the party's open `DepositRequest`s and (when `--allow` lists it) `RedeemRequest`s |
 | `GET /healthz` | | `{"ok", "accounts"}`; `ok` is false when the participant does not answer; the answer is kept for 5 seconds |
 
 The party id is `bridge::<fingerprint of the key>`, so the same key is always the same account and `allocate` for it twice makes nothing the second time. The service answers for the accounts it allocated only (it keeps them in `--state-file`, one JSON line each, so keep that file): `prepare`, `execute` and `holdings` for another party are 404.
 
-**Proof of the account's key.** `prepare`, `execute` and `holdings` are about one account, and each request carries that account's signature in the header `X-Account-Signature: <unix-seconds>.<base64 signature>`. The signature is Ed25519, made with the account's key (the one it was allocated from) over the UTF-8 string
+**Proof of the account's key.** `prepare`, `execute`, `holdings`, `allocations` and `open` are about one account, and each request carries that account's signature in the header `X-Account-Signature: <unix-seconds>.<base64 signature>`. The signature is Ed25519, made with the account's key (the one it was allocated from) over the UTF-8 string
 
 ```
 accounts-v1\n<METHOD>\n<PATH>\n<hex sha256 of the body>\n<unix-seconds>

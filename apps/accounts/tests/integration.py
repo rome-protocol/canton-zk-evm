@@ -1,15 +1,19 @@
 """The accounts service on a real participant (run by integration.sh, which starts Canton, the service and a user with no rights).
 An Ed25519 key is made here with openssl, and it is the only thing that signs: an external party is allocated from it, then a WithdrawalAcceptance of the
 chain package is created for that party through prepare, a signature and execute; the contract is read back, and the holdings are listed."""
-import base64, hashlib, json, os, subprocess, sys, tempfile, time, unittest, urllib.error, urllib.parse, urllib.request
+import base64, hashlib, json, os, struct, subprocess, sys, tempfile, time, unittest, urllib.error, urllib.parse, urllib.request
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "network" / "canton"))
+sys.path.insert(0, str(ROOT / "demo"))
 import propose
+import canton as demo   # the demo's helpers (CZE_CANTON=external): the test token's rules and a holding of U's, read with the demo user's token
 
 SERVICE, LEDGER, USER = os.environ["ACCOUNTS_URL"], os.environ["CZE_LEDGER_URL"], os.environ["ACCOUNTS_USER"]
 ACCEPTANCE = "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"
+DEPOSIT, REDEEM, TWIN_ACCEPTANCE = "#canton-zk-evm:Zk.Chain:DepositRequest", "#canton-zk-evm:Zk.Chain:RedeemRequest", "#ostia-twin:Twin.Twin:TwinAcceptance"
 
 
 def call(method, url, body=None, bearer=None, key=None):
@@ -69,9 +73,18 @@ class AccountsOnCanton(unittest.TestCase):
             self.assertEqual(status, 200, topology)
             party = topology["party"]
             self.assertTrue(party.startswith("bridge::1220"), party)
+            # Canton's fingerprint of the key: the hash (purpose 12, hash prefix 1220) of the key's DER X.509 bytes; the party is the hint and the fingerprint.
+            self.assertEqual(party, "bridge::1220" + hashlib.sha256(struct.pack(">i", 12) + key.public).hexdigest())
+            self.assertTrue(topology["topologyTransactions"] and topology["multiHash"])
+            participant = call("GET", f"{LEDGER}/v2/parties/participant-id", bearer=propose.role_token("admin"))[1]["participantId"]
+            print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": public, "publicKeyDer": base64.b64encode(key.public).decode(), "participant": participant,
+                                           "multiHash": topology["multiHash"], "topologyTransactions": topology["topologyTransactions"]}, sort_keys=True), flush=True)
             status, made = service("/accounts/v1/allocate", {"blob": topology["blob"], "signature": key.sign(topology["multiHash"])})
             self.assertEqual((status, made), (200, {"party": party, "created": True}), made)
             self.assertEqual(service("/accounts/v1/topology", {"publicKey": public})[1], {"party": party, "exists": True})   # the same key: the same account
+            self.assertEqual(service(f"/accounts/v1/holdings/{party}", key=key), (200, {"party": party, "holdings": []}))
+            self.assertEqual(service(f"/accounts/v1/allocations/{party}", key=key), (200, {"party": party, "allocations": []}))
+            self.assertEqual(service(f"/accounts/v1/open/{party}", key=key), (200, {"party": party, "depositRequests": [], "redeemRequests": []}))
 
             # The service's user has the right to act as this party, and no more than that: no admin right.
             _, rights = call("GET", f"{LEDGER}/v2/users/{USER}/rights", bearer=propose.role_token("admin"))
@@ -114,33 +127,88 @@ class AccountsOnCanton(unittest.TestCase):
             status, again = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}]}, key)
             self.assertEqual(status, 409, again)
 
-            # A DepositRequest names a contract id as its allocation, and a real one (the chain's own, which is longer than 128 characters) passes the service's checks and
-            # the participant's prepare. The test stops at prepare: the create does not fetch the allocation, and no allocation of a test holding is made here.
-            self.assertGreater(len(chain["contractId"]), 128)
-            label = "integration"
-            deposit = {k: arguments[k] for k in ("chainId", "operator", "confirmer", "gateway", "builder")}
-            deposit.update(depositor=party, depositId=hashlib.sha256(f"deposit,{party},{label}".encode()).hexdigest(), recipient="ab" * 20, allocation=chain["contractId"], label=label)
-            status, prepared_deposit = service("/accounts/v1/prepare", {"party": party, "commands": [{"CreateCommand": {"templateId": "#canton-zk-evm:Zk.Chain:DepositRequest", "createArguments": deposit}}]}, key)
-            self.assertEqual(status, 200, prepared_deposit)
-
             # An account-scoped call without the account's signature is refused.
-            status, refused = service(f"/accounts/v1/holdings/{party}")
-            self.assertEqual(status, 401, refused)
+            for what in ("holdings", "allocations", "open"):
+                self.assertEqual(service(f"/accounts/v1/{what}/{party}")[0], 401, what)
 
-            # An exercise on the account's own contract: the Archive of its acceptance, prepared and not executed. The three prepared transactions are printed as fixtures
-            # for the explorer's check of what a page signs (explorer/src/bridge/canton/fixtures.json): each with the command asked for and the service's hash.
+            def run(command, disclosed=()):
+                """Prepares the command; gives the prepared transaction and a function that signs it and executes it."""
+                status, made = service("/accounts/v1/prepare", {"party": party, "commands": [command], "disclosedContracts": list(disclosed)}, key)
+                self.assertEqual(status, 200, made)
+                return made, lambda: service("/accounts/v1/execute", {"preparedTransaction": made["preparedTransaction"], "partySignatures": [{"party": party, "signature": key.sign(made["preparedTransactionHash"])}]}, key)
+
+            def fixture(name, command, made, **more):
+                print("FIXTURE " + json.dumps({"name": name, "party": party, "command": command, "preparedTransaction": made["preparedTransaction"], "preparedTransactionHash": made["preparedTransactionHash"],
+                                               "hashingSchemeVersion": made["hashingSchemeVersion"], **more}, sort_keys=True), flush=True)
+
+            def until(what, find):
+                deadline = time.time() + 90
+                while time.time() < deadline:
+                    found = find()
+                    if found:
+                        return found
+                    time.sleep(4)
+                self.fail(f"timed out waiting for {what}")
+
+            # An exercise on the account's own contract: the Archive of its acceptance, prepared and not executed.
             [acceptance] = [c for c in builder.active("WithdrawalAcceptance") if c["party"] == party]
             archive = {"ExerciseCommand": {"templateId": ACCEPTANCE, "contractId": acceptance["contractId"], "choice": "Archive", "choiceArgument": {}}}
-            status, prepared_archive = service("/accounts/v1/prepare", {"party": party, "commands": [archive]}, key)
-            self.assertEqual(status, 200, prepared_archive)
-            create_deposit = {"CreateCommand": {"templateId": "#canton-zk-evm:Zk.Chain:DepositRequest", "createArguments": deposit}}
-            create_acceptance = {"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}
-            for name, command, made in (("create-acceptance", create_acceptance, prepared), ("create-deposit-request", create_deposit, prepared_deposit), ("exercise-archive", archive, prepared_archive)):
-                print("FIXTURE " + json.dumps({"name": name, "party": party, "command": command, "preparedTransaction": made["preparedTransaction"],
-                                               "preparedTransactionHash": made["preparedTransactionHash"], "hashingSchemeVersion": made["hashingSchemeVersion"]}, sort_keys=True), flush=True)
+            made_archive, _ = run(archive)
+            fixture("exercise-archive", archive, made_archive)
+            fixture("create-acceptance", {"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": arguments}}, prepared)
 
-            status, holdings = service(f"/accounts/v1/holdings/{party}", key=key)
-            self.assertEqual((status, holdings), (200, {"party": party, "holdings": []}))
+            # A holding of the account's own: U (a party on this participant, with 100 of the test token) sends 40 through the token standard, and the account accepts the offer.
+            net = demo.Network()
+            registry, u, disclosed = net.party("registry"), net.party("u"), demo.read_disclosed(net)
+            offers = {e["contractId"] for e in net.template("users", "registry", demo.TRANSFER_OFFER)}
+            transfer = {"sender": u, "receiver": party, "amount": "40.0", "instrumentId": {"admin": registry, "id": demo.INSTRUMENT}, "requestedAt": demo.utc(timedelta(minutes=-1)),
+                        "executeBefore": demo.utc(timedelta(hours=1)), "inputHoldingCids": [e["contractId"] for e in net.template("users", "u", demo.TOKEN)], "meta": {"values": {}}}
+            net.submit("users", ["u"], {"ExerciseCommand": {"templateId": demo.TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
+                                                           "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": demo.NO_EXTRA_ARGS}}}, disclosed)
+            [offer] = net.wait_for("the offer", lambda: [e["contractId"] for e in net.template("users", "registry", demo.TRANSFER_OFFER) if e["contractId"] not in offers])
+            _, execute_accept = run({"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offer, "choice": "TransferInstruction_Accept", "choiceArgument": {"extraArgs": demo.NO_EXTRA_ARGS}}})
+            self.assertEqual(execute_accept()[0], 200)
+            [holding] = until("the holding", lambda: service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"])
+            self.assertEqual((holding["instrumentId"], float(holding["amount"]), holding["locked"]), ({"admin": registry, "id": demo.INSTRUMENT}, 40.0, False))
+
+            # AllocationFactory_Allocate: the account locks 5 for the gateway (the operator executes), with the registry's rules as a disclosed contract.
+            requested, label = demo.utc(timedelta(minutes=-1)), "integration"
+            spec = {"settlement": {"executor": arguments["operator"], "settlementRef": {"id": label, "cid": None}, "requestedAt": requested, "allocateBefore": demo.utc(timedelta(hours=1)),
+                                   "settleBefore": demo.utc(timedelta(hours=2)), "meta": {"values": {}}}, "transferLegId": "leg-" + label,
+                    "transferLeg": {"sender": party, "receiver": arguments["gateway"], "amount": "5.0", "instrumentId": {"admin": registry, "id": demo.INSTRUMENT}, "meta": {"values": {}}}}
+            allocate = {"ExerciseCommand": {"templateId": demo.ALLOCATION_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
+                "expectedAdmin": registry, "allocation": spec, "requestedAt": requested, "inputHoldingCids": [holding["contractId"]], "extraArgs": demo.NO_EXTRA_ARGS}}}
+            made_allocate, execute_allocate = run(allocate, disclosed)
+            fixture("exercise-allocate", allocate, made_allocate, disclosedContracts=disclosed)
+            self.assertEqual(execute_allocate()[0], 200)
+            [allocation] = until("the allocation", lambda: service(f"/accounts/v1/allocations/{party}", key=key)[1]["allocations"])
+            self.assertEqual((allocation["allocation"]["settlement"]["settlementRef"]["id"], allocation["allocation"]["transferLeg"]["sender"]), (label, party))
+
+            # A DepositRequest names the allocation's committed contract id (a contract id is longer than 128 characters, and the service's checks and the participant's pass it).
+            self.assertGreater(len(allocation["contractId"]), 128)
+            deposit = {k: arguments[k] for k in ("chainId", "operator", "confirmer", "gateway", "builder")}
+            deposit.update(depositor=party, depositId=hashlib.sha256(f"deposit,{party},{label}".encode()).hexdigest(), recipient="ab" * 20, allocation=allocation["contractId"], label=label)
+            create_deposit = {"CreateCommand": {"templateId": DEPOSIT, "createArguments": deposit}}
+            made_deposit, execute_deposit = run(create_deposit)
+            fixture("create-deposit-request", create_deposit, made_deposit)
+            self.assertEqual(execute_deposit()[0], 200)
+
+            # A RedeemRequest and a TwinAcceptance, each made by the account's key and executed.
+            redeem = {"holder": party, "operator": arguments["operator"], "confirmer": arguments["confirmer"], "gateway": arguments["gateway"], "builder": arguments["builder"], "chainId": arguments["chainId"],
+                      "token": "ab" * 20, "holdings": [holding["contractId"]], "amount": "1.5", "recipient": "cd" * 20, "ref": "redeem-1"}
+            create_redeem = {"CreateCommand": {"templateId": REDEEM, "createArguments": redeem}}
+            made_redeem, execute_redeem = run(create_redeem)
+            fixture("create-redeem-request", create_redeem, made_redeem)
+            self.assertEqual(execute_redeem()[0], 200)
+            twin = {"CreateCommand": {"templateId": TWIN_ACCEPTANCE, "createArguments": {"party": party, "admin": arguments["gateway"]}}}
+            made_twin, execute_twin = run(twin)
+            fixture("create-twin-acceptance", twin, made_twin)
+            self.assertEqual(execute_twin()[0], 200)
+
+            # What the page reads to resume: the allocation by its contract id, the open requests by theirs.
+            opened = until("the open requests", lambda: (lambda o: o if o["depositRequests"] and o["redeemRequests"] else None)(service(f"/accounts/v1/open/{party}", key=key)[1]))
+            self.assertEqual((opened["depositRequests"][0]["arguments"]["allocation"], opened["redeemRequests"][0]["arguments"]["ref"]), (allocation["contractId"], "redeem-1"))
+            print("FIXTURE " + json.dumps({"name": "answers", "party": party, "allocations": service(f"/accounts/v1/allocations/{party}", key=key)[1], "open": opened}, sort_keys=True), flush=True)
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make
 
 

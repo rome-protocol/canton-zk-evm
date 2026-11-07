@@ -25,6 +25,8 @@ CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
 ACCEPTANCE, DEPOSIT = CHAIN_CREATES
 ALLOW_ENTRY = re.compile(r"#[a-z0-9][a-z0-9-]*:[A-Za-z0-9_.]+:[A-Za-z0-9_]+(#[A-Za-z0-9_]+)?\Z")
 HOLDING = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
+ALLOCATION = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
 PARTY = re.compile(r"[A-Za-z0-9_-]{1,64}::1220[0-9a-f]{64}\Z")   # hint::fingerprint; a hash fingerprint is "1220" and 64 lowercase hex digits
 HINT = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 SPKI_ED25519 = bytes.fromhex("302a300506032b6570032100")   # the DER prefix of an Ed25519 public key; 32 raw key bytes follow
@@ -483,12 +485,12 @@ class Accounts:
                         self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
                 return route(body, ip)
         elif method == "GET":
-            m = re.fullmatch(r"/accounts/v1/holdings/([^/]+)", path)
+            m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open)/([^/]+)", path)
             if m:
-                party = urllib.parse.unquote(m.group(1))
+                party = urllib.parse.unquote(m.group(2))
                 self.authenticate(party, method, path, raw, auth, ip)
                 self.account_rate.hit(party)
-                return self.holdings(party)
+                return getattr(self, m.group(1))(party)
         raise HttpError(404, "no such route")
 
     def topology(self, body: dict, ip: str) -> dict:
@@ -502,7 +504,7 @@ class Accounts:
         blob = hmac.new(self.secret, raw, hashlib.sha256).hexdigest()[:48]
         again = self.topologies.get(blob)
         if again:
-            return {"party": again[0], "exists": False, "multiHash": again[3], "blob": blob}
+            return {"party": again[0], "exists": False, "multiHash": again[3], "topologyTransactions": again[2], "blob": blob}
         self.topologies.room(pending_owner(ip))   # a client at its cap costs the participant nothing
         if not ed25519.usable_key(raw):
             raise HttpError(400, "publicKey is not a usable Ed25519 key")
@@ -516,7 +518,7 @@ class Accounts:
         if party in self.parties:
             return {"party": party, "exists": True}
         self.topologies.put(blob, (party, made["publicKeyFingerprint"], made["topologyTransactions"], made["multiHash"], raw), pending_owner(ip))
-        return {"party": party, "exists": False, "multiHash": made["multiHash"], "blob": blob}
+        return {"party": party, "exists": False, "multiHash": made["multiHash"], "topologyTransactions": made["topologyTransactions"], "blob": blob}
 
     def allocate(self, body: dict, ip: str) -> dict:
         blob = text(body, "blob", 100)
@@ -661,23 +663,42 @@ class Accounts:
                 raise
         return {"updateId": done["updateId"]}
 
-    def holdings(self, party: str) -> dict:
-        """The party's own CIP-0056 holdings (the Holding interface's view, owner = the party), all pages of one snapshot."""
+    def active(self, party: str, identifier_filter: dict, what: str) -> list:
+        """The created events of the party's active contracts that match the filter, all pages of one snapshot."""
         self.known(party)
-        flt = {"cumulative": [{"identifierFilter": {"InterfaceFilter": {"value": {"interfaceId": HOLDING, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}}]}
+        flt = {"cumulative": [{"identifierFilter": identifier_filter}]}
         request, out = {"eventFormat": {"filtersByParty": {party: flt}, "verbose": False}, "maxPageSize": HOLDINGS_PAGE}, []
         for _ in range(HOLDINGS_PAGES):
             page = self.ledger.call("POST", "/v2/state/active-contracts-page", request)
-            for entry in page.get("activeContracts") or []:
-                event = (entry.get("contractEntry") or {}).get("JsActiveContract", {}).get("createdEvent") or {}
-                for view in event.get("interfaceViews") or []:
-                    v = view.get("viewValue")
-                    if isinstance(v, dict) and v.get("owner") == party:   # a holding the party only observes is not its own
-                        out.append({"contractId": event["contractId"], "instrumentId": v["instrumentId"], "amount": v["amount"], "locked": bool(v.get("lock"))})
+            out += [(entry.get("contractEntry") or {}).get("JsActiveContract", {}).get("createdEvent") or {} for entry in page.get("activeContracts") or []]
             if not page.get("nextPageToken"):
-                return {"party": party, "holdings": out}
+                return out
             request = {**request, "activeAtOffset": page["activeAtOffset"], "pageToken": page["nextPageToken"]}
-        raise HttpError(500, "the account holds more than this service lists")
+        raise HttpError(500, f"the account has more {what} than this service lists")
+
+    def views(self, party: str, interface: str, what: str) -> list:
+        """(contract id, view) of the party's contracts of an interface."""
+        found = self.active(party, {"InterfaceFilter": {"value": {"interfaceId": interface, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}, what)
+        return [(e["contractId"], v.get("viewValue")) for e in found for v in e.get("interfaceViews") or []]
+
+    def holdings(self, party: str) -> dict:
+        """The party's own CIP-0056 holdings (the Holding interface's view, owner = the party), all pages of one snapshot."""
+        return {"party": party, "holdings": [{"contractId": cid, "instrumentId": v["instrumentId"], "amount": v["amount"], "locked": bool(v.get("lock"))}
+                                             for cid, v in self.views(party, HOLDING, "holdings") if isinstance(v, dict) and v.get("owner") == party]}   # a holding the party only observes is not its own
+
+    def allocations(self, party: str) -> dict:
+        """The party's own allocations (the Allocation interface's view, the party the sender of the leg): the contract id the participant committed, the specification and the holdings."""
+        return {"party": party, "allocations": [{"contractId": cid, "allocation": v["allocation"], "holdingCids": v.get("holdingCids", [])} for cid, v in self.views(party, ALLOCATION, "allocations")
+                                                if isinstance(v, dict) and ((v.get("allocation") or {}).get("transferLeg") or {}).get("sender") == party]}
+
+    def open(self, party: str) -> dict:
+        """The party's open DepositRequests and RedeemRequests (those the service allows it to create), by contract id, with their arguments."""
+        out = {"party": party, "depositRequests": [], "redeemRequests": []}
+        for template, key, owner in ((DEPOSIT, "depositRequests", "depositor"), (REDEEM, "redeemRequests", "holder")):
+            if template in self.allow:
+                found = self.active(party, {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}, "open requests")
+                out[key] = [{"contractId": e["contractId"], "arguments": e["createArgument"]} for e in found if (e.get("createArgument") or {}).get(owner) == party]
+        return out
 
 
 def open_limits_from(allow, deposit_requests: int, given) -> dict:

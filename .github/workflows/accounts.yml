@@ -2,10 +2,10 @@ name: accounts
 
 on:
   pull_request:
-    paths: ["apps/accounts/**", "network/canton/**", "network/external/**", "daml/**", "tests/fake_sidecar.py", "tests/external_bootstrap.canton", "PINS", ".github/workflows/accounts.yml"]
+    paths: ["apps/accounts/**", "network/canton/**", "network/external/**", "daml/**", "apps/twin/**", "demo/canton.py", "tests/fake_sidecar.py", "tests/external_bootstrap.canton", "PINS", ".github/workflows/accounts.yml"]
   push:
     branches: [main]
-    paths: ["apps/accounts/**", "network/canton/**", "network/external/**", "daml/**", "tests/fake_sidecar.py", "tests/external_bootstrap.canton", "PINS", ".github/workflows/accounts.yml"]
+    paths: ["apps/accounts/**", "network/canton/**", "network/external/**", "daml/**", "apps/twin/**", "demo/canton.py", "tests/fake_sidecar.py", "tests/external_bootstrap.canton", "PINS", ".github/workflows/accounts.yml"]
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
   # of the real Daml package created for it with that key's signature, and its holdings.
   canton:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1

@@ -78,6 +78,13 @@ H0=$(printf 'ab%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'e
 python3 "$ROOT/network/external/setup.py" --demo -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
   --rules-hash "$(printf '12%.0s' $(seq 32))" --gateway-address "${GATEWAY_ADDRESS#0x}" > "$WORK/setup.json" || fail "the setup failed"
 
+# The test token (its DAR, its rules and 100 of it for U, a party on this participant: demo/canton.py) for an allocation, and the twin app's package for a TwinAcceptance.
+(export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH" SDK_VERSION=$DAML_SDK_VERSION TARGET=$DAML_TARGET; "$ROOT/apps/twin/build.sh" >&2)
+curl -sf -X POST -H "Authorization: Bearer $(tr -d '[:space:]' < "$WORK/token-admin")" -H 'content-type: application/octet-stream' --data-binary @"$ROOT/apps/twin/dist/ostia-twin.dar" \
+  "$CZE_LEDGER_URL/v2/packages?vetAllPackages=true&synchronizeVetting=true" > /dev/null || fail "the twin app's package was not uploaded"
+CZE_CANTON=external python3 "$ROOT/demo/canton.py" upload-dars > /dev/null || fail "the test token's package was not uploaded"
+CZE_CANTON=external python3 "$ROOT/demo/canton.py" setup > /dev/null || fail "the test token's rules and U's holding were not made"
+
 # The service's user: no right at all. The participant gives it the right to act as each account when the account is allocated.
 curl -sf -H "Authorization: Bearer $(tr -d '[:space:]' < "$WORK/token-admin")" -H 'content-type: application/json' "$CZE_LEDGER_URL/v2/users" \
   -d "{\"user\":{\"id\":\"$ACCOUNTS_USER\",\"primaryParty\":\"\",\"isDeactivated\":false,\"identityProviderId\":\"\"},\"rights\":[]}" > /dev/null || fail "the service's user was not made"
@@ -93,11 +100,14 @@ PY
 ALLOW=(--allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance' --allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance#Archive' --allow '#canton-zk-evm:Zk.Chain:DepositRequest'
   --allow '#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate'
   --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer'
-  --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept')
+  --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept'
+  --allow '#canton-zk-evm:Zk.Chain:RedeemRequest' --open-limit '#canton-zk-evm:Zk.Chain:RedeemRequest=3'
+  --allow '#ostia-twin:Twin.Twin:TwinAcceptance' --open-limit '#ostia-twin:Twin.Twin:TwinAcceptance=1'
+  --requests-per-minute 600 --requests-per-account-minute 600 --requests-per-network-minute 600)
 python3 "$ROOT/apps/accounts/accounts.py" "${ALLOW[@]}" --chain-parties "$WORK/chain-parties.json" --ledger-url "$CZE_LEDGER_URL" --user-id "$ACCOUNTS_USER" --token-file "$WORK/token-accounts" \
   --state-file "$WORK/accounts.jsonl" --listen 127.0.0.1:18081 > "$WORK/service.log" 2>&1 & pids+=($!)
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18081/healthz > /dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:18081/healthz > /dev/null || fail "the service did not come up"
 
-ACCOUNTS_URL=http://127.0.0.1:18081 python3 "$ROOT/apps/accounts/tests/integration.py" -v
+CZE_CANTON=external ACCOUNTS_URL=http://127.0.0.1:18081 python3 "$ROOT/apps/accounts/tests/integration.py" -v
 echo "accounts service test on Canton passed"

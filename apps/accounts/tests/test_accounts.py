@@ -22,6 +22,7 @@ class FakeLedger:
     """Answers the endpoints the service uses, records every call, and can be told to refuse."""
     def __init__(self):
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
+        self.created, self.allocations = {}, []   # created events by template (a read of open contracts); (contract id, view) of the Allocation interface
         self.rights = []   # the parties the service's user can act as
         self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
         fake = self
@@ -68,7 +69,12 @@ class FakeLedger:
             return 200, {"updateId": "u-1", "completionOffset": 5}
         if path.endswith("/active-contracts-page") and "TemplateFilter" in json.dumps(body):   # the account's own contracts of one template
             template = json.dumps(body).split('"templateId": "')[1].split('"')[0]
+            if template in self.created:
+                return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": e}}} for e in self.created[template]]}
             return 200, {"activeAtOffset": 9, "activeContracts": [{}] * min(self.open.get(template, 0), body["maxPageSize"])}
+        if path.endswith("/active-contracts-page") and "AllocationV1:Allocation" in json.dumps(body):
+            return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
+                "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:AllocationV1:Allocation", "viewValue": view}]}}}} for cid, view in self.allocations]}
         if path.endswith("/active-contracts-page"):
             pages = self.holdings
             at = int(body["pageToken"]) if body.get("pageToken") else 0
@@ -118,7 +124,7 @@ class Case(unittest.TestCase):
     def req(self, method, path, body=None, headers=None, raw=None, signed=True, seed=SEED, at=None):
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
         headers = dict(headers or {})
-        if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute") or path.startswith("/accounts/v1/holdings/")) and "X-Account-Signature" not in headers:
+        if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute") or path.startswith(("/accounts/v1/holdings/", "/accounts/v1/allocations/", "/accounts/v1/open/"))) and "X-Account-Signature" not in headers:
             headers["X-Account-Signature"] = self.account_signature(method, path, data or b"", seed, at)
         r = urllib.request.Request(self.base + path, data, headers, method=method)
         try:
@@ -146,7 +152,8 @@ class Case(unittest.TestCase):
 class TopologyAndAllocate(Case):
     def test_topology_wraps_a_raw_key_and_names_the_synchronizer(self):
         status, out, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})
-        self.assertEqual((status, out["party"], out["exists"], out["multiHash"]), (200, PARTY, False, "bXVsdGk="))
+        self.assertEqual((status, out["party"], out["exists"], out["multiHash"], out["topologyTransactions"]), (200, PARTY, False, "bXVsdGk=", ["t1", "t2"]))
+        self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[1]["topologyTransactions"], ["t1", "t2"])   # asked again: the same blob, with its transactions
         sent = self.calls_to("/generate-topology")[0][2]
         self.assertEqual(sent["synchronizer"], SYNC)
         self.assertEqual(sent["partyHint"], "bridge")
@@ -690,6 +697,42 @@ class Holdings(Case):
     def test_no_holdings_is_an_empty_list(self):
         self.make_account()
         self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{PARTY}")[1], {"party": PARTY, "holdings": []})
+
+
+class AllocationsAndOpen(Case):
+    LEG = lambda self, sender: {"transferLeg": {"sender": sender, "receiver": CHAIN["gateway"], "amount": "5.0", "instrumentId": {"admin": "reg::1", "id": "TKB"}}}
+
+    def test_the_allocations_the_party_sends_with_the_committed_contract_id(self):
+        self.make_account()
+        self.ledger.allocations = [("a1", {"allocation": {"settlement": {"settlementRef": {"id": "dep1"}}, **self.LEG(PARTY)}, "holdingCids": ["h1"]}),
+                                   ("a2", {"allocation": self.LEG("other::1220" + "99" * 32), "holdingCids": []})]
+        status, out, _ = self.req("GET", f"/accounts/v1/allocations/{PARTY}")
+        self.assertEqual(status, 200)
+        self.assertEqual([(a["contractId"], a["holdingCids"], a["allocation"]["settlement"]["settlementRef"]["id"]) for a in out["allocations"]], [("a1", ["h1"], "dep1")])
+        sent = self.calls_to("/active-contracts-page")[0][2]
+        self.assertEqual(sent["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.ALLOCATION)
+
+    def test_the_open_requests_the_party_made(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
+        self.make_account()
+        self.ledger.created = {DEPOSIT: [{"contractId": "d1", "createArgument": {"depositor": PARTY, "label": "x"}}, {"contractId": "d2", "createArgument": {"depositor": "other::1220" + "99" * 32}}],
+                               A.REDEEM: [{"contractId": "r1", "createArgument": {"holder": PARTY, "ref": "y"}}]}
+        status, out, _ = self.req("GET", f"/accounts/v1/open/{PARTY}")
+        self.assertEqual((status, out), (200, {"party": PARTY, "depositRequests": [{"contractId": "d1", "arguments": {"depositor": PARTY, "label": "x"}}],
+                                              "redeemRequests": [{"contractId": "r1", "arguments": {"holder": PARTY, "ref": "y"}}]}))
+
+    def test_a_template_the_service_does_not_allow_is_not_read(self):
+        self.make_account()
+        self.ledger.created = {DEPOSIT: []}
+        self.assertEqual(self.req("GET", f"/accounts/v1/open/{PARTY}")[1], {"party": PARTY, "depositRequests": [], "redeemRequests": []})
+        self.assertEqual(len(self.calls_to("/active-contracts-page")), 1)
+
+    def test_both_need_the_account_signature_and_an_account_the_service_made(self):
+        self.make_account()
+        for what in ("allocations", "open"):
+            self.assertEqual(self.req("GET", f"/accounts/v1/{what}/{PARTY}", signed=False)[0], 401, what)
+            self.assertEqual(self.req("GET", f"/accounts/v1/{what}/{PARTY}", seed=OTHER_SEED)[0], 401, what)
+            self.assertEqual(self.req("GET", f"/accounts/v1/{what}/nobody::1220" + "0" * 64)[0], 404, what)
 
 
 class Authentication(Case):
