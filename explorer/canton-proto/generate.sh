@@ -36,5 +36,7 @@ include=$(ls -d node_modules/@protobuf-ts/protoc/installed/*/include | head -n 1
 [ -f "$include/google/protobuf/timestamp.proto" ] || fail "protobuf-ts's protoc has no include folder"
 mkdir -p "$work/google/protobuf"
 cp "$include/google/protobuf/timestamp.proto" "$include/google/protobuf/duration.proto" "$include/google/protobuf/descriptor.proto" "$work/google/protobuf/"
-npx --no-install protoc --proto_path "$work" --ts_out canton-proto/gen --ts_opt optimize_code_size --ts_opt import_extension=.ts --ts_opt force_exclude_all_options \
+npx --no-install protoc --proto_path "$work" --ts_out canton-proto/gen --ts_opt optimize_code_size --ts_opt force_exclude_all_options \
   "${files[@]}" google/protobuf/timestamp.proto google/protobuf/duration.proto
+# The generated imports name their files without an extension; this explorer's imports (NodeNext, allowImportingTsExtensions) name them with .ts, so the types of one generated file reach the next.
+find canton-proto/gen -name '*.ts' -exec sed -i -E 's#^(import .* from "\.\.?/[^"]*)";#\1.ts";#' {} +
