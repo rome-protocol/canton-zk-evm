@@ -17,13 +17,6 @@ export interface Intent {
 }
 export interface Built { command: Command; intent: Intent; disclosedContracts: DisclosedContract[] }
 
-/** The participant that hosts every account (`VITE_CANTON_PARTICIPANT`: its id as the Ledger API says it, PAR::name::fingerprint): an account is onboarded only onto it. */
-export function participantFromEnv(env: Record<string, string | undefined>): string {
-  const participant = env.VITE_CANTON_PARTICIPANT;
-  if (!participant) throw new Error("VITE_CANTON_PARTICIPANT is not set");
-  return participant;
-}
-
 /** The chain's parties and id, from the page's configuration (`VITE_CHAIN_*`): never written into the code. */
 export interface Chain { operator: string; confirmer: string; gateway: string; builder: string; chainId: number }
 export function chainFromEnv(env: Record<string, string | undefined>): Chain {
@@ -102,7 +95,7 @@ export function allocate(party: string, c: Chain, a: Allocation, factory: { cont
   };
   return {
     command: { ExerciseCommand: { templateId: id({ packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }), contractId: factory.contractId, choice: "AllocationFactory_Allocate", choiceArgument: args } },
-    intent: { party, kind: "exercise", template: { packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }, interface: ALLOCATION_FACTORY, choice: "AllocationFactory_Allocate", contractId: factory.contractId, args, ignore: ["extraArgs.context"], implementation: a.implementation ?? implementationOf(a.instrumentId) },
+    intent: { party, kind: "exercise", template: { packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }, interface: ALLOCATION_FACTORY, choice: "AllocationFactory_Allocate", contractId: factory.contractId, args, ignore: ["extraArgs.context"], implementation: a.implementation ?? implementationOf(a.instrumentId), ledgerTimes: true },   // the standard's deadlines are the transaction's ledger time bounds
     disclosedContracts: factory.disclosedContracts,
   };
 }

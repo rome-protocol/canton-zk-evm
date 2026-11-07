@@ -73,13 +73,12 @@ class AccountsOnCanton(unittest.TestCase):
             self.assertEqual(status, 200, topology)
             party = topology["party"]
             self.assertTrue(party.startswith("bridge::1220"), party)
-            # Canton's fingerprint of the key: the hash (purpose 12, hash prefix 1220) of the key's bytes; the party is the hint and the fingerprint.
-            fingerprints = {name: "bridge::1220" + hashlib.sha256(struct.pack(">i", 12) + data).hexdigest() for name, data in (("der", key.public), ("raw", key.public[-32:]))}
-            print("FINGERPRINT", party, fingerprints, flush=True)
-            self.assertIn(party, fingerprints.values())
+            # Canton's fingerprint of the key: the hash (purpose 12, hash prefix 1220) of the key's 32 raw bytes; the party is the hint and the fingerprint.
+            raw = key.public[-32:]
+            self.assertEqual(party, "bridge::1220" + hashlib.sha256(struct.pack(">i", 12) + raw).hexdigest())
             self.assertTrue(topology["topologyTransactions"] and topology["multiHash"])
             participant = call("GET", f"{LEDGER}/v2/parties/participant-id", bearer=propose.role_token("admin"))[1]["participantId"]
-            print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": public, "publicKeyDer": base64.b64encode(key.public).decode(), "participant": participant,
+            print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": base64.b64encode(raw).decode(), "participant": participant,
                                            "multiHash": topology["multiHash"], "topologyTransactions": topology["topologyTransactions"]}, sort_keys=True), flush=True)
             status, made = service("/accounts/v1/allocate", {"blob": topology["blob"], "signature": key.sign(topology["multiHash"])})
             self.assertEqual((status, made), (200, {"party": party, "created": True}), made)
