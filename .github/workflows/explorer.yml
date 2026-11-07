@@ -233,3 +233,23 @@ jobs:
       - name: Remove the PostgreSQL and its volume
         if: always()
         run: docker rm -f -v explorer-l2-db
+
+  # The generated Canton topology code (explorer/canton-proto/gen) is what generate.sh makes from the pinned Canton release's .proto files (each checked against its SHA-256), with the
+  # protobuf-ts plugin of the lockfile. On the runner's own Node: protobuf-ts's protoc is a glibc build, which the alpine Node image cannot run.
+  canton-proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Generate the code again and compare it with what is committed
+        run: |
+          cd explorer
+          npm ci --ignore-scripts
+          canton-proto/generate.sh
+          [ -z "$(git status --porcelain -- canton-proto/gen)" ] || { git status --short -- canton-proto/gen; echo "the generated code is not what generate.sh makes" >&2; exit 1; }
+      - name: Keep what was generated
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canton-proto-gen
+          path: explorer/canton-proto/gen
+          if-no-files-found: warn

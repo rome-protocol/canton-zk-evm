@@ -5,6 +5,9 @@
   "license": "Apache-2.0",
   "description": "A block explorer and faucet for Ostia, a Canton zkEVM.",
   "type": "module",
+  "config": {
+    "protocVersion": "36.2"
+  },
   "engines": {
     "node": ">=22.18"
   },
@@ -19,7 +22,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@canton-network/core-ledger-proto": "1.14.0",
+    "@canton-network/core-tx-visualizer": "1.14.0",
     "@ethereum-sourcify/lib-sourcify": "3.7.4",
+    "@noble/ed25519": "3.2.0",
+    "@protobuf-ts/runtime": "2.11.1",
     "@tanstack/react-query": "5.104.1",
     "pg": "8.23.1",
     "react": "19.3.0",
@@ -28,6 +35,8 @@
     "viem": "2.57.2"
   },
   "devDependencies": {
+    "@protobuf-ts/plugin": "2.11.1",
+    "@protobuf-ts/protoc": "2.11.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",

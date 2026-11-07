@@ -1,0 +1,11 @@
+# The .proto files the generated code (gen/) is made from. <SHA-256> <source> <path>. `canton` files are fetched from the Canton release tag v$CANTON_VERSION (PINS),
+# community/base/src/main/protobuf/<path>; `scalapb` is the options file the Canton files import, from ScalaPB's tag in generate.sh (only parsed, nothing is generated from it).
+# generate.sh refuses a file whose SHA-256 is not the one here.
+46d7ceb34d69ad11d2ee7f42228578c69cdf553e5000dc9d43630873ddcbaeb6 canton com/digitalasset/canton/version/v1/untyped_versioned_message.proto
+9d0903eb1b8188c3ddb5f1178ef86cd24e2d7aa5a25bf6cdb5ec19773a1334b1 canton com/digitalasset/canton/crypto/v30/crypto.proto
+6f060f0a8e147a3d453118b8a897794bd1a2432740d85c85a1ff254c1c9f757b canton com/digitalasset/canton/protocol/v30/topology.proto
+113e149722199ba4594139a0fafc79764d25c9537a5309aa0645f2a2d108635f canton com/digitalasset/canton/protocol/v30/sequencing_parameters.proto
+6f283a7367ddf25efd564477fff56124e21a5ad980522074a36d0fd147014ca2 canton com/digitalasset/canton/protocol/v30/synchronizer_parameters.proto
+720d2aafb498452eb76406b1aa867c876af4891228f5627f7924079820616535 canton com/digitalasset/canton/protocol/v30/traffic_control_parameters.proto
+672b07645f7919f1355068f957053f468dbac5b32c9adb296aea76f6ac479688 canton com/digitalasset/canton/protocol/v31/topology.proto
+e6afad11c7fe51326f30d7132d932850755452d86c8235831487296462dd4fba scalapb scalapb/scalapb.proto
