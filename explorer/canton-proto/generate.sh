@@ -40,3 +40,6 @@ npx --no-install protoc --proto_path "$work" --ts_out canton-proto/gen --ts_opt 
   "${files[@]}" google/protobuf/timestamp.proto google/protobuf/duration.proto
 # The generated imports name their files without an extension; this explorer's imports (NodeNext, allowImportingTsExtensions) name them with .ts, so the types of one generated file reach the next.
 find canton-proto/gen -name '*.ts' -exec sed -i -E 's#^(import .* from "\.\.?/[^"]*)";#\1.ts";#' {} +
+# Nothing imports descriptor.ts (the scalapb options file was only parsed), and the generated code is not held to this explorer's strict checks (it declares enums, which erasableSyntaxOnly refuses): each file says so.
+rm -f canton-proto/gen/google/protobuf/descriptor.ts
+find canton-proto/gen -name '*.ts' | while read -r f; do { echo "// @ts-nocheck"; cat "$f"; } > "$f.part" && mv "$f.part" "$f"; done
