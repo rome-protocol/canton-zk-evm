@@ -1,11 +1,19 @@
-// The account service's client (apps/accounts). The page holds the account's key: it signs the topology's multi-hash, each prepared transaction's hash, and each
-// account-scoped request (X-Account-Signature). `signPrepared` in sign.ts is the only way a prepared transaction is signed here.
-import { base64, fromBase64, hex, type CantonKey } from "./key.ts";
+// The account service's client (apps/accounts). The page holds the account's key: it signs the multi-hash of its own onboarding (after checking it, topology.ts), each prepared
+// transaction's hash, and each account-scoped request (X-Account-Signature). `signPrepared` in sign.ts is the only way a prepared transaction is signed here.
+import { base64, hex, signOnboarding, signRequest, type CantonKey } from "./key.ts";
+import { partyOf, verifyOnboarding } from "./topology.ts";
 
 export type Command = { CreateCommand: { templateId: string; createArguments: object } } | { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: object } };
 export interface DisclosedContract { templateId: string; contractId: string; createdEventBlob: string; synchronizerId: string }
 export interface Prepared { party: string; preparedTransaction: string; preparedTransactionHash: string; hashingSchemeVersion: string }
 export interface Holding { contractId: string; instrumentId: { admin: string; id: string }; amount: string; locked: boolean }
+/** An allocation the account sent, by the contract id the participant committed. `allocation` is the token standard's specification (settlement and leg). */
+export interface AllocationView {
+  contractId: string;
+  allocation: { settlement: { settlementRef: { id: string } } & Record<string, unknown>; transferLegId: string; transferLeg: { sender: string; receiver: string; amount: string; instrumentId: { admin: string; id: string } } };
+  holdingCids: string[];
+}
+export interface OpenRequest { contractId: string; arguments: Record<string, unknown> }
 
 const KINDS: Record<number, AccountsErrorKind> = { 400: "bad-request", 401: "unauthorized", 403: "forbidden", 404: "not-found", 409: "conflict", 422: "refused", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
 export type AccountsErrorKind = "bad-request" | "unauthorized" | "forbidden" | "not-found" | "conflict" | "refused" | "rate-limited" | "unavailable" | "server" | "network";
@@ -69,10 +77,10 @@ export class AccountsClient {
     while (this.used.has(`${method} ${path} ${digest} ${seconds}`) && seconds > now - 50) seconds--;
     this.used.add(`${method} ${path} ${digest} ${seconds}`);
     const message = `accounts-v1\n${method}\n${path}\n${digest}\n${seconds}`;
-    return `${seconds}.${base64(await key.sign(new TextEncoder().encode(message)))}`;
+    return `${seconds}.${base64(await signRequest(key, message))}`;
   }
 
-  topology(publicKey: Uint8Array): Promise<{ party: string; exists: boolean; multiHash?: string; blob?: string }> {
+  topology(publicKey: Uint8Array): Promise<{ party: string; exists: boolean; multiHash?: string; topologyTransactions?: string[]; blob?: string }> {
     return this.send("POST", "/accounts/v1/topology", { publicKey: base64(publicKey) });
   }
   allocate(blob: string, signature: Uint8Array): Promise<{ party: string; created: boolean }> {
@@ -88,11 +96,27 @@ export class AccountsClient {
     return (await this.send("GET", `/accounts/v1/holdings/${party}`, undefined, key)).holdings;
   }
 
-  /** The account of this key: made on the first call (the key signs the multi-hash), found after. Gives the party id. */
-  async open(key: CantonKey): Promise<string> {
+  async allocations(key: CantonKey, party: string): Promise<AllocationView[]> {
+    return (await this.send("GET", `/accounts/v1/allocations/${party}`, undefined, key)).allocations;
+  }
+  /** The account's open deposit and redeem requests, by contract id: where a page resumes. */
+  async openRequests(key: CantonKey, party: string): Promise<{ depositRequests: OpenRequest[]; redeemRequests: OpenRequest[] }> {
+    return this.send("GET", `/accounts/v1/open/${party}`, undefined, key);
+  }
+
+  /** The account of this key: found, or made on the first call. The party is the page's own (the key's fingerprint), never the service's word. A new account is made only from a
+   * topology that is this key's onboarding on `participant` (topology.ts), and the key signs the multi-hash the page computed. `confirm` runs once before anything is signed (the
+   * wallet is asked again, and refused if it signs another way). */
+  async open(key: CantonKey, participant: string, confirm?: () => Promise<void>): Promise<string> {
+    const party = await partyOf(key.publicKey);
     const found = await this.topology(key.publicKey);
-    if (found.exists) return found.party;
-    if (!found.multiHash || !found.blob) throw new AccountsError("server", 200, "the topology has no multi-hash");
-    return (await this.allocate(found.blob, await key.sign(fromBase64(found.multiHash)))).party;
+    if (found.party !== party) throw new AccountsError("server", 200, `the account service names ${found.party}, not this key's account ${party}`);
+    if (found.exists) return party;
+    if (!found.multiHash || !found.blob || !found.topologyTransactions) throw new AccountsError("server", 200, "the topology has no multi-hash, blob or transactions");
+    const multiHash = await verifyOnboarding({ party: found.party, multiHash: found.multiHash, topologyTransactions: found.topologyTransactions }, key.publicKey, participant);
+    await confirm?.();
+    const made = await this.allocate(found.blob, await signOnboarding(key, multiHash));
+    if (made.party !== party) throw new AccountsError("server", 200, `the account service made ${made.party}, not this key's account ${party}`);
+    return party;
   }
 }

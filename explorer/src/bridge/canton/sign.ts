@@ -2,12 +2,13 @@
 // the command it asked for, hashes it itself, and signs its own hash if the service's is the same. The decode and the hash are Digital Asset's own
 // (@canton-network/core-tx-visualizer, hashing scheme V2), checked against transactions of the pinned Canton in fixtures.json.
 import { decodePreparedTransaction, hashPreparedTransaction } from "@canton-network/core-tx-visualizer";
-import type { PreparedTransaction, Value } from "@canton-network/core-ledger-proto";
+import type { DamlTransaction_Node, PreparedTransaction, Value } from "@canton-network/core-ledger-proto";
 import type { AccountsClient, Prepared } from "./accounts.ts";
 import type { Built, Intent } from "./commands.ts";
-import { fromBase64, type CantonKey } from "./key.ts";
+import { fromBase64, signVerifiedTransaction, type CantonKey } from "./key.ts";
 
 export const HASHING_SCHEME = "HASHING_SCHEME_VERSION_V2";
+export const PREPARATION_WINDOW_MS = 5 * 60 * 1000;   // a prepared transaction is made within this long of the page's clock
 
 /** The transaction is not what the page asked for (or could not be checked): nothing is signed. */
 export class UnexpectedTransaction extends Error {
@@ -51,6 +52,7 @@ function matches(v: Value, want: unknown, path: string, ignore: string[]): void 
     case "textMap": {
       const entries = s.textMap.entries;
       if (!isMap(want) || entries.length !== Object.keys(want).length) return refuse(`${at} is a map of ${entries.length} entries, not what was asked`);
+      if (new Set(entries.map((e) => e.key)).size !== entries.length) return refuse(`${at} has a key twice`);
       return entries.forEach((e) => {
         if (!Object.hasOwn(want, e.key) || !e.value) refuse(`${at} has the key ${e.key}`);
         matches(e.value!, want[e.key], sub(path, e.key), ignore);
@@ -73,13 +75,41 @@ function matches(v: Value, want: unknown, path: string, ignore: string[]): void 
 const names = (id: { moduleName: string; entityName: string } | undefined) => (id ? `${id.moduleName}:${id.entityName}` : "none");
 const alone = (what: string, got: string[], party: string) => { if (got.length !== 1 || got[0] !== party) refuse(`${what} is ${JSON.stringify(got)}, not the account alone`); };
 
-/** Refuses a transaction that is not the one command of the intent, made by the account. What is beneath the root (the choice's own consequences) is the Daml code's, and is covered by the hash. */
-export function checkIntent(tx: PreparedTransaction, intent: Intent): void {
-  alone("the submitter", tx.metadata?.submitterInfo?.actAs ?? [], intent.party);
+/** The root node, found as the hasher finds it (by its id in the table of nodes), after the table is made sure to be one tree: every node id is used once, and every node is under the
+ * root once. So the node the page checks is the node the hash covers, and nothing the hash skips (or counts twice) is there. A create is that one node alone. */
+function rootNode(tx: PreparedTransaction, intent: Intent): DamlTransaction_Node {
   const roots = tx.transaction?.roots ?? [];
-  if (roots.length !== 1) refuse(`it has ${roots.length} root nodes, not one`);
-  const node = tx.transaction?.nodes.find((n) => n.nodeId === roots[0]);
-  if (node?.versionedNode.oneofKind !== "v1") return refuse("the root node is missing or not a v1 node");
+  if (roots.length !== 1) return refuse(`it has ${roots.length} root nodes, not one`);
+  const byId = new Map<string, DamlTransaction_Node>();
+  for (const n of tx.transaction?.nodes ?? []) {
+    if (byId.has(n.nodeId)) return refuse(`the node ${n.nodeId} is there twice`);
+    byId.set(n.nodeId, n);
+  }
+  const reached = new Set<string>();
+  const walk = (id: string): void => {
+    const n = byId.get(id);
+    if (!n) return refuse(`the node ${id} is missing`);
+    if (reached.has(id)) return refuse(`the node ${id} is under the root twice`);
+    reached.add(id);
+    if (n.versionedNode.oneofKind !== "v1") return refuse("a node is not a v1 node");
+    const t = n.versionedNode.v1.nodeType;
+    (t.oneofKind === "exercise" ? t.exercise.children : t.oneofKind === "rollback" ? t.rollback.children : []).forEach(walk);
+  };
+  walk(roots[0]!);
+  if (reached.size !== byId.size) return refuse("it has a node that is not under the root");
+  if (intent.kind === "create" && byId.size !== 1) return refuse(`a create is one node, not ${byId.size}`);
+  return byId.get(roots[0]!)!;
+}
+
+/** Refuses a transaction that is not the one command of the intent, made by the account, prepared now. What is beneath an exercise's root (the choice's own consequences) is the Daml code's,
+ * and is covered by the hash. */
+export function checkIntent(tx: PreparedTransaction, intent: Intent, now = Date.now()): void {
+  alone("the submitter", tx.metadata?.submitterInfo?.actAs ?? [], intent.party);
+  const m = tx.metadata!;   // `alone` has refused a transaction without it
+  if (m.preparationTime === undefined || Math.abs(Number(m.preparationTime / 1000n) - now) > PREPARATION_WINDOW_MS) refuse("it was not prepared within five minutes of now");
+  if ((m.minLedgerEffectiveTime !== undefined || m.maxLedgerEffectiveTime !== undefined) && !intent.ledgerTimes) refuse("it carries a ledger time bound that was not asked for");
+  const node = rootNode(tx, intent);
+  if (node.versionedNode.oneofKind !== "v1") return refuse("the root node is not a v1 node");
   const t = node.versionedNode.v1.nodeType;
   const { template } = intent;
   if (t.oneofKind === "create" && intent.kind === "create") {
@@ -94,7 +124,7 @@ export function checkIntent(tx: PreparedTransaction, intent: Intent): void {
     if (e.choiceId !== intent.choice || e.contractId !== intent.contractId) refuse(`it exercises ${e.choiceId} on ${e.contractId}`);
     alone("the acting party", e.actingParties, intent.party);
     const through = intent.interface
-      ? names(e.interfaceId) === `${intent.interface.module}:${intent.interface.entity}`
+      ? names(e.interfaceId) === `${intent.interface.module}:${intent.interface.entity}` && (intent.implementation === undefined || e.packageName === intent.implementation)   // the package that implements the interface is the instrument's
       : e.interfaceId === undefined && e.packageName === template.packageName && names(e.templateId) === `${template.module}:${template.entity}`;
     if (!through) refuse(`it exercises through ${names(e.interfaceId)} on ${e.packageName} ${names(e.templateId)}`);
     if (!e.chosenValue) refuse("the exercise has no argument");
@@ -104,16 +134,16 @@ export function checkIntent(tx: PreparedTransaction, intent: Intent): void {
 }
 
 /** The signature of a prepared transaction that is the intent's, whose hash the page computed itself and found to be the service's. */
-export async function signPrepared(key: CantonKey, intent: Intent, prepared: Prepared): Promise<Uint8Array> {
+export async function signPrepared(key: CantonKey, intent: Intent, prepared: Prepared, now = Date.now()): Promise<Uint8Array> {
   if (prepared.party !== intent.party) refuse("it is for another party");
   if (prepared.hashingSchemeVersion !== HASHING_SCHEME) refuse(`the hashing scheme is ${prepared.hashingSchemeVersion}, not ${HASHING_SCHEME}`);
   let tx: PreparedTransaction;
   try { tx = decodePreparedTransaction(prepared.preparedTransaction, { readUnknownField: "throw" }); }
   catch (e) { return refuse(`it does not decode (${e instanceof Error ? e.message : "?"})`); }
-  checkIntent(tx, intent);
+  checkIntent(tx, intent, now);
   const hash = await hashPreparedTransaction(tx, "base64");
   if (hash !== prepared.preparedTransactionHash) refuse("its hash is not the service's hash");
-  return key.sign(fromBase64(hash));
+  return signVerifiedTransaction(key, fromBase64(hash));
 }
 
 /** Prepare, check, sign and execute one command of the account. Gives the update id. */

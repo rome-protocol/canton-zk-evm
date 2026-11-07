@@ -12,8 +12,17 @@ export interface Intent {
   contractId?: string;
   args: Record<string, unknown>;                                   // createArguments or choiceArgument: every field, in declaration order
   ignore?: string[];                                               // dotted paths in args whose value the page does not pin (a registry's choice context)
+  implementation?: string;                                         // an exercise through an interface: the package of the contract that implements it (the instrument's)
+  ledgerTimes?: boolean;                                           // the transaction may carry a minimum or maximum ledger time (otherwise it is refused if it does)
 }
 export interface Built { command: Command; intent: Intent; disclosedContracts: DisclosedContract[] }
+
+/** The participant that hosts every account (`VITE_CANTON_PARTICIPANT`: its id as the Ledger API says it, PAR::name::fingerprint): an account is onboarded only onto it. */
+export function participantFromEnv(env: Record<string, string | undefined>): string {
+  const participant = env.VITE_CANTON_PARTICIPANT;
+  if (!participant) throw new Error("VITE_CANTON_PARTICIPANT is not set");
+  return participant;
+}
 
 /** The chain's parties and id, from the page's configuration (`VITE_CHAIN_*`): never written into the code. */
 export interface Chain { operator: string; confirmer: string; gateway: string; builder: string; chainId: number }
@@ -29,6 +38,12 @@ export function chainFromEnv(env: Record<string, string | undefined>): Chain {
 const CHAIN = { packageName: "canton-zk-evm", module: "Zk.Chain" };
 const TWIN = { packageName: "ostia-twin", module: "Twin.Twin" };
 const ALLOCATION_FACTORY = { module: "Splice.Api.Token.AllocationInstructionV1", entity: "AllocationFactory" };
+/** The package that implements the token standard for an instrument, which an allocation's transaction must name. Canton Coin and the twins; the test token's is `Allocation.implementation`. */
+export function implementationOf(instrumentId: string): string {
+  if (instrumentId === "Amulet") return "splice-amulet";
+  if (/^erc20:[0-9a-f]{40}$/.test(instrumentId)) return "ostia-twin";
+  throw new Error(`no implementation is known for the instrument ${instrumentId}`);
+}
 const id = (t: { packageName: string; module: string; entity: string }) => `#${t.packageName}:${t.module}:${t.entity}`;
 
 function create(party: string, template: Intent["template"], args: Record<string, unknown>): Built {
@@ -68,6 +83,7 @@ export interface Allocation {
   requestedAt: string;      // ISO times, as the registry's choice context was asked for them
   allocateBefore: string;
   settleBefore: string;
+  implementation?: string;  // the instrument's implementing package where `implementationOf` does not know it (the test token's)
 }
 /** The token standard's `AllocationFactory_Allocate`: the account locks `amount` for the gateway, with the operator as the executor. The factory, the choice context and the disclosed
  * contracts are the registry's answer (checked by the caller); the context is the registry's and the page does not pin it, the rest is what the account signs. */
@@ -86,7 +102,7 @@ export function allocate(party: string, c: Chain, a: Allocation, factory: { cont
   };
   return {
     command: { ExerciseCommand: { templateId: id({ packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }), contractId: factory.contractId, choice: "AllocationFactory_Allocate", choiceArgument: args } },
-    intent: { party, kind: "exercise", template: { packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }, interface: ALLOCATION_FACTORY, choice: "AllocationFactory_Allocate", contractId: factory.contractId, args, ignore: ["extraArgs.context"] },
+    intent: { party, kind: "exercise", template: { packageName: "splice-api-token-allocation-instruction-v1", ...ALLOCATION_FACTORY }, interface: ALLOCATION_FACTORY, choice: "AllocationFactory_Allocate", contractId: factory.contractId, args, ignore: ["extraArgs.context"], implementation: a.implementation ?? implementationOf(a.instrumentId) },
     disclosedContracts: factory.disclosedContracts,
   };
 }
