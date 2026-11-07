@@ -257,7 +257,8 @@ cut_block() {
   cat "$CUT_ERR" >&2   # the builder's stderr names how the block was packed ("block N: ..., packed by gas used"); the check below reads it
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
   # The nightly's L3 reads the block's update id here when it can; it times a block from the update's offset on the reader's participant (canton_updates.reader_offset, found by update id).
-  [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
+  # It also reports the builder's advance and prove seconds, and why the builder left transactions out.
+  [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId, advanceSeconds, proveSeconds, leftOut: [(.leftOut // [])[] | {reason}]}' <<<"$out"
 }
 # Canton's head: what the chain's state contract holds, as one JSON line {"headNumber", "headHash"}. L3 reads it after a cut that failed, to tell a chain that forked
 # (Canton and reth hold different heads) from a block that Canton has.
