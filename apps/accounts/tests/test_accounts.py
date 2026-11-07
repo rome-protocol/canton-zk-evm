@@ -1,5 +1,5 @@
 """The accounts service against a fake JSON Ledger API. Run: python3 -m unittest discover -s apps/accounts/tests -v (pytest collects them too)."""
-import base64, calendar, hashlib, http.client, ipaddress, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
+import base64, calendar, hashlib, http.client, ipaddress, json, os, secrets, sys, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -124,7 +124,8 @@ class Case(unittest.TestCase):
     def req(self, method, path, body=None, headers=None, raw=None, signed=True, seed=SEED, at=None):
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
         headers = dict(headers or {})
-        if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute") or path.startswith(("/accounts/v1/holdings/", "/accounts/v1/allocations/", "/accounts/v1/open/"))) and "X-Account-Signature" not in headers:
+        if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute", "/accounts/v1/faucet")
+                       or path.startswith(("/accounts/v1/holdings/", "/accounts/v1/allocations/", "/accounts/v1/open/", "/accounts/v1/registry/"))) and "X-Account-Signature" not in headers:
             headers["X-Account-Signature"] = self.account_signature(method, path, data or b"", seed, at)
         r = urllib.request.Request(self.base + path, data, headers, method=method)
         try:
@@ -992,6 +993,351 @@ class Limits(Case):
                 f.write(token + "\n")
             self.req("POST", "/accounts/v1/topology", {"publicKey": key})
         self.assertEqual(self.ledger.tokens[-3:], ["Bearer one", "Bearer one", "Bearer two"])   # the first topology also asked for the synchronizer
+
+
+ADMIN = "DSO::1220" + "dd" * 32
+INSTRUCTION = "00" + "ab" * 40
+FACTORY = {"factoryId": "00" + "cd" * 40, "choiceContext": {"choiceContextData": {"values": {}}, "disclosedContracts": [{"templateId": "#p:M:E", "contractId": "00" + "cd" * 40}]}}
+HANDLE = secrets.token_hex(8)
+
+
+# Splice 0.10.0 wallet-internal.yaml, TransferInstructionResultResponse: a completed transfer names the receiver's holdings, with no discriminator field.
+COMPLETED = {"output": {"receiver_holding_cids": ["00" + "ef" * 40]}, "sender_change_cids": [], "meta": {"values": {}}}
+
+
+class FakeOutside:
+    """A registry or a wallet: records each request (path, body, authorization, user agent) and answers with what it is told, after `delay` seconds."""
+    def __init__(self, status=200, answer=None, headers=None, raw=None, delay=0):
+        self.calls, self.status, self.answer, self.headers, self.raw, self.delay = [], status, answer if answer is not None else FACTORY, headers or {}, raw, delay
+        fake = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("content-length") or 0)
+                fake.calls.append((self.path, json.loads(self.rfile.read(n) or b"null"), self.headers.get("authorization"), self.headers.get("user-agent")))
+                time.sleep(fake.delay)
+                data = fake.raw if fake.raw is not None else json.dumps(fake.answer).encode()
+                try:
+                    self.send_response(fake.status)
+                    for k, v in {"content-length": str(len(data)), **fake.headers}.items():
+                        self.send_header(k, v)
+                    self.end_headers(); self.wfile.write(data)
+                except OSError:
+                    pass
+
+            def log_message(self, *a): pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
+class OutsideCase(Case):
+    def setUp(self):
+        super().setUp()
+        self.outside = FakeOutside()
+        self.bearer_file = os.path.join(self.dir.name, "token")
+        with open(self.bearer_file, "w") as f:
+            f.write(HANDLE + "\n")
+        os.chmod(self.bearer_file, 0o600)
+
+    def tearDown(self):
+        self.outside.server.shutdown()
+        super().tearDown()
+
+    def with_registry(self, **kw):
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, **kw)
+        self.assertEqual(self.make_account()[0], 200)
+
+    def factory(self, body=None, admin=ADMIN, **kw):
+        return self.req("POST", f"/accounts/v1/registry/{admin}/allocation-factory", {"party": PARTY, "choiceArguments": {"x": 1}} if body is None else body, **kw)
+
+    def accept(self, cid=INSTRUCTION, **kw):
+        return self.req("POST", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/{cid}/accept-context", {"party": PARTY, "meta": {}, "excludeDebugFields": True}, **kw)
+
+
+class RegistryRelay(OutsideCase):
+    def test_the_allocation_factory_goes_to_the_registry_and_the_answer_comes_back_as_it_is(self):
+        self.with_registry()
+        status, out, _ = self.factory()
+        self.assertEqual((status, out), (200, FACTORY))
+        # the party is the account's proof, not the registry's business; the token and the contact go along
+        self.assertEqual(self.outside.calls, [("/scan-proxy/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": {"x": 1}}, "Bearer " + HANDLE, A.USER_AGENT)])
+
+    def test_the_accept_context_of_an_instruction(self):
+        self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
+        self.with_registry()
+        status, out, _ = self.accept()
+        self.assertEqual((status, out), (200, self.outside.answer))
+        self.assertEqual(self.outside.calls[0][:2], (f"/scan-proxy/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/accept", {"meta": {}, "excludeDebugFields": True}))
+
+    def test_an_unknown_admin_is_404_and_a_registry_without_a_token_gets_none(self):
+        self.with_registry()
+        self.assertEqual(self.factory(admin="DSO::1220" + "ee" * 32)[0], 404)
+        self.assertEqual(self.outside.calls, [])
+        self.start(registries={ADMIN: (self.outside.url, None)})   # the account is in the state file
+        self.assertEqual(self.factory()[0], 200)
+        self.assertIsNone(self.outside.calls[0][2])
+
+    def test_no_registry_is_configured_by_default(self):
+        self.make_account()
+        self.assertEqual(self.factory()[0], 404)
+
+    def test_the_account_must_have_signed_and_a_bad_instruction_id_is_no_route(self):
+        self.with_registry()
+        self.assertEqual(self.factory(signed=False)[0], 401)
+        self.assertEqual(self.factory(seed=OTHER_SEED)[0], 401)   # another key's signature
+        self.assertEqual(self.factory({"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.factory({})[0], 404)
+        self.assertEqual(self.accept(cid="nope")[0], 404)
+        self.assertEqual(self.accept(cid="00" + "AB" * 40)[0], 404)
+        self.assertEqual(self.outside.calls, [])
+
+    def test_each_call_counts_against_the_accounts_rate(self):
+        self.with_registry(account_rate=A.Limiter(2, 60))
+        self.assertEqual([self.factory()[0] for _ in range(3)], [200, 200, 429])
+        self.assertEqual(len(self.outside.calls), 2)
+
+    def test_the_answer_is_capped_at_one_mebibyte(self):
+        self.assertEqual(A.RELAY_MAX_ANSWER, 1024 * 1024)
+        self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER + 10)}
+        self.with_registry()
+        status, out, _ = self.factory()
+        self.assertEqual((status, out), (502, {"error": "the token registry could not be used"}))
+        self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER - 100)}   # under the cap: passes
+        self.assertEqual(self.factory()[0], 200)
+
+    def test_the_request_is_capped(self):
+        self.with_registry()
+        self.assertEqual(self.factory({"party": PARTY, "pad": "x" * A.RELAY_MAX_BODY})[0], 400)
+        self.assertEqual(self.outside.calls, [])
+
+    def test_a_redirect_is_not_followed(self):
+        other = FakeOutside()
+        self.outside.status, self.outside.headers, self.outside.raw = 302, {"location": other.url + "/stolen"}, b"{}"
+        self.with_registry()
+        status, out, _ = self.factory()
+        self.assertEqual((status, out["error"], out["registryStatus"]), (502, "the token registry answered HTTP 302", 302))
+        self.assertEqual(other.calls, [])
+        other.server.shutdown()
+
+    def test_an_answer_that_is_not_a_json_object_is_refused(self):
+        self.with_registry()
+        for raw in (b"not json", b"[1]", b"NaN", b'{"a": NaN}', b"\xff", b""):
+            self.outside.raw = raw
+            self.assertEqual(self.factory()[0], 502, raw)
+
+    def test_a_registry_that_refuses_is_a_502_with_its_status_and_none_of_its_text(self):
+        self.outside.status, self.outside.raw = 404, json.dumps({"error": HANDLE + " secret"}).encode()
+        self.with_registry()
+        status, out, _ = self.factory()
+        self.assertEqual((status, out), (502, {"error": "the token registry answered HTTP 404", "registryStatus": 404}))
+
+    def test_the_peer_is_checked_before_anything_is_sent(self):
+        self.with_registry()
+        with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
+            self.assertEqual(self.factory()[0], 502)
+        self.assertEqual(self.outside.calls, [])
+
+    def test_a_slow_registry_is_cut_off(self):
+        self.outside.delay = 3
+        self.with_registry()
+        started = time.monotonic()
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.5):
+            self.assertEqual(self.factory()[0], 502)
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_a_registry_that_is_not_there_is_a_502(self):
+        self.start(registries={ADMIN: ("http://127.0.0.1:1", None)})
+        self.make_account()
+        self.assertEqual(self.factory()[0], 502)
+
+    def test_the_token_is_read_from_its_file_for_each_request(self):
+        self.with_registry()
+        self.factory()
+        with open(self.bearer_file, "w") as f:
+            f.write("rotated\n")
+        self.factory({"party": PARTY, "choiceArguments": {"x": 2}})
+        self.assertEqual([c[2] for c in self.outside.calls], ["Bearer " + HANDLE, "Bearer rotated"])
+        with open(self.bearer_file, "w") as f:
+            f.write("two tokens\n")
+        self.assertEqual(self.factory()[0], 502)   # a file with two in it: nothing is sent
+        self.assertEqual(len(self.outside.calls), 2)
+
+
+class Faucets(OutsideCase):
+    WALLET = "/v0/wallet/token-standard/transfers"
+
+    def with_faucet(self, **kw):
+        self.start(faucet=A.Faucet("20.0", self.outside.url + "/api/validator", self.bearer_file, **kw))
+        self.assertEqual(self.make_account()[0], 200)
+
+    def ask(self, **kw):
+        return self.req("POST", "/accounts/v1/faucet", {"party": PARTY}, **kw)
+
+    def faucet_reset(self):
+        self.service.faucet.per_account = A.Limiter(1, DAY)
+        self.service.faucet.per_client = A.Limiter(1, DAY)
+
+    def test_the_faucet_is_off_unless_it_is_set(self):
+        self.make_account()
+        self.assertEqual(self.ask()[0], 404)
+        self.assertEqual(self.outside.calls, [])
+        self.assertIsNone(A.faucet_from(None, None, None, 200))
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), self.assertRaises(SystemExit):   # the amount alone does not turn it on
+            A.main(["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--faucet-amount", "20"])
+
+    def test_a_pending_transfer_gives_the_instruction_the_account_accepts(self):
+        self.outside.answer = {"output": {"transfer_instruction_cid": INSTRUCTION}, "sender_change_cids": [], "meta": {"values": {}}}
+        self.with_faucet()
+        status, out, _ = self.ask()
+        self.assertEqual((status, out), (200, {"transferInstructionCid": INSTRUCTION}))
+        [(path, body, auth, agent)] = self.outside.calls
+        self.assertEqual((path, auth, agent), ("/api/validator" + self.WALLET, "Bearer " + HANDLE, A.USER_AGENT))
+        self.assertEqual((body["receiver_party_id"], body["amount"]), (PARTY, "20.0"))
+        self.assertTrue(body["tracking_id"].startswith("faucet-") and body["expires_at"] > time.time() * 1_000_000)
+
+    def test_a_completed_transfer(self):
+        self.outside.answer = COMPLETED
+        self.with_faucet()
+        self.assertEqual(self.ask()[1], {"completed": True})
+
+    def test_an_answer_that_made_no_transfer_is_a_502(self):
+        self.with_faucet(per_day=100)
+        for answer in ({"output": {"dummy": {}}}, {"output": {"transfer_instruction_cid": "x"}}, {"output": {"receiver_holding_cids": "x"}}, {"output": 1}, {}):
+            self.outside.answer = answer
+            self.faucet_reset()
+            self.assertEqual(self.ask()[0], 502, answer)
+
+    def test_the_account_must_have_signed(self):
+        self.with_faucet()
+        self.assertEqual(self.ask(signed=False)[0], 401)
+        self.assertEqual(self.ask(seed=OTHER_SEED)[0], 401)
+        self.assertEqual(self.req("POST", "/accounts/v1/faucet", {"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.outside.calls, [])
+
+    def test_once_a_day_for_an_account_with_retry_after(self):
+        self.outside.answer = COMPLETED
+        self.with_faucet()
+        self.assertEqual(self.ask()[0], 200)
+        status, _, headers = self.ask()
+        self.assertEqual(status, 429)
+        self.assertGreater(int(headers["Retry-After"]), 80000)
+        self.assertEqual(len(self.outside.calls), 1)
+
+    def test_the_limits_of_the_account_the_client_and_the_day(self):
+        with unittest.mock.patch.object(A, "outside_post", return_value=COMPLETED) as sent:
+            f = A.Faucet("20.0", "https://wallet.example", self.bearer_file, per_day=2)
+            self.assertEqual(f.grant("p1", "1.1.1.1"), {"completed": True})
+            for party, client in (("p1", "2.2.2.2"), ("p2", "1.1.1.1")):   # the same account, the same client
+                with self.assertRaises(A.HttpError) as e:
+                    f.grant(party, client)
+                self.assertEqual(e.exception.status, 429)
+            self.assertEqual(f.grant("p2", "2.2.2.2"), {"completed": True})
+            with self.assertRaises(A.HttpError) as e:   # the day's total of 2
+                f.grant("p3", "3.3.3.3")
+            self.assertEqual(e.exception.status, 429)
+            self.assertEqual(sent.call_count, 2)   # a refused request charged nothing and sent nothing
+            for limiter in f.limiters():   # a day later
+                limiter.clock = lambda: time.monotonic() + DAY + 1
+            self.assertEqual(f.grant("p1", "1.1.1.1"), {"completed": True})
+
+    def test_a_client_is_an_ipv4_address_or_an_ipv6_48(self):
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:1:2::5")), A.pending_owner(A.client_key("2001:db8:1:ffff::9")))
+        self.assertNotEqual(A.pending_owner(A.client_key("2001:db8:1::5")), A.pending_owner(A.client_key("2001:db8:2::5")))
+
+    def test_requests_at_once_cannot_both_pass(self):
+        self.outside.answer, self.outside.delay = COMPLETED, 0.3
+        self.with_faucet()
+        statuses = []
+        threads = [threading.Thread(target=lambda: statuses.append(self.ask()[0])) for _ in range(4)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(sorted(statuses), [200, 429, 429, 429])
+        self.assertEqual(len(self.outside.calls), 1)
+
+    def test_the_wallet_gets_the_peer_check_and_no_redirect(self):
+        other = FakeOutside()
+        self.outside.status, self.outside.headers, self.outside.raw = 307, {"location": other.url}, b"{}"
+        self.with_faucet(per_day=100)
+        self.assertEqual(self.ask()[0], 502)
+        self.assertEqual(other.calls, [])
+        other.server.shutdown()
+        self.outside.status, self.outside.raw, self.outside.answer = 200, None, COMPLETED
+        self.faucet_reset()
+        with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
+            self.assertEqual(self.ask()[0], 502)
+        self.assertEqual(len(self.outside.calls), 1)   # only the redirected try reached it
+
+    def test_the_faucets_limits_are_swept(self):
+        self.with_faucet()
+        self.service.faucet.per_account.hit("x")
+        self.service.faucet.per_account.clock = lambda: time.monotonic() + DAY + 1
+        self.service.sweep()
+        self.assertEqual(self.service.faucet.per_account.hits, {})
+
+
+class OutsideConfig(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.bearer_file = os.path.join(self.dir.name, "t")
+        with open(self.bearer_file, "w") as f:
+            f.write("tok\n")
+        os.chmod(self.bearer_file, 0o600)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_a_registry_is_https_or_on_this_machine(self):
+        ok = A.parse_registries([f"{ADMIN}=https://validator.example/api/validator/v0/scan-proxy/", f"DSO2::1220{'aa' * 32}=http://127.0.0.1:5003", f"DSO3::1220{'bb' * 32}=http://localhost/x",
+                                 f"DSO4::1220{'cc' * 32}=http://[::1]:1"], [f"{ADMIN}={self.bearer_file}"])
+        self.assertEqual(ok[ADMIN], ("https://validator.example/api/validator/v0/scan-proxy", self.bearer_file))
+        self.assertEqual(A.parse_registries(None, None), {})
+        for bad in (f"{ADMIN}=http://validator.example/x", f"{ADMIN}=http://10.0.0.1/x", f"{ADMIN}=ftp://127.0.0.1/", f"{ADMIN}=https://u:p@validator.example/", f"{ADMIN}=https://validator.example/?a=1",
+                    f"{ADMIN}=https://validator.example/#f", f"{ADMIN}=https://validator.example:99999/", f"{ADMIN}=https://", f"{ADMIN}=", "nobody=https://validator.example/",
+                    f"DSO::1220{'zz' * 32}=https://v.example/"):
+            with self.assertRaises(SystemExit, msg=bad):
+                A.parse_registries([bad], None)
+        with self.assertRaises(SystemExit):   # two registries for one admin
+            A.parse_registries([f"{ADMIN}=https://a.example", f"{ADMIN}=https://b.example"], None)
+
+    def test_a_name_under_dot_localhost_must_resolve_to_loopback_only(self):
+        item = f"{ADMIN}=http://validator.localhost:5003/api"
+        for found, fine in (([(2, 1, 6, "", ("127.0.0.1", 0)), (10, 1, 6, "", ("::1", 0, 0, 0))], True), ([(2, 1, 6, "", ("127.0.0.1", 0)), (2, 1, 6, "", ("10.1.2.3", 0))], False), ([], False)):
+            with unittest.mock.patch.object(A.socket, "getaddrinfo", return_value=found):
+                if fine:
+                    self.assertIn(ADMIN, A.parse_registries([item], None))
+                else:
+                    with self.assertRaises(SystemExit):
+                        A.parse_registries([item], None)
+        with unittest.mock.patch.object(A.socket, "getaddrinfo", side_effect=OSError), self.assertRaises(SystemExit):
+            A.parse_registries([item], None)
+
+    def test_a_registry_token_needs_its_registry_and_one_token(self):
+        for items in ([f"other::1220{'ee' * 32}={self.bearer_file}"], [f"{ADMIN}=/nonexistent"], [f"{ADMIN}={self.dir.name}"]):
+            with self.assertRaises(SystemExit):
+                A.parse_registries([f"{ADMIN}=https://v.example"], items)
+        for content in ("", "a b", "a\nb"):
+            with open(self.bearer_file, "w") as f:
+                f.write(content)
+            with self.assertRaises(SystemExit, msg=content):
+                A.parse_registries([f"{ADMIN}=https://v.example"], [f"{ADMIN}={self.bearer_file}"])
+
+    def test_the_faucet_needs_its_options_and_a_token_file_for_its_owner_only(self):
+        ok = A.faucet_from("20", "https://validator.example/api/validator/", self.bearer_file, 200)
+        self.assertEqual((ok.amount, ok.url, ok.total.count), ("20.0", "https://validator.example/api/validator", 200))
+        self.assertEqual(A.faucet_from("0.5", "http://127.0.0.1:1", self.bearer_file, 5).amount, "0.5")
+        for amount, url, bearer_file, per_day in (("0", "https://v.example", self.bearer_file, 1), ("-1", "https://v.example", self.bearer_file, 1), ("1.00000000001", "https://v.example", self.bearer_file, 1),
+                                                 ("abc", "https://v.example", self.bearer_file, 1), ("20", None, self.bearer_file, 1), ("20", "https://v.example", None, 1), ("20", "https://v.example", self.bearer_file, 0),
+                                                 ("20", "http://validator.example", self.bearer_file, 1), ("20", "https://v.example", "/nonexistent", 1), ("20", "https://v.example", self.dir.name, 1)):
+            with self.assertRaises(SystemExit, msg=(amount, url, bearer_file, per_day)):
+                A.faucet_from(amount, url, bearer_file, per_day)
+        for mode in (0o644, 0o640, 0o604, 0o660):
+            os.chmod(self.bearer_file, mode)
+            with self.assertRaises(SystemExit, msg=oct(mode)):
+                A.faucet_from("20", "https://v.example", self.bearer_file, 200)
+        os.chmod(self.bearer_file, 0o400)
+        self.assertIsNotNone(A.faucet_from("20", "https://v.example", self.bearer_file, 200))
 
 
 class Config(unittest.TestCase):

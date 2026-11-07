@@ -161,13 +161,26 @@ class AccountsOnCanton(unittest.TestCase):
             # A holding of the account's own: U (a party on this participant, with 100 of the test token) sends 40 through the token standard, and the account accepts the offer.
             net = demo.Network()
             registry, u, disclosed = net.party("registry"), net.party("u"), demo.read_disclosed(net)
+            # The local network has no Canton Coin: the token registry here is the test token's, behind a stand-in server (fake_registry.py, which wants the bearer token the service
+            # holds). It answers as a registry does, with the test token's rules; the page's two calls go through the service, and what comes back is what the commands below use.
+            answers = Path(os.environ["REGISTRY_ANSWERS"])
+            factory_answer = {"factoryId": disclosed[0]["contractId"], "choiceContext": {"choiceContextData": {"values": {}}, "disclosedContracts": disclosed}}
+            accept_answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
+            (answers / "allocation-factory.json").write_text(json.dumps(factory_answer))
+            (answers / "accept.json").write_text(json.dumps(accept_answer))
+            self.assertEqual(service(f"/accounts/v1/registry/{registry}/allocation-factory", {"party": party})[0], 401)   # signed by no one
+            self.assertEqual(service(f"/accounts/v1/registry/nobody::1220{'0' * 64}/allocation-factory", {"party": party}, key)[0], 404)   # an admin the service has no registry for
+            self.assertEqual(service("/accounts/v1/faucet", {"party": party}, key)[0], 404)   # the faucet is off unless it is set
             offers = {e["contractId"] for e in net.template("users", "registry", demo.TRANSFER_OFFER)}
             transfer = {"sender": u, "receiver": party, "amount": "40.0", "instrumentId": {"admin": registry, "id": demo.INSTRUMENT}, "requestedAt": demo.utc(timedelta(minutes=-1)),
                         "executeBefore": demo.utc(timedelta(hours=1)), "inputHoldingCids": [e["contractId"] for e in net.template("users", "u", demo.TOKEN)], "meta": {"values": {}}}
             net.submit("users", ["u"], {"ExerciseCommand": {"templateId": demo.TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
                                                            "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": demo.NO_EXTRA_ARGS}}}, disclosed)
             [offer] = net.wait_for("the offer", lambda: [e["contractId"] for e in net.template("users", "registry", demo.TRANSFER_OFFER) if e["contractId"] not in offers])
-            _, execute_accept = run({"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offer, "choice": "TransferInstruction_Accept", "choiceArgument": {"extraArgs": demo.NO_EXTRA_ARGS}}})
+            status, context = service(f"/accounts/v1/registry/{registry}/transfer-instruction/{offer}/accept-context", {"party": party, "meta": {}, "excludeDebugFields": True}, key)
+            self.assertEqual((status, context), (200, accept_answer))
+            _, execute_accept = run({"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offer, "choice": "TransferInstruction_Accept",
+                                                         "choiceArgument": {"extraArgs": {"context": context["choiceContextData"], "meta": {"values": {}}}}}}, context["disclosedContracts"])
             self.assertEqual(execute_accept()[0], 200)
             [holding] = until("the holding", lambda: service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"])
             self.assertEqual((holding["instrumentId"], float(holding["amount"]), holding["locked"]), ({"admin": registry, "id": demo.INSTRUMENT}, 40.0, False))
@@ -177,10 +190,13 @@ class AccountsOnCanton(unittest.TestCase):
             spec = {"settlement": {"executor": arguments["operator"], "settlementRef": {"id": label, "cid": None}, "requestedAt": requested, "allocateBefore": demo.utc(timedelta(hours=1)),
                                    "settleBefore": demo.utc(timedelta(hours=2)), "meta": {"values": {}}}, "transferLegId": "leg-" + label,
                     "transferLeg": {"sender": party, "receiver": arguments["gateway"], "amount": "5.0", "instrumentId": {"admin": registry, "id": demo.INSTRUMENT}, "meta": {"values": {}}}}
-            allocate = {"ExerciseCommand": {"templateId": demo.ALLOCATION_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
-                "expectedAdmin": registry, "allocation": spec, "requestedAt": requested, "inputHoldingCids": [holding["contractId"]], "extraArgs": demo.NO_EXTRA_ARGS}}}
-            made_allocate, execute_allocate = run(allocate, disclosed)
-            fixture("exercise-allocate", allocate, made_allocate, disclosedContracts=disclosed)
+            arguments_for_factory = {"expectedAdmin": registry, "allocation": spec, "requestedAt": requested, "inputHoldingCids": [holding["contractId"]]}
+            status, relayed = service(f"/accounts/v1/registry/{registry}/allocation-factory", {"party": party, "choiceArguments": arguments_for_factory, "excludeDebugFields": True}, key)
+            self.assertEqual((status, relayed), (200, factory_answer))
+            allocate = {"ExerciseCommand": {"templateId": demo.ALLOCATION_FACTORY, "contractId": relayed["factoryId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
+                **arguments_for_factory, "extraArgs": {"context": relayed["choiceContext"]["choiceContextData"], "meta": {"values": {}}}}}}
+            made_allocate, execute_allocate = run(allocate, relayed["choiceContext"]["disclosedContracts"])
+            fixture("exercise-allocate", allocate, made_allocate, disclosedContracts=relayed["choiceContext"]["disclosedContracts"])
             self.assertEqual(execute_allocate()[0], 200)
             [allocation] = until("the allocation", lambda: service(f"/accounts/v1/allocations/{party}", key=key)[1]["allocations"])
             self.assertEqual((allocation["allocation"]["settlement"]["settlementRef"]["id"], allocation["allocation"]["transferLeg"]["sender"]), (label, party))
