@@ -1,16 +1,14 @@
-import { timeoutSignal } from "./timeout.ts";
-
 /** A JSON-RPC answer that was an error: its message as reth worded it, and its code. */
 export class RpcError extends Error {
   readonly code: number;
   constructor(message: string, code: number) { super(message); this.code = code; }
 }
 
-/** One call to this explorer's public RPC (/rpc), which answers about final blocks only. */
-export async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
+/** One call to this explorer's public RPC (/rpc), which answers about final blocks only. `signal` is optional and none is set by default; the Bridge page passes a timeout. */
+export async function rpc<T = unknown>(method: string, params: unknown[] = [], signal?: AbortSignal): Promise<T> {
   let res: Response;
   try {
-    res = await fetch("/rpc", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: timeoutSignal() });
+    res = await fetch("/rpc", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal });
   } catch {
     throw new RpcError("The explorer's RPC cannot be reached right now.", 0);
   }

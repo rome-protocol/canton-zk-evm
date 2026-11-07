@@ -1,10 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 import type { ApiTx, BlockLeg } from "../../api.ts";
 import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
-import { createMove, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -813,5 +813,18 @@ describe("a failed release, a drained vault, a lock re-read, and waits that run 
     const t = setup({ store, locks: null });
     await expect(t.move.abandon("ref-1")).rejects.toThrow("cannot run the bridge");
     await expect(t.move.start(withdraw)).rejects.toThrow("cannot run the bridge");
+  });
+});
+
+describe("the explorer reads the moves make", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("carry a timeout", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ items: [], status: "final", txHash: null }), { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await explorerTx("0xab" as Hex);
+    await explorerLeg("0xab" as Hex);
+    await explorerSentSince(ME, 1);
+    expect(f).toHaveBeenCalledTimes(3);
+    for (const c of f.mock.calls as unknown as [string, RequestInit][]) expect(c[1].signal).toBeInstanceOf(AbortSignal);
   });
 });

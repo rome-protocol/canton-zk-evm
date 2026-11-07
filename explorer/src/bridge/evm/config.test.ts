@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { keccak256, toFunctionSelector, type Address, type Hex } from "viem";
 import type { ApiStatus, TwinsOverview } from "../../api.ts";
 import { bridgePins } from "../../../bridge-pins.ts";
-import { BUILD_PINS, loadBridgeConfig, type BridgePins, type ConfigDeps } from "./config.ts";
+import { apiDeps, BUILD_PINS, loadBridgeConfig, type BridgePins, type ConfigDeps } from "./config.ts";
 
 const status = { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } } as ApiStatus;
 const GATEWAY = "0xa7E0000000000000000000000000000000000000";
@@ -98,5 +98,19 @@ describe("loadBridgeConfig", () => {
     expect(JSON.parse(bridgePins(undefined, { BRIDGE_WTROME_ADDRESS: "0x" + "AB".repeat(20) }).__WTROME_ADDRESS__!)).toBe("0x" + "ab".repeat(20));
     expect(JSON.parse(bridgePins(undefined, {}).__WTROME_ADDRESS__!)).toBe("");
     expect(() => bridgePins(undefined, { BRIDGE_WTROME_ADDRESS: "0x12" })).toThrow("not an address");
+  });
+});
+
+describe("the bridge's own reads", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("carry a timeout: the status, the twins, and the RPC reads of the vault, the tokens and the code", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ chainId: 1, result: "0x" }), { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await apiDeps.status();
+    await apiDeps.twins();
+    await apiDeps.call("0xab", "0x");
+    await apiDeps.code("0xab");
+    expect(f).toHaveBeenCalledTimes(4);
+    for (const c of f.mock.calls as unknown as [string, RequestInit][]) expect(c[1].signal).toBeInstanceOf(AbortSignal);
   });
 });

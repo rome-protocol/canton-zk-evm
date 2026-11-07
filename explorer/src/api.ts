@@ -1,6 +1,5 @@
 import type { Lifecycle } from "./block-times.ts";
 import type { FaucetInfo } from "./faucet/faucet-client.ts";
-import { timeoutSignal } from "./timeout.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
 export interface ApiStatus {
@@ -147,10 +146,11 @@ export class ApiError extends Error {
 
 const UNREADABLE = "The explorer cannot read the chain right now.";
 
-async function call(path: string, accept: readonly number[]): Promise<{ status: number; body: unknown }> {
+/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. The Bridge page passes a timeout on its own reads. */
+async function call(path: string, accept: readonly number[], signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
   let res: Response;
   try {
-    res = await fetch(path, { headers: { accept: "application/json" }, signal: timeoutSignal() });
+    res = await fetch(path, { headers: { accept: "application/json" }, signal });
   } catch {
     throw new ApiError(UNREADABLE, 0);
   }
@@ -163,8 +163,8 @@ async function call(path: string, accept: readonly number[]): Promise<{ status: 
 }
 
 /** The status. The server answers 503 with the same fields when a check fails or a node cannot be read, and the pages show that state, so it is an answer here too. */
-export async function getStatus(): Promise<ApiStatus> {
-  const { body } = await call("/api/status", [200, 503]);
+export async function getStatus(signal?: AbortSignal): Promise<ApiStatus> {
+  const { body } = await call("/api/status", [200, 503], signal);
   if (!body || typeof body !== "object" || !("chainId" in body)) throw new ApiError(UNREADABLE, 503);
   return body as ApiStatus;
 }
@@ -281,7 +281,7 @@ export interface OpenApiDoc {
   paths?: Record<string, Partial<Record<"get" | "post", { summary?: string; "x-modules"?: Record<string, string[]> }>>>;
 }
 export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
-export const getTwins = async () => (await call("/api/twins", [200])).body as TwinsOverview;
+export const getTwins = async (signal?: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview;
 export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
 export const getStatsSeries = async (metric: StatsMetric, window: StatsWindow, step?: StatsSeries["step"]) =>
   (await call(`/api/stats/series?metric=${metric}&window=${window}${step ? `&step=${step}` : ""}`, [200])).body as StatsSeries;
@@ -297,7 +297,7 @@ export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).
 export type BlockSummary = Omit<ApiBlock, "transactions" | "canton"> & { canton: CantonSummary | null; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null };
 export const getBlockSummary = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockSummary;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
-export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
+export const getTx = async (hash: string, signal?: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx;
 /** What /api/txs/:hash adds to a transaction: the stage 2 fields, null until its block is derived. `derived` is false while the explorer has not read the block's calls. */
 export type ApiTxDetail = Omit<ApiTxSeen, "logs"> & {
   derived: boolean; callCount: number | null; revertReason: string | null;
@@ -351,7 +351,7 @@ export const getBlockLegs = async (id: string, after: string | null, limit = PAG
 /** A gateway leg as the legs routes give it: what the EVM recorded, with the block and the transaction that made it. `txHash` is null when the explorer has not stored that transaction; `party` is the Canton party a withdrawal paid, null on the other kinds. */
 export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null; twin: "lock" | "release" | null }
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;
-export const getLeg = async (id: string) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200])).body as LegListItem;
+export const getLeg = async (id: string, signal?: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
 /** The EVM transactions one Canton update settled: its block's, in order. */
 export const getUpdateTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
@@ -451,7 +451,7 @@ export const getAddressDetail = async (a: string) => (await call(of(a), [200])).
 /** Which of an address's transactions a list holds: all, those it sent, or those it received. */
 export type TxDirection = "all" | "sent" | "received";
 const directionQuery = (d: TxDirection) => (d === "all" ? "" : `&direction=${d}`);
-export const getAddressTxs = async (a: string, before: string | null, limit = PAGE, direction: TxDirection = "all") => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}${directionQuery(direction)}`, [200])).body as Page<TxListItem>;
+export const getAddressTxs = async (a: string, before: string | null, limit = PAGE, direction: TxDirection = "all", signal?: AbortSignal) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}${directionQuery(direction)}`, [200], signal)).body as Page<TxListItem>;
 /** The newest transactions of an address as a CSV file (up to 1,000), kept to the direction. */
 export const addressTxsCsvPath = (a: string, direction: TxDirection = "all") => `${of(a, "/txs")}?format=csv${directionQuery(direction)}`;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;

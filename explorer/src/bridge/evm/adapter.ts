@@ -1,4 +1,6 @@
 import { createPublicClient, createWalletClient, custom, defineChain, encodeFunctionData, type Address, type Hex } from "viem";
+import { rpc } from "../../rpc.ts";
+import { timeoutSignal } from "../../timeout.ts";
 import type { Eip1193 } from "../../wallet.ts";
 import { erc20Abi, gatewayAbi, vaultAbi, wrapperAbi } from "./abi.ts";
 
@@ -28,6 +30,9 @@ export interface EvmAdapter {
   sentNonce(hash: Hex): Promise<number | null>;
   waitReceipt(hash: Hex): Promise<{ success: boolean }>;
 }
+
+/** The explorer's /rpc for the adapter's reads (`ViemOptions.read`), with the Bridge page's timeout. */
+export const explorerRead = (method: string, params: unknown[]): Promise<unknown> => rpc(method, params, timeoutSignal());
 
 export interface ViemOptions {
   wallet: Eip1193;

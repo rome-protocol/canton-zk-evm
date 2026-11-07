@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toFunctionSelector, type Address } from "viem";
 import type { Eip1193 } from "../../wallet.ts";
-import { approveCall, padGas, viemAdapter, wrapCall, withdrawCall } from "./adapter.ts";
+import { approveCall, explorerRead, padGas, viemAdapter, wrapCall, withdrawCall } from "./adapter.ts";
 
 const ME = ("0x" + "11".repeat(20)) as Address, GATEWAY = ("0x" + "22".repeat(20)) as Address, TOKEN = ("0x" + "aa".repeat(20)) as Address;
 const chain = { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } };
@@ -84,5 +84,16 @@ describe("the viem adapter", () => {
     expect(await adapter.nonce()).toBe(9);
     expect(await adapter.used(GATEWAY, ("0x" + "01".repeat(32)) as `0x${string}`)).toBe(true);
     expect(reads).toContain("eth_getTransactionCount");
+  });
+});
+
+describe("the default read", () => {
+  it("is the explorer's /rpc with a timeout", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ result: "0x1" }), { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    try {
+      expect(await explorerRead("eth_blockNumber", [])).toBe("0x1");
+      expect(((f.mock.calls as unknown as [string, RequestInit][])[0]![1]).signal).toBeInstanceOf(AbortSignal);
+    } finally { vi.unstubAllGlobals(); }
   });
 });

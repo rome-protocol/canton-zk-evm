@@ -10,7 +10,7 @@ describe("the explorer's RPC", () => {
     vi.stubGlobal("fetch", f);
     expect(await rpc("eth_blockNumber")).toBe("0x15");
     expect(f.mock.calls[0]![0]).toBe("/rpc");
-    expect(f.mock.calls[0]![1]!.signal).toBeInstanceOf(AbortSignal);
+    expect(f.mock.calls[0]![1]!.signal).toBeUndefined();   // no timeout unless the caller sets one
     expect(JSON.parse(f.mock.calls[0]![1]!.body as string)).toMatchObject({ jsonrpc: "2.0", method: "eth_blockNumber", params: [] });
   });
   it("throws the node's message and code when it answers an error, and a plain one when it cannot be reached", async () => {

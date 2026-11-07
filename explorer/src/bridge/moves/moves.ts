@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import { ApiError, getAddressTxs, getLeg, getTx, type ApiTx, type BlockLeg } from "../../api.ts";
 import { walletWords } from "../../wallet.ts";
+import { timeoutSignal } from "../../timeout.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
 import { approveCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
@@ -65,13 +66,13 @@ export interface Deps {
 
 /** The explorer's own answer for a transaction; a 404 is a transaction it has not seen yet. */
 export const explorerTx = async (hash: Hex): Promise<ApiTx | null> => {
-  try { return await getTx(hash); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
+  try { return await getTx(hash, timeoutSignal()); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
 };
 export const explorerLeg: Deps["leg"] = async (id) => {
-  try { return await getLeg(id); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
+  try { return await getLeg(id, timeoutSignal()); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
 };
 export const explorerSentSince: Deps["sentSince"] = async (account, nonce) =>
-  (await getAddressTxs(account, null, 50, "sent")).items.filter((t) => t.nonce >= nonce).sort((a, b) => a.nonce - b.nonce).map((t) => t.hash as Hex);
+  (await getAddressTxs(account, null, 50, "sent", timeoutSignal())).items.filter((t) => t.nonce >= nonce).sort((a, b) => a.nonce - b.nonce).map((t) => t.hash as Hex);
 export const randomRef = (): string => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 /** A refusal with the words the person reads. */
