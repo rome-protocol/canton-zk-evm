@@ -1,5 +1,5 @@
 import { decodeFunctionResult, encodeFunctionData, keccak256, type Abi, type Address, type Hex } from "viem";
-import { getStatus, getTwins, type ApiStatus, type TwinsOverview } from "../../api.ts";
+import { bridgeReads, type ApiStatus, type TwinsOverview } from "../../api.ts";
 import { rpc } from "../../rpc.ts";
 import { timeoutSignal } from "../../timeout.ts";
 import { erc20Abi, gatewayAbi, vaultAbi } from "./abi.ts";
@@ -42,7 +42,7 @@ export interface ConfigDeps {
   code(address: string): Promise<string>;
 }
 export const apiDeps: ConfigDeps = {
-  status: () => getStatus(timeoutSignal()), twins: () => getTwins(timeoutSignal()),
+  status: () => bridgeReads.status(timeoutSignal()), twins: () => bridgeReads.twins(timeoutSignal()!),
   call: (to, data) => rpc<string>("eth_call", [{ to, data }, "latest"], timeoutSignal()),
   code: (address) => rpc<string>("eth_getCode", [address, "latest"], timeoutSignal()),
 };

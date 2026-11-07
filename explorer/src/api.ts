@@ -163,11 +163,13 @@ async function call(path: string, accept: readonly number[], signal?: AbortSigna
 }
 
 /** The status. The server answers 503 with the same fields when a check fails or a node cannot be read, and the pages show that state, so it is an answer here too. */
-export async function getStatus(signal?: AbortSignal): Promise<ApiStatus> {
+export async function readStatus(signal?: AbortSignal): Promise<ApiStatus> {
   const { body } = await call("/api/status", [200, 503], signal);
   if (!body || typeof body !== "object" || !("chainId" in body)) throw new ApiError(UNREADABLE, 503);
   return body as ApiStatus;
 }
+/** The status with no timeout (the pages hand this to react-query, which calls it with its own argument). */
+export const getStatus = (): Promise<ApiStatus> => readStatus();
 
 /** One check of /api/health: the word it counts for (`ok`, `degraded` or `down`). */
 export interface HealthCheck { id: string; role: string; status: "ok" | "degraded" | "down"; value?: unknown; detail: string | null }
@@ -281,7 +283,7 @@ export interface OpenApiDoc {
   paths?: Record<string, Partial<Record<"get" | "post", { summary?: string; "x-modules"?: Record<string, string[]> }>>>;
 }
 export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
-export const getTwins = async (signal?: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview;
+export const getTwins = async () => (await call("/api/twins", [200])).body as TwinsOverview;
 export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
 export const getStatsSeries = async (metric: StatsMetric, window: StatsWindow, step?: StatsSeries["step"]) =>
   (await call(`/api/stats/series?metric=${metric}&window=${window}${step ? `&step=${step}` : ""}`, [200])).body as StatsSeries;
@@ -297,7 +299,7 @@ export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).
 export type BlockSummary = Omit<ApiBlock, "transactions" | "canton"> & { canton: CantonSummary | null; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null };
 export const getBlockSummary = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockSummary;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
-export const getTx = async (hash: string, signal?: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx;
+export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 /** What /api/txs/:hash adds to a transaction: the stage 2 fields, null until its block is derived. `derived` is false while the explorer has not read the block's calls. */
 export type ApiTxDetail = Omit<ApiTxSeen, "logs"> & {
   derived: boolean; callCount: number | null; revertReason: string | null;
@@ -351,7 +353,7 @@ export const getBlockLegs = async (id: string, after: string | null, limit = PAG
 /** A gateway leg as the legs routes give it: what the EVM recorded, with the block and the transaction that made it. `txHash` is null when the explorer has not stored that transaction; `party` is the Canton party a withdrawal paid, null on the other kinds. */
 export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null; twin: "lock" | "release" | null }
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;
-export const getLeg = async (id: string, signal?: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem;
+export const getLeg = async (id: string) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200])).body as LegListItem;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
 /** The EVM transactions one Canton update settled: its block's, in order. */
 export const getUpdateTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
@@ -451,7 +453,7 @@ export const getAddressDetail = async (a: string) => (await call(of(a), [200])).
 /** Which of an address's transactions a list holds: all, those it sent, or those it received. */
 export type TxDirection = "all" | "sent" | "received";
 const directionQuery = (d: TxDirection) => (d === "all" ? "" : `&direction=${d}`);
-export const getAddressTxs = async (a: string, before: string | null, limit = PAGE, direction: TxDirection = "all", signal?: AbortSignal) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}${directionQuery(direction)}`, [200], signal)).body as Page<TxListItem>;
+export const getAddressTxs = async (a: string, before: string | null, limit = PAGE, direction: TxDirection = "all") => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}${directionQuery(direction)}`, [200])).body as Page<TxListItem>;
 /** The newest transactions of an address as a CSV file (up to 1,000), kept to the direction. */
 export const addressTxsCsvPath = (a: string, direction: TxDirection = "all") => `${of(a, "/txs")}?format=csv${directionQuery(direction)}`;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
@@ -541,3 +543,13 @@ export interface SwapItem {
 }
 export const getSwapPage = async (before: string | null, limit = PAGE) => (await call(`/api/swaps?limit=${limit}${cursor("before", before)}`, [200])).body as Page<SwapItem>;
 export const getSwap = async (payId: string) => (await call(`/api/swaps/${encodeURIComponent(payId)}`, [200])).body as SwapItem;
+
+/** The reads the Bridge page makes, each with a signal (its timeout). The reads above set none: some requests (exports, statistics) may take long. */
+export const bridgeReads = {
+  status: readStatus,
+  twins: async (signal: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview,
+  tx: async (hash: string, signal: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx,
+  leg: async (id: string, signal: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem,
+  /** The newest transactions the address sent. */
+  sentTxs: async (a: string, limit: number, signal: AbortSignal) => (await call(`${of(a, "/txs")}?limit=${limit}${directionQuery("sent")}`, [200], signal)).body as Page<TxListItem>,
+};
