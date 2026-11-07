@@ -75,9 +75,12 @@ docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else doc
 # The same, without the output of a build, a start or a removal (an image id, a container id, a name).
 quietly() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@" > /dev/null; fi; }
 
+# BRIDGE_WTROME_ADDRESS, when set, is built into the Bridge page as this deployment's wrapped coin (without it the page does not wrap).
 build() {
+  local wrapper=()
+  if [ -n "${BRIDGE_WTROME_ADDRESS:-}" ]; then wrapper=(--build-arg "BRIDGE_WTROME_ADDRESS=$BRIDGE_WTROME_ADDRESS"); fi
   quietly build --quiet -f "$ROOT/explorer/Dockerfile" -t "$IMAGE" \
-    --build-arg "EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" --build-arg "EXPLORER_RUST_IMAGE=$EXPLORER_RUST_IMAGE" "$ROOT"
+    --build-arg "EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" --build-arg "EXPLORER_RUST_IMAGE=$EXPLORER_RUST_IMAGE" ${wrapper[@]+"${wrapper[@]}"} "$ROOT"
 }
 
 # What every container here is given: no rights beyond the caller's, a read-only filesystem.

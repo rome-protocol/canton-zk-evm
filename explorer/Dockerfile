@@ -21,7 +21,12 @@ FROM ${EXPLORER_NODE_IMAGE} AS pages
 WORKDIR /repo/explorer
 COPY explorer/package.json explorer/package-lock.json ./
 RUN npm ci --ignore-scripts
-COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts ./
+# The Bridge page pins the gateway's address (PINS), the hash of the vault's code and, for this deployment, the wrapped coin's address (BRIDGE_WTROME_ADDRESS, none when empty:
+# the page then does not wrap) when it is built: explorer/bridge-pins.ts reads them from beside the explorer folder.
+COPY PINS /repo/PINS
+COPY gateway/Vault.bin-runtime /repo/gateway/Vault.bin-runtime
+ARG BRIDGE_WTROME_ADDRESS=
+COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts ./
 COPY explorer/src ./src
 COPY explorer/canton-proto ./canton-proto
 COPY explorer/public ./public

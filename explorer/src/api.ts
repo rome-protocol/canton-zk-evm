@@ -146,10 +146,11 @@ export class ApiError extends Error {
 
 const UNREADABLE = "The explorer cannot read the chain right now.";
 
-async function call(path: string, accept: readonly number[]): Promise<{ status: number; body: unknown }> {
+/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. The Bridge page passes a timeout on its own reads. */
+async function call(path: string, accept: readonly number[], signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
   let res: Response;
   try {
-    res = await fetch(path, { headers: { accept: "application/json" } });
+    res = await fetch(path, { headers: { accept: "application/json" }, signal });
   } catch {
     throw new ApiError(UNREADABLE, 0);
   }
@@ -162,11 +163,13 @@ async function call(path: string, accept: readonly number[]): Promise<{ status: 
 }
 
 /** The status. The server answers 503 with the same fields when a check fails or a node cannot be read, and the pages show that state, so it is an answer here too. */
-export async function getStatus(): Promise<ApiStatus> {
-  const { body } = await call("/api/status", [200, 503]);
+export async function readStatus(signal?: AbortSignal): Promise<ApiStatus> {
+  const { body } = await call("/api/status", [200, 503], signal);
   if (!body || typeof body !== "object" || !("chainId" in body)) throw new ApiError(UNREADABLE, 503);
   return body as ApiStatus;
 }
+/** The status with no timeout (the pages hand this to react-query, which calls it with its own argument). */
+export const getStatus = (): Promise<ApiStatus> => readStatus();
 
 /** One check of /api/health: the word it counts for (`ok`, `degraded` or `down`). */
 export interface HealthCheck { id: string; role: string; status: "ok" | "degraded" | "down"; value?: unknown; detail: string | null }
@@ -540,3 +543,13 @@ export interface SwapItem {
 }
 export const getSwapPage = async (before: string | null, limit = PAGE) => (await call(`/api/swaps?limit=${limit}${cursor("before", before)}`, [200])).body as Page<SwapItem>;
 export const getSwap = async (payId: string) => (await call(`/api/swaps/${encodeURIComponent(payId)}`, [200])).body as SwapItem;
+
+/** The reads the Bridge page makes, each with a signal (its timeout). The reads above set none: some requests (exports, statistics) may take long. */
+export const bridgeReads = {
+  status: readStatus,
+  twins: async (signal: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview,
+  tx: async (hash: string, signal: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx,
+  leg: async (id: string, signal: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem,
+  /** The newest transactions the address sent. */
+  sentTxs: async (a: string, limit: number, signal: AbortSignal) => (await call(`${of(a, "/txs")}?limit=${limit}${directionQuery("sent")}`, [200], signal)).body as Page<TxListItem>,
+};

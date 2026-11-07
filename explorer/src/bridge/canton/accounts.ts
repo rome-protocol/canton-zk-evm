@@ -2,6 +2,7 @@
 // transaction's hash, and each account-scoped request (X-Account-Signature). `signPrepared` in sign.ts is the only way a prepared transaction is signed here.
 import { base64, hex, signOnboarding, signRequest, type CantonKey } from "./key.ts";
 import { partyOf, verifyOnboarding } from "./topology.ts";
+import { timeoutSignal } from "../../timeout.ts";
 
 export type Command = { CreateCommand: { templateId: string; createArguments: object } } | { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: object } };
 export interface DisclosedContract { templateId: string; contractId: string; createdEventBlob: string; synchronizerId: string }
@@ -61,7 +62,7 @@ export class AccountsClient {
     const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
     if (key) headers["X-Account-Signature"] = await this.accountSignature(key, method, path, text);
     let r: Response;
-    try { r = await this.fetcher(this.base + path, { method, headers, body: body === undefined ? undefined : text }); }
+    try { r = await this.fetcher(this.base + path, { method, headers, body: body === undefined ? undefined : text, signal: timeoutSignal() }); }
     catch (e) { throw new AccountsError("network", 0, e instanceof Error ? e.message : "the account service could not be reached"); }
     const answer = await r.json().catch(() => ({}));
     if (r.ok) return answer;
