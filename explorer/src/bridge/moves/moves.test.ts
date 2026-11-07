@@ -4,8 +4,8 @@ import type { ApiTx, BlockLeg } from "../../api.ts";
 import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
-import { createMove, type CantonAdapter, type Deps } from "./moves.ts";
-import { depositIdOf, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
+import { createMove, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { depositIdOf, keptMoves, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
 const [ME, GATEWAY, VAULT, TKA, WTROME, WCC] = [addr("1"), addr("2"), ("0x" + "cd".repeat(20)) as Address, addr("a"), addr("b"), addr("c")];
@@ -36,9 +36,21 @@ const made = (call: { to: Address; data: Hex; value?: string }, legs: BlockLeg[]
 const hashOf = (n: number) => ("0x" + String(n).padStart(64, "0")) as Hex;
 const OTHER = ("0x" + "ee".repeat(32)) as Hex;
 
+/** Web Locks as the browser keeps them: one holder per name, never waited for. Tabs share one object. */
+const memoryLocks = (): LocksLike => {
+  const held = new Set<string>();
+  return {
+    async request<T>(name: string, _o: { ifAvailable: true }, cb: (lock: unknown | null) => Promise<T>): Promise<T> {
+      if (held.has(name)) return cb(null);
+      held.add(name);
+      try { return await cb({}); } finally { held.delete(name); }
+    },
+  };
+};
+
 interface EvmOptions {
   balance?: bigint; native?: bigint; allowance?: bigint; receipt?: (n: number) => boolean; nonce?: number;
-  wallet?: { pending: number; latest: number } | null; used?: (id: Hex) => boolean; vaultBalance?: Record<string, bigint>; beforeSend?: (name: string) => void; approveSticks?: boolean;
+  holdSend?: Promise<void>; wallet?: { pending: number; latest: number } | null; used?: (id: Hex) => boolean; vaultBalance?: Record<string, bigint>; beforeSend?: (name: string) => void; approveSticks?: boolean;
 }
 /** An EVM adapter that records its sends and answers from a few numbers. The nonce moves on with each send that goes through. */
 function fakeEvm(o: EvmOptions = {}) {
@@ -50,6 +62,7 @@ function fakeEvm(o: EvmOptions = {}) {
   const send = (name: string) => async (...args: unknown[]) => {
     calls.push({ name, args });
     o.beforeSend?.(name);
+    await o.holdSend;
     if (refuse === name) throw Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" });
     if (name === "approve" && o.approveSticks !== false) allowance = args[2] as bigint;
     nonces.set(hashOf(n + 1), nonce);
@@ -69,7 +82,7 @@ function fakeEvm(o: EvmOptions = {}) {
 
 interface SetupOptions {
   evm?: ReturnType<typeof fakeEvm>; txs?: (ApiTx | null)[]; store?: ReturnType<typeof memoryStore>; maxPolls?: number; lockParts?: Deps["registry"]["lockParts"];
-  tx?: Deps["api"]["tx"]; legOf?: Deps["leg"]; sentSince?: Deps["sentSince"]; config?: BridgeConfig; newRef?: () => string;
+  tx?: Deps["api"]["tx"]; legOf?: Deps["leg"]; sentSince?: Deps["sentSince"]; locks?: LocksLike | null; config?: BridgeConfig; newRef?: () => string;
 }
 function setup(o: SetupOptions = {}) {
   const evm = o.evm ?? fakeEvm();
@@ -83,7 +96,7 @@ function setup(o: SetupOptions = {}) {
   };
   const lockParts = vi.fn(o.lockParts ?? (async (a: { receiver: string; ref: string }) => ({ lockId: lockIdOf(a.receiver, a.ref), vaults: [VAULT], acceptance: "00ab" })));
   const deps: Deps = {
-    config: o.config ?? config, evm: evm.evm, canton, registry: { lockParts }, store, sleep: async () => {}, newRef: o.newRef ?? (() => "ref-1"), maxPolls: o.maxPolls ?? 5,
+    config: o.config ?? config, evm: evm.evm, canton, registry: { lockParts }, store, locks: "locks" in o ? o.locks! : memoryLocks(), sleep: async () => {}, newRef: o.newRef ?? (() => "ref-1"), maxPolls: o.maxPolls ?? 5,
     api: { tx: o.tx ?? (async () => (answers.length > 1 ? answers.shift()! : answers[0] ?? null)) },
     leg: o.legOf ?? (async () => null), sentSince: o.sentSince ?? (async () => []),
   };
@@ -432,7 +445,7 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     keep(store, { input: withdraw, stage: "evm" });
     const t = setup({ store, txs: [final([withdrawLeg()])] });
     await expect(t.move.start(withdraw)).rejects.toThrow("is kept");
-    await t.move.abandon();
+    await t.move.abandon("ref-1");
     expect(await t.move.start(withdraw)).toMatchObject({ phase: "final" });
   });
   it("M9: abandon() while a move runs rejects instead of returning silently", async () => {
@@ -504,7 +517,7 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     const evm = fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } });
     const t = setup({ store, evm, sentSince: async () => sent, tx: async () => made(call, [withdrawLeg()]) });
     // The explorer shows nothing yet (only final blocks), but the wallet says its pending count is above its final count and above the saved nonce.
-    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("speed it up or cancel it in your wallet") });
     expect(loadCheckpoint(store)).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7 });
     expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
     expect(t.evm.calls).toEqual([]);
@@ -574,5 +587,144 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     expect(await t.move.start(lock)).toMatchObject({ phase: "paused", note: expect.stringContaining("did not give the gateway") });
     expect(loadCheckpoint(t.store)).toMatchObject({ stage: "start" });
     expect(t.evm.calls.map((c) => c.name)).toEqual(["approve"]);
+  });
+});
+
+describe("two tabs, sends still pending, and a move that is already done", () => {
+  const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const lock = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY } as const;
+  const deposit = { kind: "deposit", asset: WCC, amount: "1" } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
+  const call = withdrawCall(GATEWAY, WCC, 10n ** 10n, PARTY);
+  const unrelated = { ...final([]), from: ME, to: addr("9"), input: "0x1234", value: "0", nonce: 7 } as unknown as ApiTx;
+
+  it("H5: two tabs on one record: the second continue reads the record again and, the first having sent, only waits for the explorer", async () => {
+    const store = memoryStore(), locks = memoryLocks(), evm = fakeEvm();
+    keep(store, { input: withdraw, stage: "start" });
+    const a = setup({ store, locks, evm, tx: async () => proving, maxPolls: 1 }), b = setup({ store, locks, evm, txs: [final([withdrawLeg()])] });
+    expect((await a.move.resume()).phase).toBe("paused");
+    expect((await b.move.resume()).phase).toBe("paused");
+    expect(await a.move.proceed()).toMatchObject({ phase: "failed", kept: true });
+    expect(await b.move.proceed()).toMatchObject({ phase: "final" });
+    expect(evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("H5: while one tab is in the wallet step, the other is refused by the move's lock and sends nothing", async () => {
+    const store = memoryStore(), locks = memoryLocks();
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>((r) => { release = r; }), inSend = new Promise<void>((r) => { entered = r; });
+    const evm = fakeEvm({ holdSend: hold, beforeSend: () => entered() });
+    keep(store, { input: withdraw, stage: "start" });
+    const a = setup({ store, locks, evm, txs: [final([withdrawLeg()])] }), b = setup({ store, locks, evm, txs: [final([withdrawLeg()])] });
+    await a.move.resume();
+    await b.move.resume();
+    const first = a.move.proceed();
+    await inSend;
+    expect(await b.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("another tab") });
+    await expect(b.move.abandon("ref-1")).rejects.toThrow("another tab");
+    release();
+    expect(await first).toMatchObject({ phase: "final" });
+    expect(evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("H5: the other tab finishing the move leaves nothing for this one to send", async () => {
+    const store = memoryStore(), locks = memoryLocks(), evm = fakeEvm();
+    keep(store, { input: withdraw, stage: "start" });
+    const a = setup({ store, locks, evm, txs: [final([withdrawLeg()])] }), b = setup({ store, locks, evm });
+    await a.move.resume();
+    await b.move.resume();
+    expect(await a.move.proceed()).toMatchObject({ phase: "final" });
+    expect((await b.move.proceed()).phase).toBe("idle");
+    expect(evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("H5: without Web Locks nothing runs: start is refused and a kept move only pauses", async () => {
+    const store = memoryStore();
+    const none = setup({ store, locks: null });
+    await expect(none.move.start(withdraw)).rejects.toThrow("Web Locks");
+    keep(store, { input: withdraw, stage: "start" });
+    expect(await none.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("Web Locks") });
+    expect(none.evm.calls).toEqual([]);
+  });
+  it("M11: a claim still pending after a reload is not sent again, and once it has landed the move is proved from its leg", async () => {
+    const store = memoryStore();
+    const id = depositIdOf(PARTY, "ref-1");
+    keep(store, { input: deposit, stage: "wallet", step: "claim", nonce: 7 });
+    let landed = false;
+    const evm = fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 }, used: () => landed });
+    const t = setup({ store, evm, legOf: async () => (landed ? { txHash: OTHER } : null), tx: async () => final([leg({ kind: "deposit", legId: id }, WCC)]) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls).toEqual([]);
+    landed = true;
+    evm.setWallet({ pending: 8, latest: 8 });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("M11: a pay or release pending in the wallet blocks a resend as well", async () => {
+    for (const [input, step] of [[lock, "pay"], [{ kind: "redeem", asset: TKA, amount: "2" } as const, "release"]] as const) {
+      const store = memoryStore();
+      keep(store, { input, stage: "wallet", step, nonce: 7 });
+      const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } }) });
+      expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+      expect(t.evm.calls).toEqual([]);
+    }
+  });
+  it("M11: a second claim that reverted over the first does not fail the move: the transaction that made the leg is proved instead", async () => {
+    const id = lockIdOf(PARTY, "ref-1");
+    let landed = false;
+    const reverted = final([], false);
+    const t = setup({
+      evm: fakeEvm({ allowance: 10n ** 30n, used: () => landed }), legOf: async () => (landed ? { txHash: OTHER } : null),
+      tx: async (h) => { if (h === hashOf(1)) { landed = true; return reverted; } return final([leg({ kind: "payment", legId: id })]); },
+    });
+    expect(await t.move.start(lock)).toMatchObject({ phase: "final", tx: OTHER });
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("M11: with the id used and the leg's transaction not yet in the explorer, the move keeps waiting and stays recoverable", async () => {
+    const t = setup({ evm: fakeEvm({ allowance: 10n ** 30n, used: () => true }), tx: async () => final([], false), legOf: async () => null });
+    // The id is already used before any send, so the move is proved from its leg instead of being sent.
+    expect(await t.move.start(lock)).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("not shown its transaction") });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("L18: a final successful withdrawal that is exactly the saved call is done: without its leg the move waits, it is never reset to a resend", async () => {
+    let legs: BlockLeg[] = [];
+    const t = setup({ tx: async () => made(call, legs) });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("does not show the leg yet") });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "sent", tx: hashOf(1) });
+    legs = [withdrawLeg()];
+    expect(await t.move.proceed()).toMatchObject({ phase: "final", tx: hashOf(1) });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("L16: the search for the call stops as soon as the explorer's list covers every nonce up to the final count and none is the call", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
+    const complete = vi.fn(async () => [OTHER]);
+    const one = setup({ store, sentSince: complete, tx: async () => unrelated, evm: fakeEvm({ nonce: 8 }), maxPolls: 50 });
+    expect(await one.move.resume()).toMatchObject({ phase: "paused" });
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    // Final count 9 but only one of the two sends listed yet: look again, and stop when the list is whole.
+    const store2 = memoryStore();
+    keep(store2, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
+    const lists: Hex[][] = [[OTHER], [OTHER, hashOf(77)]];
+    const growing = vi.fn(async () => lists.length > 1 ? lists.shift()! : lists[0]!);
+    const two = setup({ store: store2, sentSince: growing, tx: async () => unrelated, evm: fakeEvm({ nonce: 9 }), maxPolls: 50 });
+    expect(await two.move.resume()).toMatchObject({ phase: "paused" });
+    expect(growing).toHaveBeenCalledTimes(2);
+  });
+  it("L19: abandon() with no ref and no move of its own refuses, and a record that belongs to another account is not given up", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "evm" });
+    keep(store, { input: withdraw, stage: "evm", ref: "theirs", account: addr("9") });
+    const t = setup({ store });
+    await expect(t.move.abandon()).rejects.toThrow("Say which move");
+    await expect(t.move.abandon("theirs")).rejects.toThrow("another account");
+    expect(listMoves(store)).toEqual(["ref-1", "theirs"]);
+  });
+  it("L19: records more than 30 days old are not listed, and are removed", () => {
+    const store = memoryStore(), now = Date.UTC(2026, 10, 7), day = 24 * 60 * 60 * 1000;
+    keep(store, { input: withdraw, stage: "evm", ref: "old", at: now - 31 * day });
+    keep(store, { input: withdraw, stage: "evm", ref: "recent", at: now - 29 * day });
+    keep(store, { input: withdraw, stage: "evm", ref: "undated" });
+    expect(keptMoves(store, undefined, now).map((c) => c.ref).sort()).toEqual(["recent", "undated"]);
+    expect(listMoves(store).sort()).toEqual(["recent", "undated"]);
   });
 });

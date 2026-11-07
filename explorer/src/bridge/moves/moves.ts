@@ -29,6 +29,15 @@ export interface CantonAdapter {
   waitDeposit(depositId: Hex): Promise<void>;
 }
 
+/** The part of the browser's Web Locks that a move uses: a lock per move, held while it runs, never waited for. */
+export interface LocksLike {
+  request<T>(name: string, options: { ifAvailable: true }, callback: (lock: unknown | null) => Promise<T>): Promise<T>;
+}
+export const webLocks = (): LocksLike | null => {
+  try { return typeof navigator !== "undefined" && navigator.locks ? (navigator.locks as unknown as LocksLike) : null; } catch { return null; }
+};
+const NO_LOCKS = "This browser cannot keep a second tab or window from working on the same move (Web Locks is missing), so a move cannot run here.";
+
 export interface Deps {
   config: BridgeConfig;
   evm: EvmAdapter;
@@ -41,6 +50,8 @@ export interface Deps {
   /** The final transactions `account` sent with a nonce of `nonce` or more, oldest first, from the explorer. */
   sentSince(account: Address, nonce: number): Promise<Hex[]>;
   store: StoreLike | null;
+  /** Web Locks (`webLocks()`), or null where there are none: then nothing runs, rather than running without the guard against a second tab. */
+  locks: LocksLike | null;
   sleep(ms: number): Promise<void>;
   /** A fresh random id for a move: at most 128 characters. */
   newRef(): string;
@@ -65,6 +76,14 @@ export class Refused extends Error {}
 class Waited extends Refused {}
 /** The move stops here until the person continues. */
 class Pause extends Error {}
+/** The record is gone: another tab finished the move or gave it up. */
+class Gone extends Error {}
+
+/** Whether a transaction (as the explorer shows it) is exactly the call a move saved: from the account, to the same address, with the same input data and value. */
+function makesCall(t: ApiTx, c: Checkpoint): boolean {
+  return c.call !== undefined && typeof t.from === "string" && same(t.from, c.account) && typeof t.to === "string" && same(t.to, c.call.to)
+    && typeof t.input === "string" && same(t.input, c.call.data) && (c.call.value === undefined || t.value === c.call.value);
+}
 
 const PARTY = /^[^:\s]+::1220[0-9a-f]{64}$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -85,7 +104,7 @@ export interface Move {
   kept(): Checkpoint[];
   /** Carries on a paused move, or retries a failed one that is kept: this is the person's go for the next send. */
   proceed(): Promise<MoveState>;
-  /** The person gives the move up: its record is removed. Rejects while a move is running. */
+  /** The person gives the move up: its record is removed. Rejects while a move is running here or in another tab, and when no move is named. */
   abandon(ref?: string): Promise<void>;
 }
 
@@ -96,7 +115,7 @@ export function createMove(d: Deps): Move {
   const owner = () => ({ account: d.evm.account, party: d.canton.party() });
   const subs = new Set<(s: MoveState) => void>();
   const go = (next: MoveState) => { state = transition(state, next); subs.forEach((f) => f(state)); };
-  const save = (patch: Partial<Checkpoint>) => { ck = { ...ck!, ...patch }; saveCheckpoint(d.store, ck); };
+  const save = (patch: Partial<Checkpoint>) => { ck = { ...ck!, ...patch, at: Date.now() }; saveCheckpoint(d.store, ck); };
   const assetOf = (list: BridgeToken[], a: Address) => {
     const t = list.find((x) => same(x.address, a));
     if (!t) throw new Refused("The bridge does not move this token.");
@@ -140,17 +159,21 @@ export function createMove(d: Deps): Move {
   }
 
   /** A transaction of the account, at the saved nonce or after it, that makes exactly the call this move asked its wallet for (the same `to`, input data and value). A nonce alone proves nothing. */
-  async function findCall(c: Checkpoint): Promise<Hex | null> {
-    if (!c.call || c.nonce === undefined) return null;
-    for (const h of await d.sentSince(c.account, c.nonce).catch(() => [] as Hex[])) {
+  async function findCall(c: Checkpoint): Promise<{ hash: Hex | null; complete: boolean }> {
+    if (!c.call || c.nonce === undefined) return { hash: null, complete: true };
+    const list = await d.sentSince(c.account, c.nonce).catch(() => null);
+    if (list === null) return { hash: null, complete: false };
+    for (const h of list) {
       const t = await d.api.tx(h).catch(() => null);
-      if (t && same(t.from, c.account) && t.to !== null && same(t.to, c.call.to) && t.input !== null && same(t.input, c.call.data) && (c.call.value === undefined || t.value === c.call.value)) return h;
+      if (t && makesCall(t, c)) return { hash: h, complete: true };
     }
-    return null;
+    // Complete: the list holds a final transaction for every nonce from the saved one up to the final count, and none is the call. Waiting longer cannot change that.
+    const final = await d.evm.nonce().catch(() => null);
+    return { hash: null, complete: final !== null && list.length >= final - c.nonce };
   }
   /** The transaction that made a move's leg. A move with an id (lock, redeem, deposit) is found by that id and nothing else; a withdrawal, which has none, by the call it made. Null while the explorer has not got it. */
   const lookup = async (c: Checkpoint, id: Hex | null): Promise<Hex | null> =>
-    id ? ((await d.leg(id).catch(() => null))?.txHash as Hex | null | undefined) ?? null : findCall(c);
+    id ? ((await d.leg(id).catch(() => null))?.txHash as Hex | null | undefined) ?? null : (await findCall(c)).hash;
   /** The wallet itself (not /rpc) says a transaction of the account is still pending: its pending count is above its final count and above the nonce this move saved. A wallet that does not answer says nothing. */
   async function pendingInWallet(c: Checkpoint): Promise<boolean> {
     const n = await d.evm.walletNonces().catch(() => null);
@@ -194,29 +217,40 @@ export function createMove(d: Deps): Move {
   async function adopt(tx: Hex, p: Plan) { save({ stage: "sent", tx }); await prove(tx, p); }
 
   async function prove(first: Hex, p: Plan) {
-    let tx = first, lost = false;
+    let tx = first, lost = false, legMissing = false;
     go({ phase: "proving", tx });
     for (let i = 0; i < (d.maxPolls ?? 200); i++) {
       const t = await d.api.tx(tx).catch(() => null);
       lost = t?.status === "dropped" || t?.status === "replaced";
+      legMissing = false;
       if (lost) {
         // A speed-up or a replacement in the wallet is another hash for the same move: find it by the move's id, or by the nonce. The progress is kept either way.
         const other = await lookup(ck!, p.id);
         if (other && !same(other, tx)) { tx = other; save({ tx }); go({ phase: "proving", tx }); continue; }
       } else if (t?.status === "final") {
-        if (t.success === false) throw new Refused("The transaction failed on Ostia.");
-        if (!t.legs.some(p.match)) {
-          // Not this move's transaction. If the id is not used (or a withdrawal has none) nothing of the move has happened: go back before the send and wait for the person.
-          if (p.id !== null && (await d.evm.used(d.config.gateway, p.id))) throw new Refused("The transaction is final, but it made no leg of this move.");
+        if (t.success !== false && t.legs.some(p.match)) {
+          go({ phase: "final", tx, block: t.block?.number ?? 0 });
+          clearCheckpoint(d.store, ck!.ref);
+          return;
+        }
+        if (p.id !== null && (await d.evm.used(d.config.gateway, p.id))) {
+          // The id is used, so the move is on Ostia, but perhaps not in this transaction (a second send that reverted over the first): prove the transaction that made the leg.
+          const other = await lookup(ck!, p.id);
+          if (other && !same(other, tx)) { tx = other; save({ tx }); go({ phase: "proving", tx }); continue; }
+          legMissing = true;
+        } else if (t.success === false) {
+          throw new Refused("The transaction failed on Ostia.");
+        } else if (makesCall(t, ck!)) {
+          legMissing = true; // exactly the saved call, final and successful: the move is done, only the explorer's leg is missing
+        } else {
+          // Not this move's transaction, and the id is not used (or a withdrawal has none): nothing of the move has happened. Go back before the send and wait for the person.
           save(reset());
           throw new Pause("That transaction made no leg of this move, so the move has not happened on Ostia. Continue to send it again.");
         }
-        go({ phase: "final", tx, block: t.block?.number ?? 0 });
-        clearCheckpoint(d.store, ck!.ref);
-        return;
       }
       await d.sleep(d.pollMs ?? 3000);
     }
+    if (legMissing) throw new Waited("The move is final on Ostia, but the explorer does not show the leg yet. Continue to look again; nothing is sent.");
     if (lost) {
       save({ stage: "wallet", tx: undefined });
       throw new Waited("The transaction was replaced or dropped, and the explorer has not shown another one for this move. Continue to look again; nothing is sent until the wallet is asked.");
@@ -232,16 +266,19 @@ export function createMove(d: Deps): Move {
     if (at() === "sent" && c.tx) return prove(c.tx, p);
     if (at() === "wallet") {
       // The wallet was asked at this step. A move with an id is decided by the id below. For a wrap, an approval or a withdrawal, the account's own transaction counts only when it makes exactly the saved call.
-      if (c.call) {
-        let h: Hex | null = c.tx ?? (await findCall(c));
-        if (!h && c.nonce !== undefined && (await d.evm.nonce()) > c.nonce) h = await poll(() => findCall(c));
-        if (h) {
-          if (LAST.includes(c.step!)) return adopt(h, p);
-          await mined(h, "The transaction");
-        } else if (await pendingInWallet(c)) {
-          // The explorer shows only final blocks, but the wallet knows its own pending sends: never send again over one. The record stays at this step and is matched as above once the transaction is final.
-          throw new Pause("A transaction from this account is still waiting. This move continues once it is final.");
-        }
+      let h: Hex | null = c.tx ?? null;
+      if (!h && c.call) {
+        let r = await findCall(c);
+        h = r.hash;
+        // The explorer may not list the account's latest final sends yet: look again until its list covers every nonce from the saved one to the final count (or the call is found).
+        for (let i = 0; !h && !r.complete && i < (d.maxPolls ?? 200); i++) { await d.sleep(d.pollMs ?? 3000); r = await findCall(c); h = r.hash; }
+      }
+      if (h) {
+        if (LAST.includes(c.step!)) return adopt(h, p);
+        await mined(h, "The transaction");
+      } else if (await pendingInWallet(c)) {
+        // The explorer shows only final blocks, but the wallet knows its own pending sends: never send any step again over one. The record stays at this step; the transaction is matched (by its call, or by the id) once it is final.
+        throw new Pause("A transaction from this account is still waiting. This move continues once it is final. If it does not go through, speed it up or cancel it in your wallet.");
       }
       save(reset());
     }
@@ -310,21 +347,32 @@ export function createMove(d: Deps): Move {
     }
   }
 
-  /** Runs one job at a time: `prep` gives the record, `confirmed` says whether the person has said go to the next send. */
-  function run(prep: () => Promise<Checkpoint>, confirmed: boolean): Promise<MoveState> {
+  /**
+   * Runs one job at a time in this tab, and one at a time across tabs: the move's lock is held for the whole run and is never waited for. `prep` gives the record and whether the person has said go
+   * to the next send. Where there are no Web Locks nothing runs.
+   */
+  function run(prep: () => Promise<{ c: Checkpoint; confirmed: boolean }>): Promise<MoveState> {
     if (state.phase === "failed" || state.phase === "final" || state.phase === "paused") go({ phase: "idle" });
     ck = null;
     const job = (async () => {
       try {
-        ck = await prep();
-        await execute(ck, confirmed);
+        const { c, confirmed } = await prep();
+        ck = c;
+        if (d.locks === null) throw new Pause(NO_LOCKS);
+        const held = await d.locks.request("bridge-move:" + c.ref, { ifAvailable: true }, async (lock) => {
+          if (lock === null) return false;
+          await execute(c, confirmed);
+          return true;
+        });
+        if (!held) throw new Pause("This move is being worked on in another tab or window. Wait until it stops there, then continue here.");
       } catch (e) {
-        if (e instanceof Pause) go({ phase: "paused", note: e.message });
+        if (e instanceof Gone) { /* another tab finished the move or gave it up: nothing is left to do */ }
+        else if (e instanceof Pause) go({ phase: "paused", note: e.message });
         else {
           const known = e instanceof Refused || e instanceof AmountError || e instanceof LockRefused;
           const reason = known ? (e as Error).message : (e as { shortMessage?: string }).shortMessage ?? walletWords(e);
-          // Once anything has been done the record stays, so the move can be finished; a move that failed before that leaves nothing behind.
-          const kept = ck !== null && ck.stage !== "start";
+          // Once anything has been done the record stays, so the move can be finished (also a move found already on Ostia that is only waiting for the explorer); a move that failed before that leaves nothing behind.
+          const kept = ck !== null && (ck.stage !== "start" || e instanceof Waited);
           if (ck !== null && !kept) clearCheckpoint(d.store, ck.ref);
           go({ phase: "failed", reason, from: state.phase, kept });
         }
@@ -341,33 +389,50 @@ export function createMove(d: Deps): Move {
     start(input) {
       if (running || !["idle", "final", "failed"].includes(state.phase)) return Promise.reject(new Refused("Another move is not finished yet."));
       if (keptMoves(d.store, owner()).length > 0) return Promise.reject(new Refused("An earlier move of this account is kept. Continue it, or give it up, before starting another."));
+      if (d.locks === null) return Promise.reject(new Refused(NO_LOCKS));
       return run(async () => {
         const ref = d.newRef();
         if (ref.length === 0 || ref.length > 128) throw new Refused("The move could not be given an id.");
         const account = d.evm.account, c: Checkpoint = { input, ref, account, party: d.canton.party(), vault: d.config.vault, to: input.kind === "redeem" ? input.to ?? account : undefined, stage: "start" };
         const p = plan(c);
         if (input.kind === "redeem") c.vault = await pickVault(p.asset, p.base);
+        c.at = Date.now();
         saveCheckpoint(d.store, c);
-        return c;
-      }, true);
+        return { c, confirmed: true };
+      });
     },
     resume(ref) {
       if (running) return running;
       const c = loadCheckpoint(d.store, ref, owner());
-      return c ? run(async () => c, false) : Promise.resolve(state);
+      return c ? run(async () => ({ c, confirmed: false })) : Promise.resolve(state);
     },
     proceed() {
       if (running) return running;
-      const c = ck;
-      return c && (state.phase === "paused" || (state.phase === "failed" && state.kept)) ? run(async () => c, true) : Promise.resolve(state);
+      const c0 = ck;
+      if (!c0 || !(state.phase === "paused" || (state.phase === "failed" && state.kept))) return Promise.resolve(state);
+      return run(async () => {
+        // The record is shared by every tab: read it again. If another tab moved it on (or finished it), this tab only shows where it is; it sends only what the record it just read is waiting to send.
+        const fresh = loadCheckpoint(d.store, c0.ref);
+        if (fresh === null) throw new Gone();
+        return { c: fresh, confirmed: JSON.stringify(fresh) === JSON.stringify(c0) };
+      });
     },
     kept: () => keptMoves(d.store, owner()),
-    abandon(ref) {
-      if (running) return Promise.reject(new Refused("A move is running; wait until it stops before giving it up."));
-      const id = ref ?? ck?.ref ?? keptMoves(d.store, owner())[0]?.ref;
-      if (id !== undefined) clearCheckpoint(d.store, id);
-      if (id === undefined || id === ck?.ref) { ck = null; if (state.phase !== "idle") go({ phase: "idle" }); }
-      return Promise.resolve();
+    async abandon(ref) {
+      if (running) throw new Refused("A move is running; wait until it stops before giving it up.");
+      const id = ref ?? ck?.ref;
+      if (id === undefined) throw new Refused("Say which move to give up.");
+      if (d.locks === null) throw new Refused(NO_LOCKS);
+      // Read the record again, and only give up a move of this account and party, one that no other tab is working on.
+      const record = loadCheckpoint(d.store, id);
+      if (record !== null && !keptMoves(d.store, owner()).some((c) => c.ref === id)) throw new Refused("That move belongs to another account or Canton party.");
+      const done = await d.locks.request("bridge-move:" + id, { ifAvailable: true }, async (lock) => {
+        if (lock === null) return false;
+        clearCheckpoint(d.store, id);
+        return true;
+      });
+      if (!done) throw new Refused("That move is being worked on in another tab or window. Wait until it stops there.");
+      if (id === ck?.ref) { ck = null; if (state.phase !== "idle") go({ phase: "idle" }); }
     },
   };
 }

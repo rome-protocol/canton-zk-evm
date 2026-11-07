@@ -67,6 +67,8 @@ export interface Checkpoint {
   stage: (typeof STAGES)[number];
   /** The step the wallet is asked for, the exact call it makes, and the nonce the send took: a guess (a lower bound) until the wallet returns the hash, then the transaction's own. */
   step?: Step; call?: Call; nonce?: number; tx?: Hex;
+  /** When the record was last written (ms). A record more than 30 days old is no longer listed. */
+  at?: number;
 }
 
 export interface StoreLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
@@ -97,9 +99,13 @@ const read = (store: StoreLike | null, ref: string): Checkpoint | null => {
 /** Who a move belongs to: the EVM account (any case) and the Canton party. */
 export interface Owner { account: string; party: string }
 const owns = (o: Owner | undefined, c: Checkpoint) => o === undefined || (o.account.toLowerCase() === c.account.toLowerCase() && o.party === c.party);
-/** The moves kept, newest first, only those of `owner` when one is named: for the screens to show and choose from. */
-export function keptMoves(store: StoreLike | null, owner?: Owner): Checkpoint[] {
-  return listMoves(store).reverse().map((r) => read(store, r)).filter((c): c is Checkpoint => c !== null && owns(owner, c));
+/** A record this old is dropped when the moves are listed. */
+export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** The moves kept, newest first, only those of `owner` when one is named: for the screens to show and choose from. Records older than 30 days are dropped (and removed) here. */
+export function keptMoves(store: StoreLike | null, owner?: Owner, now: number = Date.now()): Checkpoint[] {
+  const all = listMoves(store).reverse().map((r) => read(store, r)).filter((c): c is Checkpoint => c !== null);
+  for (const c of all) if (c.at !== undefined && now - c.at > MAX_AGE_MS) clearCheckpoint(store, c.ref);
+  return all.filter((c) => (c.at === undefined || now - c.at <= MAX_AGE_MS) && owns(owner, c));
 }
 /** The move kept under `ref`, or the newest one (of `owner`, when named) when no ref is given. */
 export function loadCheckpoint(store: StoreLike | null, ref?: string, owner?: Owner): Checkpoint | null {

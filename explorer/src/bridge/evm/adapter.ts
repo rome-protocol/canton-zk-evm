@@ -11,7 +11,7 @@ export interface EvmAdapter {
   native(): Promise<bigint>;
   /** The balance of `holder` (the account itself when none is named). */
   balanceOf(erc20: Address, holder?: Address): Promise<bigint>;
-  /** The account's transaction count at the final block: a lower bound of the nonce its next send takes (the explorer's RPC answers every tag with the final block). */
+  /** The account's transaction count at the final block ("latest"): a lower bound of the nonce its next send takes. The explorer's RPC passes "pending" through to the node's pool for transaction counts, but a move saves only this count, which does not depend on it. */
   nonce(): Promise<number>;
   /** The gateway's `used(id)`: the id has been paid, claimed or released. */
   used(gateway: Address, id: Hex): Promise<boolean>;
