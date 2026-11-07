@@ -21,7 +21,7 @@ HOLDER = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
 class FakeLedger:
     """Answers the endpoints the service uses, records every call, and can be told to refuse."""
     def __init__(self):
-        self.calls, self.fail, self.holdings, self.bearer_files, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
+        self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
         self.created, self.allocations = {}, []   # created events by template (a read of open contracts); (contract id, view) of the Allocation interface
         self.rights = []   # the parties the service's user can act as
         self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
