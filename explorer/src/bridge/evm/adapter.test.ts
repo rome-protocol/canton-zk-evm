@@ -13,6 +13,7 @@ function setup(estimate: () => string = () => "0x186a0") {
     request: async ({ method, params }) => {
       if (method === "eth_chainId") return "0x" + chain.chainId.toString(16);
       if (method === "eth_getTransactionByHash") return { nonce: "0xc" };
+      if (method === "eth_getTransactionCount") return (params as string[])[1] === "pending" ? "0xa" : "0x9";
       if (method === "eth_sendTransaction") { sent.push((params as Record<string, string>[])[0]!); return "0x" + "ab".repeat(32); }
       throw new Error(`the wallet was asked ${method}`);
     },
@@ -62,6 +63,11 @@ describe("the viem adapter", () => {
   it("H3: reads the nonce of a sent transaction from the wallet", async () => {
     const { adapter } = setup();
     expect(await adapter.sentNonce(("0x" + "ab".repeat(32)) as `0x${string}`)).toBe(12);
+  });
+  it("asks the wallet itself, not the explorer's RPC, for the account's pending and latest counts", async () => {
+    const { adapter, reads } = setup();
+    expect(await adapter.walletNonces()).toEqual({ pending: 10, latest: 9 });
+    expect(reads).not.toContain("eth_getTransactionCount");
   });
   it("H3: the calls a move keeps are the very calls the adapter sends", async () => {
     const { adapter, sent } = setup();

@@ -22,6 +22,8 @@ export interface EvmAdapter {
   release(vault: Address, ref: string, erc20: Address, to: Address, amount: bigint): Promise<Hex>;
   claim(gateway: Address, id: Hex, erc20: Address, amount: bigint): Promise<Hex>;
   withdraw(gateway: Address, erc20: Address, amount: bigint, party: string): Promise<Hex>;
+  /** The account's transaction count as the wallet provider itself answers it (not the explorer's RPC, which shows only final blocks), pending and latest: pending above latest means a transaction of the account is still waiting. Null when the wallet does not answer. */
+  walletNonces(): Promise<{ pending: number; latest: number } | null>;
   /** The nonce of the transaction the wallet returned this hash for, from the wallet itself; null when it does not say. */
   sentNonce(hash: Hex): Promise<number | null>;
   waitReceipt(hash: Hex): Promise<{ success: boolean }>;
@@ -77,6 +79,12 @@ export function viemAdapter(o: ViemOptions): EvmAdapter {
     release: (vault, ref, erc20, to, amount) => send(vault, encodeFunctionData({ abi: vaultAbi, functionName: "release", args: [ref, erc20, to, amount] })),
     claim: (gateway, id, erc20, amount) => send(gateway, encodeFunctionData({ abi: gatewayAbi, functionName: "claim", args: [id, erc20, amount] })),
     withdraw: (gateway, erc20, amount, party) => { const c = withdrawCall(gateway, erc20, amount, party); return send(c.to, c.data); },
+    walletNonces: async () => {
+      try {
+        const count = async (tag: string) => Number(BigInt(String(await o.wallet.request({ method: "eth_getTransactionCount", params: [account, tag] }))));
+        return { pending: await count("pending"), latest: await count("latest") };
+      } catch { return null; }
+    },
     sentNonce: async (hash) => {
       try {
         const t = (await o.wallet.request({ method: "eth_getTransactionByHash", params: [hash] })) as { nonce?: string } | null;

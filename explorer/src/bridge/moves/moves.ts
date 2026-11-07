@@ -151,6 +151,11 @@ export function createMove(d: Deps): Move {
   /** The transaction that made a move's leg. A move with an id (lock, redeem, deposit) is found by that id and nothing else; a withdrawal, which has none, by the call it made. Null while the explorer has not got it. */
   const lookup = async (c: Checkpoint, id: Hex | null): Promise<Hex | null> =>
     id ? ((await d.leg(id).catch(() => null))?.txHash as Hex | null | undefined) ?? null : findCall(c);
+  /** The wallet itself (not /rpc) says a transaction of the account is still pending: its pending count is above its final count and above the nonce this move saved. A wallet that does not answer says nothing. */
+  async function pendingInWallet(c: Checkpoint): Promise<boolean> {
+    const n = await d.evm.walletNonces().catch(() => null);
+    return n !== null && n.pending > n.latest && n.pending > (c.nonce ?? 0);
+  }
   async function poll(f: () => Promise<Hex | null>): Promise<Hex | null> {
     for (let i = 0; i < (d.maxPolls ?? 200); i++) { const h = await f(); if (h) return h; await d.sleep(d.pollMs ?? 3000); }
     return null;
@@ -233,6 +238,9 @@ export function createMove(d: Deps): Move {
         if (h) {
           if (LAST.includes(c.step!)) return adopt(h, p);
           await mined(h, "The transaction");
+        } else if (await pendingInWallet(c)) {
+          // The explorer shows only final blocks, but the wallet knows its own pending sends: never send again over one. The record stays at this step and is matched as above once the transaction is final.
+          throw new Pause("A transaction from this account is still waiting. This move continues once it is final.");
         }
       }
       save(reset());

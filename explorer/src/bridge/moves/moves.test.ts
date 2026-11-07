@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 import type { ApiTx, BlockLeg } from "../../api.ts";
-import { withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
+import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { createMove, type CantonAdapter, type Deps } from "./moves.ts";
@@ -38,13 +38,15 @@ const OTHER = ("0x" + "ee".repeat(32)) as Hex;
 
 interface EvmOptions {
   balance?: bigint; native?: bigint; allowance?: bigint; receipt?: (n: number) => boolean; nonce?: number;
-  used?: (id: Hex) => boolean; vaultBalance?: Record<string, bigint>; beforeSend?: (name: string) => void; approveSticks?: boolean;
+  wallet?: { pending: number; latest: number } | null; used?: (id: Hex) => boolean; vaultBalance?: Record<string, bigint>; beforeSend?: (name: string) => void; approveSticks?: boolean;
 }
 /** An EVM adapter that records its sends and answers from a few numbers. The nonce moves on with each send that goes through. */
 function fakeEvm(o: EvmOptions = {}) {
   const calls: { name: string; args: unknown[] }[] = [];
   let n = 0, nonce = o.nonce ?? 7, allowance = o.allowance ?? 0n, refuse: string | null = null;
   const nonces = new Map<Hex, number>();
+  /** What the wallet itself says of its pending sends: nothing pending unless a test says so. */
+  let wallet: { pending: number; latest: number } | null | undefined = o.wallet;
   const send = (name: string) => async (...args: unknown[]) => {
     calls.push({ name, args });
     o.beforeSend?.(name);
@@ -58,11 +60,11 @@ function fakeEvm(o: EvmOptions = {}) {
     account: ME,
     native: async () => o.native ?? 0n,
     balanceOf: async (_t, holder) => (holder ? o.vaultBalance?.[holder.toLowerCase()] ?? 10n ** 21n : o.balance ?? 10n ** 21n),
-    nonce: async () => nonce, sentNonce: async (h) => nonces.get(h) ?? null, used: async (_g, id) => o.used?.(id) ?? false, allowance: async () => allowance,
+    nonce: async () => nonce, sentNonce: async (h) => nonces.get(h) ?? null, walletNonces: async () => (wallet === undefined ? { pending: nonce, latest: nonce } : wallet), used: async (_g, id) => o.used?.(id) ?? false, allowance: async () => allowance,
     wrap: send("wrap"), approve: send("approve"), pay: send("pay"), release: send("release"), claim: send("claim"), withdraw: send("withdraw"),
     waitReceipt: async () => ({ success: o.receipt ? o.receipt(n) : true }),
   };
-  return { evm, calls, refuse: (name: string | null) => { refuse = name; } };
+  return { evm, calls, refuse: (name: string | null) => { refuse = name; }, setWallet: (w: { pending: number; latest: number } | null) => { wallet = w; } };
 }
 
 interface SetupOptions {
@@ -494,6 +496,42 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     t.deps.evm = { ...t.evm.evm, sentNonce: async () => 12 };
     await createMove(t.deps).start(withdraw);
     expect(loadCheckpoint(store)).toMatchObject({ stage: "sent", nonce: 12 });
+  });
+  it("a send still pending in the wallet blocks a resend, and the move adopts it once it is final", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
+    let sent: Hex[] = [];
+    const evm = fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } });
+    const t = setup({ store, evm, sentSince: async () => sent, tx: async () => made(call, [withdrawLeg()]) });
+    // The explorer shows nothing yet (only final blocks), but the wallet says its pending count is above its final count and above the saved nonce.
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(loadCheckpoint(store)).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7 });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls).toEqual([]);
+    // It becomes final: the exact-call matching adopts it, and nothing is sent.
+    sent = [OTHER];
+    evm.setWallet({ pending: 8, latest: 8 });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("with nothing pending in the wallet, the resend goes ahead when the person continues, also when an unrelated send has finalized past the saved nonce", async () => {
+    for (const wallet of [{ pending: 7, latest: 7 }, { pending: 8, latest: 8 }, null]) {
+      const store = memoryStore();
+      keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
+      const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet }), txs: [final([withdrawLeg()])] });
+      expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("Continue to ask your wallet") });
+      expect(t.evm.calls).toEqual([]);
+      expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+      expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    }
+  });
+  it("a pending approval blocks a resend the same way", async () => {
+    const store = memoryStore();
+    keep(store, { input: lock, stage: "wallet", step: "approve", nonce: 7, call: approveCall(TKA, GATEWAY, 10n ** 18n) });
+    const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } }) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls).toEqual([]);
+    expect(t.lockParts).not.toHaveBeenCalled();
   });
   it("M5: a resumed move at the start never prompts the wallet by itself", async () => {
     const store = memoryStore();
