@@ -1,6 +1,9 @@
 /** Canton, the twins and the wrapped tokens count in 10 decimals. */
 export const CANTON_DECIMALS = 10;
 
+/** A Canton amount (10 decimals, as `twin` below) as the exact text Canton takes: always ten decimals, e.g. "1.5000000000". */
+export const tenDecimals = (twin: bigint): string => `${twin / 10n ** 10n}.${(twin % 10n ** 10n).toString().padStart(10, "0")}`;
+
 /** An amount the bridge will not take, in words for the person. */
 export class AmountError extends Error {}
 

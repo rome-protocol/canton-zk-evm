@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AmountError, parseAmount } from "./amounts.ts";
+import { AmountError, parseAmount, tenDecimals } from "./amounts.ts";
+
+describe("tenDecimals", () => {
+  it("writes a Canton amount with exactly ten decimals", () => {
+    expect(tenDecimals(15n * 10n ** 9n)).toBe("1.5000000000");
+    expect(tenDecimals(1n)).toBe("0.0000000001");
+    expect(tenDecimals(2n * 10n ** 10n)).toBe("2.0000000000");
+    expect(tenDecimals(parseAmount("1.5", 18).twin)).toBe("1.5000000000");
+  });
+});
 
 describe("parseAmount", () => {
   it("gives base units and the same amount in Canton's 10 decimals", () => {

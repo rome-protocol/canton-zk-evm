@@ -2,10 +2,10 @@ name: explorer
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", "tests/FOUNDRY", ".github/workflows/explorer.yml"]
+    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", "gateway/Vault.bin-runtime", "tests/FOUNDRY", ".github/workflows/explorer.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", "tests/FOUNDRY", ".github/workflows/explorer.yml"]
+    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", "gateway/Vault.bin-runtime", "tests/FOUNDRY", ".github/workflows/explorer.yml"]
 
   # L2 at another size, by hand: the design's size is 10000000 and 600, which takes about 50 minutes and 13 GB of disk (docs/METRICS.md has the run).
   workflow_dispatch:

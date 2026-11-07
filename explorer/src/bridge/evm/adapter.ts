@@ -9,7 +9,12 @@ import { erc20Abi, gatewayAbi, vaultAbi, wrapperAbi } from "./abi.ts";
 export interface EvmAdapter {
   account: Address;
   native(): Promise<bigint>;
-  balanceOf(erc20: Address): Promise<bigint>;
+  /** The balance of `holder` (the account itself when none is named). */
+  balanceOf(erc20: Address, holder?: Address): Promise<bigint>;
+  /** The account's transaction count including the pool: the nonce its next send takes. */
+  nonce(): Promise<number>;
+  /** The gateway's `used(id)`: the id has been paid, claimed or released. */
+  used(gateway: Address, id: Hex): Promise<boolean>;
   allowance(erc20: Address, spender: Address): Promise<bigint>;
   wrap(wrapper: Address, amount: bigint): Promise<Hex>;
   approve(erc20: Address, spender: Address, amount: bigint): Promise<Hex>;
@@ -54,7 +59,9 @@ export function viemAdapter(o: ViemOptions): EvmAdapter {
   return {
     account,
     native: () => pub.getBalance({ address: account }),
-    balanceOf: (erc20) => read<bigint>(erc20, erc20Abi, "balanceOf", [account]),
+    balanceOf: (erc20, holder) => read<bigint>(erc20, erc20Abi, "balanceOf", [holder ?? account]),
+    nonce: () => pub.getTransactionCount({ address: account, blockTag: "pending" }),
+    used: (gateway, id) => pub.readContract({ address: gateway, abi: gatewayAbi, functionName: "used", args: [id] }),
     allowance: (erc20, spender) => read<bigint>(erc20, erc20Abi, "allowance", [account, spender]),
     wrap: (wrapper, amount) => send(wrapper, encodeFunctionData({ abi: wrapperAbi, functionName: "deposit" }), amount),
     approve: (erc20, spender, amount) => send(erc20, encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] })),

@@ -11,9 +11,11 @@ export type MoveKind = MoveInput["kind"];
 /** The step of the EVM work a move is on. */
 export type Step = "prepare" | "wrap" | "approve" | "pay" | "release" | "claim" | "withdraw";
 
-export type Phase = "idle" | "signing-canton" | "waiting-canton" | "sending-evm" | "proving" | "final" | "failed";
+export type Phase = "idle" | "paused" | "signing-canton" | "waiting-canton" | "sending-evm" | "proving" | "final" | "failed";
 export type MoveState =
   | { phase: "idle" }
+  /** A move picked up after a reload, or one a send was refused for: its state is shown, and nothing is sent until the person continues. */
+  | { phase: "paused"; note: string }
   | { phase: "signing-canton" }
   | { phase: "waiting-canton"; ref: string }
   | { phase: "sending-evm"; step: Step }
@@ -21,15 +23,16 @@ export type MoveState =
   | { phase: "proving"; tx: Hex }
   | { phase: "final"; tx: Hex; block: number }
   /** `from` is the phase it stopped in. */
-  | { phase: "failed"; reason: string; from: Phase };
+  | { phase: "failed"; reason: string; from: Phase; kept: boolean };
 
 /** Which phase may follow which. A move that is picked up again after a reload enters at the phase it had reached. */
 const NEXT: Record<Phase, Phase[]> = {
-  idle: ["signing-canton", "waiting-canton", "sending-evm", "proving", "failed"],
+  idle: ["paused", "signing-canton", "waiting-canton", "sending-evm", "proving", "failed"],
+  paused: ["idle"],
   "signing-canton": ["waiting-canton", "failed"],
-  "waiting-canton": ["sending-evm", "failed"],
+  "waiting-canton": ["sending-evm", "paused", "failed"],
   "sending-evm": ["sending-evm", "proving", "failed"],
-  proving: ["final", "failed"],
+  proving: ["proving", "final", "failed"],
   final: ["idle"],
   failed: ["idle"],
 };
@@ -45,31 +48,50 @@ export const lockIdOf = (receiver: string, ref: string): Hex => idOf(`lock,${rec
 export const depositIdOf = (depositor: string, label: string): Hex => idOf(`deposit,${depositor},${label}`);
 export const releaseIdOf = (vault: Address, ref: string): Hex => idOf(`vault-release,${vault.slice(2).toLowerCase()},${ref}`);
 
-/** What a reload needs to pick the move up: its input, its ref, how far it got, and the transaction once there is one. */
+export const STAGES = ["start", "signing", "allocated", "canton", "evm", "wallet", "sent"] as const;
+
+/**
+ * Everything a reload needs to finish the move, and to refuse to finish it as someone else. One record per move, under its ref.
+ * Stages: start: nothing done. signing: the first Canton command (a redeem, or a deposit's allocation) is started and may or may not be on the ledger; doing it again is safe. allocated: a deposit's allocation is done. canton: the Canton command is on the ledger (a redeem, or the deposit request): only the wait is left.
+ * evm: Canton is done. wallet: the wallet is about to be asked for `step` at `nonce` (saved before it is asked). sent: the transaction is in `tx`.
+ */
 export interface Checkpoint {
   input: MoveInput;
+  /** The move's id: random, at most 128 characters. */
   ref: string;
-  /** start: nothing sent. canton: the Canton command may have been signed. evm: Canton is done. sent: the transaction is in `tx`. */
-  stage: "start" | "canton" | "evm" | "sent";
-  tx?: Hex;
+  /** The EVM account and the Canton party the move was started under, and the vault it pays into or releases from. */
+  account: Address; party: string; vault: Address;
+  /** A redeem's recipient on Ostia, as it was resolved when the move started. */
+  to?: Address;
+  stage: (typeof STAGES)[number];
+  step?: Step; nonce?: number; tx?: Hex;
 }
 
 export interface StoreLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
-const KEY = "bridge-move";
+const KEY = "bridge-move:", INDEX = "bridge-moves";
 
 /** The tab's session storage, or null where there is none (a private window, a preview). */
 export function sessionStore(): StoreLike | null {
   try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
 }
+/** The refs of the moves kept, oldest first. */
+export function listMoves(store: StoreLike | null): string[] {
+  try { const l = JSON.parse(store?.getItem(INDEX) ?? "[]") as unknown; return Array.isArray(l) ? l.filter((r): r is string => typeof r === "string") : []; } catch { return []; }
+}
 export function saveCheckpoint(store: StoreLike | null, c: Checkpoint): void {
-  try { store?.setItem(KEY, JSON.stringify(c)); } catch { /* the move still runs; it just cannot be picked up after a reload */ }
-}
-export function clearCheckpoint(store: StoreLike | null): void {
-  try { store?.removeItem(KEY); } catch { /* nothing to clear */ }
-}
-export function loadCheckpoint(store: StoreLike | null): Checkpoint | null {
   try {
-    const c = JSON.parse(store?.getItem(KEY) ?? "null") as Checkpoint | null;
-    return c && typeof c.ref === "string" && typeof c.input?.kind === "string" && ["start", "canton", "evm", "sent"].includes(c.stage) ? c : null;
+    store?.setItem(KEY + c.ref, JSON.stringify(c));
+    if (!listMoves(store).includes(c.ref)) store?.setItem(INDEX, JSON.stringify([...listMoves(store), c.ref]));
+  } catch { /* the move still runs; it just cannot be picked up after a reload */ }
+}
+export function clearCheckpoint(store: StoreLike | null, ref: string): void {
+  try { store?.removeItem(KEY + ref); store?.setItem(INDEX, JSON.stringify(listMoves(store).filter((r) => r !== ref))); } catch { /* nothing to clear */ }
+}
+/** The move kept under `ref`, or the newest one when none is named. */
+export function loadCheckpoint(store: StoreLike | null, ref?: string): Checkpoint | null {
+  try {
+    const id = ref ?? listMoves(store).at(-1);
+    const c = id === undefined ? null : (JSON.parse(store?.getItem(KEY + id) ?? "null") as Checkpoint | null);
+    return c && typeof c.ref === "string" && typeof c.input?.kind === "string" && typeof c.account === "string" && typeof c.party === "string" && typeof c.vault === "string" && (STAGES as readonly string[]).includes(c.stage) ? c : null;
   } catch { return null; }
 }

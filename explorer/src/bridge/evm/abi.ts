@@ -8,6 +8,7 @@ export const gatewayAbi = parseAbi([
   "function claim(bytes32 id, address token, uint256 amount)",
   "function withdraw(address token, uint256 amount, string party)",
   "function used(bytes32 id) view returns (bool)",
+  "function wrapped(address token) view returns (bool)",
 ]);
 
 /** gateway/Vault.sol. */

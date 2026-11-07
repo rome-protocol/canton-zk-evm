@@ -5,14 +5,15 @@ import type { EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { createMove, type CantonAdapter, type Deps } from "./moves.ts";
-import { depositIdOf, loadCheckpoint, lockIdOf, releaseIdOf, transition, type MoveState, type StoreLike } from "./state.ts";
+import { depositIdOf, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
 const [ME, GATEWAY, VAULT, TKA, WTROME, WCC] = [addr("1"), addr("2"), ("0x" + "cd".repeat(20)) as Address, addr("a"), addr("b"), addr("c")];
+const VAULT2 = addr("d");
 const PARTY = "alice::1220" + "ab".repeat(32);
 const config: BridgeConfig = {
   chain: { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } },
-  gateway: GATEWAY, vault: VAULT, registryUrl: "https://registry.example/twin-registry", wrapper: WTROME,
+  gateway: GATEWAY, vault: VAULT, vaults: [VAULT], registryUrl: "https://registry.example/twin-registry", wrapper: WTROME,
   twins: [{ address: TKA, symbol: "TKA", decimals: 18 }, { address: WTROME, symbol: "WtROME", decimals: 18 }],
   wrapped: [{ address: WCC, symbol: "wCC", decimals: 10, instrument: { admin: "admin::1220" + "00".repeat(32), id: "Amulet" } }],
 };
@@ -21,43 +22,64 @@ const memoryStore = (): StoreLike & { map: Map<string, string> } => {
   const map = new Map<string, string>();
   return { map, getItem: (k) => map.get(k) ?? null, setItem: (k, v) => void map.set(k, v), removeItem: (k) => void map.delete(k) };
 };
+/** A record kept in session storage, as a reload finds it. */
+const keep = (store: StoreLike, c: Pick<Checkpoint, "input" | "stage"> & Partial<Checkpoint>) =>
+  saveCheckpoint(store, { ref: "ref-1", account: ME, party: PARTY, vault: VAULT, ...(c.input.kind === "redeem" ? { to: ME } : {}), ...c });
 /** A leg of `erc20` (the legs name that field after the token standard). */
 const FIELD = "tok" + "en";
 const leg = (o: Partial<BlockLeg>, erc20: Address = TKA): BlockLeg => ({ block: 42, legIndex: 0, txIndex: 0, logIndex: 0, kind: "payment", legId: "0x", [FIELD]: erc20, account: ME, amount: "0", txHash: null, updateId: null, canton: null, ...o }) as BlockLeg;
 const final = (legs: BlockLeg[], success = true) => ({ status: "final", success, block: { number: 42, hash: null, updateId: null }, legs }) as unknown as ApiTx;
 const proving = { status: "proving", legs: [] } as unknown as ApiTx;
+const replaced = { status: "replaced", legs: [] } as unknown as ApiTx;
+const hashOf = (n: number) => ("0x" + String(n).padStart(64, "0")) as Hex;
+const OTHER = ("0x" + "ee".repeat(32)) as Hex;
 
-/** An EVM adapter that records its sends and answers from a few numbers. */
-function fakeEvm(o: { balance?: bigint; native?: bigint; allowance?: bigint; receipt?: (n: number) => boolean } = {}) {
+interface EvmOptions {
+  balance?: bigint; native?: bigint; allowance?: bigint; receipt?: (n: number) => boolean; nonce?: number;
+  used?: (id: Hex) => boolean; vaultBalance?: Record<string, bigint>; beforeSend?: (name: string) => void; approveSticks?: boolean;
+}
+/** An EVM adapter that records its sends and answers from a few numbers. The nonce moves on with each send that goes through. */
+function fakeEvm(o: EvmOptions = {}) {
   const calls: { name: string; args: unknown[] }[] = [];
-  let n = 0, refuse: string | null = null;
+  let n = 0, nonce = o.nonce ?? 7, allowance = o.allowance ?? 0n, refuse: string | null = null;
   const send = (name: string) => async (...args: unknown[]) => {
     calls.push({ name, args });
+    o.beforeSend?.(name);
     if (refuse === name) throw Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" });
-    return ("0x" + String(++n).padStart(64, "0")) as Hex;
+    if (name === "approve" && o.approveSticks !== false) allowance = args[2] as bigint;
+    nonce++;
+    return hashOf(++n);
   };
   const evm: EvmAdapter = {
     account: ME,
-    native: async () => o.native ?? 0n, balanceOf: async () => o.balance ?? 10n ** 21n, allowance: async () => o.allowance ?? 0n,
+    native: async () => o.native ?? 0n,
+    balanceOf: async (_t, holder) => (holder ? o.vaultBalance?.[holder.toLowerCase()] ?? 10n ** 21n : o.balance ?? 10n ** 21n),
+    nonce: async () => nonce, used: async (_g, id) => o.used?.(id) ?? false, allowance: async () => allowance,
     wrap: send("wrap"), approve: send("approve"), pay: send("pay"), release: send("release"), claim: send("claim"), withdraw: send("withdraw"),
     waitReceipt: async () => ({ success: o.receipt ? o.receipt(n) : true }),
   };
-  return { evm, calls, refuse: (name: string) => { refuse = name; } };
+  return { evm, calls, refuse: (name: string | null) => { refuse = name; } };
 }
 
-function setup(o: { evm?: ReturnType<typeof fakeEvm>; txs?: (ApiTx | null)[]; store?: ReturnType<typeof memoryStore>; maxPolls?: number; lockParts?: Deps["registry"]["lockParts"] } = {}) {
+interface SetupOptions {
+  evm?: ReturnType<typeof fakeEvm>; txs?: (ApiTx | null)[]; store?: ReturnType<typeof memoryStore>; maxPolls?: number; lockParts?: Deps["registry"]["lockParts"];
+  tx?: Deps["api"]["tx"]; legOf?: Deps["leg"]; txAt?: Deps["txAt"]; config?: BridgeConfig; newRef?: () => string;
+}
+function setup(o: SetupOptions = {}) {
   const evm = o.evm ?? fakeEvm();
   const store = o.store ?? memoryStore();
   const answers = [...(o.txs ?? [])];
-  const canton: CantonAdapter & { calls: string[] } = {
-    calls: [], party: () => PARTY,
-    signRedeem: async () => void canton.calls.push("signRedeem"), waitRedeem: async () => void canton.calls.push("waitRedeem"),
-    signDeposit: async () => void canton.calls.push("signDeposit"), waitDeposit: async () => void canton.calls.push("waitDeposit"),
+  const canton: CantonAdapter & { calls: string[]; args: unknown[] } = {
+    calls: [], args: [], party: () => PARTY,
+    signRedeem: async (a) => void (canton.calls.push("signRedeem"), canton.args.push(a)), waitRedeem: async () => void canton.calls.push("waitRedeem"),
+    allocateDeposit: async (a) => void (canton.calls.push("allocateDeposit"), canton.args.push(a)),
+    signDeposit: async (a) => void (canton.calls.push("signDeposit"), canton.args.push(a)), waitDeposit: async () => void canton.calls.push("waitDeposit"),
   };
   const lockParts = vi.fn(o.lockParts ?? (async (a: { receiver: string; ref: string }) => ({ lockId: lockIdOf(a.receiver, a.ref), vaults: [VAULT], acceptance: "00ab" })));
   const deps: Deps = {
-    config, evm: evm.evm, canton, registry: { lockParts }, store, sleep: async () => {}, newRef: () => "ref-1", maxPolls: o.maxPolls ?? 5,
-    api: { tx: async () => (answers.length > 1 ? answers.shift()! : answers[0] ?? null) },
+    config: o.config ?? config, evm: evm.evm, canton, registry: { lockParts }, store, sleep: async () => {}, newRef: o.newRef ?? (() => "ref-1"), maxPolls: o.maxPolls ?? 5,
+    api: { tx: o.tx ?? (async () => (answers.length > 1 ? answers.shift()! : answers[0] ?? null)) },
+    leg: o.legOf ?? (async () => null), txAt: o.txAt ?? (async () => null),
   };
   const move = createMove(deps);
   const phases: string[] = [];
@@ -68,7 +90,7 @@ function setup(o: { evm?: ReturnType<typeof fakeEvm>; txs?: (ApiTx | null)[]; st
 describe("the state machine", () => {
   it("refuses a transition it does not have", () => {
     expect(() => transition({ phase: "idle" }, { phase: "final", tx: "0x00", block: 1 })).toThrow();
-    expect(transition({ phase: "proving", tx: "0x00" }, { phase: "failed", reason: "x", from: "proving" }).phase).toBe("failed");
+    expect(transition({ phase: "proving", tx: "0x00" }, { phase: "failed", reason: "x", from: "proving", kept: true }).phase).toBe("failed");
   });
   it("derives the ids as the chain does", () => {
     expect(lockIdOf(PARTY, "ref-1")).toBe("0xfbc7d6bc0f781cb13c08682c0ae19955851281dd83868167a6f60bebcd0cf59f");
@@ -90,7 +112,7 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     expect(t.evm.calls[0]!.args).toEqual([TKA, GATEWAY, 15n * 10n ** 17n]);
     expect(t.evm.calls[1]!.args).toEqual([GATEWAY, lockIdOf(PARTY, "ref-1"), TKA, VAULT, 15n * 10n ** 17n]);
     expect(t.lockParts).toHaveBeenCalledWith({ receiver: PARTY, ref: "ref-1" });
-    expect(t.store.map.size).toBe(0);
+    expect(listMoves(t.store)).toEqual([]);
   });
   it("skips the approval when the allowance covers the amount", async () => {
     const t = setup({ evm: fakeEvm({ allowance: 10n ** 30n }), txs: [final([lockLeg()])] });
@@ -98,16 +120,17 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     expect(t.evm.calls.map((c) => c.name)).toEqual(["pay"]);
   });
   it("wraps tROME into WtROME first, for what the wallet lacks", async () => {
-    const t = setup({ evm: fakeEvm({ balance: 10n ** 18n, native: 10n ** 20n }), txs: [final([leg({ kind: "payment", legId: lockIdOf(PARTY, "ref-1") }, WTROME)])] });
+    const t = setup({ evm: fakeEvm({ balance: 10n ** 18n, native: 10n ** 20n, allowance: 10n ** 30n }), txs: [final([leg({ kind: "payment", legId: lockIdOf(PARTY, "ref-1") }, WTROME)])] });
     await t.move.start({ ...input, asset: WTROME, wrapNative: true });
     expect(t.evm.calls[0]).toEqual({ name: "wrap", args: [WTROME, 5n * 10n ** 17n] });
     expect(t.phases).toContain("sending-evm:wrap");
   });
-  it("sends nothing when the registry refuses the lock with 409", async () => {
+  it("sends nothing and keeps nothing when the registry refuses the lock with 409", async () => {
     const t = setup({ lockParts: async () => { throw new LockRefused("The receiver has not accepted twins yet.", 409); } });
     const s = await t.move.start(input);
-    expect(s).toMatchObject({ phase: "failed", reason: expect.stringContaining("accepted twins"), from: "sending-evm" });
+    expect(s).toMatchObject({ phase: "failed", reason: expect.stringContaining("accepted twins"), from: "sending-evm", kept: false });
     expect(t.evm.calls).toEqual([]);
+    expect(listMoves(t.store)).toEqual([]);
   });
   it("sends nothing when the registry's lock id is not the one the payer works out", async () => {
     const t = setup({ lockParts: async () => ({ lockId: "0x" + "00".repeat(32) }) });
@@ -132,19 +155,20 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     expect(await t.move.start({ ...input, amount: "0.00000000001" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at most 10 decimals") });
     expect(t.lockParts).not.toHaveBeenCalled();
     expect(t.evm.calls).toEqual([]);
+    expect(listMoves(t.store)).toEqual([]);
   });
   it("is picked up after a reload from the transaction kept in session storage", async () => {
     const store = memoryStore();
     const first = setup({ store, txs: [proving], maxPolls: 2, evm: fakeEvm({ allowance: 10n ** 30n }) });
-    expect(await first.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("took too long") });
+    expect(await first.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("took too long"), kept: true });
     const kept = loadCheckpoint(store)!;
-    expect(kept).toMatchObject({ stage: "sent", ref: "ref-1", input });
+    expect(kept).toMatchObject({ stage: "sent", ref: "ref-1", input, account: ME, party: PARTY });
 
     const after = setup({ store, txs: [final([lockLeg()])] });
     expect(await after.move.resume()).toMatchObject({ phase: "final", tx: kept.tx });
     expect(after.phases).toEqual(["proving", "final"]);
     expect(after.evm.calls).toEqual([]);
-    expect(store.map.size).toBe(0);
+    expect(listMoves(store)).toEqual([]);
   });
   it("does nothing on resume when nothing was kept, and survives storage that throws", async () => {
     expect((await setup().move.resume()).phase).toBe("idle");
@@ -153,17 +177,31 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     t.deps.store = bad;
     expect((await createMove(t.deps).start(input)).phase).toBe("final");
   });
+  it("L7: a wrapped token that is not 10 decimals is refused", async () => {
+    const odd = { ...config, wrapped: [{ ...config.wrapped[0]!, decimals: 18 }] };
+    const t = setup({ config: odd });
+    expect(await t.move.start({ kind: "withdraw", asset: WCC, amount: "1" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("10 decimals") });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("refuses a move id that is empty or longer than 128 characters", async () => {
+    for (const ref of ["", "x".repeat(129)]) {
+      const t = setup({ newRef: () => ref });
+      expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("id") });
+      expect(t.evm.calls).toEqual([]);
+    }
+  });
 });
 
 describe("move 2: a twin back, Canton to Ostia", () => {
   const input = { kind: "redeem", asset: TKA, amount: "2" } as const;
   const releaseLeg = () => leg({ kind: "payment", legId: releaseIdOf(VAULT, "ref-1") });
 
-  it("signs the redeem on Canton, waits for it, releases from the vault, and is final on the release leg", async () => {
+  it("signs the redeem on Canton with an exact 10-decimal amount, waits for it, releases from the vault, and is final on the release leg", async () => {
     const t = setup({ txs: [final([releaseLeg()])] });
     expect(await t.move.start(input)).toMatchObject({ phase: "final", block: 42 });
     expect(t.phases).toEqual(["signing-canton", "waiting-canton", "sending-evm:release", "proving", "final"]);
     expect(t.canton.calls).toEqual(["signRedeem", "waitRedeem"]);
+    expect(t.canton.args[0]).toEqual({ asset: TKA, amount: "2.0000000000", recipient: ME, ref: "ref-1" });
     expect(t.evm.calls).toEqual([{ name: "release", args: [VAULT, "ref-1", TKA, ME, 2n * 10n ** 18n] }]);
   });
   it("fails when the release transaction fails on Ostia", async () => {
@@ -175,25 +213,46 @@ describe("move 2: a twin back, Canton to Ostia", () => {
     expect(await t.move.start({ ...input, amount: "1.00000000001" })).toMatchObject({ phase: "failed" });
     expect(t.canton.calls).toEqual([]);
   });
-  it("after a reload mid-wait, waits again and releases, without signing a second time", async () => {
+  it("after a reload mid-wait, waits again, stops before the send, and releases only when the person continues; it never signs a second time", async () => {
     const store = memoryStore();
-    store.setItem("bridge-move", JSON.stringify({ input, ref: "ref-1", stage: "canton" }));
+    keep(store, { input, stage: "canton" });
     const t = setup({ store, txs: [final([releaseLeg()])] });
-    expect(await t.move.resume()).toMatchObject({ phase: "final" });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused" });
     expect(t.canton.calls).toEqual(["waitRedeem"]);
-    expect(t.phases).toEqual(["waiting-canton", "sending-evm:release", "proving", "final"]);
+    expect(t.evm.calls).toEqual([]);
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.canton.calls).toEqual(["waitRedeem"]);
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["release"]);
+  });
+  it("L6: signs for a vault that holds the amount, not the first one", async () => {
+    const two = { ...config, vaults: [VAULT, VAULT2] };
+    const evm = fakeEvm({ vaultBalance: { [VAULT]: 1n, [VAULT2]: 10n ** 21n } });
+    const t = setup({ config: two, evm, txs: [final([leg({ kind: "payment", legId: releaseIdOf(VAULT2, "ref-1") })])] });
+    expect(await t.move.start(input)).toMatchObject({ phase: "final" });
+    expect(t.evm.calls).toEqual([{ name: "release", args: [VAULT2, "ref-1", TKA, ME, 2n * 10n ** 18n] }]);
+    expect(loadCheckpoint(t.store)).toBeNull();
+  });
+  it("L6: signs nothing on Canton when no vault holds the amount", async () => {
+    const t = setup({ evm: fakeEvm({ vaultBalance: { [VAULT]: 1n } }) });
+    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("vault does not hold"), kept: false });
+    expect(t.canton.calls).toEqual([]);
   });
 });
 
 describe("move 3: a Canton token to Ostia", () => {
   const input = { kind: "deposit", asset: WCC, amount: "3.5" } as const;
   const id = depositIdOf(PARTY, "ref-1");
+  const depositLeg = () => leg({ kind: "deposit", legId: id }, WCC);
 
-  it("signs the deposit with the derived id, then claims the wrapped token", async () => {
-    const t = setup({ txs: [final([leg({ kind: "deposit", legId: id }, WCC)])] });
+  it("allocates, sends the deposit request with the derived id, then claims the wrapped token", async () => {
+    const t = setup({ txs: [final([depositLeg()])] });
     expect(await t.move.start(input)).toMatchObject({ phase: "final" });
     expect(t.phases).toEqual(["signing-canton", "waiting-canton", "sending-evm:claim", "proving", "final"]);
-    expect(t.canton.calls).toEqual(["signDeposit", "waitDeposit"]);
+    expect(t.canton.calls).toEqual(["allocateDeposit", "signDeposit", "waitDeposit"]);
+    expect(t.canton.args).toEqual([
+      { instrument: config.wrapped[0]!.instrument, amount: "3.5000000000", label: "ref-1" },
+      { instrument: config.wrapped[0]!.instrument, amount: "3.5000000000", label: "ref-1", depositId: id, recipient: ME },
+    ]);
     expect(t.evm.calls).toEqual([{ name: "claim", args: [GATEWAY, id, WCC, 35n * 10n ** 9n] }]);
   });
   it("fails when the claim is refused, and when Canton's own step fails", async () => {
@@ -203,7 +262,19 @@ describe("move 3: a Canton token to Ostia", () => {
 
     const t = setup();
     t.deps.canton.signDeposit = async () => { throw { code: 4001 }; };
-    expect(await createMove(t.deps).start(input)).toMatchObject({ phase: "failed", reason: "You declined it in your wallet.", from: "signing-canton" });
+    expect(await createMove(t.deps).start(input)).toMatchObject({ phase: "failed", reason: "You declined it in your wallet.", from: "signing-canton", kept: true });
+  });
+  it("keeps a checkpoint between the two Canton steps: a failed request resumes at the request, not the allocation", async () => {
+    const t = setup({ txs: [final([depositLeg()])] });
+    let declined = true;
+    const sign = t.deps.canton.signDeposit;
+    t.deps.canton.signDeposit = async (a) => { if (declined) throw { code: 4001 }; return sign(a); };
+    const move = createMove(t.deps);
+    await move.start(input);
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "allocated" });
+    declined = false;
+    expect(await move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.canton.calls).toEqual(["allocateDeposit", "signDeposit", "waitDeposit"]);
   });
   it("refuses an amount finer than 10 decimals", async () => {
     const t = setup();
@@ -212,28 +283,63 @@ describe("move 3: a Canton token to Ostia", () => {
   });
   it("after a reload with the claim sent, only waits for the explorer", async () => {
     const store = memoryStore();
-    store.setItem("bridge-move", JSON.stringify({ input, ref: "ref-1", stage: "sent", tx: "0x" + "09".repeat(32) }));
-    const t = setup({ store, txs: [proving, final([leg({ kind: "deposit", legId: id }, WCC)])] });
+    keep(store, { input, stage: "sent", tx: ("0x" + "09".repeat(32)) as Hex });
+    const t = setup({ store, txs: [proving, final([depositLeg()])] });
     expect(await t.move.resume()).toMatchObject({ phase: "final", tx: "0x" + "09".repeat(32) });
     expect(t.evm.calls).toEqual([]);
+  });
+  it("H2: a claim declined after the deposit is on Canton keeps the record, and the person's continue finishes it without signing on Canton again", async () => {
+    const evm = fakeEvm();
+    evm.refuse("claim");
+    const t = setup({ evm, txs: [final([depositLeg()])] });
+    expect(await t.move.start(input)).toMatchObject({ phase: "failed", kept: true });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "evm", ref: "ref-1", party: PARTY, account: ME });
+    evm.refuse(null);
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.canton.calls).toEqual(["allocateDeposit", "signDeposit", "waitDeposit"]);
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("H2: the same for a redeem whose release fails, and abandon removes the record", async () => {
+    const evm = fakeEvm();
+    evm.refuse("release");
+    const t = setup({ evm });
+    expect(await t.move.start({ kind: "redeem", asset: TKA, amount: "2" })).toMatchObject({ phase: "failed", kept: true });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "evm", vault: VAULT, to: ME });
+    t.move.abandon();
+    expect(listMoves(t.store)).toEqual([]);
+    expect(t.move.state.phase).toBe("idle");
+  });
+  it("L5: refuses to resume under another EVM account or another Canton party, and keeps the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "evm" });
+    const other = setup({ store });
+    other.deps.evm = { ...other.evm.evm, account: addr("9") };
+    expect(await createMove(other.deps).resume()).toMatchObject({ phase: "failed", reason: expect.stringContaining("another wallet account"), kept: true });
+    const party = setup({ store });
+    party.deps.canton.party = () => "bob::1220" + "cd".repeat(32);
+    expect(await createMove(party.deps).resume()).toMatchObject({ phase: "failed", reason: expect.stringContaining("another wallet account") });
+    expect(party.canton.calls).toEqual([]);
+    expect(loadCheckpoint(store)).toMatchObject({ stage: "evm" });
   });
 });
 
 describe("move 4: a wrapped token back to Canton", () => {
   const input = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
 
   it("withdraws to the user's party and is final on the withdrawal leg", async () => {
-    const t = setup({ txs: [proving, final([leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC)])] });
+    const t = setup({ txs: [proving, final([withdrawLeg()])] });
     expect(await t.move.start(input)).toMatchObject({ phase: "final" });
     expect(t.phases).toEqual(["sending-evm:withdraw", "proving", "final"]);
     expect(t.evm.calls).toEqual([{ name: "withdraw", args: [GATEWAY, WCC, 10n ** 10n, PARTY] }]);
   });
-  it("fails without a send when the wallet holds too little, and when the transaction is dropped", async () => {
+  it("fails without a send when the wallet holds too little, and keeps the move when the transaction is dropped", async () => {
     const poor = setup({ evm: fakeEvm({ balance: 1n }) });
     expect(await poor.move.start(input)).toMatchObject({ phase: "failed", reason: "You do not hold enough wCC." });
     expect(poor.evm.calls).toEqual([]);
     const dropped = setup({ txs: [{ status: "dropped", legs: [] } as unknown as ApiTx] });
-    expect(await dropped.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("dropped") });
+    expect(await dropped.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("dropped"), kept: true });
+    expect(loadCheckpoint(dropped.store)).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7 });
   });
   it("refuses an amount finer than 10 decimals, and a token it does not move", async () => {
     expect(await setup().move.start({ ...input, amount: "0.00000000001" })).toMatchObject({ phase: "failed" });
@@ -242,5 +348,105 @@ describe("move 4: a wrapped token back to Canton", () => {
   it("does not call a final transaction the move's own unless it made the leg", async () => {
     const t = setup({ txs: [final([leg({ kind: "withdrawal", account: addr("7"), amount: (10n ** 10n).toString() }, WCC)])] });
     expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("no leg") });
+  });
+});
+
+describe("a move survives a reload, a double mount and a wallet speed-up", () => {
+  const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const lock = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
+
+  it("M4: two resume() calls at once are one promise and send nothing; two proceed() calls send once", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "start" });
+    const t = setup({ store, txs: [final([withdrawLeg()])] });
+    const a = t.move.resume(), b = t.move.resume();
+    expect(a).toBe(b);
+    expect(await a).toMatchObject({ phase: "paused" });
+    expect(t.evm.calls).toEqual([]);
+    const [x, y] = await Promise.all([t.move.proceed(), t.move.proceed()]);
+    expect(x).toBe(y);
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("M4: start() is refused while a move runs and while one is paused, and each move has its own record", async () => {
+    const t = setup({ txs: [final([withdrawLeg()])] });
+    const first = t.move.start(withdraw);
+    await expect(t.move.start(withdraw)).rejects.toThrow("not finished");
+    await first;
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "start" });
+    keep(store, { input: lock, stage: "start", ref: "ref-2" });
+    expect(listMoves(store)).toEqual(["ref-1", "ref-2"]);
+    const paused = setup({ store });
+    await paused.move.resume("ref-1");
+    await expect(paused.move.start(withdraw)).rejects.toThrow("not finished");
+    expect(loadCheckpoint(store, "ref-2")).toMatchObject({ input: lock });
+    expect(loadCheckpoint(store)).toMatchObject({ ref: "ref-2" });
+  });
+  it("M5: the step and the account's nonce are saved before the wallet is asked", async () => {
+    const store = memoryStore();
+    let seen: Checkpoint | null = null;
+    const t = setup({ store, txs: [final([withdrawLeg()])], evm: fakeEvm({ nonce: 7, beforeSend: () => { seen = loadCheckpoint(store); } }) });
+    await t.move.start(withdraw);
+    expect(seen).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7 });
+  });
+  it("M5: a reload between the prompt and the hash, with the nonce unmoved, sends nothing until the person continues", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7 });
+    const t = setup({ store, txs: [final([withdrawLeg()])], evm: fakeEvm({ nonce: 7 }) });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused" });
+    expect(t.evm.calls).toEqual([]);
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("M5: a reload after the wallet sent (the nonce moved) finds the transaction at that nonce and sends nothing", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7 });
+    const txAt = vi.fn(async () => OTHER);
+    const t = setup({ store, txAt, tx: async () => final([withdrawLeg()]), evm: fakeEvm({ nonce: 8 }) });
+    expect(await t.move.resume()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(txAt).toHaveBeenCalledWith(ME, 7);
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("M5: a resumed move at the start never prompts the wallet by itself", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "start" });
+    const t = setup({ store });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused" });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("M5: an id the gateway has already used is proved from its leg, not sent again", async () => {
+    const store = memoryStore();
+    keep(store, { input: lock, stage: "start" });
+    const id = lockIdOf(PARTY, "ref-1");
+    const t = setup({ store, evm: fakeEvm({ used: (i) => i === id }), legOf: async () => ({ txHash: OTHER }), tx: async () => final([leg({ kind: "payment", legId: id })]) });
+    expect(await t.move.resume()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(t.evm.calls).toEqual([]);
+    expect(t.lockParts).not.toHaveBeenCalled();
+  });
+  it("M6: a pay replaced in the wallet is followed by the move's id, and the move still ends final", async () => {
+    const id = lockIdOf(PARTY, "ref-1");
+    const t = setup({
+      evm: fakeEvm({ allowance: 10n ** 30n }), legOf: async () => ({ txHash: OTHER }),
+      tx: async (h) => (h === hashOf(1) ? replaced : final([leg({ kind: "payment", legId: id })])),
+    });
+    expect(await t.move.start(lock)).toMatchObject({ phase: "final", tx: OTHER });
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("M6: a withdrawal replaced in the wallet is followed by the transaction at its nonce", async () => {
+    const txAt = vi.fn(async () => OTHER);
+    const t = setup({ txAt, tx: async (h) => (h === hashOf(1) ? replaced : final([withdrawLeg()])) });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "final", tx: OTHER });
+    expect(txAt).toHaveBeenCalledWith(ME, 7);
+  });
+  it("M6: a replaced transaction that is not found keeps the progress and does not fail the move for good", async () => {
+    const t = setup({ evm: fakeEvm({ allowance: 10n ** 30n }), tx: async () => replaced });
+    expect(await t.move.start(lock)).toMatchObject({ phase: "failed", reason: expect.stringContaining("replaced or dropped"), kept: true });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "pay" });
+  });
+  it("M6: a replaced approval is not taken as done: the allowance is read again and the move stops with a clear message", async () => {
+    const t = setup({ evm: fakeEvm({ approveSticks: false }) });
+    expect(await t.move.start(lock)).toMatchObject({ phase: "failed", reason: expect.stringContaining("did not give the gateway") });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["approve"]);
   });
 });

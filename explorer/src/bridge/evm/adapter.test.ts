@@ -16,11 +16,12 @@ function setup(estimate: () => string = () => "0x186a0") {
       throw new Error(`the wallet was asked ${method}`);
     },
   };
-  const read = async (method: string) => {
+  const read = async (method: string, params: unknown[] = []) => {
     reads.push(method);
     if (method === "eth_estimateGas") return estimate();
     if (method === "eth_getBalance") return "0x64";
-    if (method === "eth_call") return "0x" + (7).toString(16).padStart(64, "0");
+    if (method === "eth_getTransactionCount") return "0x9";
+    if (method === "eth_call") return "0x" + ((params[0] as { data: string }).data.startsWith(toFunctionSelector("used(bytes32)")) ? 1 : 7).toString(16).padStart(64, "0");
     throw new Error(`the RPC was asked ${method}`);
   };
   return { adapter: viemAdapter({ wallet, account: ME, chain, read }), sent, reads };
@@ -55,5 +56,12 @@ describe("the viem adapter", () => {
     expect(await adapter.native()).toBe(100n);
     expect(await adapter.balanceOf(TOKEN)).toBe(7n);
     expect(await adapter.allowance(TOKEN, GATEWAY)).toBe(7n);
+    expect(await adapter.balanceOf(TOKEN, GATEWAY)).toBe(7n);
+  });
+  it("gives the account's pending nonce and the gateway's used(id)", async () => {
+    const { adapter, reads } = setup();
+    expect(await adapter.nonce()).toBe(9);
+    expect(await adapter.used(GATEWAY, ("0x" + "01".repeat(32)) as `0x${string}`)).toBe(true);
+    expect(reads).toContain("eth_getTransactionCount");
   });
 });

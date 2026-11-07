@@ -19,9 +19,12 @@ RUN rustup target add wasm32-unknown-unknown && sh explorer/verify/build.sh
 # The pages, from the lockfile, with the check's file put where the pages' build copies it from.
 FROM ${EXPLORER_NODE_IMAGE} AS pages
 WORKDIR /repo/explorer
+# The Bridge page pins the gateway's address (PINS) and the hash of the vault's code when it is built: explorer/bridge-pins.ts reads them from beside the explorer folder.
+COPY PINS /repo/PINS
+COPY gateway/Vault.bin-runtime /repo/gateway/Vault.bin-runtime
 COPY explorer/package.json explorer/package-lock.json ./
 RUN npm ci --ignore-scripts
-COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts ./
+COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts ./
 COPY explorer/src ./src
 COPY explorer/public ./public
 COPY --from=wasm /repo/explorer/public/verify ./public/verify
