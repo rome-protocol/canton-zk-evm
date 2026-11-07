@@ -168,7 +168,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
   }
-  /** Opens the token picker of a field and takes a token of it (named as the picker names it, "CC on canton"). */
+  /** Opens the token picker of a field and takes a token of it (named as the picker names it, "CC on Canton"). */
   async function pick(page: any, field: "From" | "To", name: RegExp) {
     await page.getByRole("button", { name: new RegExp(`^${field} token`) }).click();
     await page.getByRole("dialog").getByRole("button", { name }).click();
@@ -215,7 +215,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     service.extra = { wrapped: true };
     const page = await open("/bridge");
     await signedIn(page);
-    await pick(page, "From", /^CC on canton$/);
+    await pick(page, "From", /^CC on Canton$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
     expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
@@ -237,7 +237,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     service.extra = { wrapped: true };
     const page = await open("/bridge");
     await signedIn(page);
-    await pick(page, "From", /^wCC on ostia$/);
+    await pick(page, "From", /^wCC on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
     expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
@@ -255,7 +255,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     service.extra = { wrapper: true };
     const page = await open("/bridge");
     await signedIn(page);
-    await pick(page, "From", /^tROME on ostia$/);
+    await pick(page, "From", /^tROME on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
     expect(await page.getByText("About 30 s · 3 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();

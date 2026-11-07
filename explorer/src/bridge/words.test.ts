@@ -79,6 +79,11 @@ describe("the page's sentences about wallets and moves", () => {
     expect(moveWords("You do not hold enough TKA.")).toBe("You do not hold enough TKA.");
     expect(moveWords("Canton has your redeem. Continue to ask your wallet for the release.")).toBe("Canton has it. Continue to release it on Ostia.");
   });
+  it("says a balance too low for the fees in plain words", () => {
+    const viem = "The total cost (gas * gas fee + value) of executing this transaction exceeds the balance of the account.";
+    expect(moveWords(viem)).toBe("You do not have enough for the fees. Get some from the faucet, then try again.");
+    expect(moveWords("insufficient funds for gas")).toBe("You do not have enough for the fees. Get some from the faucet, then try again.");
+  });
   it("gives the general sentence for anything else", () => {
     for (const odd of ["execution reverted: 0x08c379a0", "Error: boom", "{\"code\":-32000}", "no punctuation here", null, undefined, "", "The leg 0xabcd is missing."]) expect(moveWords(odd), String(odd)).toBe(GENERIC);
   });

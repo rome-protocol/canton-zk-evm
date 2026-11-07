@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
 import { AmountError, maxText, parseAmount, showUnits } from "../bridge/amounts.ts";
-import { continueWords, entryOf } from "../bridge/activity.ts";
+import { continueWords, entryOf, recordOf } from "../bridge/activity.ts";
 import { amountSize, buttonOf, noteOf, progressWords } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
@@ -62,6 +62,7 @@ export function MoveCard(p: MoveCardProps) {
   const [move, setMove] = useState<MoveState>({ phase: "idle" });
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   const pair: Pair | undefined = pairs.find((x) => x.key === sel.pair) ?? pairs[0];
   const from = sel.from;
@@ -72,11 +73,11 @@ export function MoveCard(p: MoveCardProps) {
     if (!session) { setMove({ phase: "idle" }); return; }
     setMove(session.move.state);
     const off = session.move.subscribe(setMove);
-    const kept = session.kept()[0];
+    const kept = recordOf(session.kept(), session.move.current) ?? session.kept()[0];
     if (kept) {
       const found = pairs.find((x) => x.erc20.toLowerCase() === kept.input.asset.toLowerCase());
       if (found) { setSel({ pair: found.key, from: kept.input.kind === "lock" || kept.input.kind === "withdraw" ? "ostia" : "canton" }); setText(kept.input.amount); }
-      void session.move.resume();
+      void session.move.resume(kept.ref);
     }
     return off;
   }, [session, pairs]);
@@ -113,7 +114,7 @@ export function MoveCard(p: MoveCardProps) {
   const tokenDecimals = (s: Side) => (!pair ? 18 : s === "ostia" ? pair.ostia.decimals : pair.canton.decimals);
 
   const to = from === "ostia" ? "Canton" : p.chainName;
-  const keptNow = move.phase === "paused" || (move.phase === "failed" && move.kept) ? session?.kept()[0] : undefined;
+  const keptNow = move.phase === "paused" || (move.phase === "failed" && move.kept) ? recordOf(session?.kept() ?? [], session?.move.current) : undefined;
   const button = buttonOf({
     connected: p.account !== null, accountReady: session !== null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
     to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
@@ -140,7 +141,8 @@ export function MoveCard(p: MoveCardProps) {
     } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); }
     finally { setStarting(false); }
   }, [button.action, session, pair, from, text, p, starting]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const giveUp = async () => { try { await session?.move.abandon(); setText(""); } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); } };
+  // A move Canton or the wallet may already know cannot be finished by this page once it is given up, so it is asked first.
+  const giveUp = async () => { setAsking(false); try { await session?.move.abandon(); setText(""); } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); } };
 
   const pick = (t: Token, field: "from" | "to") => {
     setPicker(null);
@@ -189,7 +191,7 @@ export function MoveCard(p: MoveCardProps) {
     <section className="card move" aria-label="Move tokens">
       {!pair ? (
         <>
-          <p className="muted">{p.configState === "failed" ? "The bridge is not available on this chain yet." : "Looking up the tokens…"}</p>
+          <p className="muted">{p.configState === "failed" ? "The bridge is not available on this chain yet." : p.configState === "ready" ? "There are no tokens to move here yet." : "Looking up the tokens…"}</p>
           <button type="button" className="btn go" disabled={button.disabled || starting} onClick={press}>{button.label}</button>
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
         </>
@@ -200,7 +202,13 @@ export function MoveCard(p: MoveCardProps) {
           {side("to")}
           {parsed.error && <p className="small bad" role="status">{parsed.error}</p>}
           <button type="button" className="btn go" disabled={button.disabled || starting} onClick={press}>{button.label}</button>
-          {button.action === "continue" && <button type="button" className="link-b give-up" onClick={giveUp}>Give this move up</button>}
+          {button.action === "continue" && !asking && <button type="button" className="link-b give-up" onClick={() => (keptNow && keptNow.stage !== "start" ? setAsking(true) : void giveUp())}>Give this move up</button>}
+          {button.action === "continue" && asking && (
+            <div className="give-up" role="group" aria-label="Give this move up">
+              <p className="small muted">Part of this move may already be done. If you give it up, this page cannot finish it.</p>
+              <button type="button" className="link-b" onClick={() => void giveUp()}>Give it up</button> <button type="button" className="link-b" onClick={() => setAsking(false)}>Keep it</button>
+            </div>
+          )}
           {note && <p className={`small ${note.bad ? "bad" : "muted"}`} role={note.bad ? "alert" : "status"}>{note.text}</p>}
           {problem && <p className="small bad" role="alert">{problem}</p>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}

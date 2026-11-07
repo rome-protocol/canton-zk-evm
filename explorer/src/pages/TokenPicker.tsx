@@ -28,14 +28,14 @@ export function TokenPicker({ pairs, chainName, selected, onPick, onClose }: { p
           <section key={g.name} aria-label={g.name}>
             <h3 className="picker-g">{g.name}</h3>
             <ul className="picker-l">
-              {g.rows.map((t) => (
+              {g.rows.map((t) => { const where = g.name.replace(/^On /, "on "); return (
                 <li key={t.key} className={t.key === selected ? "on" : undefined}>
-                  <button type="button" className="pick" aria-label={`${t.symbol} ${g.name.toLowerCase()}`} onClick={() => onPick(t)}><b>{t.symbol}</b><span className="muted small">{g.name.toLowerCase()}</span></button>
-                  <Info about={`${t.symbol} ${g.name.toLowerCase()}`}>
+                  <button type="button" className="pick" aria-label={`${t.symbol} ${where}`} onClick={() => onPick(t)}><b>{t.symbol}</b><span className="muted small">{where}</span></button>
+                  <Info about={`${t.symbol} ${where}`}>
                     <dl className="tok-facts">{factsOf(t, pairs, chainName).map((f) => <div key={f.label}><dt>{f.label}</dt><dd className={f.label === "Address" || f.label === "Token id" || f.label.endsWith("address") ? "mono" : undefined}>{f.value}</dd></div>)}</dl>
                   </Info>
                 </li>
-              ))}
+              ); })}
             </ul>
           </section>
         ))}

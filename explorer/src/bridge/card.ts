@@ -40,7 +40,7 @@ export function waitWords(s: MoveState): string | null {
   switch (s.phase) {
     case "signing-canton": return "Signing on Canton…";
     case "waiting-canton": return "Waiting for Canton…";
-    case "sending-evm": return "Confirm in your wallet…";
+    case "sending-evm": return s.step === "prepare" ? "Getting ready…" : "Confirm in your wallet…";
     case "proving": return "Sent. Waiting for the block to be final…";
     default: return null;
   }

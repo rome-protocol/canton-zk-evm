@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountSize, buttonOf, noteOf, progressWords, type ButtonInput } from "./card.ts";
+import { amountSize, buttonOf, noteOf, progressWords, waitWords, type ButtonInput } from "./card.ts";
 
 const base: ButtonInput = { connected: true, accountReady: true, config: "ready", amount: "ok", enough: true, symbol: "TKA", to: "Canton", move: { phase: "idle" } };
 
@@ -30,6 +30,10 @@ describe("the move button", () => {
     expect(buttonOf({ ...base, move: { phase: "paused", note: "x" }, continueLabel: "Release on Ostia" }).label).toBe("Release on Ostia");
     expect(buttonOf({ ...base, move: { phase: "failed", reason: "x", from: "proving", kept: true } }).action).toBe("continue");
     expect(buttonOf({ ...base, move: { phase: "failed", reason: "x", from: "proving", kept: false } }).action).toBe("move");
+  });
+  it("does not ask for the wallet while a lock is only getting ready", () => {
+    expect(waitWords({ phase: "sending-evm", step: "prepare" })).toBe("Getting ready…");
+    expect(waitWords({ phase: "sending-evm", step: "pay" })).toBe("Confirm in your wallet…");
   });
   it("puts a pause or a failure in plain words", () => {
     expect(noteOf({ phase: "paused", note: "Canton has your redeem. Continue to ask your wallet for the release." })).toEqual({ text: "Canton has it. Continue to release it on Ostia.", bad: false });

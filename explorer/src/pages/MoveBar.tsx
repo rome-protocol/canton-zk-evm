@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
-import { entryOf, whatMoved, type Entry } from "../bridge/activity.ts";
+import { entryOf, recordOf, whatMoved, type Entry } from "../bridge/activity.ts";
 import { waitWords } from "../bridge/card.ts";
-import { FINAL_MARKS, merge } from "../bridge/marks.ts";
 import { explorerTx } from "../bridge/moves/moves.ts";
 import type { Session } from "../bridge/session.ts";
 import type { Pair } from "../bridge/tokens.ts";
@@ -20,7 +19,7 @@ export function MoveBar({ session, pairs, chainName, read = explorerTx, pollMs }
   // The record the move keeps says what is moving; it is looked at as the state changes, and the last one seen stays once the move is final and its record is gone.
   useEffect(() => {
     if (!session) { setEntry(null); return; }
-    const look = () => { const k = session.kept()[0]; if (k) setEntry(entryOf(k)); };
+    const look = () => { const k = recordOf(session.kept(), session.move.current); if (k) setEntry(entryOf(k)); };
     look();
     return session.move.subscribe(look);
   }, [session]);
@@ -28,12 +27,11 @@ export function MoveBar({ session, pairs, chainName, read = explorerTx, pollMs }
   const seen = useMarks(tx, null, read, pollMs);
   const on = ["signing-canton", "waiting-canton", "sending-evm", "proving"].includes(state.phase);
   if (!on || !entry) return null;
-  const marks = state.phase === "final" ? merge(seen, FINAL_MARKS(state.block)) : seen;
   const words = tx !== null ? null : waitWords(state);
   return (
     <section className="flight card" aria-label="Move on its way">
       <span className="fl-what">{whatMoved(entry, pairs, chainName)}</span>
-      <MoveMarks marks={marks} />
+      <MoveMarks marks={seen} />
       {words && <span className="small muted">{words}</span>}
     </section>
   );

@@ -55,6 +55,8 @@ export function Bridge() {
   const [info, setInfo] = useState<FaucetInfo | null>(null);
   const [copied, setCopied] = useState(false);
   const [sheet, setSheet] = useState(false);
+  const [nudge, setNudge] = useState(0);
+  const sheetRef = useRef<HTMLElement>(null);
   const [noWallet, setNoWallet] = useState(false);
   const [cfg, setCfg] = useState<Config>({ s: "loading" });
   const [evm, setEvm] = useState<EvmAdapter | null>(null);
@@ -102,6 +104,9 @@ export function Bridge() {
     import("../bridge/session.ts").then((m) => { if (live) { made = m.createSession({ evm, account: opened, config }); setSession(made); } }, () => {});
     return () => { live = false; made?.close(); };
   }, [config, evm, opened]);
+
+  // "Open my Canton account" brings the sign-in part into view: it sits below the card, so on a phone it may be off the screen.
+  useEffect(() => { if (nudge > 0) sheetRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" }); }, [nudge]);
 
   const wait = unready(st, "Looking up the chain…");
   if (wait) return wait;
@@ -153,6 +158,7 @@ export function Bridge() {
     return on.ok ? null : plainText(on.message) ?? "Your wallet is not on " + chain.chainName + " yet.";
   }
   function connect() { if (!injected()) setNoWallet(true); else { setNoWallet(false); void wallet.connect(); } }
+  const openSheet = () => { setSheet(true); setNudge((n) => n + 1); };
   const showSheet = sheet || phase.s !== "idle" || (wrongSite && connected);
   const note = (c: Coin) => c.s === "done" || c.s === "failed" ? <p className={`small ${c.s === "failed" ? "bad" : "muted"}`} role="status">{c.message}</p> : null;
   const walletNote = noWallet ? NO_WALLET : wallet.error ? plainText(wallet.error) : null;
@@ -170,7 +176,7 @@ export function Bridge() {
         <div className="panel" role="tabpanel" id="bridge-panel-move" aria-labelledby="bridge-tab-move" hidden={tab !== "move"}>
           <MoveCard
             config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} chainName={chain.chainName}
-            onConnect={connect} connectNote={walletNote} onOpenAccount={() => setSheet(true)} ensureChain={ensureChain}
+            onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
             faucet={info === null || info.on ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null}
           />
           <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
@@ -178,12 +184,12 @@ export function Bridge() {
       )}
       {settings && tab === "activity" && (
         <div className="panel" role="tabpanel" id="bridge-panel-activity" aria-labelledby="bridge-tab-activity">
-          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} connectNote={walletNote} onOpenAccount={() => setSheet(true)} ensureChain={ensureChain} />
+          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain} />
         </div>
       )}
       {!ready && note(rome)}
       {settings && showSheet && (
-        <section className="card account" aria-label="Your Canton account">
+        <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
           {phase.s === "ready" ? (
             <>

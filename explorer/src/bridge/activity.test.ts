@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Address, Hex } from "viem";
-import { continueWords, entryOf, finished, openOnCanton, remember, rowsOf, seedOf, standing, track, whatMoved, type Entry } from "./activity.ts";
+import { continueWords, entryOf, finished, openOnCanton, recordOf, remember, rowsOf, seedOf, standing, track, whatMoved, type Entry } from "./activity.ts";
 import { depositIdOf, saveCheckpoint, type Checkpoint, type MoveState, type StoreLike } from "./moves/state.ts";
 import { pairsOf } from "./tokens.ts";
 import { config, GATEWAY_PARTY, ME, PARTY, TKA, VAULT, WCC } from "../pages/bridge-fakes.ts";
@@ -62,7 +62,7 @@ describe("writing a move down when it ends", () => {
     const store = memory();
     let fire: (s: MoveState) => void = () => {};
     const kept: Checkpoint[] = [];
-    track({ subscribe: (fn) => { fire = fn; return () => {}; }, kept: () => kept }, store);
+    track({ state: { phase: "idle" }, current: "r1", subscribe: (fn) => { fire = fn; return () => {}; }, kept: () => kept }, store);
     keep(store, { input: redeem, stage: "evm" });
     kept.push({ input: redeem, ref: "r1", account: ME, party: PARTY, vault: VAULT, stage: "evm", at: NOW });
     fire({ phase: "sending-evm", step: "release" });
@@ -70,6 +70,15 @@ describe("writing a move down when it ends", () => {
     expect(finished(store)).toEqual([]);
     fire({ phase: "final", tx: TX, block: 42 });
     expect(finished(store)).toEqual([expect.objectContaining({ ref: "r1", done: true, tx: TX, block: 42, stage: null })]);
+  });
+});
+
+describe("the move that is running", () => {
+  const rec = (ref: string): Checkpoint => ({ input: redeem, ref, account: ME, party: PARTY, vault: VAULT, stage: "evm", at: NOW });
+  it("is the record the move names, not the newest one kept", () => {
+    expect(recordOf([rec("Y"), rec("X")], "X")?.ref).toBe("X");
+    expect(recordOf([rec("Y"), rec("X")], null)).toBeUndefined();
+    expect(recordOf([rec("Y")], "gone")).toBeUndefined();
   });
 });
 
@@ -92,10 +101,11 @@ describe("a move that is not finished, in words", () => {
   it("names the step the row carries on with: the release or the claim on Ostia", () => {
     expect(continueWords(e("redeem", "evm"), "Ostia")).toBe("Release on Ostia");
     expect(continueWords(e("deposit", "wallet"), "Ostia")).toBe("Claim on Ostia");
-    expect(continueWords(e("redeem", "canton"), "Ostia")).toBe("Continue");
+    expect(continueWords(e("redeem", "canton"), "Ostia")).toBe("Continue to Ostia");
     expect(continueWords(e("redeem", "canton"), "Ostia", true)).toBe("Release on Ostia");
-    expect(continueWords(e("deposit", "sent"), "Ostia")).toBe("Continue");
-    expect(continueWords(e("lock", "start"), "Ostia")).toBe("Continue");
+    expect(continueWords(e("deposit", "sent"), "Ostia")).toBe("Continue to Ostia");
+    expect(continueWords(e("lock", "start"), "Ostia")).toBe("Continue to Canton");
+    expect(continueWords(e("withdraw", "wallet"), "Ostia")).toBe("Continue to Canton");
   });
   it("finds a move's request in the account service's open list", () => {
     const redeemRow = e("redeem", "canton"), depositRow = { ...e("deposit", "canton"), ref: "d1" };

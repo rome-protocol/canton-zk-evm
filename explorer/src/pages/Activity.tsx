@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
-import { continueWords, openOnCanton, rememberUpdate, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
+import { continueWords, openOnCanton, recordOf, rememberUpdate, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
 import { noteOf, waitWords } from "../bridge/card.ts";
 import type { OpenState } from "../bridge/canton/accounts.ts";
 import type { MoveState, StoreLike } from "../bridge/moves/state.ts";
@@ -83,7 +83,7 @@ export function Activity(props: ActivityProps) {
     session.open().then((o) => { if (live) setOpen(o); }, () => {});
     return () => { live = false; };
   }, [session, waits]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const liveRef = session?.kept()[0]?.ref;
+  const liveRef = session ? recordOf(session.kept(), session.move.current)?.ref : undefined;
 
   const onContinue = useCallback(async (e: Entry) => {
     if (!session || busy) return;
@@ -94,7 +94,7 @@ export function Activity(props: ActivityProps) {
       const paused = (s: MoveState) => s.phase === "paused" || (s.phase === "failed" && s.kept);
       const now = e.ref === liveRef && paused(session.move.state) ? session.move.state : await session.move.resume(e.ref);
       let end = now;
-      if (paused(now)) {
+      if (paused(now) && session.move.current === e.ref) {
         const why = await props.ensureChain?.();
         if (why) { setProblem(why); return; }
         end = await session.move.proceed();

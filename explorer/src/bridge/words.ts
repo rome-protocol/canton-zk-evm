@@ -70,6 +70,7 @@ export function plainText(message: string | null | undefined): string | null {
 /** What the moves library says in its own sentences, where a sentence names a part of the bridge, in words for the person. The first match wins. */
 const MOVE_SENTENCES: [RegExp, string][] = [
   [/reject|denied|declin/i, "You declined it in your wallet."],
+  [/exceeds the balance|insufficient funds/i, "You do not have enough for the fees. Get some from the faucet, then try again."],
   [/current chain of the wallet/i, "Your wallet is not on Ostia. Switch it to Ostia, then continue."],
   [/not a Canton party id/, "That Canton account is not valid."],
   [/Wrapping the chain's coin/, "Moving this coin is not set up here. Nothing was moved."],

@@ -69,14 +69,21 @@ export function rowsOf(store: StoreLike | null, account: string): Entry[] {
  * Keeps the list of finished moves: it looks at the move's state as it changes, remembers the record that is kept, and when the move is final writes it down with its transaction and block.
  * `kept` is the move library's own list. Returns what stops the watching.
  */
-export function track(move: { subscribe(fn: (s: MoveState) => void): () => void; kept(): Checkpoint[] }, store: StoreLike | null): () => void {
-  let last: Entry | null = null;
-  return move.subscribe((s) => {
-    const k = move.kept()[0];
+export function track(move: { readonly state: MoveState; readonly current: string | null; subscribe(fn: (s: MoveState) => void): () => void; kept(): Checkpoint[] }, store: StoreLike | null): () => void {
+  let last: Entry | null = null, closing = false;
+  const off = move.subscribe((s) => {
+    const k = recordOf(move.kept(), move.current);
     if (k) last = entryOf(k, s.phase === "proving" || s.phase === "final" ? s.tx : ownTx(k));
     if (s.phase === "final" && last) { remember(store, { ...last, tx: s.tx, block: s.block }); last = null; }
+    if (closing && !RUNNING.includes(s.phase)) off();
   });
+  // Stopping lets a move that is still running finish being written down (the person may have switched account while it ran).
+  return () => { closing = true; if (!RUNNING.includes(move.state.phase)) off(); };
 }
+
+const RUNNING: MoveState["phase"][] = ["signing-canton", "waiting-canton", "sending-evm", "proving"];
+/** The kept record of the move that is running (or held) now: the one the move names, never just the newest. */
+export const recordOf = (kept: Checkpoint[], current: string | null | undefined): Checkpoint | undefined => (current ? kept.find((c) => c.ref === current) : undefined);
 
 /** Whether Canton shows the move's request open (a redeem by its ref, a deposit by the id its party and ref make), from the account service's list of open requests. */
 export function openOnCanton(e: Entry, open: Pick<OpenState, "redeemRequests" | "depositRequests">): boolean {
@@ -109,7 +116,7 @@ export function continueWords(e: Entry, chainName: string, onCanton = false): st
   const ready = (AFTER_CANTON.includes(stage) && stage !== "sent") || (onCanton && STAGES.indexOf(stage) < STAGES.indexOf("evm"));
   if (ready && e.kind === "redeem") return `Release on ${chainName}`;
   if (ready && e.kind === "deposit") return `Claim on ${chainName}`;
-  return "Continue";
+  return `Continue to ${e.kind === "lock" || e.kind === "withdraw" ? "Canton" : chainName}`;
 }
 
 /** What moved, in words: "5 CC to Ostia" ("tokens" where this build no longer lists the token). */

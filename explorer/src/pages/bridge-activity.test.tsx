@@ -6,12 +6,12 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
-import { entryOf, remember } from "../bridge/activity.ts";
+import { entryOf, finished, remember } from "../bridge/activity.ts";
 import { pairsOf } from "../bridge/tokens.ts";
 import { depositIdOf, releaseIdOf, saveCheckpoint, type Checkpoint, type MoveState } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import { Activity, type ActivityProps } from "./Activity.tsx";
-import { config, fakeEvm, fakeSession, GATEWAY_PARTY, leg, ME, memoryStore, PARTY, TKA, VAULT, WCC } from "./bridge-fakes.ts";
+import { config, fakeEvm, finalTx, fakeSession, GATEWAY_PARTY, leg, ME, memoryStore, PARTY, TKA, VAULT, WCC } from "./bridge-fakes.ts";
 import { MoveBar } from "./MoveBar.tsx";
 
 afterEach(cleanup);
@@ -31,7 +31,7 @@ describe("the bar under the card", () => {
   /** A session whose move state the test drives: the bar reads the state and the kept record, as it does of the real one. */
   function driven(record: Checkpoint) {
     const subs = new Set<(s: MoveState) => void>();
-    const move = { state: { phase: "idle" } as MoveState, subscribe: (f: (s: MoveState) => void) => { subs.add(f); return () => void subs.delete(f); } };
+    const move = { state: { phase: "idle" } as MoveState, current: record.ref, subscribe: (f: (s: MoveState) => void) => { subs.add(f); return () => void subs.delete(f); } };
     const session = { move, kept: () => [record] } as unknown as Session;
     const set = (s: MoveState) => act(() => { move.state = s; subs.forEach((f) => f(s)); });
     return { session, set };
@@ -177,7 +177,7 @@ describe("the Activity list", () => {
     const { session } = fakeSession({ store, legs: () => [] });
     show({ store, session });
     expect(await screen.findByText("Signed on Canton. Waiting for Canton to show it.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Continue to Ostia" })).toBeEnabled();
   });
   it("does not ask the account service when no move waits for Canton", async () => {
     const store = memoryStore();
@@ -229,6 +229,29 @@ describe("the Activity list", () => {
     expect(made.evm.evm.release).toHaveBeenCalledTimes(1);
     await act(async () => { release(TX); });
   });
+  it("writes down the move that was continued, when two are kept and the older one is continued", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, ck({ ref: "X", input: redeem, to: ME, stage: "evm", at: NOW - 1000 }));
+    saveCheckpoint(store, ck({ ref: "Y", input: { ...redeem, amount: "9" }, to: ME, stage: "evm", at: NOW }));
+    const made = fakeSession({ store, legs: () => [], tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "X") }, TKA)]) });
+    expect(made.session.kept().map((c) => c.ref)).toEqual(["Y", "X"]);
+    await made.move.resume("X");
+    expect(made.move.current).toBe("X");
+    await made.move.proceed();
+    expect(made.move.state.phase).toBe("final");
+    expect(finished(store).map((e) => [e.ref, e.amount, e.done, e.block])).toEqual([["X", "3", true, 42]]);
+    expect(made.session.kept().map((c) => c.ref)).toEqual(["Y"]);   // the other move is still kept, and not written down as done
+  });
+  it("keeps writing a move down when its session is closed while it runs, and stops after", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, ck({ ref: "X", input: redeem, to: ME, stage: "evm" }));
+    const made = fakeSession({ store, legs: () => [], tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "X") }, TKA)]) });
+    await made.move.resume("X");
+    // the wallet's account changes while the move is running
+    const off = made.move.subscribe((st) => { if (st.phase === "sending-evm") { off(); made.session.close(); } });
+    await made.move.proceed();
+    expect(finished(store).map((e) => [e.ref, e.block])).toEqual([["X", 42]]);
+  });
   it("says a refusal in plain words and keeps the move", async () => {
     const store = memoryStore();
     saveCheckpoint(store, ck({ input: redeem, to: ME, stage: "evm" }));
@@ -246,7 +269,7 @@ describe("the Activity list", () => {
     const made = fakeSession({ store, legs: () => [] });
     vi.spyOn(made.evm.evm, "approve").mockRejectedValue(Object.assign(new Error("x"), { shortMessage: "User rejected the request.", code: 4001 }));
     show({ store, session: made.session });
-    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Continue to Canton" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
     expect(screen.getByRole("alert").textContent).not.toMatch(/rejected|0x|Error/);
   });
