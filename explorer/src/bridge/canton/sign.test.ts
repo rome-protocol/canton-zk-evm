@@ -83,7 +83,10 @@ const KINDS: Record<string, "party" | "contractId" | "timestamp" | "numeric" | "
   expectedAdmin: "party", executor: "party", sender: "party", receiver: "party", admin: "party", inputHoldingCids: "contractId",
   requestedAt: "timestamp", allocateBefore: "timestamp", settleBefore: "timestamp", amount: "numeric", id: "text", transferLegId: "text",
 };
-const micros = (iso: string) => String(BigInt(Date.parse(iso)) * 1000n);
+const micros = (iso: string) => {
+  const [base = "", fraction = ""] = iso.replace("Z", "").split(".");
+  return String(BigInt(Date.parse(base + "Z")) * 1000n + BigInt(fraction.padEnd(6, "0")));
+};
 function value(x: unknown, name = ""): Value {
   if (x === null) return { sum: { oneofKind: "optional", optional: {} } };
   if (Array.isArray(x)) return { sum: { oneofKind: "list", list: { elements: x.map((e) => value(e, name)) } } };
