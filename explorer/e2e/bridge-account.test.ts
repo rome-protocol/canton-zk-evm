@@ -25,7 +25,7 @@ const STATUS = {
 const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = ""; req.on("data", (c) => (t += c)); req.on("end", () => done(t)); });
 
 describe.skipIf(!dist)("the Bridge page, in a browser", () => {
-  const wallet = privateKeyToAccount("0x" + "11".repeat(32));
+  const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`);
   const seen = { topologies: [] as Uint8Array[], prepares: [] as { path: string; body: string; header: string }[], signRequests: 0 };
   let server: Server, browser: any, party = "";
 
