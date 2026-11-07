@@ -51,7 +51,7 @@ export function Bridge() {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" });
+    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setCopied(false);
   }, [wallet.account]);
   const ready = phase.s === "ready";
   useEffect(() => { if (ready) faucet.info().then(setInfo, () => setInfo(null)); }, [ready]);
@@ -120,7 +120,7 @@ export function Bridge() {
             <p className="lead">Sign one message in your wallet. It opens your Canton account. No gas and no new wallet. The same wallet opens the same account on any device.</p>
             {wallet.account === null
               ? <button type="button" className="btn" onClick={wallet.connect}>Connect MetaMask</button>
-              : <button type="button" className="btn" disabled={phase.s === "working" || wrongSite} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in MetaMask"}</button>}
+              : <button type="button" className="btn" disabled={phase.s === "working" || wrongSite} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>}
             <p className="small muted">You are on <b className="mono">{here}</b>. Sign in only if that is the address you meant to open.</p>
             {wrongSite && <p className="small bad" role="alert">This page is open at {here}, but this bridge is set up for {settings.origin}. Signing is turned off here. Open the bridge from its own address.</p>}
             {phase.s === "failed" && <p className="small bad" role="alert">{phase.message}</p>}

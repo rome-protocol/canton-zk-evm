@@ -108,7 +108,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     await page.getByText(ORIGIN, { exact: true }).waitFor();   // the site's origin, beside the sign-in
     expect(scripts.some((s) => /\/Bridge-/.test(s))).toBe(true);
     expect(scripts.some((s) => /\/account-/.test(s))).toBe(false);
-    await page.getByRole("button", { name: "Sign in MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
     expect(scripts.some((s) => /\/account-/.test(s))).toBe(true);
 
@@ -136,7 +136,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     service.hide = "withdrawal";   // the withdrawal acceptance never shows in the account's list
     const { page } = await open("/bridge");
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
-    await page.getByRole("button", { name: "Sign in MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 60_000 });
     expect(await alert.textContent()).toBe("Your account is not set up yet. Try signing in again in a moment.");
@@ -152,8 +152,8 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     await alert.waitFor();
     expect(await alert.textContent()).toBe(`This page is open at http://localhost:${PORT}, but this bridge is set up for ${ORIGIN}. Signing is turned off here. Open the bridge from its own address.`);
     expect(await page.getByText(`http://localhost:${PORT}`, { exact: true }).count()).toBe(1);   // the address it is on is shown beside the button
-    expect(await page.getByRole("button", { name: "Sign in MetaMask" }).isDisabled()).toBe(true);
-    await page.getByRole("button", { name: "Sign in MetaMask" }).click({ force: true }).catch(() => {});
+    expect(await page.getByRole("button", { name: "Sign in with MetaMask" }).isDisabled()).toBe(true);
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click({ force: true }).catch(() => {});
     expect(seen.signRequests).toBe(0);
     expect(seen.topologies).toHaveLength(0);
     expect(seen.prepares).toHaveLength(0);
@@ -164,7 +164,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     service.prepare = "too_many_open";
     const { page } = await open("/bridge");
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
-    await page.getByRole("button", { name: "Sign in MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 30_000 });
     const text = (await alert.textContent()) ?? "";

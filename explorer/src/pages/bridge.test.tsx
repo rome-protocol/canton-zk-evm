@@ -24,7 +24,7 @@ const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v)
 const signIn = async () => {
   renderApp("/bridge");
   await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
-  await userEvent.click(await screen.findByRole("button", { name: "Sign in MetaMask" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
 };
 
 describe("the Bridge page", () => {
@@ -41,7 +41,7 @@ describe("the Bridge page", () => {
     renderApp("/bridge");
     await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
     expect(await screen.findByText(ORIGIN)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(mocks.openAccount).toHaveBeenCalledWith(expect.anything(), ME, expect.objectContaining({ origin: ORIGIN, participant: env.VITE_CANTON_PARTICIPANT }), expect.any(Function), undefined, expect.any(Function));
     expect(screen.getByTitle(PARTY)).toHaveTextContent("bridge::1220abab…ababab");
@@ -67,7 +67,7 @@ describe("the Bridge page", () => {
     mocks.openAccount.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: 4001 })).mockResolvedValue({ party: PARTY });
     await signIn();
     expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
-    await userEvent.click(screen.getByRole("button", { name: "Sign in MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
   });
 
@@ -85,8 +85,8 @@ describe("the Bridge page", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(`This page is open at ${location.origin}, but this bridge is set up for https://ostia.example. Signing is turned off here.`);
-    expect(screen.getByRole("button", { name: "Sign in MetaMask" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in MetaMask" }));
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(mocks.openAccount).not.toHaveBeenCalled();
   });
 
@@ -98,7 +98,7 @@ describe("the Bridge page", () => {
       .mockResolvedValue(opened());
     await signIn();
     expect(await screen.findByRole("alert")).toHaveTextContent("A step for your account from a moment ago is still open. Try again in 10 minutes.");
-    await userEvent.click(screen.getByRole("button", { name: "Sign in MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Nothing was lost. Try again in a moment."));
     expect(screen.getByRole("alert").textContent).not.toMatch(/TypeError|Cannot read|accounts\.ts|waiting_for_signature/);
   });
@@ -120,7 +120,22 @@ describe("the Bridge page", () => {
     act(() => handlers.accountsChanged!([addr(0xe4)]));
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
     expect(closed).toHaveBeenCalledTimes(1);   // its key is dropped and nothing more is done for it
-    expect(screen.getByRole("button", { name: "Sign in MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+  });
+
+  it("does not show Copied for another account after the wallet switches", async () => {
+    setUp();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn(async () => {}) }, configurable: true });
+    mocks.openAccount.mockResolvedValue(opened());
+    await signIn();
+    await userEvent.click(await screen.findByRole("button", { name: "Copy account id" }));
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(screen.queryByText("Copied")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy account id" })).toHaveTextContent("Copy");
   });
 
   it("ignores an account that finishes opening after the wallet has switched to another", async () => {
