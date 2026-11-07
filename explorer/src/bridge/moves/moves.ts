@@ -2,11 +2,11 @@ import type { Address, Hex } from "viem";
 import { ApiError, getAddressTxs, getLeg, getTx, type ApiTx, type BlockLeg } from "../../api.ts";
 import { walletWords } from "../../wallet.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
-import type { EvmAdapter } from "../evm/adapter.ts";
+import { approveCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
-  clearCheckpoint, depositIdOf, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition,
+  clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition,
   type Checkpoint, type MoveInput, type MoveState, type Step, type StoreLike,
 } from "./state.ts";
 
@@ -38,8 +38,8 @@ export interface Deps {
   api: { tx(hash: Hex): Promise<ApiTx | null> };
   /** The explorer's /api/legs/{id}: the leg of a move and the transaction that made it; null while it is not indexed. */
   leg(id: Hex): Promise<{ txHash: string | null } | null>;
-  /** The final transaction `account` sent with `nonce`, from the explorer; null when there is none. */
-  txAt(account: Address, nonce: number): Promise<Hex | null>;
+  /** The final transactions `account` sent with a nonce of `nonce` or more, oldest first, from the explorer. */
+  sentSince(account: Address, nonce: number): Promise<Hex[]>;
   store: StoreLike | null;
   sleep(ms: number): Promise<void>;
   /** A fresh random id for a move: at most 128 characters. */
@@ -55,8 +55,8 @@ export const explorerTx = async (hash: Hex): Promise<ApiTx | null> => {
 export const explorerLeg: Deps["leg"] = async (id) => {
   try { return await getLeg(id); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
 };
-export const explorerTxAt: Deps["txAt"] = async (account, nonce) =>
-  ((await getAddressTxs(account, null, 50, "sent")).items.find((t) => t.nonce === nonce)?.hash as Hex | undefined) ?? null;
+export const explorerSentSince: Deps["sentSince"] = async (account, nonce) =>
+  (await getAddressTxs(account, null, 50, "sent")).items.filter((t) => t.nonce >= nonce).sort((a, b) => a.nonce - b.nonce).map((t) => t.hash as Hex);
 export const randomRef = (): string => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 /** A refusal with the words the person reads. */
@@ -74,23 +74,26 @@ const LAST: Step[] = ["pay", "release", "claim", "withdraw"];
 export interface Move {
   readonly state: MoveState;
   subscribe(fn: (s: MoveState) => void): () => void;
-  /** Starts a move. Refused unless the last one is idle, final or failed. */
+  /** Starts a move. Refused unless the last one is idle, final or failed, and while a move of this account is kept (continue it or abandon it first). */
   start(input: MoveInput): Promise<MoveState>;
   /**
-   * Picks up a move kept in session storage after a reload (the newest, or the one named); idle when there is none. It only reads, waits and shows where the move is:
+   * Picks up a move kept in storage after a reload (the newest of this account and party, or the one named); idle when there is none. It only reads, waits and shows where the move is:
    * it never asks the wallet or signs, so a move that needs a send ends in `paused`. A second call while the first runs gets the same promise.
    */
   resume(ref?: string): Promise<MoveState>;
+  /** The moves kept for the current account and party, newest first: for the screens to show and choose from. */
+  kept(): Checkpoint[];
   /** Carries on a paused move, or retries a failed one that is kept: this is the person's go for the next send. */
   proceed(): Promise<MoveState>;
-  /** The person gives the move up: its record is removed. */
-  abandon(ref?: string): void;
+  /** The person gives the move up: its record is removed. Rejects while a move is running. */
+  abandon(ref?: string): Promise<void>;
 }
 
 export function createMove(d: Deps): Move {
   let state: MoveState = { phase: "idle" };
   let ck: Checkpoint | null = null;
   let running: Promise<MoveState> | null = null;
+  const owner = () => ({ account: d.evm.account, party: d.canton.party() });
   const subs = new Set<(s: MoveState) => void>();
   const go = (next: MoveState) => { state = transition(state, next); subs.forEach((f) => f(state)); };
   const save = (patch: Partial<Checkpoint>) => { ck = { ...ck!, ...patch }; saveCheckpoint(d.store, ck); };
@@ -110,6 +113,7 @@ export function createMove(d: Deps): Move {
       case "lock": {
         if (!PARTY.test(input.receiver)) throw new Refused("The receiver is not a Canton party id (a name, then ::1220 and 64 hex digits).");
         const id = lockIdOf(input.receiver, ref), asset = assetOf(d.config.twins, input.asset);
+        if (input.wrapNative === true && (d.config.wrapper === null || !same(asset.address, d.config.wrapper))) throw new Refused("Wrapping the chain's coin is not set up for this deployment, so nothing was wrapped.");
         return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "payment" && same(l.legId, id) };
       }
       case "redeem": {
@@ -128,7 +132,6 @@ export function createMove(d: Deps): Move {
   }
   type Plan = ReturnType<typeof plan>;
 
-  const mined = async (tx: Hex, what: string) => { if (!(await d.evm.waitReceipt(tx)).success) throw new Refused(`${what} failed on Ostia.`); };
   const enough = async (asset: BridgeToken, base: bigint) => { if ((await d.evm.balanceOf(asset.address)) < base) throw new Refused(`You do not hold enough ${asset.symbol}.`); };
   /** The first vault that holds the amount: a redeem is released from it, so the Canton step is not signed for a vault that could not pay. */
   async function pickVault(asset: BridgeToken, base: bigint): Promise<Address> {
@@ -136,29 +139,51 @@ export function createMove(d: Deps): Move {
     throw new Refused(`The vault does not hold enough ${asset.symbol} to release this amount.`);
   }
 
-  /** The transaction that made a move's leg: by its id, else by the account's nonce. Null while the explorer has not got it. */
+  /** A transaction of the account, at the saved nonce or after it, that makes exactly the call this move asked its wallet for (the same `to`, input data and value). A nonce alone proves nothing. */
+  async function findCall(c: Checkpoint): Promise<Hex | null> {
+    if (!c.call || c.nonce === undefined) return null;
+    for (const h of await d.sentSince(c.account, c.nonce).catch(() => [] as Hex[])) {
+      const t = await d.api.tx(h).catch(() => null);
+      if (t && same(t.from, c.account) && t.to !== null && same(t.to, c.call.to) && t.input !== null && same(t.input, c.call.data) && (c.call.value === undefined || t.value === c.call.value)) return h;
+    }
+    return null;
+  }
+  /** The transaction that made a move's leg. A move with an id (lock, redeem, deposit) is found by that id and nothing else; a withdrawal, which has none, by the call it made. Null while the explorer has not got it. */
   const lookup = async (c: Checkpoint, id: Hex | null): Promise<Hex | null> =>
-    (id ? ((await d.leg(id).catch(() => null))?.txHash as Hex | null | undefined) : null) ?? (c.nonce === undefined ? null : await d.txAt(c.account, c.nonce).catch(() => null));
+    id ? ((await d.leg(id).catch(() => null))?.txHash as Hex | null | undefined) ?? null : findCall(c);
   async function poll(f: () => Promise<Hex | null>): Promise<Hex | null> {
     for (let i = 0; i < (d.maxPolls ?? 200); i++) { const h = await f(); if (h) return h; await d.sleep(d.pollMs ?? 3000); }
     return null;
   }
 
-  /** The wallet is asked once per step, and what it is asked is saved first (the step and the nonce it will take), so a reload can tell a send that happened from one that did not. */
-  async function ask(name: Step, send: () => Promise<Hex>): Promise<Hex> {
+  /** What a step that did not happen leaves behind: the stage goes back to before the send. */
+  const reset = (): Partial<Checkpoint> => ({ stage: before(ck!), step: undefined, call: undefined, nonce: undefined, tx: undefined });
+  /**
+   * The wallet is asked once per step, and what it is asked is saved first (the step, the exact call and a nonce that is a lower bound), so a reload can tell a send that happened from one that did not.
+   * When the wallet returns the hash, the transaction's real nonce is saved.
+   */
+  async function ask(name: Step, send: () => Promise<Hex>, call?: Call): Promise<Hex> {
     go({ phase: "sending-evm", step: name });
-    save({ stage: "wallet", step: name, nonce: await d.evm.nonce() });
-    try { return await send(); } catch (e) { save({ stage: before(ck!), step: undefined, nonce: undefined }); throw e; }
+    save({ stage: "wallet", step: name, call, nonce: await d.evm.nonce() });
+    let tx: Hex;
+    try { tx = await send(); } catch (e) { save(reset()); throw e; }
+    const real = (await d.evm.sentNonce(tx).catch(() => null)) ?? (await d.api.tx(tx).catch(() => null))?.nonce ?? null;
+    save({ tx, ...(real === null ? {} : { nonce: real }) });
+    return tx;
+  }
+  /** A step that failed on Ostia returns the move to before it and pauses, so the person's continue tries it again. */
+  async function mined(tx: Hex, what: string) {
+    if (!(await d.evm.waitReceipt(tx)).success) { save(reset()); throw new Pause(`${what} failed on Ostia. Nothing else was sent. Continue to try again.`); }
   }
   /** A step that makes no leg of the move (the wrap, the approval): done when it is mined. */
-  async function prepare(name: Step, what: string, send: () => Promise<Hex>) {
-    await mined(await ask(name, send), what);
-    save({ stage: before(ck!), step: undefined, nonce: undefined });
+  async function prepare(name: Step, what: string, send: () => Promise<Hex>, call: Call) {
+    await mined(await ask(name, send, call), what);
+    save(reset());
   }
   /** The move's own transaction: asked, its hash kept, and proven final with its leg. */
-  async function last(p: Plan, name: Step, send: () => Promise<Hex>) {
-    const tx = await ask(name, send);
-    save({ stage: "sent", tx });
+  async function last(p: Plan, name: Step, send: () => Promise<Hex>, call?: Call) {
+    const tx = await ask(name, send, call);
+    save({ stage: "sent" });
     await prove(tx, p);
   }
   async function adopt(tx: Hex, p: Plan) { save({ stage: "sent", tx }); await prove(tx, p); }
@@ -175,7 +200,12 @@ export function createMove(d: Deps): Move {
         if (other && !same(other, tx)) { tx = other; save({ tx }); go({ phase: "proving", tx }); continue; }
       } else if (t?.status === "final") {
         if (t.success === false) throw new Refused("The transaction failed on Ostia.");
-        if (!t.legs.some(p.match)) throw new Refused("The transaction is final, but it made no leg of this move.");
+        if (!t.legs.some(p.match)) {
+          // Not this move's transaction. If the id is not used (or a withdrawal has none) nothing of the move has happened: go back before the send and wait for the person.
+          if (p.id !== null && (await d.evm.used(d.config.gateway, p.id))) throw new Refused("The transaction is final, but it made no leg of this move.");
+          save(reset());
+          throw new Pause("That transaction made no leg of this move, so the move has not happened on Ostia. Continue to send it again.");
+        }
         go({ phase: "final", tx, block: t.block?.number ?? 0 });
         clearCheckpoint(d.store, ck!.ref);
         return;
@@ -196,14 +226,16 @@ export function createMove(d: Deps): Move {
     const p = plan(c), { input, ref } = c;
     if (at() === "sent" && c.tx) return prove(c.tx, p);
     if (at() === "wallet") {
-      // The wallet was asked at this nonce. If the account has moved past it, something was sent: find it. If not, nothing was.
-      if (c.nonce !== undefined && (await d.evm.nonce()) > c.nonce) {
-        const h = await poll(() => lookup(c, LAST.includes(c.step!) ? p.id : null));
-        if (!h) throw new Waited("Your wallet sent a transaction and the explorer has not shown it yet. Reload this page to keep waiting.");
-        if (LAST.includes(c.step!)) return adopt(h, p);
-        await mined(h, "The transaction");
+      // The wallet was asked at this step. A move with an id is decided by the id below. For a wrap, an approval or a withdrawal, the account's own transaction counts only when it makes exactly the saved call.
+      if (c.call) {
+        let h: Hex | null = c.tx ?? (await findCall(c));
+        if (!h && c.nonce !== undefined && (await d.evm.nonce()) > c.nonce) h = await poll(() => findCall(c));
+        if (h) {
+          if (LAST.includes(c.step!)) return adopt(h, p);
+          await mined(h, "The transaction");
+        }
       }
-      save({ stage: before(c), step: undefined, nonce: undefined });
+      save(reset());
     }
     // An id that is already used was made by an earlier send: find its transaction and prove it, never send again.
     if (p.id && (at() === "start" || at() === "evm") && (await d.evm.used(d.config.gateway, p.id))) {
@@ -216,7 +248,7 @@ export function createMove(d: Deps): Move {
     switch (input.kind) {
       case "lock": {
         gate("Your lock is saved. Continue to ask your wallet.");
-        const wraps = input.wrapNative === true && d.config.wrapper !== null && same(p.asset.address, d.config.wrapper);
+        const wraps = input.wrapNative === true;
         if (!wraps) await enough(p.asset, p.base);
         go({ phase: "sending-evm", step: "prepare" });
         const parts = await d.registry.lockParts({ receiver: input.receiver, ref });
@@ -225,12 +257,12 @@ export function createMove(d: Deps): Move {
           const held = await d.evm.balanceOf(p.asset.address);
           if (held < p.base) {
             if ((await d.evm.native()) < p.base - held) throw new Refused(`You do not hold enough ${d.config.chain.coin.symbol}.`);
-            await prepare("wrap", "The wrap", () => d.evm.wrap(p.asset.address, p.base - held));
+            await prepare("wrap", "The wrap", () => d.evm.wrap(p.asset.address, p.base - held), wrapCall(p.asset.address, p.base - held));
           }
         }
         if ((await d.evm.allowance(p.asset.address, d.config.gateway)) < p.base) {
-          await prepare("approve", "The approval", () => d.evm.approve(p.asset.address, d.config.gateway, p.base));
-          if ((await d.evm.allowance(p.asset.address, d.config.gateway)) < p.base) throw new Refused("The approval did not give the gateway the amount. Check the allowance in your wallet and try again.");
+          await prepare("approve", "The approval", () => d.evm.approve(p.asset.address, d.config.gateway, p.base), approveCall(p.asset.address, d.config.gateway, p.base));
+          if ((await d.evm.allowance(p.asset.address, d.config.gateway)) < p.base) throw new Pause("The approval did not give the gateway the amount (a replaced approval, or a lower one). Check the allowance in your wallet. Continue to try again.");
         }
         return last(p, "pay", () => d.evm.pay(d.config.gateway, p.id!, p.asset.address, c.vault, p.base));
       }
@@ -265,7 +297,7 @@ export function createMove(d: Deps): Move {
       case "withdraw": {
         gate("Your withdrawal is saved. Continue to ask your wallet.");
         await enough(p.asset, p.base);
-        return last(p, "withdraw", () => d.evm.withdraw(d.config.gateway, p.asset.address, p.base, c.party));
+        return last(p, "withdraw", () => d.evm.withdraw(d.config.gateway, p.asset.address, p.base, c.party), withdrawCall(d.config.gateway, p.asset.address, p.base, c.party));
       }
     }
   }
@@ -300,6 +332,7 @@ export function createMove(d: Deps): Move {
     subscribe(fn) { subs.add(fn); return () => { subs.delete(fn); }; },
     start(input) {
       if (running || !["idle", "final", "failed"].includes(state.phase)) return Promise.reject(new Refused("Another move is not finished yet."));
+      if (keptMoves(d.store, owner()).length > 0) return Promise.reject(new Refused("An earlier move of this account is kept. Continue it, or give it up, before starting another."));
       return run(async () => {
         const ref = d.newRef();
         if (ref.length === 0 || ref.length > 128) throw new Refused("The move could not be given an id.");
@@ -312,7 +345,7 @@ export function createMove(d: Deps): Move {
     },
     resume(ref) {
       if (running) return running;
-      const c = loadCheckpoint(d.store, ref);
+      const c = loadCheckpoint(d.store, ref, owner());
       return c ? run(async () => c, false) : Promise.resolve(state);
     },
     proceed() {
@@ -320,11 +353,13 @@ export function createMove(d: Deps): Move {
       const c = ck;
       return c && (state.phase === "paused" || (state.phase === "failed" && state.kept)) ? run(async () => c, true) : Promise.resolve(state);
     },
+    kept: () => keptMoves(d.store, owner()),
     abandon(ref) {
-      if (running) return;
-      const id = ref ?? ck?.ref;
+      if (running) return Promise.reject(new Refused("A move is running; wait until it stops before giving it up."));
+      const id = ref ?? ck?.ref ?? keptMoves(d.store, owner())[0]?.ref;
       if (id !== undefined) clearCheckpoint(d.store, id);
       if (id === undefined || id === ck?.ref) { ck = null; if (state.phase !== "idle") go({ phase: "idle" }); }
+      return Promise.resolve();
     },
   };
 }

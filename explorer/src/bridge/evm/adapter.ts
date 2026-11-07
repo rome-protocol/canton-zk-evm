@@ -11,7 +11,7 @@ export interface EvmAdapter {
   native(): Promise<bigint>;
   /** The balance of `holder` (the account itself when none is named). */
   balanceOf(erc20: Address, holder?: Address): Promise<bigint>;
-  /** The account's transaction count including the pool: the nonce its next send takes. */
+  /** The account's transaction count at the final block: a lower bound of the nonce its next send takes (the explorer's RPC answers every tag with the final block). */
   nonce(): Promise<number>;
   /** The gateway's `used(id)`: the id has been paid, claimed or released. */
   used(gateway: Address, id: Hex): Promise<boolean>;
@@ -22,6 +22,8 @@ export interface EvmAdapter {
   release(vault: Address, ref: string, erc20: Address, to: Address, amount: bigint): Promise<Hex>;
   claim(gateway: Address, id: Hex, erc20: Address, amount: bigint): Promise<Hex>;
   withdraw(gateway: Address, erc20: Address, amount: bigint, party: string): Promise<Hex>;
+  /** The nonce of the transaction the wallet returned this hash for, from the wallet itself; null when it does not say. */
+  sentNonce(hash: Hex): Promise<number | null>;
   waitReceipt(hash: Hex): Promise<{ success: boolean }>;
 }
 
@@ -37,6 +39,12 @@ export interface ViemOptions {
 
 /** Gas the estimate gives, with a fifth more on top: the chain's blocks are fixed, so a short limit is the one failure that costs a fee. */
 export const padGas = (g: bigint): bigint => (g * 12n) / 10n;
+
+/** The exact call a step makes: where it goes, its input data and, for the wrap, the value in wei (a decimal string). A move keeps it, so a transaction found later can be matched to it exactly. */
+export interface Call { to: Address; data: Hex; value?: string }
+export const wrapCall = (wrapper: Address, amount: bigint): Call => ({ to: wrapper, data: encodeFunctionData({ abi: wrapperAbi, functionName: "deposit" }), value: amount.toString() });
+export const approveCall = (erc20: Address, spender: Address, amount: bigint): Call => ({ to: erc20, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] }) });
+export const withdrawCall = (gateway: Address, erc20: Address, amount: bigint, party: string): Call => ({ to: gateway, data: encodeFunctionData({ abi: gatewayAbi, functionName: "withdraw", args: [erc20, amount, party] }) });
 
 export function viemAdapter(o: ViemOptions): EvmAdapter {
   const chain = defineChain({
@@ -60,15 +68,21 @@ export function viemAdapter(o: ViemOptions): EvmAdapter {
     account,
     native: () => pub.getBalance({ address: account }),
     balanceOf: (erc20, holder) => read<bigint>(erc20, erc20Abi, "balanceOf", [holder ?? account]),
-    nonce: () => pub.getTransactionCount({ address: account, blockTag: "pending" }),
+    nonce: () => pub.getTransactionCount({ address: account, blockTag: "latest" }),
     used: (gateway, id) => pub.readContract({ address: gateway, abi: gatewayAbi, functionName: "used", args: [id] }),
     allowance: (erc20, spender) => read<bigint>(erc20, erc20Abi, "allowance", [account, spender]),
-    wrap: (wrapper, amount) => send(wrapper, encodeFunctionData({ abi: wrapperAbi, functionName: "deposit" }), amount),
-    approve: (erc20, spender, amount) => send(erc20, encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] })),
+    wrap: (wrapper, amount) => { const c = wrapCall(wrapper, amount); return send(c.to, c.data, amount); },
+    approve: (erc20, spender, amount) => { const c = approveCall(erc20, spender, amount); return send(c.to, c.data); },
     pay: (gateway, id, erc20, vault, amount) => send(gateway, encodeFunctionData({ abi: gatewayAbi, functionName: "pay", args: [id, erc20, vault, amount] })),
     release: (vault, ref, erc20, to, amount) => send(vault, encodeFunctionData({ abi: vaultAbi, functionName: "release", args: [ref, erc20, to, amount] })),
     claim: (gateway, id, erc20, amount) => send(gateway, encodeFunctionData({ abi: gatewayAbi, functionName: "claim", args: [id, erc20, amount] })),
-    withdraw: (gateway, erc20, amount, party) => send(gateway, encodeFunctionData({ abi: gatewayAbi, functionName: "withdraw", args: [erc20, amount, party] })),
+    withdraw: (gateway, erc20, amount, party) => { const c = withdrawCall(gateway, erc20, amount, party); return send(c.to, c.data); },
+    sentNonce: async (hash) => {
+      try {
+        const t = (await o.wallet.request({ method: "eth_getTransactionByHash", params: [hash] })) as { nonce?: string } | null;
+        return typeof t?.nonce === "string" ? Number(BigInt(t.nonce)) : null;
+      } catch { return null; }
+    },
     waitReceipt: async (hash) => {
       const r = await pub.waitForTransactionReceipt({ hash, timeout: o.receiptTimeoutMs ?? 600_000, pollingInterval: o.pollMs ?? 2_000 });
       return { success: r.status === "success" };

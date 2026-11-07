@@ -1,4 +1,5 @@
 import { sha256, stringToBytes, type Address, type Hex } from "viem";
+import type { Call } from "../evm/adapter.ts";
 
 /** The four moves. lock: an ERC-20 with a Canton twin, Ostia to Canton. redeem: the twin back. deposit: a Canton token to Ostia (claims the wrapped token). withdraw: a wrapped token back to Canton. */
 export type MoveInput =
@@ -31,8 +32,8 @@ const NEXT: Record<Phase, Phase[]> = {
   paused: ["idle"],
   "signing-canton": ["waiting-canton", "failed"],
   "waiting-canton": ["sending-evm", "paused", "failed"],
-  "sending-evm": ["sending-evm", "proving", "failed"],
-  proving: ["proving", "final", "failed"],
+  "sending-evm": ["sending-evm", "proving", "paused", "failed"],
+  proving: ["proving", "final", "paused", "failed"],
   final: ["idle"],
   failed: ["idle"],
 };
@@ -64,15 +65,16 @@ export interface Checkpoint {
   /** A redeem's recipient on Ostia, as it was resolved when the move started. */
   to?: Address;
   stage: (typeof STAGES)[number];
-  step?: Step; nonce?: number; tx?: Hex;
+  /** The step the wallet is asked for, the exact call it makes, and the nonce the send took: a guess (a lower bound) until the wallet returns the hash, then the transaction's own. */
+  step?: Step; call?: Call; nonce?: number; tx?: Hex;
 }
 
 export interface StoreLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
 const KEY = "bridge-move:", INDEX = "bridge-moves";
 
-/** The tab's session storage, or null where there is none (a private window, a preview). */
-export function sessionStore(): StoreLike | null {
-  try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
+/** The browser's local storage, so a kept move outlives the tab and the browser; null where there is none (a private window, a preview). A record holds no key and no secret. */
+export function moveStore(): StoreLike | null {
+  try { return typeof localStorage === "undefined" ? null : localStorage; } catch { return null; }
 }
 /** The refs of the moves kept, oldest first. */
 export function listMoves(store: StoreLike | null): string[] {
@@ -87,11 +89,19 @@ export function saveCheckpoint(store: StoreLike | null, c: Checkpoint): void {
 export function clearCheckpoint(store: StoreLike | null, ref: string): void {
   try { store?.removeItem(KEY + ref); store?.setItem(INDEX, JSON.stringify(listMoves(store).filter((r) => r !== ref))); } catch { /* nothing to clear */ }
 }
-/** The move kept under `ref`, or the newest one when none is named. */
-export function loadCheckpoint(store: StoreLike | null, ref?: string): Checkpoint | null {
-  try {
-    const id = ref ?? listMoves(store).at(-1);
-    const c = id === undefined ? null : (JSON.parse(store?.getItem(KEY + id) ?? "null") as Checkpoint | null);
-    return c && typeof c.ref === "string" && typeof c.input?.kind === "string" && typeof c.account === "string" && typeof c.party === "string" && typeof c.vault === "string" && (STAGES as readonly string[]).includes(c.stage) ? c : null;
-  } catch { return null; }
+const valid = (c: Checkpoint | null): c is Checkpoint =>
+  c !== null && typeof c.ref === "string" && typeof c.input?.kind === "string" && typeof c.account === "string" && typeof c.party === "string" && typeof c.vault === "string" && (STAGES as readonly string[]).includes(c.stage);
+const read = (store: StoreLike | null, ref: string): Checkpoint | null => {
+  try { const c = JSON.parse(store?.getItem(KEY + ref) ?? "null") as Checkpoint | null; return valid(c) ? c : null; } catch { return null; }
+};
+/** Who a move belongs to: the EVM account (any case) and the Canton party. */
+export interface Owner { account: string; party: string }
+const owns = (o: Owner | undefined, c: Checkpoint) => o === undefined || (o.account.toLowerCase() === c.account.toLowerCase() && o.party === c.party);
+/** The moves kept, newest first, only those of `owner` when one is named: for the screens to show and choose from. */
+export function keptMoves(store: StoreLike | null, owner?: Owner): Checkpoint[] {
+  return listMoves(store).reverse().map((r) => read(store, r)).filter((c): c is Checkpoint => c !== null && owns(owner, c));
+}
+/** The move kept under `ref`, or the newest one (of `owner`, when named) when no ref is given. */
+export function loadCheckpoint(store: StoreLike | null, ref?: string, owner?: Owner): Checkpoint | null {
+  return ref !== undefined ? read(store, ref) : keptMoves(store, owner)[0] ?? null;
 }

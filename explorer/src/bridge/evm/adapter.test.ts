@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toFunctionSelector, type Address } from "viem";
 import type { Eip1193 } from "../../wallet.ts";
-import { padGas, viemAdapter } from "./adapter.ts";
+import { approveCall, padGas, viemAdapter, wrapCall, withdrawCall } from "./adapter.ts";
 
 const ME = ("0x" + "11".repeat(20)) as Address, GATEWAY = ("0x" + "22".repeat(20)) as Address, TOKEN = ("0x" + "aa".repeat(20)) as Address;
 const chain = { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } };
@@ -12,6 +12,7 @@ function setup(estimate: () => string = () => "0x186a0") {
   const wallet: Eip1193 = {
     request: async ({ method, params }) => {
       if (method === "eth_chainId") return "0x" + chain.chainId.toString(16);
+      if (method === "eth_getTransactionByHash") return { nonce: "0xc" };
       if (method === "eth_sendTransaction") { sent.push((params as Record<string, string>[])[0]!); return "0x" + "ab".repeat(32); }
       throw new Error(`the wallet was asked ${method}`);
     },
@@ -58,7 +59,21 @@ describe("the viem adapter", () => {
     expect(await adapter.allowance(TOKEN, GATEWAY)).toBe(7n);
     expect(await adapter.balanceOf(TOKEN, GATEWAY)).toBe(7n);
   });
-  it("gives the account's pending nonce and the gateway's used(id)", async () => {
+  it("H3: reads the nonce of a sent transaction from the wallet", async () => {
+    const { adapter } = setup();
+    expect(await adapter.sentNonce(("0x" + "ab".repeat(32)) as `0x${string}`)).toBe(12);
+  });
+  it("H3: the calls a move keeps are the very calls the adapter sends", async () => {
+    const { adapter, sent } = setup();
+    await adapter.withdraw(GATEWAY, TOKEN, 5n, "alice::1220ab");
+    await adapter.approve(TOKEN, GATEWAY, 7n);
+    await adapter.wrap(TOKEN, 9n);
+    const w = withdrawCall(GATEWAY, TOKEN, 5n, "alice::1220ab"), a = approveCall(TOKEN, GATEWAY, 7n), r = wrapCall(TOKEN, 9n);
+    expect(sent.map((t) => [t.to!.toLowerCase(), t.data])).toEqual([[w.to, w.data], [a.to, a.data], [r.to, r.data]]);
+    expect(r.value).toBe("9");
+    expect(BigInt(sent[2]!.value!)).toBe(9n);
+  });
+  it("gives the account's transaction count at the final block and the gateway's used(id)", async () => {
     const { adapter, reads } = setup();
     expect(await adapter.nonce()).toBe(9);
     expect(await adapter.used(GATEWAY, ("0x" + "01".repeat(32)) as `0x${string}`)).toBe(true);

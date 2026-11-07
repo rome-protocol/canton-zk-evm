@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { keccak256, toFunctionSelector, type Hex } from "viem";
+import { keccak256, toFunctionSelector, type Address, type Hex } from "viem";
 import type { ApiStatus, TwinsOverview } from "../../api.ts";
 import { bridgePins } from "../../../bridge-pins.ts";
 import { BUILD_PINS, loadBridgeConfig, type BridgePins, type ConfigDeps } from "./config.ts";
@@ -8,7 +8,7 @@ const status = { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", d
 const GATEWAY = "0xa7E0000000000000000000000000000000000000";
 const [VAULT, TKA, WTROME, WCC] = ["0xABCDEF" + "0".repeat(34), "0xF" + "1".repeat(39), "0xC" + "2".repeat(39), "0xD" + "3".repeat(39)];
 const CODE = ("0x" + "60".repeat(120)) as Hex;
-const pins: BridgePins = { gateway: GATEWAY.toLowerCase() as Hex, vaultCodeHash: keccak256(CODE) };
+const pins: BridgePins = { gateway: GATEWAY.toLowerCase() as Address, vaultCodeHashes: [keccak256(CODE)], wrapper: WTROME.toLowerCase() as Address };
 const word = (v: string | number | bigint) => "0x" + BigInt(v).toString(16).padStart(64, "0");
 const line = (token: string, symbol: string) => ({ token, symbol, name: symbol, decimals: 18, supply: "0", vaultBalance: "0", matched: true, locks: 0, releases: 0, through: 5 });
 const wrappedLine = (token: string) => ({ token, symbol: "wCC", name: "wCC", decimals: 10, instrumentAdmin: "dso::1220ab", instrumentId: "Amulet", custody: "0", custodyDecimals: 10, holdings: 0, supply: "0", supplyBlock: 5, matched: true, ledgerOffset: 1, readAt: "" });
@@ -65,11 +65,38 @@ describe("loadBridgeConfig", () => {
     const c = await loadBridgeConfig(deps({}, { decimals: { [TKA.toLowerCase()]: 6 } }), pins);
     expect(c.twins.find((t) => t.symbol === "TKA")!.decimals).toBe(6);
   });
-  it("M7: the build puts in the gateway from PINS and the hash of gateway/Vault.bin-runtime", () => {
+  it("L8: the build pins the literal values: the gateway of PINS and the hash of gateway/Vault.bin-runtime", () => {
+    expect(BUILD_PINS.gateway).toBe("0xa7e0000000000000000000000000000000000000");
+    expect(BUILD_PINS.vaultCodeHashes).toEqual(["0x2fbcf33083dd26a360690a0d8d24cd333997b3c7000d950aa5e564e01460d4da"]);
     const built = bridgePins();
     expect(JSON.parse(built.__BRIDGE_GATEWAY__!)).toBe(BUILD_PINS.gateway);
-    expect(BUILD_PINS.gateway).toMatch(/^0x[0-9a-f]{40}$/);
-    expect(BUILD_PINS.vaultCodeHash).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(JSON.parse(built.__VAULT_CODE_HASH__!)).toBe(BUILD_PINS.vaultCodeHash);
+    expect(JSON.parse(built.__VAULT_CODE_HASHES__!)).toEqual(BUILD_PINS.vaultCodeHashes);
+  });
+  it("M8: a vault whose code is any one of the reviewed hashes is accepted", async () => {
+    const c = await loadBridgeConfig(deps(), { ...pins, vaultCodeHashes: [keccak256("0x00"), keccak256(CODE)] });
+    expect(c.vaults).toEqual([VAULT.toLowerCase()]);
+  });
+  it("M8: the wrapped coin is the address pinned for the deployment, never the contract the API calls WtROME", async () => {
+    const pinned = await loadBridgeConfig(deps(), pins);
+    expect(pinned.wrapper).toBe(WTROME.toLowerCase());
+    // The API names TKA "WtROME" too, and a twin by that symbol is not the wrapper: only the pinned address is.
+    const lying = overview({ twins: [line(TKA, "WtROME"), line(WTROME, "WtROME2")] });
+    const d = { ...deps(), twins: async () => lying };
+    expect((await loadBridgeConfig(d, { ...pins, wrapper: TKA.toLowerCase() as Address })).wrapper).toBe(TKA.toLowerCase());
+    expect((await loadBridgeConfig(d, { ...pins, wrapper: WTROME.toLowerCase() as Address })).wrapper).toBe(WTROME.toLowerCase());
+  });
+  it("M8: with no wrapper pinned, no twin is the wrapper, whatever its symbol", async () => {
+    expect((await loadBridgeConfig(deps(), { ...pins, wrapper: null })).wrapper).toBeNull();
+  });
+  it("M8: a pinned wrapper that is not a twin, or has no code on the chain, is not used", async () => {
+    expect((await loadBridgeConfig(deps(), { ...pins, wrapper: ("0x" + "77".repeat(20)) as Address })).wrapper).toBeNull();
+    const d = deps();
+    d.code = async (a) => (a.toLowerCase() === WTROME.toLowerCase() ? "0x" : CODE);
+    expect((await loadBridgeConfig(d, pins)).wrapper).toBeNull();
+  });
+  it("M8: the build reads the wrapper from BRIDGE_WTROME_ADDRESS, and refuses a value that is not an address", () => {
+    expect(JSON.parse(bridgePins(undefined, { BRIDGE_WTROME_ADDRESS: "0x" + "AB".repeat(20) }).__WTROME_ADDRESS__!)).toBe("0x" + "ab".repeat(20));
+    expect(JSON.parse(bridgePins(undefined, {}).__WTROME_ADDRESS__!)).toBe("");
+    expect(() => bridgePins(undefined, { BRIDGE_WTROME_ADDRESS: "0x12" })).toThrow("not an address");
   });
 });

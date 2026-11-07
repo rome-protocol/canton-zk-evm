@@ -24,13 +24,13 @@ export interface BridgeConfig {
   twins: BridgeToken[];
   /** Canton tokens as ERC-20s on Ostia (wCC, wTKB): registered with the gateway, 10 decimals. */
   wrapped: BridgeToken[];
-  /** The twin whose symbol is WtROME, which wraps the chain's own coin; null when there is none. */
+  /** The twin that is this deployment's pinned WtROME, which wraps the chain's own coin; null when none is pinned, and then nothing is wrapped. */
   wrapper: Address | null;
 }
 
-/** The two values written into the page at build time (explorer/bridge-pins.ts). */
-export interface BridgePins { gateway: Address; vaultCodeHash: Hex }
-export const BUILD_PINS: BridgePins = { gateway: __BRIDGE_GATEWAY__ as Address, vaultCodeHash: __VAULT_CODE_HASH__ as Hex };
+/** What is written into the page at build time (explorer/bridge-pins.ts): the gateway, the reviewed hashes of the vault's code, and this deployment's wrapped coin (null when none is pinned). */
+export interface BridgePins { gateway: Address; vaultCodeHashes: Hex[]; wrapper: Address | null }
+export const BUILD_PINS: BridgePins = { gateway: __BRIDGE_GATEWAY__ as Address, vaultCodeHashes: __VAULT_CODE_HASHES__ as Hex[], wrapper: __WTROME_ADDRESS__ === "" ? null : (__WTROME_ADDRESS__ as Address) };
 
 export interface ConfigDeps {
   status(): Promise<ApiStatus>;
@@ -62,7 +62,7 @@ export async function loadBridgeConfig(d: ConfigDeps = apiDeps, pins: BridgePins
   const vaults = (await Promise.all(overview.vaults.map(async (v) => {
     const a = lower(v.address);
     const [code, gw] = await Promise.all([ask(() => d.code(a)), ask(() => view<Address>(vaultAbi, a, "GATEWAY"))]);
-    return code !== null && gw !== null && keccak256(code as Hex) === pins.vaultCodeHash.toLowerCase() && lower(gw) === gateway ? a : null;
+    return code !== null && gw !== null && pins.vaultCodeHashes.some((h) => h.toLowerCase() === keccak256(code as Hex)) && lower(gw) === gateway ? a : null;
   }))).filter((a): a is Address => a !== null);
   if (vaults.length === 0) throw new Error("The chain has no vault that matches the pinned code and gateway, so the bridge is not available.");
 
@@ -71,6 +71,10 @@ export async function loadBridgeConfig(d: ConfigDeps = apiDeps, pins: BridgePins
     const address = lower(t.token), decimals = await decimalsOf(address);
     return decimals === null ? null : { address, symbol: t.symbol ?? "", decimals };
   }))).filter((t): t is BridgeToken => t !== null);
+  // The wrapped coin is the one address pinned for this deployment, never one the API names. It must be a twin, and it must have code.
+  const pinned = pins.wrapper === null ? null : lower(pins.wrapper);
+  const wrapperCode = pinned !== null && twins.some((t) => t.address === pinned) ? await ask(() => d.code(pinned)) : null;
+  const wrapper = wrapperCode !== null && wrapperCode !== "0x" ? pinned : null;
   // A wrapped token is one the gateway made (its `wrapped` map), and it counts in Canton's 10 decimals.
   const wrapped = (await Promise.all(overview.canton.map(async (c): Promise<BridgeToken | null> => {
     const address = lower(c.token);
@@ -80,6 +84,6 @@ export async function loadBridgeConfig(d: ConfigDeps = apiDeps, pins: BridgePins
   return {
     chain: { chainId: status.chainId, chainName: status.chainName, coin: status.coin },
     gateway, vault: vaults[0]!, vaults, registryUrl: overview.registryService.replace(/\/+$/, ""), twins, wrapped,
-    wrapper: twins.find((t) => t.symbol === "WtROME")?.address ?? null,
+    wrapper,
   };
 }

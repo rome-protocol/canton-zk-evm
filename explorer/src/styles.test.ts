@@ -31,8 +31,8 @@ describe("themes", () => {
   });
 
   it("has no switch of its own: nothing reads or stores a theme choice", () => {
-    // The bridge's moves keep their own progress in the tab's session store (state.ts); that is not a theme choice.
-    for (const f of sources(join(root, "src"))) expect(readFileSync(f, "utf8"), f).not.toMatch(f.includes("/src/bridge/moves/") ? /data-theme|localStorage/ : /data-theme|localStorage|sessionStorage/);
+    // The bridge's moves keep their own progress in local storage (moves/state.ts, no secret in it); that is not a theme choice.
+    for (const f of sources(join(root, "src"))) expect(readFileSync(f, "utf8"), f).not.toMatch(f.endsWith("/src/bridge/moves/state.ts") ? /data-theme|sessionStorage/ : /data-theme|localStorage|sessionStorage/);
   });
 });
 

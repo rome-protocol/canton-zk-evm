@@ -2,4 +2,5 @@
 
 /** The Bridge page's build-time pins (explorer/bridge-pins.ts). */
 declare const __BRIDGE_GATEWAY__: string;
-declare const __VAULT_CODE_HASH__: string;
+declare const __VAULT_CODE_HASHES__: string[];
+declare const __WTROME_ADDRESS__: string;
