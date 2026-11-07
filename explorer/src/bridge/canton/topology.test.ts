@@ -85,7 +85,7 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
     const wrapped = Uint8Array.from([...fromBase64(fx.topologyTransactions[0]!), 0x78, 0x01]);
     await expect(verify(fx, [base64(wrapped)])).rejects.toThrow(/does not decode/);
     await expect(verify(fx, [base64(new Uint8Array([0, 0, 0]))])).rejects.toThrow(UnexpectedOnboarding);
-    await expect(verify(fx, ["not base64!"])).rejects.toThrow(UnexpectedOnboarding);
+    await expect(verifyOnboarding({ party: fx.party, topologyTransactions: ["not base64!"], multiHash: fx.multiHash }, key, fx.participant)).rejects.toThrow(UnexpectedOnboarding);
   });
   it("refuses a wrapper version other than 30 or 31, and a message in the other version's wrapper", async () => {
     for (const v of [0, 29, 32, 36, 37]) await expect(verify(fx, [remake(fx, undefined, v)]), String(v)).rejects.toThrow(/not 30 or 31/);
