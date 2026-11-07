@@ -998,7 +998,7 @@ class Limits(Case):
 ADMIN = "DSO::1220" + "dd" * 32
 INSTRUCTION = "00" + "ab" * 40
 FACTORY = {"factoryId": "00" + "cd" * 40, "choiceContext": {"choiceContextData": {"values": {}}, "disclosedContracts": [{"templateId": "#p:M:E", "contractId": "00" + "cd" * 40}]}}
-SECRET = secrets.token_hex(8)
+HANDLE = secrets.token_hex(8)
 
 
 class FakeOutside:
@@ -1034,7 +1034,7 @@ class OutsideCase(Case):
         self.outside = FakeOutside()
         self.bearer_file = os.path.join(self.dir.name, "token")
         with open(self.bearer_file, "w") as f:
-            f.write(SECRET + "\n")
+            f.write(HANDLE + "\n")
         os.chmod(self.bearer_file, 0o600)
 
     def tearDown(self):
@@ -1058,7 +1058,7 @@ class RegistryRelay(OutsideCase):
         status, out, _ = self.factory()
         self.assertEqual((status, out), (200, FACTORY))
         # the party is the account's proof, not the registry's business; the token and the contact go along
-        self.assertEqual(self.outside.calls, [("/scan-proxy/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": {"x": 1}}, "Bearer " + SECRET, A.USER_AGENT)])
+        self.assertEqual(self.outside.calls, [("/scan-proxy/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": {"x": 1}}, "Bearer " + HANDLE, A.USER_AGENT)])
 
     def test_the_accept_context_of_an_instruction(self):
         self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
@@ -1124,7 +1124,7 @@ class RegistryRelay(OutsideCase):
             self.assertEqual(self.factory()[0], 502, raw)
 
     def test_a_registry_that_refuses_is_a_502_with_its_status_and_none_of_its_text(self):
-        self.outside.status, self.outside.raw = 404, json.dumps({"error": SECRET + " secret"}).encode()
+        self.outside.status, self.outside.raw = 404, json.dumps({"error": HANDLE + " secret"}).encode()
         self.with_registry()
         status, out, _ = self.factory()
         self.assertEqual((status, out), (502, {"error": "the token registry answered HTTP 404", "registryStatus": 404}))
@@ -1154,7 +1154,7 @@ class RegistryRelay(OutsideCase):
         with open(self.bearer_file, "w") as f:
             f.write("rotated\n")
         self.factory({"party": PARTY, "choiceArguments": {"x": 2}})
-        self.assertEqual([c[2] for c in self.outside.calls], ["Bearer " + SECRET, "Bearer rotated"])
+        self.assertEqual([c[2] for c in self.outside.calls], ["Bearer " + HANDLE, "Bearer rotated"])
         with open(self.bearer_file, "w") as f:
             f.write("two tokens\n")
         self.assertEqual(self.factory()[0], 502)   # a file with two in it: nothing is sent
@@ -1189,7 +1189,7 @@ class Faucets(OutsideCase):
         status, out, _ = self.ask()
         self.assertEqual((status, out), (200, {"transferInstructionCid": INSTRUCTION}))
         [(path, body, auth, agent)] = self.outside.calls
-        self.assertEqual((path, auth, agent), ("/api/validator" + self.WALLET, "Bearer " + SECRET, A.USER_AGENT))
+        self.assertEqual((path, auth, agent), ("/api/validator" + self.WALLET, "Bearer " + HANDLE, A.USER_AGENT))
         self.assertEqual((body["receiver_party_id"], body["amount"]), (PARTY, "20.0"))
         self.assertTrue(body["tracking_id"].startswith("faucet-") and body["expires_at"] > time.time() * 1_000_000)
 
