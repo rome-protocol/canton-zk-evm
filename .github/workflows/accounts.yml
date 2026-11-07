@@ -33,6 +33,13 @@ jobs:
   canton:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # 37 is the version PINS names; 36 is today's DevNet, and its topology transactions are another version of the messages (the explorer's page reads both).
+        protocol_version: ["37", "36"]
+    env:
+      CZE_PROTOCOL_VERSION: ${{ matrix.protocol_version }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1

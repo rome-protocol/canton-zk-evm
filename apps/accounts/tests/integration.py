@@ -78,7 +78,7 @@ class AccountsOnCanton(unittest.TestCase):
             self.assertEqual(party, "bridge::1220" + hashlib.sha256(struct.pack(">i", 12) + raw).hexdigest())
             self.assertTrue(topology["topologyTransactions"] and topology["multiHash"])
             participant = call("GET", f"{LEDGER}/v2/parties/participant-id", bearer=propose.role_token("admin"))[1]["participantId"]
-            print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": base64.b64encode(raw).decode(), "participant": participant,
+            print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": base64.b64encode(raw).decode(), "participant": participant, "protocolVersion": int(os.environ["CANTON_PROTOCOL_VERSION"]),
                                            "multiHash": topology["multiHash"], "topologyTransactions": topology["topologyTransactions"]}, sort_keys=True), flush=True)
             status, made = service("/accounts/v1/allocate", {"blob": topology["blob"], "signature": key.sign(topology["multiHash"])})
             self.assertEqual((status, made), (200, {"party": party, "created": True}), made)

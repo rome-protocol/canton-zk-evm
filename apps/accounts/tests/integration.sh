@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The accounts service on a real Canton, on the protocol version PINS names (CANTON_PROTOCOL_VERSION): the pinned Canton, started as tests/canton_external.sh
+# The accounts service on a real Canton, on the protocol version PINS names (CANTON_PROTOCOL_VERSION; CZE_PROTOCOL_VERSION=36 runs the other one Canton 3.7.1 supports): the pinned Canton, started as tests/canton_external.sh
 # starts it (an existing participant with a login on its Ledger API), Ostia's chain set up on it, and a Ledger API user that holds NO right. The service
 # runs with that user's token alone (the participant lets a user with no right allocate up to 100 parties for itself); integration.py then makes an external party from an Ed25519 key, creates a WithdrawalAcceptance for it, and lists its holdings.
 # The tokens live two minutes (as on the DevNet) and are written again every twenty seconds, each by a replace of the file, so a reader never sees half of one.
@@ -11,6 +11,9 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 WORK=$(mktemp -d)
 export CZE_STATE_DIR=$WORK/state FAKE_LOG=$WORK/calls FAKE_ANSWER=$WORK/answer
 fail() { echo "FAIL: $*" >&2; exit 1; }
+CANTON_PROTOCOL_VERSION=${CZE_PROTOCOL_VERSION:-$CANTON_PROTOCOL_VERSION}
+[[ $CANTON_PROTOCOL_VERSION =~ ^3[67]$ ]] || fail "CZE_PROTOCOL_VERSION is 36 or 37 (the versions Canton $CANTON_VERSION supports)"
+export CANTON_PROTOCOL_VERSION
 pids=()
 cleanup() {
   local status=$?
@@ -71,7 +74,7 @@ java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" -c "
 pids+=($!)
 for _ in $(seq 1 300); do grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" && break; kill -0 "${pids[-1]}" 2>/dev/null || fail "Canton stopped"; sleep 1; done
 grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" || fail "the participant did not come up"
-echo "the synchronizer runs protocol version $CANTON_PROTOCOL_VERSION (PINS)"
+echo "the synchronizer runs protocol version $CANTON_PROTOCOL_VERSION"
 
 # Ostia's chain: the package, the parties, the users and the chain record, as an existing participant gets them.
 H0=$(printf 'ab%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
