@@ -24,6 +24,7 @@ On 29 October 2026 at 10:33 UTC, DevNet deployed commit 4b4f63c, which adds two-
 
 DevNet has run commit 2857b00 since 5 November 2026 at 01:09 UTC: the explorer, the builder and the twin registry service. That commit has the Canton 3.7.1 pins (CI runs protocol version 37), a lighter explorer, and a token registry that may be named `*.localhost` on the builder's machine, with the peer checked on every request that carries a token. Main is ahead of it. These are merged on main and not deployed, and DevNet runs 2857b00 until the next deploy:
 
+- Canton 3.7.2 pins. The local network and CI run open-source Canton 3.7.2 (the version Splice 0.10.1 ships); protocol version 37 stays.
 - The twin acceptance. Twin package 0.2.0 adds `TwinAcceptance`, signed by the holder. The builder builds a lock only for a receiver with an active acceptance, and the twin registry service answers 409 without one. Once it is deployed, this fixes the stranded payer described in [docs/DESIGN.md](docs/DESIGN.md#ostia-on-devnet).
 - Paged reads. Every Canton list the builder reads on its block path is read 200 to a page, and a failed read leaves out only the legs that needed it.
 - The accounts service ([apps/accounts](apps/accounts/README.md)): Canton accounts held by the user's own key, and a DevNet-only faucet of test Canton Coin. Self-serve accounts are not live until it is deployed.
