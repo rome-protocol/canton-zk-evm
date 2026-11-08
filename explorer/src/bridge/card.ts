@@ -26,6 +26,9 @@ export interface ButtonInput {
 }
 
 /** What a move that is running says while it waits. Null when no move is running. */
+/** How long a move takes from Move to Final, as the card says it (live moves took 46 to 56 s). The one place for this figure. */
+export const WAIT_WORDS = "About 1 min";
+
 export function progressWords(s: MoveState, symbol: string): string | null {
   switch (s.phase) {
     case "signing-canton": return "Signing on Canton…";

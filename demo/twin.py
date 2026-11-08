@@ -322,9 +322,14 @@ class _TokenHTTP(urllib.request.HTTPHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect, _TokenHTTP)
 
 
+USER_AGENT = "ostia-twin/1 Rome Protocol rome@romeprotocol.com"   # the site's edge refuses Python's default User-Agent (403, error code 1010)
+
+
 def fetch_json(request: urllib.request.Request) -> dict:
-    """What a service answers to a JSON request, for a server that is not trusted: bounded in size, and an object or nothing."""
+    """What a service answers to a JSON request, for a server that is not trusted: bounded in size, and an object or nothing. A request without a User-Agent of its own carries USER_AGENT."""
     url = request.full_url
+    if not request.has_header("User-agent"):
+        request.add_header("User-agent", USER_AGENT)
     try:
         with _OPENER.open(request, timeout=60) as r:
             data = r.read(MAX_ANSWER + 1)

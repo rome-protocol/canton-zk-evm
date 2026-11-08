@@ -99,6 +99,13 @@ describe("the button walks the steps", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Amount to move" }), "1");
     expect(screen.getByRole("button", { name: "Not enough TKA" })).toBeDisabled();
   });
+  it("shows a balance with at most six decimals, cut down, while Max fills in the exact amount", async () => {
+    show({}, fakeSession({ legs: () => [], evm: fakeEvm({ balance: 1999999999999999999n }) }));
+    await tka();
+    expect(await screen.findByText("1.999999")).toBeInTheDocument();
+    await press("Max");
+    expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("1.9999999999");
+  });
   it("offers the faucet inline only when the account holds nothing for fees", async () => {
     const { props } = show({}, fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) }));
     await userEvent.click(await screen.findByRole("button", { name: "Get 1 tROME" }));
@@ -123,7 +130,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, TKA)] });
     show({}, m);
     await tka();
-    expect(screen.getByText(/About 30 s · 2 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 1 min · 2 MetaMask pop-ups/)).toBeInTheDocument();
     await type("1.5");
     await press("Move to Canton");
     await done();
@@ -135,7 +142,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ evm: fakeEvm({ balance: 0n, native: 10n ** 20n }), legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, WTROME)] });
     show({}, m);
     await choose("From", /^tROME on Ostia$/);
-    expect(screen.getByText(/About 30 s · 3 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 1 min · 3 MetaMask pop-ups/)).toBeInTheDocument();
     await type("2");
     await press("Move to Canton");
     await done();
@@ -146,7 +153,7 @@ describe("the four moves on the card", () => {
     show({}, m);
     await tka();
     await press("Swap direction");
-    expect(screen.getByText(/About 30 s · 1 MetaMask pop-up$/)).toBeInTheDocument();
+    expect(screen.getByText(/About 1 min · 1 MetaMask pop-up$/)).toBeInTheDocument();
     await type("3");
     await press("Move to Ostia");
     await done();
@@ -156,7 +163,7 @@ describe("the four moves on the card", () => {
   it("Canton Coin, Canton to Ostia: the page signs the deposit on Canton, then one claim; the wrapped token lands on Ostia", async () => {
     const m = fakeSession({ legs: (ref) => [leg({ kind: "deposit", legId: depositIdOf(PARTY, ref) }, WCC)] });
     show({}, m);
-    await choose("From", /^CC on Canton$/);
+    await choose("From", /^Canton Coin on Canton$/);
     expect(screen.getByRole("button", { name: /^To token wCC on Ostia$/ })).toBeInTheDocument();
     await type("5");
     await press("Move to Ostia");
@@ -233,9 +240,9 @@ describe("the folded steps line", () => {
   it("opens to the steps and says who signs each", async () => {
     show();
     await tka();
-    const steps = screen.getByText(/About 30 s/).closest("details")!;
+    const steps = screen.getByText(/About 1 min/).closest("details")!;
     expect(steps).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText(/About 30 s/));
+    await userEvent.click(screen.getByText(/About 1 min/));
     expect(steps).toHaveAttribute("open");
     expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");
@@ -250,22 +257,25 @@ describe("the token picker", () => {
     await userEvent.click(screen.getByRole("button", { name: /^From token/ }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog.querySelector('[aria-label="On Ostia"]') as HTMLElement).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["tROMEon Ostia", "TKAon Ostia", "wCCon Ostia"]);
-    expect(within(dialog.querySelector('[aria-label="On Canton"]') as HTMLElement).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["tROMEon Canton", "TKAon Canton", "CCon Canton"]);
-    await userEvent.click(within(dialog).getByRole("button", { name: "CC on Canton" }));
+    expect(within(dialog.querySelector('[aria-label="On Canton"]') as HTMLElement).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["tROMEon Canton", "TKAon Canton", "Canton Coinon Canton"]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Canton Coin on Canton" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("button", { name: /^From token CC on Canton$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^From token Canton Coin on Canton$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^To token wCC on Ostia$/ })).toBeInTheDocument();
   });
   it("picking a token in To makes it the destination", async () => {
     show();
     await choose("To", /^wCC on Ostia$/);
-    expect(screen.getByRole("button", { name: /^From token CC on Canton$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^From token Canton Coin on Canton$/ })).toBeInTheDocument();
   });
   it("searches by name and by address, and says when nothing matches", async () => {
     show();
     await userEvent.click(screen.getByRole("button", { name: /^From token/ }));
     await userEvent.type(screen.getByRole("searchbox", { name: "Search tokens" }), "cc");
-    expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["wCCon Ostia", "CCon Canton"]);
+    expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["wCCon Ostia"]);
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "coin");
+    expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["Canton Coinon Canton"]);
     expect(screen.queryByRole("button", { name: "TKA on Ostia" })).toBeNull();
     await userEvent.clear(screen.getByRole("searchbox"));
     await userEvent.type(screen.getByRole("searchbox"), TKA.slice(0, 12));
@@ -281,9 +291,9 @@ describe("the token picker", () => {
     const facts = (b: HTMLElement) => document.getElementById(b.getAttribute("aria-describedby")!)!.textContent;
     const wcc = within(onOstia).getByRole("button", { name: "About wCC on Ostia" });
     await userEvent.click(wcc);
-    expect(facts(wcc)).toBe(`Address${WCC}Decimals10Twin ofCC on Canton (wrapped here)`);
+    expect(facts(wcc)).toBe(`Address${WCC}Decimals10Twin ofCanton Coin on Canton (wrapped here)`);
     const canton = screen.getByRole("region", { name: "On Canton" });
-    const cc = within(canton).getByRole("button", { name: "About CC on Canton" });
+    const cc = within(canton).getByRole("button", { name: "About Canton Coin on Canton" });
     await userEvent.click(cc);
     expect(facts(cc)).toBe("Token idAmuletDecimals10Twin ofwCC on Ostia (its wrapped form)");
   });
@@ -355,7 +365,7 @@ describe("what the card does around a move", () => {
     const six = { ...config, twins: [{ address: TKA, symbol: "TKA", decimals: 6 }, ...config.twins.slice(1)] };
     show({ config: six }, fakeSession({ legs: () => [], cantonBalance: 123456789012n }));
     await choose("From", /^TKA on Canton$/);
-    await screen.findByText("12.3456789012");   // Canton holds ten decimals
+    await screen.findByText("12.345678");   // Canton holds ten decimals: the balance shows six, cut down
     await press("Max");
     expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("12.345678");
     expect(await screen.findByRole("button", { name: "Move to Ostia" })).toBeEnabled();

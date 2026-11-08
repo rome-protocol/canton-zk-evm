@@ -24,8 +24,10 @@ export interface Pair {
 export interface Token { key: string; pair: string; side: Side; symbol: string; decimals: number }
 
 const bare = (a: string) => a.replace(/^0x/, "").toLowerCase();
-/** A wrapped token's name on Canton: "wCC" is "CC". */
-const cantonName = (wrapped: string, id: string) => (/^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : id);
+/** Canton's own coin is an instrument called "Amulet": people know it as Canton Coin. */
+export const CANTON_COIN = "Canton Coin";
+/** A wrapped token's name on Canton: Canton Coin for the Amulet instrument, otherwise "wTKB" is "TKB" (or the instrument's id when the symbol does not start with w). */
+const cantonName = (wrapped: string, id: string) => (id === "Amulet" ? CANTON_COIN : /^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : id);
 
 /** The pairs this build can move. `gateway` is the Canton party that issues the twins on Canton (the build's chain gateway). */
 export function pairsOf(config: BridgeConfig, gateway: string): Pair[] {

@@ -49,6 +49,15 @@ export const lockIdOf = (receiver: string, ref: string): Hex => idOf(`lock,${rec
 export const depositIdOf = (depositor: string, label: string): Hex => idOf(`deposit,${depositor},${label}`);
 export const releaseIdOf = (vault: Address, ref: string): Hex => idOf(`vault-release,${vault.slice(2).toLowerCase()},${ref}`);
 
+/** An id as 32 bytes: 64 hex digits in lower case, with or without 0x. Null when it is not one. The chain's ids come with 0x from this page and without it from the registry. */
+export const idBytes = (id: unknown): string | null => {
+  if (typeof id !== "string") return null;
+  const t = id.replace(/^0x/i, "").toLowerCase();
+  return /^[0-9a-f]{64}$/.test(t) ? t : null;
+};
+/** Whether two ids are the same 32 bytes, however each is written. An id that is not 32 bytes is never the same as anything. */
+export const sameId = (a: unknown, b: unknown): boolean => { const x = idBytes(a); return x !== null && x === idBytes(b); };
+
 export const STAGES = ["start", "signing", "allocated", "canton", "evm", "wallet", "sent"] as const;
 
 /**

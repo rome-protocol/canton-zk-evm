@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { Address, Hex } from "viem";
 import type { ApiTx } from "../api.ts";
 import { continueWords, openOnCanton, otherMoves, recordOf, rememberUpdate, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
+import { NoLongerOpen } from "../bridge/adopt.ts";
 import { noteOf, waitWords } from "../bridge/card.ts";
 import type { OpenState } from "../bridge/canton/accounts.ts";
 import type { MoveState, StoreLike } from "../bridge/moves/state.ts";
@@ -104,7 +105,7 @@ export function Activity(props: ActivityProps) {
         end = await session.move.proceed();
       }
       if (end.phase === "failed" && !end.kept) setProblem(moveWords(end.reason));   // a failed move that is kept says it in its own row
-    } catch (x) { setProblem(moveWords(x instanceof Error ? x.message : null)); }
+    } catch (x) { setProblem(x instanceof NoLongerOpen ? x.message : moveWords(x instanceof Error ? x.message : null)); }
     finally { setBusy(false); setStamp((n) => n + 1); }
   }, [session, busy, liveRef, props.ensureChain, others]);
 

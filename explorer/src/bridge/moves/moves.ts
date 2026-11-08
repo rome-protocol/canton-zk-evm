@@ -7,7 +7,7 @@ import { approveCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from 
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
-  clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition,
+  clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition,
   type Checkpoint, type MoveInput, type MoveState, type Step, type StoreLike,
 } from "./state.ts";
 
@@ -140,15 +140,15 @@ export function createMove(d: Deps): Move {
         if (!PARTY.test(input.receiver)) throw new Refused("The receiver is not a Canton party id (a name, then ::1220 and 64 hex digits).");
         const id = lockIdOf(input.receiver, ref), asset = assetOf(d.config.twins, input.asset);
         if (input.wrapNative === true && (d.config.wrapper === null || !same(asset.address, d.config.wrapper))) throw new Refused("Wrapping the chain's coin is not set up for this deployment, so nothing was wrapped.");
-        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "payment" && same(l.legId, id) };
+        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "payment" && sameId(l.legId, id) };
       }
       case "redeem": {
         const id = releaseIdOf(c.vault, ref), asset = assetOf(d.config.twins, input.asset);
-        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "payment" && same(l.legId, id) };
+        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "payment" && sameId(l.legId, id) };
       }
       case "deposit": {
         const id = depositIdOf(party, ref), asset = assetOf(d.config.wrapped, input.asset);
-        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "deposit" && same(l.legId, id) };
+        return { asset, ...parseAmount(input.amount, asset.decimals), id, match: (l: BlockLeg) => l.kind === "deposit" && sameId(l.legId, id) };
       }
       case "withdraw": {
         const asset = assetOf(d.config.wrapped, input.asset), a = parseAmount(input.amount, asset.decimals);
@@ -308,7 +308,7 @@ export function createMove(d: Deps): Move {
         if (!wraps) await enough(p.asset, p.base);
         go({ phase: "sending-evm", step: "prepare" });
         const parts = await d.registry.lockParts({ receiver: input.receiver, ref });
-        if (!same(parts.lockId, p.id!)) throw new Refused("The registry gave a lock id that is not the one this lock makes. Nothing was sent.");
+        if (!sameId(parts.lockId, p.id)) throw new Refused("The registry gave a lock id that is not the one this lock makes. Nothing was sent.");
         if (wraps) {
           const held = await d.evm.balanceOf(p.asset.address);
           if (held < p.base) {

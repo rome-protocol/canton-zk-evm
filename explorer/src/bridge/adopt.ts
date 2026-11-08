@@ -2,9 +2,18 @@
 // the move library then picks it up like any kept move, never asks the wallet before the person says go, and releases or claims from a vault it picks again. Nothing here signs or sends.
 import type { Address } from "viem";
 import { parseAmount } from "./amounts.ts";
-import type { AllocationView, OpenRequest } from "./canton/accounts.ts";
+import type { AllocationView, OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { BridgeConfig } from "./evm/config.ts";
-import { depositIdOf, type Checkpoint } from "./moves/state.ts";
+import { depositIdOf, sameId, type Checkpoint } from "./moves/state.ts";
+
+/** Thrown when a request that was listed as open is not open any more when its move is about to be kept. */
+export class NoLongerOpen extends Error {
+  constructor() { super("This move is no longer open on Canton."); }
+}
+
+/** Whether the request is still among the account's open requests (redeem or deposit), by its contract. */
+export const stillOpen = (request: OpenRequest, open: Pick<OpenState, "redeemRequests" | "depositRequests">): boolean =>
+  [...open.redeemRequests, ...open.depositRequests].some((r) => r.contractId === request.contractId);
 
 const bare = (t: string) => t.replace(/^0x/, "").toLowerCase();
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -27,8 +36,8 @@ export function redeemRecord(r: OpenRequest, o: { account: Address; party: strin
 
 /** The deposit an open request stands for: its token and amount come from the allocation the account made under the request's label. Null when the allocation is not there any more or its token is not one this build moves. */
 export async function depositRecord(r: OpenRequest, o: { account: Address; party: string; config: BridgeConfig; allocations(): Promise<AllocationView[]> }): Promise<Checkpoint | null> {
-  const a = r.arguments, label = str(a.label), id = typeof a.depositId === "string" ? bare(a.depositId) : null;
-  if (label === null || id === null || depositIdOf(o.party, label).slice(2).toLowerCase() !== id || (typeof a.depositor === "string" && a.depositor !== o.party)) return null;
+  const a = r.arguments, label = str(a.label), id = a.depositId;
+  if (label === null || !sameId(depositIdOf(o.party, label), id) || (typeof a.depositor === "string" && a.depositor !== o.party)) return null;
   const held = (await o.allocations()).find((x) => x.allocation.settlement.settlementRef.id === label);
   const leg = held?.allocation.transferLeg;
   if (!leg) return null;

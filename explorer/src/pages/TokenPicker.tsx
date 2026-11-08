@@ -27,7 +27,7 @@ export function TokenPicker({ pairs, chainName, selected, onPick, onClose }: { p
     <div className="picker-back" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="picker card" role="dialog" aria-modal="true" aria-labelledby={title}>
         <div className="picker-h"><h2 id={title}>Choose a token</h2><button type="button" className="icon-b" aria-label="Close" onClick={onClose}><Icon name="cross" size={14} /></button></div>
-        <label className="picker-s"><Icon name="search" size={14} /><input ref={box} type="search" aria-label="Search tokens" placeholder="Search by name or address" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+        <label className="picker-s"><Icon name="search" size={14} /><input ref={box} type="search" aria-label="Search tokens" placeholder="Name or address" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
         {shown.map((g) => g.rows.length === 0 ? null : (
           <section key={g.name} aria-label={g.name}>
             <h3 className="picker-g">{g.name}</h3>

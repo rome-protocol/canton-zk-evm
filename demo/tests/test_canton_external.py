@@ -182,6 +182,30 @@ class SettingsTests(ExternalTestCase):
             twin.get_json(url, {"authorization": "Bearer s3cret"})
         self.assertEqual(asked, ["Bearer s3cret"])
 
+    def test_a_request_names_the_tool_in_its_user_agent(self):
+        import twin
+        agents = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+
+            def do_GET(self):
+                agents.append(self.headers.get("user-agent"))
+                data = b"{}"
+                self.send_response(200)
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        url = f"http://127.0.0.1:{server.server_port}/x"
+        twin.get_json(url)
+        twin.get_json(url, {"user-agent": "other/2"})
+        self.assertTrue(agents[0].startswith("ostia-twin/"))
+        self.assertEqual(agents[1], "other/2")
+
     def test_the_mode_is_local_or_external(self):
         os.environ["CZE_CANTON"] = "remote"
         with self.assertRaises(SystemExit):

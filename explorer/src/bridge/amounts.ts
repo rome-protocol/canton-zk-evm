@@ -32,6 +32,19 @@ export function showUnits(base: bigint, decimals: number): string {
   return fraction === "" ? (base / unit).toString() : `${base / unit}.${fraction}`;
 }
 
+/** The most decimals a balance is shown with. */
+export const BALANCE_DECIMALS = 6;
+
+/**
+ * A balance for the screen: at most 6 decimals, cut down (never up, so never more than is there), the whole part never cut, no trailing zeros. A balance too small for 6 decimals reads "<0.000001".
+ * Max does not use this: it fills in the exact amount (maxText).
+ */
+export function showBalance(base: bigint, decimals: number): string {
+  if (decimals <= BALANCE_DECIMALS) return showUnits(base, decimals);
+  const cut = base - (base % 10n ** BigInt(decimals - BALANCE_DECIMALS));
+  return cut === 0n && base > 0n ? `<0.${"0".repeat(BALANCE_DECIMALS - 1)}1` : showUnits(cut, decimals);
+}
+
 /** The most of `base` the bridge moves, as text to type into the amount: cut down (never up) to the finest step it moves (10 decimals). Empty when there is none. */
 export function maxText(base: bigint, decimals: number): string {
   const step = decimals > CANTON_DECIMALS ? 10n ** BigInt(decimals - CANTON_DECIMALS) : 1n;

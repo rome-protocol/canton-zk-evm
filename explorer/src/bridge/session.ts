@@ -1,7 +1,7 @@
 // What the move card runs on once the Canton account is open: the library's move, built from the wallet, the account and this build's bridge configuration. The Bridge page loads this file
 // only when it needs it, so none of it is in the page's first script.
 import { cantonAdapter } from "./adapter.ts";
-import { depositRecord, redeemRecord } from "./adopt.ts";
+import { depositRecord, NoLongerOpen, redeemRecord, stillOpen } from "./adopt.ts";
 import { track } from "./activity.ts";
 import type { Account } from "./account.ts";
 import { holdingsOf } from "./balances.ts";
@@ -27,6 +27,7 @@ export interface Session {
   /**
    * Keeps a record here for a redeem or a deposit that Canton lists as open but this browser has no record of (it was started in another browser), so the move can be carried on like any kept
    * move. Returns the record's ref, or null when this build cannot carry it on (its token is not one the bridge moves, or its allocation is gone). It never signs, sends or asks the wallet.
+   * The open requests are read again just before the record is kept: a request that is not open any more keeps nothing and throws NoLongerOpen.
    */
   adopt(kind: "redeem" | "deposit", request: OpenRequest): Promise<string | null>;
   /** Stops the session's watching of its move (the list of finished moves). */
@@ -53,6 +54,7 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
       const o = { account: evm.account, party: account.party, config };
       const record = kind === "redeem" ? redeemRecord(request, o) : await depositRecord(request, { ...o, allocations: () => account.client.allocations(account.key, account.party) });
       if (record === null) return null;
+      if (!stillOpen(request, await account.client.openRequests(account.key, account.party))) throw new NoLongerOpen();
       // A record that is kept already is the person's own: it is never overwritten.
       if (!keptMoves(store).some((c) => c.ref === record.ref)) saveCheckpoint(store, record);
       return record.ref;
