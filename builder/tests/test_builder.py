@@ -1953,9 +1953,9 @@ class CommandLine(Case):
         self.assertEqual(built.call_args.args[0].settle_margin_seconds, 90)
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         with mock.patch.object(b, "build_block", wraps=b.build_block) as built:
-            self.run_main(s, "--settle-margin-seconds", "0")
-        self.assertEqual(built.call_args.args[0].settle_margin_seconds, 0)
-        for bad in ("-1", "86400", "abc"):
+            self.run_main(s, "--settle-margin-seconds", "60")
+        self.assertEqual(built.call_args.args[0].settle_margin_seconds, 60)
+        for bad in ("-1", "0", "59", "86400", "abc"):
             s = self.setup({})
             self.assert_failure(self.run_main(s, "--settle-margin-seconds", bad), "settle-margin-seconds")
             self.assertEqual(s.reth.engine_calls, [])

@@ -4406,8 +4406,8 @@ def main() -> int:
         if args.package_id is not None:
             cfg.package_id = check_package_id(args.package_id)
         cfg.unlabelled_deposits = args.unlabelled_deposits
-        if not 0 <= args.settle_margin_seconds < 86400:
-            raise BuilderError("--settle-margin-seconds is from 0 to less than a day")
+        if not PROOF_MARGIN.total_seconds() <= args.settle_margin_seconds < 86400:
+            raise BuilderError(f"--settle-margin-seconds is from {PROOF_MARGIN.total_seconds():g} (the check before an Advance is sent drops a proof that close to a deposit's time) to less than a day")
         cfg.settle_margin_seconds = args.settle_margin_seconds
         with work_lock(cfg.work_dir):
             if args.command == "run":

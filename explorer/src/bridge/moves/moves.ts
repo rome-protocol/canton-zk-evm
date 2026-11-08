@@ -84,11 +84,11 @@ export const CLAIM_MARGIN_MS = 10 * 60_000;
 /** How long after a deposit's time to settle its tokens may be taken back: the account service wants 60 seconds (its TAKE_BACK_MARGIN, Canton's default record-time tolerance), and this page's clock is not the service's: never below it, and with room for this page's clock running ahead of the service's. */
 export const TAKE_BACK_AFTER_MS = 90_000;
 export { TAKE_BACK_STAGES };
-/** How long past the time Canton can record a command (the service's `maxRecordTime`) the page still waits before it signs the step again. */
-export const RECORD_MARGIN_MS = 30_000;
-/** The stages from which a deposit's request is on the ledger and its claim is only asked of the wallet or waited for. */
+/** How long past the time Canton can record a command (the service's `maxRecordTime`) the page still waits before it signs the step again: the page's clock is not the sequencer's, so this leaves room for it running well ahead. */
+export const RECORD_MARGIN_MS = 120_000;
 /** The stages from which a redeem's request may be open on Canton. */
 const REDEEM_OPEN_STAGES: readonly Checkpoint["stage"][] = ["signing", "canton", "evm", "wallet", "sent"];
+/** The stages from which a deposit's request is on the ledger and its claim is only asked of the wallet or waited for. */
 const REQUEST_ON_LEDGER: readonly Checkpoint["stage"][] = ["evm", "wallet", "sent"];
 
 /** The explorer's own answer for a transaction; a 404 is a transaction it has not seen yet. */
@@ -541,6 +541,22 @@ export function createMove(d: Deps): Move {
     return job;
   }
 
+  /**
+   * A Canton step whose answer never came may still be recorded until its record time. Before the move is given up or taken back, look for it: if it appeared, the move goes on from there;
+   * if it did not and its time has not passed, refuse (the step could still land after the record is gone).
+   */
+  async function settleCantonDoubt(c: Checkpoint, later: string): Promise<Checkpoint> {
+    if (c.cantonBy === undefined) return c;
+    const what = c.input.kind === "redeem" ? { redeem: c.ref } : c.stage === "allocated" ? { deposit: depositIdOf(c.party, c.ref) } : { allocation: c.ref };
+    if (!(await d.canton.appeared(what)) && Date.now() <= c.cantonBy + RECORD_MARGIN_MS) {
+      const minutes = Math.max(1, Math.ceil((c.cantonBy + RECORD_MARGIN_MS - Date.now()) / 60_000));
+      throw new Refused(`Canton may still take the last step of this move. ${later} in about ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+    }
+    const next = { ...c, cantonBy: undefined };
+    saveCheckpoint(d.store, next);
+    return next;
+  }
+
   /** The deposit's Canton side, taken back. `strict` (the person asked for it) refuses a deposit that was claimed; giving a deposit up lets a claimed one go (nothing is locked for it). */
   async function takeBackCanton(c: Checkpoint, strict: boolean): Promise<void> {
     const depositId = depositIdOf(c.party, c.ref);
@@ -615,7 +631,8 @@ export function createMove(d: Deps): Move {
       if (running) throw new Refused("A move is running; wait until it stops before giving it up.");
       const id = ref ?? ck?.ref;
       if (id === undefined) throw new Refused("Say which move to give up.");
-      await withRecord(id, async (c) => {
+      await withRecord(id, async (c0) => {
+        const c = c0 === null ? null : await settleCantonDoubt(c0, "Give this move up");
         // A deposit with a Canton step done has tokens locked on Canton: they are taken back before the record goes.
         if (c !== null && c.input.kind === "deposit" && TAKE_BACK_STAGES.includes(c.stage)) {
           try { await takeBackCanton(c, false); } catch (e) { if (!(opts?.leaveLocked === true && e instanceof CannotTakeBack)) throw e; }
@@ -640,8 +657,9 @@ export function createMove(d: Deps): Move {
       if (running) throw new Refused("A move is running; wait until it stops before taking it back.");
       const id = ref ?? ck?.ref ?? loadCheckpoint(d.store, undefined, owner())?.ref;
       if (id === undefined) throw new Refused("Say which move to take back.");
-      await withRecord(id, async (c) => {
-        if (c === null || c.input.kind !== "deposit" || !TAKE_BACK_STAGES.includes(c.stage)) throw new Refused("Only a deposit with tokens locked on Canton can be taken back.");
+      await withRecord(id, async (c0) => {
+        if (c0 === null || c0.input.kind !== "deposit" || !TAKE_BACK_STAGES.includes(c0.stage)) throw new Refused("Only a deposit with tokens locked on Canton can be taken back.");
+        const c = await settleCantonDoubt(c0, "Take it back");
         await takeBackCanton(c, true);
         clearCheckpoint(d.store, id);
       });

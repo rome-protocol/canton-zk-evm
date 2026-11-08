@@ -6,7 +6,7 @@ import type { BridgeConfig } from "../evm/config.ts";
 import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { AccountsError, Unanswered } from "../canton/accounts.ts";
-import { CannotTakeBack, createMove, TAKE_BACK_AFTER_MS, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { CannotTakeBack, createMove, RECORD_MARGIN_MS, TAKE_BACK_AFTER_MS, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -492,11 +492,11 @@ describe("a deposit that cannot settle is taken back", () => {
     keep(store, { input: { kind: "withdraw", asset: WCC, amount: "1" }, stage: "evm" });
     expect(await setup({ store }).move.takeBackDue()).toBe(false);
   });
-  it("is due 90 s past the settle-before time: not at 55 s, yes at 95 s (the page's clock may run ahead of the service's)", async () => {
+  it("is due 90 s past the settle-before time: not at 85 s, yes at 95 s (the page's clock may run ahead of the service's)", async () => {
     const store = memoryStore();
     keep(store, { input, stage: "canton" });
     const t = setup({ store });
-    t.canton.setDeadline(Date.now() - 55_000);
+    t.canton.setDeadline(Date.now() - 85_000);
     expect(await t.move.takeBackDue()).toBe(false);
     await expect(t.move.takeBack()).rejects.toThrow(/Come back in about 1 minute/);
     expect(t.canton.calls).toEqual([]);                             // recoverDeposit was not called
@@ -1269,7 +1269,7 @@ describe("a Canton command that got no answer is not signed again until its time
   });
   it("redeem: once the time to be recorded has passed (and a margin) with nothing on Canton, it signs again", async () => {
     const t = setup({ txs: [final([releaseLeg()])] });
-    t.canton.signRedeem = lost(Date.now() - 60_000);                // far past its time
+    t.canton.signRedeem = lost(Date.now() - RECORD_MARGIN_MS - 60_000);   // far past its time
     await t.move.start(redeem);
     t.canton.signRedeem = async (a) => void (t.canton.calls.push("signRedeem"), t.canton.args.push(a));
     expect(await t.move.proceed()).toMatchObject({ phase: "final" });
@@ -1299,6 +1299,53 @@ describe("a Canton command that got no answer is not signed again until its time
     expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true });
     expect(t.canton.calls).not.toContain("allocateDeposit");
     expect(t.canton.calls).not.toContain("signDeposit");
+  });
+});
+
+describe("giving up or taking back while Canton may still take a step", () => {
+  const deposit = { kind: "deposit", asset: WCC, amount: "3.5" } as const;
+  const redeem = { kind: "redeem", asset: TKA, amount: "2" } as const;
+
+  it("a deposit at signing whose time to be recorded has not passed is refused (abandon and takeBack), and the record is kept", async () => {
+    const store = memoryStore();
+    keep(store, { input: deposit, stage: "signing", cantonBy: Date.now() + 5 * 60_000 });
+    const t = setup({ store });
+    await expect(t.move.abandon("ref-1")).rejects.toThrow(/Canton may still take the last step.*Give this move up in about \d+ minutes?/);
+    await expect(t.move.takeBack("ref-1")).rejects.toThrow(/Canton may still take the last step.*Take it back in about/);
+    expect(t.canton.calls).toEqual(["appeared", "appeared"]);       // it only looked
+    expect(loadCheckpoint(store, "ref-1")).not.toBeNull();
+  });
+  it("a deposit at signing whose time (and margin) has passed with nothing on Canton is given up", async () => {
+    const store = memoryStore();
+    keep(store, { input: deposit, stage: "signing", cantonBy: Date.now() - RECORD_MARGIN_MS - 1_000 });
+    const t = setup({ store });
+    t.canton.setDeadline(null);                                     // the allocation never came
+    await t.move.abandon("ref-1");
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a step that has appeared clears the doubt and the usual take-back goes on", async () => {
+    const store = memoryStore();
+    keep(store, { input: deposit, stage: "signing", cantonBy: Date.now() + 5 * 60_000 });
+    const t = setup({ store });
+    t.canton.seen = (a) => "allocation" in a;
+    t.canton.setDeadline(Date.now() - 5 * 60_000);
+    await t.move.abandon("ref-1");
+    expect(t.canton.calls).toEqual(["appeared", "recoverDeposit"]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a deposit at allocated looks for its request; a redeem looks for its own", async () => {
+    const store = memoryStore();
+    keep(store, { input: deposit, stage: "allocated", cantonBy: Date.now() + 5 * 60_000 });
+    const t = setup({ store });
+    await expect(t.move.abandon("ref-1")).rejects.toThrow(/may still take the last step/);
+    const store2 = memoryStore();
+    keep(store2, { input: redeem, stage: "signing", cantonBy: Date.now() + 5 * 60_000 });
+    const t2 = setup({ store: store2 });
+    await expect(t2.move.abandon("ref-1")).rejects.toThrow(/may still take the last step/);
+    expect(t2.canton.calls).toEqual(["appeared"]);
+    t2.canton.seen = (a) => "redeem" in a;
+    await t2.move.abandon("ref-1");
+    expect(t2.canton.calls).toEqual(["appeared", "appeared", "cancelRedeem"]);
   });
 });
 
