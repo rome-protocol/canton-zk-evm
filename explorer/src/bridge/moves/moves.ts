@@ -104,7 +104,7 @@ export interface Move {
   start(input: MoveInput): Promise<MoveState>;
   /**
    * Picks up a move kept in storage after a reload (the newest of this account and party, or the one named); idle when there is none. It only reads, waits and shows where the move is:
-   * it never asks the wallet or signs, so a move that needs a send ends in `paused`. A second call while the first runs gets the same promise.
+   * it never asks the wallet or signs, so a move that needs a send ends in `paused`. A lock that is sent but not settled announces its parts to the registry again (no wallet request, no signature). A second call while the first runs gets the same promise.
    */
   resume(ref?: string): Promise<MoveState>;
   /** The moves kept for the current account and party, newest first: for the screens to show and choose from. */
@@ -230,6 +230,24 @@ export function createMove(d: Deps): Move {
   }
   async function adopt(tx: Hex, p: Plan) { save({ stage: "sent", tx }); await prove(tx, p); }
 
+  /**
+   * Tells the registry the parts of a lock again, for a lock that is not settled yet: the registry keeps them for two days, and a payment whose parts are gone waits in the pool until they are announced again.
+   * Announcing is idempotent: the same receiver and ref give the same id. It asks nothing of the wallet and signs nothing.
+   */
+  async function announce(c: Checkpoint, p: Plan) {
+    if (c.input.kind !== "lock") return;
+    const parts = await d.registry.lockParts({ receiver: c.input.receiver, ref: c.ref });
+    if (!sameId(parts.lockId, p.id)) throw new Refused("The registry gave a lock id that is not the one this lock makes. Nothing was sent.");
+  }
+  /** `announce` for a lock already sent: a registry that refuses pauses the move with its words, and one that cannot be reached is left for the next look (the move still waits for its block). */
+  async function announceAgain(c: Checkpoint, p: Plan) {
+    if (c.input.kind !== "lock" || (p.id !== null && (await d.leg(p.id).catch(() => null)) !== null)) return;
+    try { await announce(c, p); } catch (e) {
+      if (e instanceof LockRefused) { if (e.status === 0) return; throw new Pause(e.message); }
+      throw e;
+    }
+  }
+
   async function prove(first: Hex, p: Plan) {
     let tx = first, lost = false, legMissing = false;
     go({ phase: "proving", tx });
@@ -266,6 +284,7 @@ export function createMove(d: Deps): Move {
       }
       await d.sleep(d.pollMs ?? 3000);
     }
+    await announceAgain(ck!, p);   // a tab left waiting keeps the lock's parts alive at the registry
     if (legMissing) throw new Waited("The move is final on Ostia, but the explorer does not show the leg yet. Continue to look again; nothing is sent.");
     if (lost) {
       save({ stage: "wallet", tx: undefined });
@@ -279,6 +298,7 @@ export function createMove(d: Deps): Move {
     const gate = (note: string) => { if (!confirmed) throw new Pause(note); };
     if (!same(c.account, d.evm.account) || c.party !== d.canton.party()) throw new Refused("This move was started with another wallet account or Canton party. Switch back to continue it, or give it up.");
     const p = plan(c), { input, ref } = c;
+    if (input.kind === "lock" && (at() === "wallet" || at() === "sent")) await announceAgain(c, p);
     if (at() === "sent" && c.tx) return prove(c.tx, p);
     if (at() === "wallet") {
       // The wallet was asked at this step. The account's own transaction counts only when it makes exactly the saved call; a move with an id is also decided by the id below.
@@ -312,8 +332,7 @@ export function createMove(d: Deps): Move {
         const wraps = input.wrapNative === true;
         if (!wraps) await enough(p.asset, p.base);
         go({ phase: "sending-evm", step: "prepare" });
-        const parts = await d.registry.lockParts({ receiver: input.receiver, ref });
-        if (!sameId(parts.lockId, p.id)) throw new Refused("The registry gave a lock id that is not the one this lock makes. Nothing was sent.");
+        await announce(c, p);
         if (wraps) {
           const held = await d.evm.balanceOf(p.asset.address);
           if (held < p.base) {

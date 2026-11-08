@@ -423,6 +423,44 @@ describe("move 4: a wrapped token back to Canton", () => {
   });
 });
 
+describe("a lock that is sent keeps its parts at the registry", () => {
+  const lock = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY } as const;
+  const id = lockIdOf(PARTY, "ref-1");
+  const sentLock = () => { const store = memoryStore(); keep(store, { input: lock, stage: "sent", tx: OTHER, step: "pay", nonce: 7 }); return store; };
+
+  it("a resumed lock announces its parts again once, with the same receiver and ref, and still asks the wallet nothing", async () => {
+    const t = setup({ store: sentLock(), txs: [proving, final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(t.lockParts).toHaveBeenCalledTimes(1);
+    expect(t.lockParts).toHaveBeenCalledWith({ receiver: PARTY, ref: "ref-1" });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("announces again before it gives up waiting, so a tab left open keeps the entry alive", async () => {
+    const t = setup({ store: sentLock(), txs: [proving], maxPolls: 2 });
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("took too long") });
+    expect(t.lockParts).toHaveBeenCalledTimes(2);   // on the way in and before the wait ends
+  });
+  it("a lock whose leg is already shown is not announced again", async () => {
+    const t = setup({ store: sentLock(), legOf: async () => ({ txHash: OTHER }), txs: [final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final" });
+    expect(t.lockParts).not.toHaveBeenCalled();
+  });
+  it("a registry that answers with another id stops the move", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => ({ lockId: "00".repeat(32) }), txs: [proving] });
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("not the one this lock makes") });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("a registry that refuses (409) pauses the move with the receiver's words and keeps the record", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => { throw new LockRefused("The receiver has not accepted twins yet.", 409); }, txs: [proving] });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: "The receiver has not accepted twins yet." });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "sent", tx: OTHER });
+  });
+  it("a registry that cannot be reached does not stop a move that is waiting for its block", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => { throw new LockRefused("The twin registry cannot be reached right now.", 0); }, txs: [final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final" });
+  });
+});
+
 describe("a send whose outcome the wallet does not give", () => {
   const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
   const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
@@ -644,7 +682,7 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } }) });
     expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
     expect(t.evm.calls).toEqual([]);
-    expect(t.lockParts).not.toHaveBeenCalled();
+    expect(t.lockParts).toHaveBeenCalledTimes(1);   // announcing again asks nothing of the wallet
   });
   it("M5: a resumed move at the start never prompts the wallet by itself", async () => {
     const store = memoryStore();
