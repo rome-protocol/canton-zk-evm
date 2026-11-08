@@ -14,6 +14,12 @@ export interface AllocationView {
   allocation: { settlement: { settlementRef: { id: string } } & Record<string, unknown>; transferLegId: string; transferLeg: { sender: string; receiver: string; amount: string; instrumentId: { admin: string; id: string } } };
   holdingCids: string[];
 }
+/** A transfer waiting for its receiver to accept it, which the account sent or was offered (`GET /accounts/v1/transfers`): the transfer instruction's contract id and the token standard's description of the transfer. */
+export interface TransferView {
+  contractId: string;
+  transfer: { sender: string; receiver: string; amount: string; instrumentId: { admin: string; id: string }; requestedAt?: string | null; executeBefore?: string | null };
+  status?: unknown;
+}
 export interface OpenRequest { contractId: string; arguments: Record<string, unknown> }
 /** What `GET /accounts/v1/open` says: the open requests, and the account's two standing acceptances (null when the account has none). */
 export interface OpenState { depositRequests: OpenRequest[]; redeemRequests: OpenRequest[]; twinAcceptance: OpenRequest | null; withdrawalAcceptance: OpenRequest | null }
@@ -21,6 +27,8 @@ export interface OpenState { depositRequests: OpenRequest[]; redeemRequests: Ope
 export interface ChoiceContext { choiceContextData: object; disclosedContracts?: DisclosedContract[] }
 /** The allocation factory's answer: the factory and its `ChoiceContext` (the token standard's `FactoryWithChoiceContext`). */
 export interface FactoryAnswer { factoryId: string; choiceContext: ChoiceContext }
+/** The transfer factory's answer: the same, and how the registry will carry the transfer out: `direct` (the receiver has a preapproval, or the registry completes it at once), `self`, or `offer` (the receiver has to accept). */
+export interface TransferFactoryAnswer extends FactoryAnswer { transferKind?: string }
 export type Choice = { context: object; disclosedContracts: DisclosedContract[] };
 
 const isObject = (x: unknown): x is object => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -169,6 +177,15 @@ export class AccountsClient {
   /** The token standard's allocation factory of the registry `admin`: `choiceArguments` is the choice's argument as the account will sign it, with an empty context. */
   allocationFactory(key: CantonKey, admin: string, party: string, choiceArguments: object): Promise<FactoryAnswer> {
     return this.send("POST", `/accounts/v1/registry/${admin}/allocation-factory`, { choiceArguments, excludeDebugFields: true, party }, key);
+  }
+  /** The token standard's transfer factory of the registry `admin`: `choiceArguments` is the choice's argument as the account will sign it, with an empty context. */
+  transferFactory(key: CantonKey, admin: string, party: string, choiceArguments: object): Promise<TransferFactoryAnswer> {
+    return this.send("POST", `/accounts/v1/registry/${admin}/transfer-factory`, { choiceArguments, excludeDebugFields: true, party }, key);
+  }
+  /** The transfers waiting for a receiver's acceptance that the account sends or is offered (at most 100: `more` says there are others). */
+  async transfers(key: CantonKey, party: string): Promise<{ transfers: TransferView[]; more: boolean }> {
+    const answer = await this.send("GET", `/accounts/v1/transfers/${party}`, undefined, key);
+    return { transfers: Array.isArray(answer?.transfers) ? answer.transfers : [], more: answer?.more === true };
   }
   /** The context for the account to accept the transfer `instruction` (a transfer offered to it) at the registry `admin`. */
   acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {

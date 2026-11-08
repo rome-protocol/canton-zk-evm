@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
 import { showBalance } from "../bridge/amounts.ts";
+import type { Sender } from "../bridge/send.ts";
 import type { Pair } from "../bridge/tokens.ts";
+import { IncomingTransfers, SendOnCanton } from "./CantonSend.tsx";
 
 /** One address with its Copy button: the short form on the screen, the whole address on copy. */
 function Address({ label, value, copyLabel, lead, tail }: { label: string; value: string; copyLabel: string; lead: number; tail: number }) {
@@ -22,7 +24,11 @@ function Address({ label, value, copyLabel, lead, tail }: { label: string; value
  * Before the Canton account is open it is the short version: the wallet's address, and a word that the account is not open yet.
  * It reads nothing itself: the balances are the move card's read of the account's holdings (`held`, by token key), so a page with the panel asks the account service for no more than before.
  */
-export function AccountPanel({ wallet, party, pairs, held, chainName }: { wallet: string; party: string | null; pairs: Pair[]; held: Record<string, bigint | null>; chainName: string }) {
+export function AccountPanel({ wallet, party, pairs, held, chainName, sender = null, refresh = 0, onChanged = () => {} }: {
+  wallet: string; party: string | null; pairs: Pair[]; held: Record<string, bigint | null>; chainName: string;
+  /** What signs a send and an accept for the open account (null until it is ready); `onChanged` is said after one, so the balances are read again, and `refresh` counts up when they were. */
+  sender?: Sender | null; refresh?: number; onChanged?: () => void;
+}) {
   return (
     <section className="card addrs" aria-label="Your addresses">
       <div className="addr-pair">
@@ -47,6 +53,8 @@ export function AccountPanel({ wallet, party, pairs, held, chainName }: { wallet
               </ul>
             </>
           )}
+          {sender && <SendOnCanton sender={sender} pairs={pairs} held={held} party={party} onChanged={onChanged} />}
+          {sender && <IncomingTransfers sender={sender} pairs={pairs} refresh={refresh} onChanged={onChanged} />}
         </>
       )}
     </section>

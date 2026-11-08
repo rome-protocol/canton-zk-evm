@@ -293,8 +293,11 @@ class AccountsOnCanton(unittest.TestCase):
 
                 status, context = service(f"/accounts/v1/registry/{registry}/transfer-instruction/{offered['contractId']}/accept-context", {"party": party2, "meta": {}, "excludeDebugFields": True}, key2)
                 self.assertEqual((status, context), (200, accept_answer))
-                _, execute_accept2 = run_as(party2, key2, {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offered["contractId"], "choice": "TransferInstruction_Accept",
-                                                                                  "choiceArgument": {"extraArgs": {"context": context["choiceContextData"], "meta": {"values": {}}}}}}, context["disclosedContracts"])
+                accept2 = {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offered["contractId"], "choice": "TransferInstruction_Accept",
+                                               "choiceArgument": {"extraArgs": {"context": context["choiceContextData"], "meta": {"values": {}}}}}}
+                made_accept2, execute_accept2 = run_as(party2, key2, accept2, context["disclosedContracts"])
+                print("FIXTURE " + json.dumps({"name": "exercise-accept", "party": party2, "command": accept2, "preparedTransaction": made_accept2["preparedTransaction"], "preparedTransactionHash": made_accept2["preparedTransactionHash"],
+                                               "hashingSchemeVersion": made_accept2["hashingSchemeVersion"], "disclosedContracts": context["disclosedContracts"]}, sort_keys=True), flush=True)
                 self.assertEqual(execute_accept2()[0], 200)
                 [arrived] = until("the holding of the receiver", lambda: [h for h in service(f"/accounts/v1/holdings/{party2}", key=key2)[1]["holdings"] if not h["locked"]])
                 self.assertEqual((arrived["instrumentId"], float(arrived["amount"])), ({"admin": registry, "id": demo.INSTRUMENT}, 3.0))
