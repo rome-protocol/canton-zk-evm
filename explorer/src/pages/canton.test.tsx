@@ -348,13 +348,13 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
     expect(calls).toContain("/api/canton/stats?window=24h");
     expect(tile("Blocks committed")).toHaveTextContent("since 2026-09-20");
     expect(tile("Success rate")).toHaveTextContent("93.7%");
-    expect(tile("Success rate")).toHaveTextContent("120 of 128 commit attempts");
+    expect(tile("Success rate")).toHaveTextContent("120 of 128 answered commit attempts");
     expect(tile("Settlement time")).toHaveTextContent("9.4 s");
     expect(tile("Settlement time")).toHaveTextContent("p95 14.3 s");
-    expect(tile("Settlement time")).toHaveTextContent("average over 40 blocks, the last 24 hours");
+    expect(tile("Settlement time")).toHaveTextContent("average over 40 blocks, since 2026-10-03 02:00 UTC");
     expect(tile("Refused or retried")).toHaveTextContent("5 refused");
     expect(tile("Refused or retried")).toHaveTextContent("3 blocks committed after a retry");
-    expect(tile("Refused or retried")).toHaveTextContent("3 failed or unanswered");
+    expect(tile("Refused or retried")).toHaveTextContent("3 failed or not answered");
     expect(tile("Legs settled")).toHaveTextContent("54");
     for (const w of ["12 deposits", "30 payments", "4 withdrawals", "6 locks", "2 releases"]) expect(tile("Legs settled")).toHaveTextContent(w);
   });
@@ -364,18 +364,18 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
     const calls = await open({ cantonStats: (path) => reply(cantonStats(path.includes("7d") ? { settlement: { ...cantonStats().settlement, window: "7d", blocks: 300 } } : {})) });
     await figures().findByText("120");
     await user.hover(within(tile("Success rate")).getByRole("button", { name: "About Success rate" }));
-    expect(await screen.findByText(/Blocks committed over commit attempts submitted to Canton, counted from 2026-09-21/)).toBeInTheDocument();
+    expect(await screen.findByText(/Commit attempts that committed over commit attempts submitted to Canton, counted from 2026-09-21/)).toBeInTheDocument();
     await user.click(figures().getByRole("button", { name: "7 days" }));
     await vi.waitFor(() => expect(calls).toContain("/api/canton/stats?window=7d"));
-    await vi.waitFor(() => expect(tile("Settlement time")).toHaveTextContent("average over 300 blocks, the last 7 days"));
+    await vi.waitFor(() => expect(tile("Settlement time")).toHaveTextContent("average over 300 blocks, since 2026-10-03 02:00 UTC"));
   });
 
   it("leaves a figure out where nothing holds it: no rate with no attempt, no time with no timed block", async () => {
-    await open({ cantonStats: () => reply(cantonStats({ successRate: null, attempts: { submitted: 0, committed: 0, refused: 0, other: 0, since: null }, settlement: { ...cantonStats().settlement, blocks: 0, averageSeconds: null, p95Seconds: null } })) });
+    await open({ cantonStats: () => reply(cantonStats({ successRate: null, attempts: { submitted: 0, committed: 0, refused: 0, pending: 0, other: 0, since: null }, settlement: { ...cantonStats().settlement, blocks: 0, averageSeconds: null, p95Seconds: null } })) });
     await figures().findByText("120");
     expect(tile("Success rate")).toHaveTextContent("—");
     expect(tile("Success rate")).toHaveTextContent("no commit attempt in the producer's log");
-    expect(tile("Settlement time")).toHaveTextContent("no timed block in the last 24 hours");
+    expect(tile("Settlement time")).toHaveTextContent("no timed block since 2026-10-03 02:00 UTC");
     expect(within(tile("Settlement time")).queryByText(/^p95 /)).toBeNull();
   });
 

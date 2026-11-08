@@ -59,7 +59,8 @@ function Tile({ k, v, small, sub, info, wide }: { k: string; v: ReactNode; small
   return <div className={`card stat${wide ? " stat-wide" : ""}`}><span className="stat-k">{nb(k)}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v"><span className="hl">{v}</span>{small && <> <small>{small}</small></>}</span><span className="small muted">{sub}</span></div>;
 }
 
-const WINDOW_WORD: Record<CantonWindow, string> = { "24h": "the last 24 hours", "7d": "the last 7 days" };
+/** The window starts at a whole UTC hour and runs to now: say where it starts, not a length it does not quite have. */
+const sinceWord = (from: string) => `since ${utcDate(Date.parse(from))} ${new Date(Date.parse(from)).toISOString().slice(11, 16)} UTC`;
 
 /** The figures over the whole view, from the hourly rollup (never a scan of the updates): how many blocks, how often a commit got through, how long it took, what was refused or retried and the legs settled. */
 export function CantonHeader() {
@@ -82,13 +83,13 @@ function Tiles({ s }: { s: CantonStats }) {
   return (
     <div className="stats canton-stats">
       <Tile k="Blocks committed" v={count(s.blocks)} sub={s.dataSince ? `since ${utcDate(Date.parse(s.dataSince))}` : "none yet"} info="Canton updates that carry a block: one per block, each holding the block's proof, its transactions and its legs." />
-      <Tile k="Success rate" v={s.successRate === null ? DASH : pct(s.successRate)} sub={a.submitted > 0 ? `${count(a.committed)} of ${count(a.submitted)} commit attempts` : "no commit attempt in the producer's log"}
-        info={`Blocks committed over commit attempts submitted to Canton${a.since ? `, counted from ${utcDate(Date.parse(a.since))}` : ""}. An attempt that was refused, failed or got no answer counts against it. Attempts of test runs are left out.`} />
-      <Tile k="Settlement time" v={st.averageSeconds === null ? DASH : sec(st.averageSeconds)} small={st.p95Seconds === null ? undefined : `p95 ${sec(st.p95Seconds)}`}
-        sub={st.blocks > 0 ? `average over ${plural(st.blocks, "block")}, ${WINDOW_WORD[st.window]}` : `no timed block in ${WINDOW_WORD[st.window]}`}
+      <Tile k="Success rate" v={s.successRate === null ? DASH : pct(s.successRate)} sub={a.submitted > 0 ? `${count(a.committed)} of ${count(a.submitted - a.pending)} answered commit attempts${a.pending > 0 ? ` · ${count(a.pending)} waiting for an answer` : ""}` : "no commit attempt in the producer's log"}
+        info={`Commit attempts that committed over commit attempts submitted to Canton${a.since ? `, counted from ${utcDate(Date.parse(a.since))}` : ""}. An attempt that was refused, failed, was not taken, was cancelled or never got an answer counts against it. An attempt still waiting for its answer is left out until it has one. Attempts of test runs are left out.`} />
+      <Tile k="Settlement time" v={st.averageSeconds === null ? DASH : sec(st.averageSeconds)} small={st.p95Seconds === null ? undefined : `p95 ${st.p95Capped ? "> " : ""}${sec(st.p95Seconds)}`}
+        sub={st.blocks > 0 ? `average over ${plural(st.blocks, "block")}, ${sinceWord(st.from)}` : `no timed block ${sinceWord(st.from)}`}
         info="From the start of the block's proof to Canton's record time, for blocks the producer's log holds, over the window picked above. The p95 is read from buckets 5% wide, so it is at most 5% above the true value." />
-      <Tile k="Refused or retried" v={count(a.refused)} small="refused" sub={`${plural(s.retriedBlocks, "block")} committed after a retry${a.other > 0 ? ` · ${count(a.other)} failed or unanswered` : ""}`}
-        info="Refused: the confirmers did not accept the commit. Retried: the block was committed, but not on its first attempt. Failed or unanswered: the attempt never got an answer from Canton." />
+      <Tile k="Refused or retried" v={count(a.refused)} small="refused" sub={`${plural(s.retriedBlocks, "block")} committed after a retry${a.other > 0 ? ` · ${count(a.other)} failed or not answered` : ""}`}
+        info="Refused: Canton refused the command (the reason is on the page of the update the block was committed in). Retried: the block was committed, but not on its first attempt. Failed or not answered: failed, not taken, cancelled, or never answered." />
       <Tile wide k="Legs settled" v={count(s.legs.total)} sub={<span className="legs-kinds">{KINDS.map(([k, one]) => <span key={k}>{plural(s.legs[k], one)}</span>)}</span>} info="Legs the gateway recorded in committed blocks, by kind. A lock and a release are the payments a registered twin vault received or paid; a payment here is any other." />
     </div>
   );

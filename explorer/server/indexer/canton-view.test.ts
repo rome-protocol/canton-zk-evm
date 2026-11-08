@@ -6,6 +6,7 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../t
 import { createChainRest } from "../rest/chain-rest.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { refreshCantonView } from "./canton-view.ts";
+import { resetTwinTotals } from "./custody.ts";
 import { RUN1, Run, appendLines, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
 
 afterAll(removeFolders);
@@ -110,6 +111,62 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       await refreshCantonView(pool, { now: () => now });
       const hour = await one(pool, "select attempts, attempts_refused from canton_view_hour where hour = date_trunc('hour', $1::timestamptz)", [new Date(early)]);
       expect(hour).toMatchObject({ attempts: 1, attempts_refused: 1 });
+      // it is not a try of any block of the chain: block 1 stays at one attempt, in its row and on its page
+      expect(await one(pool, "select commit_attempts from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({ commit_attempts: 1 });
+      const detail = await createChainRest(pool, () => now).update(chain.blocks[0]!.record.updateId);
+      expect(detail!.view.attempts).toHaveLength(1);
+    });
+  });
+
+  it("counts an attempt in the hour it was submitted in when its answer comes in the next hour", async () => {
+    await inDb(async (pool) => {
+      const { chain, dir, run, now } = await setup(pool);
+      await refreshCantonView(pool, { now: () => now });
+      const hourMs = 3_600_000, edge = Math.floor((Date.parse(chain.blocks[0]!.record.recordTime) - 2 * 86_400_000) / hourMs) * hourMs;
+      const row = (ms: number) => one(pool, "select attempts, attempts_committed, attempts_refused, attempts_pending, attempts_other from canton_view_hour where hour = $1", [new Date(ms)]);
+      run.lines.length = 0;
+      run.add(edge - 5000, "cut", { attempt: 8, number: 1, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      run.add(edge - 4990, "built", { attempt: 8, block_hash: "0x" + "ab".repeat(32), parent_hash: "0x" + "cd".repeat(32), tx_hashes: [], gas_used: 0, legs: 0, rebuilds: 0, left_out: [] });
+      run.add(edge - 2000, "submitted", { attempt: 8, command_id: "ostia-770101-1-z-8", argument_bytes: 10 });
+      appendLines(dir, "2026-10-21.jsonl", run.lines);
+      await opened[0]!.loadJournal();
+      await refreshCantonView(pool, { now: () => now });
+      // submitted, not answered yet: waiting, in the hour of the submission, and not counted against the rate
+      expect(await row(edge - hourMs)).toMatchObject({ attempts: 1, attempts_pending: 1, attempts_other: 0 });
+      run.lines.length = 0;
+      run.add(edge + 1000, "answered", { attempt: 8, outcome: "refused", reason: "rejected", update_id: null, completion_offset: null });
+      appendLines(dir, "2026-10-21.jsonl", run.lines);
+      await opened[0]!.loadJournal();
+      await refreshCantonView(pool, { now: () => now });
+      expect(await row(edge - hourMs)).toMatchObject({ attempts: 1, attempts_committed: 0, attempts_refused: 1, attempts_pending: 0, attempts_other: 0 });
+      expect(await row(edge)).toBeUndefined();
+    });
+  });
+
+  it("keeps the marks of a pass that was stopped after it filled the rows, and writes the hours on the next one", async () => {
+    await inDb(async (pool) => {
+      const { now } = await setup(pool);
+      // the fill loop looks twice (once for the work, once to find none left); the third look is the recompute's, and it is stopped there
+      let looks = 0;
+      const first = await refreshCantonView(pool, { now: () => now, stopped: () => ++looks >= 3 });
+      expect(first.hours).toBe(0);
+      expect(Number((await one(pool, "select count(*) as n from canton_view_hour")).n)).toBe(0);
+      expect(Number((await one(pool, "select count(*) as n from canton_view_dirty")).n)).toBeGreaterThan(0);
+      await refreshCantonView(pool, { now: () => now });
+      expect(Number((await one(pool, "select coalesce(sum(blocks), 0) as n from canton_view_hour")).n)).toBe(3);
+      expect(Number((await one(pool, "select count(*) as n from canton_view_dirty")).n)).toBe(0);
+    });
+  });
+
+  it("opens the rows again when the twin sums are counted again, and counts their legs once more", async () => {
+    await inDb(async (pool) => {
+      const { now } = await setup(pool);
+      await refreshCantonView(pool, { now: () => now });
+      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(3);
+      await resetTwinTotals(pool);
+      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(0);
+      await refreshCantonView(pool, { now: () => now });
+      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(3);
     });
   });
 

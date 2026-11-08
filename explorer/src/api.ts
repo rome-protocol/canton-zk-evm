@@ -339,9 +339,9 @@ export type CantonWindow = "24h" | "7d";
 /** The figures of the Linked to Canton header, from the hourly rollup. */
 export interface CantonStats {
   asOf: string | null; dataSince: string | null; blocks: number; retriedBlocks: number;
-  attempts: { submitted: number; committed: number; refused: number; other: number; since: string | null };
+  attempts: { submitted: number; committed: number; refused: number; pending: number; other: number; since: string | null };
   successRate: number | null;
-  settlement: { window: CantonWindow; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; basis: "proofStart" };
+  settlement: { window: CantonWindow; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; p95Capped: boolean; basis: "proofStart" };
   legs: UpdateLegs;
 }
 export interface UpdateDetail extends UpdateRow {

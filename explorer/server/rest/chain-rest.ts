@@ -7,6 +7,7 @@ import { ChainDbError } from "../chain-db.ts";
 import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.ts";
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 import { addHists, quantile } from "../indexer/stats-hist.ts";
+import { ATTEMPT_SPAN_HOURS } from "../indexer/canton-view.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 /** A Canton amount's own scale (Daml Numeric 10): the unit of a Canton token's custody, on the token page and on the twins page. */
@@ -90,9 +91,10 @@ export interface UpdateView {
 export interface CantonStats {
   asOf: string | null; dataSince: string | null;
   blocks: number; retriedBlocks: number;
-  attempts: { submitted: number; committed: number; refused: number; other: number; since: string | null };
+  /** `submitted` is every attempt; `pending` of them have no answer yet and are left out of the rate. */
+  attempts: { submitted: number; committed: number; refused: number; pending: number; other: number; since: string | null };
   successRate: number | null;
-  settlement: { window: string; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; basis: "proofStart" };
+  settlement: { window: string; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; /** The p95 is above the last bucket edge: it is at least `p95Seconds`. */ p95Capped: boolean; basis: "proofStart" };
   legs: { deposit: number; withdrawal: number; payment: number; lock: number; release: number; total: number };
 }
 export const STATS_WINDOWS = { "24h": 24, "7d": 168 } as const;
@@ -374,7 +376,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
       const rows = await query(
         `select x.attempt_id, x.outcome, x.resolved_outcome, x.reason, ${MS("x.cut_at")} as cut_at, ${MS("x.built_at")} as built_at, ${MS("x.proof_started_at")} as proof_started_at, ${MS("x.proof_ended_at")} as proof_ended_at,
                 x.proof_outcome, ${MS("x.submitted_at")} as submitted_at, ${MS("x.answered_at")} as answered_at
-           from block_attempts x where x.number = $1 and (x.attempt_id = $2 or (x.submitted_at is not null and x.cut_at <= $3)) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw]);
+           from block_attempts x where x.number = $1 and (x.attempt_id = $2 or (x.submitted_at is not null and x.cut_at <= $3 and x.cut_at > $3::timestamptz - make_interval(hours => $4))) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw, ATTEMPT_SPAN_HOURS]);
       attempts = rows.map((x, i) => ({
         number: i + 1, outcome: Number(x.attempt_id) === Number(b.attempt_id) ? "committed" : x.outcome ?? (x.resolved_outcome === "committed" ? "committed" : x.resolved_outcome) ?? "unknown", reason: x.reason,
         committed: Number(x.attempt_id) === Number(b.attempt_id), cutAt: isoTime(x.cut_at), builtAt: x.built_at, proofStartedAt: x.proof_started_at, proofEndedAt: x.proof_ended_at, proofOutcome: x.proof_outcome, submittedAt: x.submitted_at, answeredAt: x.answered_at,
@@ -409,7 +411,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
     const t = now(), hours = STATS_WINDOWS[window], from = new Date(Math.floor(t / 3_600_000) * 3_600_000 - (hours - 1) * 3_600_000);
     const [[a], win, hist] = await Promise.all([
       query(`select coalesce(sum(blocks), 0)::bigint as blocks, coalesce(sum(retried_blocks), 0)::bigint as retried, coalesce(sum(attempts), 0)::bigint as attempts, coalesce(sum(attempts_committed), 0)::bigint as committed,
-               coalesce(sum(attempts_refused), 0)::bigint as refused, coalesce(sum(attempts_other), 0)::bigint as other, min(hour) as since, min(hour) filter (where attempts > 0) as attempts_since, max(updated_at) as as_of,
+               coalesce(sum(attempts_refused), 0)::bigint as refused, coalesce(sum(attempts_pending), 0)::bigint as pending, coalesce(sum(attempts_other), 0)::bigint as other, min(hour) as since, min(hour) filter (where attempts > 0) as attempts_since, max(updated_at) as as_of,
                coalesce(sum(legs_deposit), 0)::bigint as dep, coalesce(sum(legs_withdrawal), 0)::bigint as wd, coalesce(sum(legs_payment), 0)::bigint as pay, coalesce(sum(legs_lock), 0)::bigint as lock, coalesce(sum(legs_release), 0)::bigint as rel
              from canton_view_hour`),
       query("select coalesce(sum(settle_n), 0)::bigint as n, coalesce(sum(settle_sum), 0)::float8 as sum from canton_view_hour where hour >= $1", [from]),
@@ -418,13 +420,13 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
     const n = Number(win[0]!.n), h = addHists("time", hist.map((x) => x.settle_hist as number[]));
     const q = n === 0 ? null : quantile("time", h, 0.95);
     const iso = (d: Date | null) => (d === null ? null : d.toISOString());
-    const submitted = Number(a!.attempts), committed = Number(a!.committed);
+    const submitted = Number(a!.attempts), committed = Number(a!.committed), pending = Number(a!.pending), answered = submitted - pending;
     const [dep, wd, pay, lock, rel] = [a!.dep, a!.wd, a!.pay, a!.lock, a!.rel].map(Number) as [number, number, number, number, number];
     return {
       asOf: iso(a!.as_of), dataSince: iso(a!.since), blocks: Number(a!.blocks), retriedBlocks: Number(a!.retried),
-      attempts: { submitted, committed, refused: Number(a!.refused), other: Number(a!.other), since: iso(a!.attempts_since) },
-      successRate: submitted === 0 ? null : Math.round((committed / submitted) * 10000) / 10000,
-      settlement: { window, from: from.toISOString(), to: new Date(t).toISOString(), blocks: n, averageSeconds: n === 0 ? null : Math.round((Number(win[0]!.sum) / n) * 1000) / 1000, p95Seconds: q === null ? null : Math.round(q.value * 1000) / 1000, basis: "proofStart" },
+      attempts: { submitted, committed, refused: Number(a!.refused), pending, other: Number(a!.other), since: iso(a!.attempts_since) },
+      successRate: answered === 0 ? null : Math.round((committed / answered) * 10000) / 10000,
+      settlement: { window, from: from.toISOString(), to: new Date(t).toISOString(), blocks: n, averageSeconds: n === 0 ? null : Math.round((Number(win[0]!.sum) / n) * 1000) / 1000, p95Seconds: q === null ? null : Math.round(q.value * 1000) / 1000, p95Capped: q?.capped ?? false, basis: "proofStart" },
       legs: { deposit: dep, withdrawal: wd, payment: pay, lock, release: rel, total: dep + wd + pay + lock + rel },
     };
   }

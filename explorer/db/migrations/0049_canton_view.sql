@@ -1,6 +1,8 @@
 -- The Linked to Canton view, one row per block (the update that committed it). What each row says beyond the update itself is worked out once, from the
 -- producer's journal (block_attempts), the block and the legs index, and kept on the update so that a page of the list, a filter and the paging read
 -- one table by an index. server/indexer/canton-view.ts fills the columns and the rollup below; a row that is not filled yet is null, never a guess.
+-- The first statements hold a lock on canton_updates for as long as they scan and index it: fail fast rather than queue the API behind a busy table.
+set local lock_timeout = '5s';
 alter table canton_updates
   add column commit_attempts smallint,          -- submissions to Canton for this block's number up to and including the one that committed; null when the journal does not hold the block
   add column settle_seconds  double precision,  -- the Canton record time less the block's proof start (settle_from 'proof_start') or less the block's own timestamp ('block_time'); null when negative (clocks)
@@ -30,7 +32,8 @@ create table canton_view_hour (
   attempts          integer not null default 0,   -- commit attempts submitted in the hour (the producer's own count; a run flagged as a test is left out)
   attempts_committed integer not null default 0,
   attempts_refused  integer not null default 0,   -- Canton refused the command
-  attempts_other    integer not null default 0,   -- failed, not taken, or never answered and never found committed
+  attempts_other    integer not null default 0,   -- failed, not taken, cancelled, or never answered and never found committed
+  attempts_pending  integer not null default 0,   -- submitted and not answered yet (in flight): left out of the rate; counted again when the answer comes
   settle_n          integer not null default 0,   -- blocks whose settlement time runs from the proof start
   settle_sum        double precision not null default 0,
   legs_deposit      integer not null default 0,

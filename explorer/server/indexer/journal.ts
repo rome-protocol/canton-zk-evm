@@ -65,6 +65,7 @@ export function parseLine(raw: string): { line: JournalLine } | { bad: "malforme
 /** Applies the lines of one read, in the caller's transaction. Returns the number of lines that had no attempt to belong to. */
 async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> {
   let orphans = 0;
+  const counted = new Set<number>(); // attempts a line moved the counts of (submitted, answered, resolved, cancelled)
   const ids = new Map<string, number>();
   const pool = new Map<string, number>();
   const idOf = async (run: unknown, attempt: unknown): Promise<number | null> => {
@@ -200,6 +201,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       case "submitted": {
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
+        counted.add(id);
         await set(id, { submitted_at: t, command_id: text(ev.command_id, 200), argument_bytes: whole(ev.argument_bytes) });
         break;
       }
@@ -207,6 +209,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
         const outcome = text(ev.outcome, 40);
+        counted.add(id);
         await set(id, {
           answered_at: t, outcome, reason: text(ev.reason), update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset), traffic_bytes: whole(ev.traffic_bytes),
         });
@@ -244,6 +247,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         if (id === null) { orphans++; break; }
         const outcome = text(ev.outcome, 40) === "committed" ? "committed" : text(ev.outcome, 40);
         const known = text(ev.update_id, 200) !== null ? { update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset) } : {}; // a commit settled by its completion carries them
+        counted.add(id);
         await set(id, { resolved_at: t, resolved_outcome: outcome, ...known });
         if (outcome !== "committed") await putBack(id, t, outcome === "restarted" ? "the producer restarted before the block was answered" : "the block did not commit");
         break;
@@ -257,6 +261,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       case "cancelled": {
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
+        counted.add(id);
         await set(id, { outcome: "cancelled", reason: text(ev.reason) ?? text(ev.depends_on) });
         await putBack(id, t, "the block was cancelled");
         break;
@@ -282,9 +287,8 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         break;
     }
   }
-  // The attempts of an hour are counted again by the Linked to Canton view (server/indexer/canton-view.ts): leave the earliest time of the lines that move its counts.
-  const counted = lines.filter((l) => l.event === "submitted" || l.event === "answered" || l.event === "resolved" || l.event === "cancelled");
-  if (counted.length) await c.query("insert into canton_view_dirty (at) select min(t) from unnest($1::timestamptz[]) as x(t)", [counted.map((l) => l.time)]);
+  // The Linked to Canton view (server/indexer/canton-view.ts) counts an attempt in the hour it was submitted in, whenever its answer comes: leave that hour as the mark.
+  if (counted.size) await c.query("insert into canton_view_dirty (at) select min(submitted_at) from block_attempts where attempt_id = any($1::bigint[]) having min(submitted_at) is not null", [[...counted]]);
   if (pool.size) {
     await c.query(
       "insert into pool_samples (at, waiting) select * from unnest($1::timestamptz[], $2::int[]) on conflict (at) do update set waiting = excluded.waiting",
@@ -301,10 +305,12 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
  */
 export async function joinAttempts(pool: Pool): Promise<void> {
   // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
+  // The attempts it settles move the counts of the hour they were submitted in: that hour is left as a mark for the Linked to Canton view.
   await pool.query(
     // The attempt was not committed as far as the journal knows, so a resolved_at it has is the time of something else (the next run's restart): the block's record time replaces it.
-    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
-       from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed'`,
+    `with u as (update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
+                  from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed' returning a.submitted_at)
+     insert into canton_view_dirty (at) select min(submitted_at) from u having min(submitted_at) is not null`,
   );
   // An attempt the producer settled itself (unknown, then resolved committed) never had an update id: the indexed block gives it.
   await pool.query(

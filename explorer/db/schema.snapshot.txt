@@ -329,6 +329,7 @@ table canton_view_hour
   column attempts_committed integer not null default 0
   column attempts_refused integer not null default 0
   column attempts_other integer not null default 0
+  column attempts_pending integer not null default 0
   column settle_n integer not null default 0
   column settle_sum double precision not null default 0
   column legs_deposit integer not null default 0

@@ -220,8 +220,8 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
 /** The header figures of the Linked to Canton view: 120 blocks, 3 of them retried, 128 commit attempts of which 120 committed, 5 were refused and 3 got no answer. */
 export const cantonStats = (over: Partial<CantonStats> = {}): CantonStats => ({
   asOf: "2026-10-04T01:59:30.000Z", dataSince: "2026-09-20T00:00:00.000Z", blocks: 120, retriedBlocks: 3,
-  attempts: { submitted: 128, committed: 120, refused: 5, other: 3, since: "2026-09-21T00:00:00.000Z" }, successRate: 0.9375,
-  settlement: { window: "24h", from: "2026-10-03T02:00:00.000Z", to: "2026-10-04T02:00:00.000Z", blocks: 40, averageSeconds: 9.4, p95Seconds: 14.3, basis: "proofStart" },
+  attempts: { submitted: 128, committed: 120, refused: 5, pending: 0, other: 3, since: "2026-09-21T00:00:00.000Z" }, successRate: 0.9375,
+  settlement: { window: "24h", from: "2026-10-03T02:00:00.000Z", to: "2026-10-04T02:00:00.000Z", blocks: 40, averageSeconds: 9.4, p95Seconds: 14.3, p95Capped: false, basis: "proofStart" },
   legs: { deposit: 12, withdrawal: 4, payment: 30, lock: 6, release: 2, total: 54 }, ...over,
 });
 

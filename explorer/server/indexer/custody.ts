@@ -166,8 +166,12 @@ export async function writeRegistry(c: Pick<PoolClient, "query">, registry: Chai
   await c.query("insert into meta (key, value) values ('registry_read_block', $1) on conflict (key) do update set value = excluded.value", [String(block)]);
 }
 
-/** Forgets the twin sums and the lock and release legs counted with them, so that they are counted again from the first block (the next pass of `twinTotalsOnce`). */
+/**
+ * Forgets the twin sums and the lock and release legs counted with them, so that they are counted again from the first block (the next pass of `twinTotalsOnce`).
+ * The rows of the Linked to Canton view whose legs were counted are opened again, to be counted once the twin pass has caught up (the view's pass marks their hours).
+ */
 export async function resetTwinTotals(c: Pick<PoolClient, "query">): Promise<void> {
+  await c.query("update canton_updates set legs_done = false where legs_done");
   await c.query("delete from twin_legs");
   await c.query("delete from twin_totals");
   await c.query("delete from meta where key = 'twin_totals_block'");
