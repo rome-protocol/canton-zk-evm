@@ -177,6 +177,13 @@ describe("the token page: the overview", () => {
       expect(kv("Check")).toHaveAttribute("data-state", "unknown");
     });
 
+    it("names the Amulet instrument Canton Coin in what is held, and keeps the raw id under Instrument", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ instrumentId: "Amulet" }) }));
+      expect(kv("Held on Canton")).toHaveTextContent("1,000 Canton Coin");
+      expect(kv("Held on Canton")).not.toHaveTextContent("Amulet");
+      expect(kv("Instrument")).toHaveTextContent("Amulet");
+    });
+
     it("shows an empty custody as 0, not as a missing number", async () => {
       await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ custody: "0", holdings: 0, supply: "0" }) }));
       expect(kv("Held on Canton")).toHaveTextContent("0 TKB");

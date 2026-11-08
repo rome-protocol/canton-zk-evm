@@ -130,7 +130,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, TKA)] });
     show({}, m);
     await tka();
-    expect(screen.getByText(/About 1 min · 2 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 2 min · 2 MetaMask pop-ups/)).toBeInTheDocument();
     await type("1.5");
     await press("Move to Canton");
     await done();
@@ -240,9 +240,9 @@ describe("the folded steps line", () => {
   it("opens to the steps and says who signs each", async () => {
     show();
     await tka();
-    const steps = screen.getByText(/About 1 min/).closest("details")!;
+    const steps = screen.getByText(/About 2 min/).closest("details")!;
     expect(steps).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText(/About 1 min/));
+    await userEvent.click(screen.getByText(/About 2 min/));
     expect(steps).toHaveAttribute("open");
     expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { CardHead } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { instrumentName } from "../bridge/tokens.ts";
 import { plural, short, units } from "../format.ts";
 import { cantonMark, Mark, twinMark, Tok, useTwins } from "./TwinParts.tsx";
 
@@ -32,7 +33,7 @@ export function CantonAssets() {
                 <tr key={`canton-${c.token}`}>
                   <td><Link to={`/token/${c.token}`}>{c.symbol ?? short(c.token, 8, 4)}</Link><span className="tag">on Canton</span></td>
                   <td className="r">{c.supply === null ? <span className="muted">not known</span> : <><Tok raw={c.supply} decimals={c.decimals} symbol={null} /> <span className="muted small">wrapped supply</span></>}</td>
-                  <td className="r"><span className="num">{units(c.custody, c.custodyDecimals)}</span> {c.instrumentId} <span className="muted small">on Canton</span></td>
+                  <td className="r"><span className="num">{units(c.custody, c.custodyDecimals)}</span> {instrumentName(c.instrumentId)} <span className="muted small">on Canton</span></td>
                   <td><Mark state={cantonMark(c)} /></td>
                   <td className="muted">{plural(c.holdings, "holding")}</td>
                 </tr>

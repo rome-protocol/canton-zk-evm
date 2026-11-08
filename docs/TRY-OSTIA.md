@@ -93,8 +93,8 @@ On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/bloc
 Anyone with MetaMask (or another browser wallet) can move tokens between Ostia and Canton on their own, on `https://ostia.devnet.romeprotocol.xyz/bridge`. DevNet only.
 
 1. Open `/bridge` and press Connect MetaMask. The page adds Ostia DevNet to the wallet if it is not there.
-2. Press Open my Canton account. MetaMask asks for one signature, which costs no gas. The page makes the Canton key from that signature, and Rome's validator hosts the account but cannot move what it holds: only that key signs for it. Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
-3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's accounts service holds up to 1000.
+2. Press Open my Canton account. MetaMask asks you to sign one message, which costs no gas. The first time it asks twice for the same message, so the page can check that your wallet signs it the same way each time. The page makes the Canton key from that signature, and Rome's validator hosts the account but cannot move what it holds: only that key signs for it. Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
+3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's participant allows up to 1000 accounts.
 4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; MetaMask asks only for the Ostia steps. A card under the button lists the steps and the number of MetaMask pop-ups.
 
 The four moves:
@@ -122,7 +122,7 @@ How these flows work on DevNet (the Bridge page above makes the Canton steps for
 
 - **Lock an ERC-20 for a Canton party.** You pay the ERC-20 into the vault, and the Canton party you named holds the same amount of its twin, a CIP-0056 token with the instrument id `erc20:<token address>`. The twin moves on Canton like any CIP-0056 token. After each lock and redeem the twin's supply equals what the vault holds, and the explorer's token page compares the two.
 - **Redeem it.** The holder of the twin signs a redeem request on Canton, `Vault.release` pays the ERC-20 to the EVM address in the request, and the twin is burnt.
-- **Bring Canton Coin into Ostia and back.** A party deposits Canton Coin through the gateway and the recipient claims wCC, the wrapped Canton Coin, on Ostia. Burning wCC through the gateway pays the Canton Coin back to the party.
+- **Bring Canton Coin into Ostia and back.** A party deposits Canton Coin through the gateway and the recipient claims wCC (its symbol on Ostia is CC), the wrapped Canton Coin. Burning wCC through the gateway pays the Canton Coin back to the party.
 
 The addresses:
 

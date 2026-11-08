@@ -47,6 +47,13 @@ describe("the Canton assets card on Stats", () => {
     expect(wrapped).toHaveTextContent("123"); expect(wrapped).toHaveTextContent("wrapped supply"); expect(wrapped).toHaveTextContent("123 TKB on Canton"); expect(wrapped).toHaveTextContent("matched"); expect(wrapped).toHaveTextContent("3 holdings");
   });
 
+  it("names the Amulet instrument Canton Coin", async () => {
+    await stat({ canton: [twinCanton({ token: addr(0xd4), symbol: "CC", instrumentId: "Amulet" })] });
+    const row = rowOf(within(await screen.findByRole("region", { name: "Canton assets" })).getByRole("table", { name: "Canton assets" }), "CC");
+    expect(row).toHaveTextContent("Canton Coin on Canton");
+    expect(row).not.toHaveTextContent("Amulet");
+  });
+
   it("links each row to its token page and the card to the twins page", async () => {
     await stat();
     const card = await screen.findByRole("region", { name: "Canton assets" });

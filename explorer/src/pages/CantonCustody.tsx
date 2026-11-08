@@ -2,6 +2,7 @@ import type { CantonCustody as Custody, TokenDetail } from "../api.ts";
 import { CardHead } from "../components/Cards.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
+import { instrumentName } from "../bridge/tokens.ts";
 import { count, exact, units } from "../format.ts";
 import { useNow } from "../useStatus.ts";
 
@@ -48,7 +49,7 @@ export function CantonCustody({ t, canton: c }: { t: TokenDetail; canton: Custod
     <section className="card" aria-label="Backed on Canton">
       <CardHead as="h2" title="Backed on Canton" sub="what the gateway holds of the token's instrument, read as the gateway" />
       <Kv>
-        <Item label="Held on Canton"><span className="num" title={`${exact(c.custody, c.custodyDecimals)} ${c.instrumentId}`}>{units(c.custody, c.custodyDecimals)}</span> {c.instrumentId}</Item>
+        <Item label="Held on Canton"><span className="num" title={`${exact(c.custody, c.custodyDecimals)} ${instrumentName(c.instrumentId)}`}>{units(c.custody, c.custodyDecimals)}</span> {instrumentName(c.instrumentId)}</Item>
         <Item label="Wrapped supply">
           {c.supply === null ? <span className="muted">not known</span>
             : t.decimals === null ? <span className="num">{count(c.supply)}</span>

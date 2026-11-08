@@ -179,7 +179,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   it("moves a token from Ostia to Canton: approve, then pay in, two pop-ups, then final", async () => {
     const page = await open("/bridge");
     await signedIn(page);
-    expect(await page.getByText("About 1 min · 2 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 2 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
@@ -327,6 +327,11 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
     expect(await row.getByRole("link", { name: "Ostia block 36512" }).getAttribute("href")).toBe("/block/36512");
     expect(await row.getByRole("link", { name: "Canton update" }).getAttribute("href")).toBe("/canton/" + UPDATE_ID);
+    const dateUnderTitle = await page.locator(".act-row").evaluateAll((rows: HTMLElement[]) => rows.every((r) => {
+      const title = r.querySelector("b")!.getBoundingClientRect(), date = r.querySelector(".act-top > span")?.getBoundingClientRect();
+      return !date || date.top >= title.bottom - 1;
+    }));
+    expect(dateUnderTitle).toBe(true);   // at 360 px the date sits under the title, never beside it
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 150_000);

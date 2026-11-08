@@ -53,7 +53,7 @@ describe("the move button", () => {
 
 describe("how long a move is said to take", () => {
   it("is about 1 min for a move with one or two pop-ups and about 2 min for the three of the tROME lock", () => {
-    expect([1, 2].map(waitFor)).toEqual(["About 1 min", "About 1 min"]);
-    expect(waitFor(3)).toBe("About 2 min");
+    expect(waitFor(1)).toBe("About 1 min");
+    expect([2, 3].map(waitFor)).toEqual(["About 2 min", "About 2 min"]);
   });
 });

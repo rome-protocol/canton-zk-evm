@@ -29,7 +29,7 @@ export const CANTON_COIN = "Canton Coin";
 /** What a Canton instrument is called to people: Canton Coin for the Amulet instrument, otherwise its id. The one place for this mapping. */
 export const instrumentName = (id: string): string => (id === "Amulet" ? CANTON_COIN : id);
 /** A wrapped token's name on Canton: Canton Coin for the Amulet instrument, otherwise "wTKB" is "TKB" (or the instrument's id when the symbol does not start with w). */
-const cantonName = (wrapped: string, id: string) => (id === "Amulet" ? CANTON_COIN : /^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : id);
+const cantonName = (wrapped: string, id: string) => (id !== "Amulet" && /^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : instrumentName(id));
 
 /** The pairs this build can move. `gateway` is the Canton party that issues the twins on Canton (the build's chain gateway). */
 export function pairsOf(config: BridgeConfig, gateway: string): Pair[] {
