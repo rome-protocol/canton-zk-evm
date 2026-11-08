@@ -40,6 +40,7 @@ describe("the most an amount can be", () => {
   });
   it("refuses 10^36 base units of a token with more than 10 decimals", () => {
     expect(() => parseAmount("1000000000000", 24)).toThrow(AmountError);
+    expect(() => parseAmount("1000000000000", 24)).toThrow("less than 1,000,000,000,000 of this token");
     expect(parseAmount("999999999999.9999999999", 24).base).toBe(999999999999n * 10n ** 24n + 9999999999n * 10n ** 14n);
   });
 });

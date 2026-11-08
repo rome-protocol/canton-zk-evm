@@ -26,6 +26,8 @@ export interface EvmAdapter {
   withdraw(gateway: Address, erc20: Address, amount: bigint, party: string): Promise<Hex>;
   /** The account's transaction count as the wallet provider itself answers it (not the explorer's RPC, which shows only final blocks), pending and latest: pending above latest means a transaction of the account is still waiting. Null when the wallet does not answer. */
   walletNonces(): Promise<{ pending: number; latest: number } | null>;
+  /** The account's transaction count at "pending", as Ostia's own node answers it: above the final count means a transaction of the account waits in its pool, whatever the wallet says. Optional: a missing answer says nothing. */
+  pendingNonce?(): Promise<number>;
   /** The nonce of the transaction the wallet returned this hash for, from the wallet itself; null when it does not say. */
   sentNonce(hash: Hex): Promise<number | null>;
   waitReceipt(hash: Hex): Promise<{ success: boolean }>;
@@ -105,6 +107,7 @@ export function viemAdapter(o: ViemOptions): EvmAdapter {
     native: () => pub.getBalance({ address: account }),
     balanceOf: (erc20, holder) => read<bigint>(erc20, erc20Abi, "balanceOf", [holder ?? account]),
     nonce: () => pub.getTransactionCount({ address: account, blockTag: "latest" }),
+    pendingNonce: () => pub.getTransactionCount({ address: account, blockTag: "pending" }),
     used: (gateway, id) => pub.readContract({ address: gateway, abi: gatewayAbi, functionName: "used", args: [id] }),
     allowance: (erc20, spender) => read<bigint>(erc20, erc20Abi, "allowance", [account, spender]),
     wrap: (wrapper, amount) => { const c = wrapCall(wrapper, amount); return send(c.to, c.data, amount); },

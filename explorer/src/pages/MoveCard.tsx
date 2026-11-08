@@ -7,6 +7,7 @@ import { continueWords, entryOf, recordOf } from "../bridge/activity.ts";
 import { amountSize, buttonOf, noteOf, offersTakeBack, progressWords, TAKE_BACK_LABEL, waitFor } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
+import { CannotTakeBack } from "../bridge/moves/moves.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
 import { popups, stepsOf, cantonSignatures } from "../bridge/moves/steps.ts";
 import type { Session } from "../bridge/session.ts";
@@ -66,6 +67,8 @@ export function MoveCard(p: MoveCardProps) {
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [asking, setAsking] = useState(false);
+  /** Canton would not take a deposit's tokens back: the person is asked once more before the deposit is given up with its tokens still locked. */
+  const [stuck, setStuck] = useState(false);
 
   const pair: Pair | undefined = pairs.find((x) => x.key === sel.pair) ?? pairs[0];
   const from = sel.from;
@@ -125,8 +128,10 @@ export function MoveCard(p: MoveCardProps) {
     setDue(false);
     if (!session || !keptRef) return;
     let live = true;
-    session.move.takeBackDue(keptRef).then((v) => { if (live) setDue(v); }, () => {});
-    return () => { live = false; };
+    const look = () => session.move.takeBackDue(keptRef).then((v) => { if (live) setDue(v); }, () => {});
+    void look();
+    const timer = setInterval(() => void look(), 60_000);   // the time to settle may pass while the card is open
+    return () => { live = false; clearInterval(timer); };
   }, [session, keptRef, keptStage, move.phase]);
   const button = buttonOf({
     connected: p.account !== null, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
@@ -155,12 +160,16 @@ export function MoveCard(p: MoveCardProps) {
     finally { setStarting(false); }
   }, [button.action, session, pair, from, text, p, starting]);   // eslint-disable-line react-hooks/exhaustive-deps
   // A move Canton or the wallet may already know cannot be finished by this page once it is given up, so it is asked first.
-  const giveUp = async () => { setAsking(false); try { await session?.move.abandon(); setText(""); } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); } };
+  const giveUp = async (leaveLocked = false) => {
+    setAsking(false); setStuck(false);
+    try { await session?.move.abandon(undefined, { leaveLocked }); setText(""); }
+    catch (e) { if (e instanceof CannotTakeBack) setStuck(true); else setProblem(moveWords(e instanceof Error ? e.message : null)); }
+  };
 
   const takeBack = async () => {
     if (!session || !keptNow || starting) return;
     setProblem(null); setStarting(true);
-    try { await session.move.takeBack(keptNow.ref); setText(""); } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); }
+    try { await session.move.takeBack(keptNow.ref); setText(""); } catch (e) { if (e instanceof CannotTakeBack) setStuck(true); else setProblem(moveWords(e instanceof Error ? e.message : null)); }
     finally { setStarting(false); }
   };
 
@@ -224,7 +233,13 @@ export function MoveCard(p: MoveCardProps) {
           {parsed.error && <p className="small bad" role="status">{parsed.error}</p>}
           <button type="button" className="btn go" disabled={button.disabled || starting} onClick={press}>{button.label}</button>
           {button.action === "continue" && !asking && offersTakeBack(keptNow, due) && <button type="button" className="link-b give-up" disabled={starting} onClick={() => void takeBack()}>{TAKE_BACK_LABEL}</button>}
-          {button.action === "continue" && !asking && <button type="button" className="link-b give-up" onClick={() => (keptNow && keptNow.stage !== "start" ? setAsking(true) : void giveUp())}>Give this move up</button>}
+          {button.action === "continue" && !asking && !stuck && <button type="button" className="link-b give-up" onClick={() => (keptNow && keptNow.stage !== "start" ? setAsking(true) : void giveUp())}>Give this move up</button>}
+          {button.action === "continue" && stuck && (
+            <div className="give-up" role="group" aria-label="Give this deposit up with its tokens locked">
+              <p className="small bad">Canton would not take the tokens back. If you give this deposit up now, they stay locked on Canton.</p>
+              <button type="button" className="link-b" onClick={() => void giveUp(true)}>Give it up, leave the tokens locked</button> <button type="button" className="link-b" onClick={() => setStuck(false)}>Keep it</button>
+            </div>
+          )}
           {button.action === "continue" && asking && (
             <div className="give-up" role="group" aria-label="Give this move up">
               <p className="small muted">Part of this move may already be done. If you give it up, this page cannot finish it.</p>

@@ -24,6 +24,7 @@ class FakeLedger:
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
         self.created, self.allocations = {}, []   # created events by template (a read of open contracts); (contract id, view) of the Allocation interface
         self.rights = []   # the parties the service's user can act as
+        self.archived = set()   # contract ids the participant's own events show archived (the rest show as created)
         self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
         fake = self
 
@@ -67,6 +68,8 @@ class FakeLedger:
                 time.sleep(0.05)
                 self.open[self.commits] = self.open.get(self.commits, 0) + 1
             return 200, {"updateId": "u-1", "completionOffset": 5}
+        if path.endswith("/events/events-by-contract-id"):
+            return 200, ({"archived": {"archivedEvent": {}}} if body["contractId"] in self.archived else {"created": {"createdEvent": {}}})
         if path.endswith("/active-contracts-page") and "TemplateFilter" in json.dumps(body):   # the account's own contracts of one template
             template = json.dumps(body).split('"templateId": "')[1].split('"')[0]
             if template in self.created:
@@ -361,10 +364,22 @@ class TakeBack(Case):
 
     def test_a_deposit_request_is_archived_when_its_allocation_is_past_or_gone(self):
         self.request()
-        self.assertEqual(self.archive()[0], 200)   # no allocation of the account is left
+        self.ledger.archived.add(self.CID)
+        self.assertEqual(self.archive()[0], 200)   # the allocation is archived
         self.allocate(self.at(self.NOW - 60))
         self.assertEqual(self.archive()[0], 200)   # the allocation is past its time
         self.assertEqual(len(self.calls_to("/prepare")), 2)
+
+    def test_a_deposit_request_whose_allocation_is_missing_from_the_list_but_active_is_not_archived(self):
+        self.request()   # the account's list shows no allocation, but the participant's events show it created and not archived
+        status, out, _ = self.archive()
+        self.assertEqual((status, out["error"]), (409, "not_yet"))
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deposit_request_whose_allocation_the_participant_does_not_know_is_archived(self):
+        self.request()
+        self.ledger.fail["/v2/events/events-by-contract-id"] = (404, {"code": "CONTRACT_EVENTS_NOT_FOUND", "cause": "x"})
+        self.assertEqual(self.archive()[0], 200)
 
     def test_a_deposit_request_whose_allocation_can_still_settle_is_not_archived(self):
         self.allocate(self.at(self.NOW + 3600))

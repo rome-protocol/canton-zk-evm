@@ -60,9 +60,9 @@ describe("how long a move is said to take", () => {
 
 describe("taking a deposit back", () => {
   const deposit = (stage: string) => ({ input: { kind: "deposit" }, stage });
-  it("is offered for a deposit that stopped before its claim, once it is due", () => {
-    for (const stage of ["signing", "allocated", "canton", "evm"]) expect(offersTakeBack(deposit(stage), true)).toBe(true);
-    for (const stage of ["start", "wallet", "sent"]) expect(offersTakeBack(deposit(stage), true)).toBe(false);
+  it("is offered for a deposit with a Canton step begun, a claim asked for or sent included, once it is due", () => {
+    for (const stage of ["signing", "allocated", "canton", "evm", "wallet", "sent"]) expect(offersTakeBack(deposit(stage), true)).toBe(true);
+    expect(offersTakeBack(deposit("start"), true)).toBe(false);
     expect(offersTakeBack(deposit("canton"), false)).toBe(false);
   });
   it("is never offered for another kind of move, or when there is no record", () => {

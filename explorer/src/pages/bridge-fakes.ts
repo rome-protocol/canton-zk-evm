@@ -71,7 +71,7 @@ export function fakeEvm(o: EvmOptions = {}) {
 export function fakeCanton(): CantonAdapter & { calls: string[]; deadline: number | null } {
   const calls: string[] = [];
   const canton: CantonAdapter & { calls: string[]; deadline: number | null } = {
-    calls, deadline: null, party: () => PARTY,
+    calls, deadline: Date.now() + 90 * 60_000, party: () => PARTY,
     signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"),
     allocateDeposit: async () => void calls.push("allocateDeposit"), signDeposit: async () => void calls.push("signDeposit"), waitDeposit: async () => void calls.push("waitDeposit"),
     depositDeadline: async () => canton.deadline, recoverDeposit: async () => void calls.push("recoverDeposit"),

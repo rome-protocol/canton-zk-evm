@@ -27,7 +27,9 @@ export function parseAmount(text: string, decimals: number): { base: bigint; twi
   const base = BigInt(m[1]!) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, "0") || "0");
   if (base === 0n) throw new AmountError("The amount must be more than zero.");
   const twin = decimals >= CANTON_DECIMALS ? base / 10n ** BigInt(decimals - CANTON_DECIMALS) : base * 10n ** BigInt(CANTON_DECIMALS - decimals);
-  if (twin >= MAX_TWIN_UNITS || (decimals > CANTON_DECIMALS && base >= MAX_WIDE_BASE)) throw new AmountError(TOO_MUCH);
+  if (twin >= MAX_TWIN_UNITS) throw new AmountError(TOO_MUCH);
+  // A token of many decimals reaches its own bound first (10^36 base units): the words name that token's largest amount.
+  if (decimals > CANTON_DECIMALS && base >= MAX_WIDE_BASE) throw new AmountError(`The bridge moves less than ${(MAX_WIDE_BASE / 10n ** BigInt(decimals)).toString().replace(/\B(?=(\d{3})+$)/g, ",")} of this token at a time.`);
   return { base, twin };
 }
 

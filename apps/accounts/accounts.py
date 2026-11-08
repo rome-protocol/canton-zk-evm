@@ -840,9 +840,24 @@ class Accounts:
         request = next((r for r in self.open(party)["depositRequests"] if r["contractId"] == contract), None)
         if request is None:
             raise HttpError(404, "this account has no such open deposit request")
-        named = allocations.get((request["arguments"] or {}).get("allocation"))
+        named_id = (request["arguments"] or {}).get("allocation")
+        named = allocations.get(named_id)
         if named is not None and not self.passed(named):
             raise conflict("not_yet", "this deposit request can be taken back once its allocation is gone or its settle-before time has passed")
+        if named is None and isinstance(named_id, str) and not self.archived(party, named_id):
+            # Missing from the account's list is not yet gone: the participant may not be able to compute that allocation's view while the builder can still settle it.
+            raise conflict("not_yet", "this deposit request can be taken back once its allocation is gone or its settle-before time has passed")
+
+    def archived(self, party: str, contract: str) -> bool:
+        """Whether a contract is archived or unknown to the participant, by a look at its own events (not the account's view list). Anything else, an active contract included, is false."""
+        flt = {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}
+        try:
+            found = self.ledger.call("POST", "/v2/events/events-by-contract-id", {"contractId": contract, "eventFormat": {"filtersByParty": {party: flt}, "verbose": False}})
+        except HttpError as e:
+            if e.status == 422 and "NOT_FOUND" in str(e.extra.get("code") or ""):
+                return True
+            raise
+        return bool(found.get("archived"))
 
     def check_create(self, party: str, template: str, arguments) -> None:
         """A create names other parties as observers, and they see it and are sent it: so only the chain's own parties may be named, and the account itself (for a
