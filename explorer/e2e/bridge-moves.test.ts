@@ -401,12 +401,12 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   });
 
   it("lays the folded steps list out one step to a line at 360 px and at 1280 px: each label and its MetaMask pop-up text on one line, nothing overlapping", async () => {
-    service.extra = { wrapper: true };
+    service.extra = { wrapper: true, wrapped: true };
     const page = await open("/bridge");
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
     for (const width of [360, 1280]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const [from, name] of [["From", /^tROME on Ostia$/], ["From", /^TKA on Ostia$/]] as const) {
+      for (const [from, name] of [["From", /^tROME on Ostia$/], ["From", /^TKA on Ostia$/], ["From", /^TKA on Canton$/], ["From", /^Canton Coin on Canton$/], ["From", /^wCC on Ostia$/]] as const) {
         await pick(page, from, name);
         const details = page.locator("details.move-steps");
         if (!(await details.evaluate((d: HTMLDetailsElement) => d.open))) await details.locator("summary").click();

@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, renderApp, reply, route, status } from "../test-utils.tsx";
 
-const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n }));
+const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n, hold: Promise.resolve() as Promise<unknown> }));
 const closed = vi.fn();
 const opened = () => ({ party: PARTY, close: closed });
 vi.mock("../bridge/account.ts", () => mocks);
@@ -15,7 +15,7 @@ vi.mock("../bridge/evm/config.ts", () => ({
     twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }], wrapped: [],
   }),
 }));
-vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => mocks.gas, balanceOf: async () => 20n * 10n ** 18n }) }));
+vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => { await mocks.hold; return mocks.gas; }, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
   createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
 }));
@@ -30,7 +30,7 @@ function wallet() {
   const w = { on: vi.fn((event: string, fn: (v: unknown) => void) => { handlers[event] = fn; }), removeListener: vi.fn(), request: vi.fn(async ({ method }: { method: string }) => (method === "eth_requestAccounts" ? [ME] : method === "eth_chainId" ? "0x" + status().chainId.toString(16) : null)) };
   Object.defineProperty(window, "ethereum", { value: w, configurable: true, writable: true });
 }
-afterEach(() => { mocks.gas = 5n * 10n ** 18n; vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
+afterEach(() => { mocks.gas = 5n * 10n ** 18n; mocks.hold = Promise.resolve(); vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
 const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
 /** The faucet takes a request (the fake answers every POST to it with a place in the line) and keeps count of them. */
 const faucetAccepts = () => {
@@ -178,6 +178,40 @@ describe("the Bridge page", () => {
     expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
     expect(asked.n).toBe(1);
     expect(mocks.openAccount).not.toHaveBeenCalled();
+  });
+
+  it("after the faucet queues the coin and the balance is still 0, the card and the sheet wait ('tROME is on its way…', disabled) and the faucet is not asked a second time", async () => {
+    setUp();
+    mocks.gas = 0n;
+    const asked = faucetAccepts();
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Get test tROME" }));
+    expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
+    const waiting = await screen.findByRole("button", { name: "tROME is on its way…" });
+    expect(waiting).toBeDisabled();
+    await userEvent.click(waiting);
+    expect(asked.n).toBe(1);
+    expect(screen.queryByRole("button", { name: "Get test tROME" })).toBeNull();
+    mocks.gas = 3n * 10n ** 18n;   // the coin lands: the balance is read again on its own, and the walk goes on
+    expect(await screen.findByRole("button", { name: "Open my Canton account" }, { timeout: 8000 })).toBeInTheDocument();
+    expect(asked.n).toBe(1);
+  }, 15_000);
+
+  it("on the right address, the account sheet with no tROME offers the faucet in place of the sign-in", async () => {
+    setUp();
+    mocks.gas = 0n;
+    let release = () => {};
+    mocks.hold = new Promise<void>((r) => { release = r; });   // the balance is not known yet, so the card offers the account and the person opens the sheet
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await openSheet();
+    const sheet = await screen.findByRole("region", { name: "Your Canton account" });
+    expect(within(sheet).getByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    release();   // the balance reads 0
+    expect(await within(sheet).findByText("Get test tROME first. Every move on Ostia needs a little for fees.")).toBeInTheDocument();
+    expect(within(sheet).queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+    expect(within(sheet).getByRole("button", { name: "Get test tROME" })).toBeEnabled();
   });
 
   it("tells the person to get test tROME when the wallet will not let the page sign (4100, 4900, 4901), and keeps the sentence for another refusal", async () => {

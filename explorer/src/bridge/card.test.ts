@@ -17,6 +17,7 @@ describe("the move button", () => {
     expect(buttonOf({ ...none, connected: false })).toEqual({ label: "Connect MetaMask", action: "connect", disabled: false });
     expect(buttonOf(none)).toEqual({ label: "Get test tROME", action: "faucet", disabled: false });
     expect(buttonOf({ ...none, asking: true })).toEqual({ label: "Asking the faucet…", action: "faucet", disabled: true });
+    expect(buttonOf({ ...none, coming: true })).toEqual({ label: "tROME is on its way…", action: "faucet", disabled: true });   // queued, not seen in the wallet yet: no second ask
     expect(buttonOf({ ...base, needCoin: "tROME" }).action).toBe("faucet");   // the account is open, the coin still comes first
     expect(buttonOf({ ...none, needCoin: undefined })).toEqual({ label: "Open my Canton account", action: "open", disabled: false });   // once the wallet holds some
     expect(buttonOf({ ...base, needCoin: "tROME", move: { phase: "paused", note: "x" } }).action).toBe("continue");   // a kept move is not held back

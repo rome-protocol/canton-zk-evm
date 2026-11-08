@@ -58,6 +58,8 @@ export function Bridge() {
   /** What the wallet holds of the chain's coin (the card reads it); null while not known. */
   const [gas, setGas] = useState<bigint | null>(null);
   const [refresh, setRefresh] = useState(0);
+  /** The faucet has queued the coin and the wallet does not show it yet. */
+  const [coming, setComing] = useState(false);
   const [nudge, setNudge] = useState(0);
   const sheetRef = useRef<HTMLElement>(null);
   const [noWallet, setNoWallet] = useState(false);
@@ -73,7 +75,7 @@ export function Bridge() {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null);
+    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null);
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -107,6 +109,15 @@ export function Bridge() {
     import("../bridge/session.ts").then((m) => { if (live) { made = m.createSession({ evm, account: opened, config }); setSession(made); } }, () => {});
     return () => { live = false; made?.close(); };
   }, [config, evm, opened]);
+
+  // Once the coin is queued the balance is read every few seconds, so the walk goes on as soon as it lands; the wait ends when the wallet shows it (or after five minutes).
+  useEffect(() => { if (gas !== null && gas > 0n) setComing(false); }, [gas]);
+  useEffect(() => {
+    if (!coming) return;
+    const tick = setInterval(() => setRefresh((n) => n + 1), 3_000);
+    const stop = setTimeout(() => setComing(false), 300_000);
+    return () => { clearInterval(tick); clearTimeout(stop); };
+  }, [coming]);
 
   // "Open my Canton account" brings the sign-in part into view: it sits below the card, so on a phone it may be off the screen.
   useEffect(() => { if (nudge > 0) sheetRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" }); }, [nudge]);
@@ -150,7 +161,7 @@ export function Bridge() {
     const mine = epoch.current;
     setRome({ s: "working" });
     const r = await faucet.request(wallet.account!);
-    if (epoch.current === mine) { setRome({ s: r.kind === "queued" ? "done" : "failed", message: coinWords(r, amount) }); setRefresh((n) => n + 1); }
+    if (epoch.current === mine) { setRome({ s: r.kind === "queued" ? "done" : "failed", message: coinWords(r, amount) }); setComing(r.kind === "queued" && gas === 0n); setRefresh((n) => n + 1); }
   }
 
   /** Puts the wallet on Ostia before a move; says why not, in words. */
@@ -183,7 +194,7 @@ export function Bridge() {
           <MoveCard
             config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
-            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null} onGas={setGas} refresh={refresh}
+            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome } : null} onGas={setGas} refresh={refresh}
           />
           <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
         </div>
@@ -203,7 +214,7 @@ export function Bridge() {
                 <button type="button" className="copy" aria-label="Copy account id" onClick={() => { navigator.clipboard?.writeText(phase.account.party).then(() => setCopied(true), () => {}); }}><Icon name={copied ? "check" : "copy"} size={13} /> {copied ? "Copied" : "Copy"}</button></p>
               <div className="actions">
                 {coin.s !== "off" && <button type="button" className="btn ghost" disabled={coin.s === "working"} onClick={() => getCanton(phase.account)}>{coin.s === "working" ? "Getting Canton Coin…" : "Get test Canton Coin"}</button>}
-                {(info === null || info.on) && <button type="button" className="btn ghost" disabled={rome.s === "working" || !wallet.account} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : `Get ${amount}`}</button>}
+                {(info === null || info.on) && <button type="button" className="btn ghost" disabled={rome.s === "working" || coming || !wallet.account} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : coming ? `${sym} is on its way…` : `Get ${amount}`}</button>}
               </div>
               {note(coin)}
               {note(rome)}
@@ -214,7 +225,7 @@ export function Bridge() {
               {needCoin && phase.s !== "working" ? (
                 <>
                   <p className="small" role="status">Get test {sym} first. Every move on {chain.chainName} needs a little for fees.</p>
-                  <button type="button" className="btn" disabled={rome.s === "working"} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : `Get test ${sym}`}</button>
+                  <button type="button" className="btn" disabled={rome.s === "working" || coming} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : coming ? `${sym} is on its way…` : `Get test ${sym}`}</button>
                 </>
               ) : (
                 <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>
