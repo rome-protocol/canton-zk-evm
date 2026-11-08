@@ -78,7 +78,7 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
 .top .search-slot { flex: none; width: 210px; display: flex; justify-content: flex-end; margin-left: auto; position: relative; z-index: 2; }
 .top .search-slot .search { flex: none; width: 210px; max-width: none; margin-left: 0; }
 .top .search-slot .search:focus-within { width: 380px; margin-left: -170px; }
-.top .search input::placeholder { text-overflow: ellipsis; }
+.top .search input { text-overflow: ellipsis; }
 @media (prefers-reduced-motion: no-preference) { .top .search-slot .search { transition: width .15s ease, margin-left .15s ease; } }
 /* Above a phone the name, the links and the search box share one row (the page is 1280 px wide at most, so a wide screen needs the same room): the links sit a little closer. When they do not all fit
    (Shell.tsx measures that and sets .folded on the header, so a link added later folds in at the right width) they fold into the menu button, which sits after the search box; the links are measured
@@ -89,7 +89,6 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
   .nav { gap: 2px; }
   .nav .navlink { padding: 6px 9px; font-size: 14px; line-height: 1.45; }
   .top.folded { flex-wrap: wrap; }
-  .top.home .search-slot { margin-left: 0; }
   .top.folded .brand { order: 1; }
   .top.folded .search-slot { order: 2; }
   .top.folded .menu { display: inline-flex; order: 3; }

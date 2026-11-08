@@ -222,6 +222,7 @@ describe("the header's links, folded into the menu when the row cannot hold them
   afterEach(() => {
     if (saved.offset) Object.defineProperty(HTMLElement.prototype, "offsetWidth", saved.offset);
     if (saved.client) Object.defineProperty(Element.prototype, "clientWidth", saved.client);
+    vi.unstubAllGlobals();
   });
 
   it("keeps the links in the row while the name, the links and the search box fit, and folds them into the menu when they do not, and back", async () => {

@@ -56,7 +56,7 @@ export function SearchBox({ hero = false }: { hero?: boolean }) {
   const form = (
     <form className={`search${hero ? " hero-search" : ""}`} role="search" aria-label="Search" onSubmit={submit}>
       <Icon name="search" />
-      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : phone ? HEADER_SHORT_HINT : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }} spellCheck={false} autoComplete="off" />
+      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : phone ? HEADER_SHORT_HINT : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={hero ? undefined : (e) => { if (e.key === "Escape") e.currentTarget.blur(); }} spellCheck={false} autoComplete="off" />
       {hero ? <button type="submit" className="btn">Search</button> : <kbd className="kbd" aria-hidden="true">/</kbd>}
     </form>
   );
