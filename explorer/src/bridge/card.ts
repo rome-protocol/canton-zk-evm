@@ -25,7 +25,7 @@ export interface ButtonInput {
   preparing?: boolean;
 }
 
-/** How long a move takes from Move to Final, as the card says it, by the MetaMask pop-ups it needs (live: moves with one pop-up took 46 to 58 s; approve then pay took about 1 min 45 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
+/** How long a move takes from Move to Final, as the card says it, by the MetaMask pop-ups it needs (live: moves with one pop-up took 46 to 58 s; the approve and pay of the tROME lock took about 1 min 40 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
 export const WAIT_WORDS = { short: "About 1 min", long: "About 2 min" } as const;
 export const waitFor = (popups: number): string => (popups >= 2 ? WAIT_WORDS.long : WAIT_WORDS.short);
 

@@ -131,7 +131,7 @@ The addresses:
 | Vault | `0x69f13a94f986021f1a7650eb611bf9b717aa495a` (block 28208) |
 | TKA, the ERC-20 that has a twin | `0xf4b69022b3e6501101600743f17fbe0659dd1af8` (18 decimals) |
 | WtROME, wrapped tROME, the second twin | `0xc221fc4af51caa9d198e70e3cb3b8f3d9d2adc64` (18 decimals) |
-| wCC, wrapped Canton Coin | `0x4db3dea7c13116961fd3e438542ccfcca61a7547` (10 decimals) |
+| CC (wCC), wrapped Canton Coin | `0x4db3dea7c13116961fd3e438542ccfcca61a7547` (10 decimals) |
 
 The twin registry service answers at `https://ostia.devnet.romeprotocol.xyz/twin-registry/`. It holds no key and writes nothing to Canton. These paths are public:
 
