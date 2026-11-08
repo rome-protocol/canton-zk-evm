@@ -129,3 +129,13 @@ export function archiveDepositRequest(party: string, request: string): Built {
     disclosedContracts: [],
   };
 }
+
+/** The holder archives their own redeem request (the Daml's implicit `Archive`, which the holder, its only signatory, controls): nothing else is in the transaction. The request locks nothing, so this can be done at any time. */
+export function archiveRedeemRequest(party: string, request: string): Built {
+  const template = { ...CHAIN, entity: "RedeemRequest" };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: request, choice: "Archive", choiceArgument: {} } },
+    intent: { party, kind: "exercise", template, choice: "Archive", contractId: request, args: {} },
+    disclosedContracts: [],
+  };
+}

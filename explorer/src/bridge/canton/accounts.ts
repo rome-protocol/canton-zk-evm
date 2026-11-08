@@ -6,7 +6,7 @@ import { timeoutSignal } from "../../timeout.ts";
 
 export type Command = { CreateCommand: { templateId: string; createArguments: object } } | { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: object } };
 export interface DisclosedContract { templateId: string; contractId: string; createdEventBlob: string; synchronizerId: string }
-export interface Prepared { party: string; preparedTransaction: string; preparedTransactionHash: string; hashingSchemeVersion: string }
+export interface Prepared { party: string; preparedTransaction: string; preparedTransactionHash: string; hashingSchemeVersion: string; maxRecordTime?: string }
 export interface Holding { contractId: string; instrumentId: { admin: string; id: string }; amount: string; locked: boolean }
 /** An allocation the account sent, by the contract id the participant committed. `allocation` is the token standard's specification (settlement and leg). */
 export interface AllocationView {
@@ -62,6 +62,23 @@ export class AccountsError extends Error {
   }
 }
 
+/**
+ * An execute that got no definite answer (the request was lost or timed out, or the service answered 5xx): the transaction may still be recorded, up to `recordBy` (ms since 1970, the
+ * service's `maxRecordTime`). Until then nothing may be signed again for the same step; after it the transaction can never commit.
+ */
+export class Unanswered extends AccountsError {
+  readonly recordBy: number;
+  constructor(cause: AccountsError, recordBy: number) {
+    super(cause.kind, cause.status, cause.message, cause.retryAfter, cause.code, cause.detail, cause.registryStatus);
+    this.name = "Unanswered";
+    this.recordBy = recordBy;
+  }
+}
+/** How long the page waits for the service's answer to an execute: above the service's own 60 s wait for the ledger, so the page hears the service's answer and not its own timeout. */
+export const EXECUTE_MS = 90_000;
+/** Used when the service did not say its record time: its transaction is recorded within ten minutes of its prepare, and a prepare is not older than the page's own look. */
+const RECORD_WINDOW_MS = 11 * 60_000;
+
 /** Retry-After as seconds: a number of seconds, or an HTTP date. */
 export function retryAfterSeconds(value: string | null, now = Date.now()): number | undefined {
   if (value === null || value.trim() === "") return undefined;
@@ -82,12 +99,14 @@ export class AccountsClient {
     [this.base, this.fetcher, this.clock] = [base, fetcher, clock];
   }
 
-  private async send(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey): Promise<any> {
+  private recordBy = new Map<string, number>();   // a prepared transaction -> the time (ms) the service will record it by, until it is executed
+
+  private async send(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey, timeoutMs?: number): Promise<any> {
     const text = body === undefined ? "" : JSON.stringify(body);   // signed exactly as it is sent
     const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
     if (key) headers["X-Account-Signature"] = await this.accountSignature(key, method, path, text);
     let r: Response;
-    try { r = await this.fetcher(this.base + path, { method, headers, body: body === undefined ? undefined : text, signal: timeoutSignal() }); }
+    try { r = await this.fetcher(this.base + path, { method, headers, body: body === undefined ? undefined : text, signal: timeoutSignal(timeoutMs) }); }
     catch (e) { throw new AccountsError("network", 0, e instanceof Error ? e.message : "the account service could not be reached"); }
     const answer = await r.json().catch(() => ({}));
     if (r.ok) return answer;
@@ -114,11 +133,26 @@ export class AccountsClient {
   allocate(blob: string, signature: Uint8Array): Promise<{ party: string; created: boolean }> {
     return this.send("POST", "/accounts/v1/allocate", { blob, signature: base64(signature) });
   }
-  prepare(key: CantonKey, party: string, commands: Command[], disclosedContracts: DisclosedContract[] = []): Promise<Prepared> {
-    return this.send("POST", "/accounts/v1/prepare", { party, commands, disclosedContracts }, key);
+  async prepare(key: CantonKey, party: string, commands: Command[], disclosedContracts: DisclosedContract[] = []): Promise<Prepared> {
+    const prepared: Prepared = await this.send("POST", "/accounts/v1/prepare", { party, commands, disclosedContracts }, key);
+    const by = Date.parse(String(prepared.maxRecordTime));
+    if (typeof prepared.preparedTransaction === "string") {
+      this.recordBy.set(prepared.preparedTransaction, Number.isNaN(by) ? this.clock() + RECORD_WINDOW_MS : by);
+      if (this.recordBy.size > 20) this.recordBy.delete(this.recordBy.keys().next().value!);
+    }
+    return prepared;
   }
-  execute(key: CantonKey, preparedTransaction: string, party: string, signature: Uint8Array): Promise<{ updateId: string }> {
-    return this.send("POST", "/accounts/v1/execute", { preparedTransaction, partySignatures: [{ party, signature: base64(signature) }] }, key);
+  /** Executes a prepared transaction. An answer that is not definite (the page's request failed or timed out, or the service answered 500, 502 or 503) throws `Unanswered`: the ledger may still record it. */
+  async execute(key: CantonKey, preparedTransaction: string, party: string, signature: Uint8Array): Promise<{ updateId: string }> {
+    try {
+      const done = await this.send("POST", "/accounts/v1/execute", { preparedTransaction, partySignatures: [{ party, signature: base64(signature) }] }, key, EXECUTE_MS);
+      this.recordBy.delete(preparedTransaction);
+      return done;
+    } catch (e) {
+      if (e instanceof AccountsError && (e.kind === "network" || e.status >= 500)) throw new Unanswered(e, this.recordBy.get(preparedTransaction) ?? this.clock() + RECORD_WINDOW_MS);
+      this.recordBy.delete(preparedTransaction);
+      throw e;
+    }
   }
   async holdings(key: CantonKey, party: string): Promise<Holding[]> {
     return (await this.send("GET", `/accounts/v1/holdings/${party}`, undefined, key)).holdings;

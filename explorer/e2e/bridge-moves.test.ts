@@ -276,7 +276,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   }, 150_000);
 
   it("moves wCC back to Canton: one withdrawal in the wallet, then final", async () => {
-    service.extra = { wrapped: true };
+    service.extra = { wrapped: true, custody: String(100n * 10n ** 10n) };   // the gateway holds more than the withdrawal
     const page = await open("/bridge");
     await signedIn(page);
     await pick(page, "From", /^wCC on Ostia$/);

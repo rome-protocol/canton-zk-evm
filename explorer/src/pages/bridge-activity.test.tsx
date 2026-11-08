@@ -201,6 +201,7 @@ describe("the Activity list", () => {
     it("is listed with what it moves, says another browser started it, and carries on from its row: one release, asked of the wallet once", async () => {
       const store = memoryStore();
       const made = fakeSession({ store, legs: () => [], open: openWith([request()]), tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "other-1") }, TKA)]) });
+      made.session.open = vi.fn(async () => openWith(made.evm.calls.length > 0 ? [] : [request()]));   // the release archives the request
       show({ store, session: made.session });
       const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
       expect(within(row).getByText("Started in another browser. Canton has it. Release it on Ostia.")).toBeInTheDocument();
@@ -231,8 +232,56 @@ describe("the Activity list", () => {
       show({ store, session });
       await waitFor(() => expect(session.open).toHaveBeenCalled());
       await new Promise((r) => setTimeout(r, 20));
-      expect(rows()).toHaveLength(2);
-      expect(screen.queryByText(/another browser/)).toBeNull();
+      expect(rows()).toHaveLength(3);
+      // The request of the kept record is not listed again; the one for the finished redeem is a dead duplicate, listed as spent so it can be removed.
+      const dead = screen.getByText(/Its tokens were spent by another move.*Remove it/).closest("li")!;
+      expect(within(dead).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+      expect(within(dead).queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+      expect(screen.queryAllByText(/Started in another browser/)).toHaveLength(1);
+    });
+    it("a redeem that turns final while the list is shown does not leave its request listed as spent by another move", async () => {
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "ref-1", input: { ...redeem, amount: "3" }, to: ME, stage: "sent", tx: TX }));
+      const made = fakeSession({ store, legs: () => [], tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "ref-1") }, TKA)]) });
+      // Canton lists the request until the release is final (its Advance archives it).
+      made.session.open = vi.fn(async () => openWith(made.move.state.phase === "final" ? [] : [request({ ref: "ref-1" })]));
+      show({ store, session: made.session });
+      await waitFor(() => expect(made.session.open).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText("Sent. Waiting for the block to be final.")).toBeInTheDocument();
+      await act(async () => { await made.move.resume("ref-1"); });   // the move ends outside the list
+      expect(made.move.state.phase).toBe("final");
+      await waitFor(() => expect(made.session.open).toHaveBeenCalledTimes(2));   // the list was read again
+      await waitFor(() => expect(finished(store).map((e) => e.ref)).toEqual(["ref-1"]));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(screen.queryByText(/spent by another move/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+      expect(rows()).toHaveLength(1);
+    });
+    it("an extra open request of a deposit this browser has finished is listed as finished, cannot be continued, and is removed by its label", async () => {
+      const store = memoryStore();
+      remember(store, { ...entryOf(ck({ ref: "dep-1", input: deposit, stage: "sent" })), tx: TX, block: 7 });
+      const id = depositIdOf(PARTY, "dep-1").slice(2);
+      const deposits = [{ contractId: "00bb", arguments: { depositor: PARTY, depositId: id, label: "dep-1" } }];
+      const made = fakeSession({ store, legs: () => [], open: openWith([], deposits) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("Tokens to Ostia")).closest("li")!;
+      expect(within(row).getByText(/This deposit is finished already.*Remove it/)).toBeInTheDocument();
+      expect(within(row).queryByRole("button", { name: /Claim|Continue/ })).toBeNull();
+      await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(made.session.removeDeposit).toHaveBeenCalledWith("dep-1"));
+      expect(made.session.removeRedeem).not.toHaveBeenCalled();
+      expect(made.evm.calls).toEqual([]);
+    });
+    it("an open deposit request whose own move is still kept is not listed again", async () => {
+      const store = memoryStore();
+      saveCheckpoint(store, ck({ ref: "dep-2", input: deposit, stage: "canton" }));
+      const id = depositIdOf(PARTY, "dep-2").slice(2);
+      const { session } = fakeSession({ store, legs: () => [], open: openWith([], [{ contractId: "00bb", arguments: { depositor: PARTY, depositId: id, label: "dep-2" } }]) });
+      show({ store, session });
+      await waitFor(() => expect(session.open).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rows()).toHaveLength(1);
+      expect(screen.queryByText(/finished already/)).toBeNull();
     });
     it("is a plain row without a button where this build does not move the token", async () => {
       const store = memoryStore();
@@ -240,6 +289,35 @@ describe("the Activity list", () => {
       show({ store, session });
       expect(await screen.findByText(/Started in another browser\. Canton has it/)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+    });
+    it("a redeem whose holdings were spent says so, has no release button, and is removed from its row", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], holdings: ["live-1"], open: openWith([request({ holdings: ["gone-1"] })]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      expect(within(row).getByText(/Its tokens were spent by another move.*Remove it/)).toBeInTheDocument();
+      expect(within(row).queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+      await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(made.session.removeRedeem).toHaveBeenCalledWith("other-1"));
+      expect(made.evm.calls).toEqual([]);
+    });
+    it("a redeem whose holdings are all there can be released, and can be removed too", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], holdings: ["live-1", "live-2"], open: openWith([request({ holdings: ["live-1"] })]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      expect(within(row).getByRole("button", { name: "Release on Ostia" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    });
+    it("says why a removal failed and keeps the row", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], open: openWith([request()]) });
+      (made.session.removeRedeem as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("The bridge's account service does not allow this."));
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      expect(screen.getByText("3 TKA to Ostia")).toBeInTheDocument();
     });
     it("names the chain's own coin that comes back as its wrapped form", async () => {
       const store = memoryStore();
@@ -286,7 +364,7 @@ describe("the Activity list", () => {
       const hash = ("0x" + "cd".repeat(32)) as Hex;
       const store = memoryStore();
       saveCheckpoint(store, ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash }));
-      const session = { move: { state: { phase: "proving", tx: hash }, current: "r9", subscribe: () => () => {} }, kept: () => [ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash })], open: async () => ({ redeemRequests: [], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), party: PARTY } as unknown as Session;
+      const session = { move: { state: { phase: "proving", tx: hash }, current: "r9", subscribe: () => () => {} }, kept: () => [ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash })], open: async () => ({ redeemRequests: [], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), party: PARTY, holdingIds: async () => new Set<string>() } as unknown as Session;
       render(<MemoryRouter><MoveBar session={session} pairs={pairs} chainName="Ostia" read={read} pollMs={20} /><Activity account={ME} session={session} store={store} pairs={pairs} chainName="Ostia" onConnect={vi.fn()} onOpenAccount={vi.fn()} read={read} pollMs={20} /></MemoryRouter>);
       await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(2));
       const hashes = read.mock.calls.map((c) => (c as unknown[])[0]);

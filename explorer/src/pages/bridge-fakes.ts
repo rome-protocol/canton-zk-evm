@@ -72,7 +72,7 @@ export function fakeCanton(): CantonAdapter & { calls: string[]; deadline: numbe
   const calls: string[] = [];
   const canton: CantonAdapter & { calls: string[]; deadline: number | null } = {
     calls, deadline: Date.now() + 90 * 60_000, party: () => PARTY,
-    signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"),
+    signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"), cancelRedeem: async () => void calls.push("cancelRedeem"), appeared: async (a) => "redeem" in a,
     allocateDeposit: async () => void calls.push("allocateDeposit"), signDeposit: async () => void calls.push("signDeposit"), waitDeposit: async () => void calls.push("waitDeposit"),
     depositDeadline: async () => canton.deadline, recoverDeposit: async () => void calls.push("recoverDeposit"),
   };
@@ -80,7 +80,7 @@ export function fakeCanton(): CantonAdapter & { calls: string[]; deadline: numbe
 }
 
 /** A session on the real move library: `legs` is what the explorer shows as final for the move's transaction. */
-export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint; open?: OpenState; allocations?: AllocationView[]; tx?: (hash: Hex) => ApiTx } = { legs: () => [] }) {
+export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: string) => BlockLeg[]; store?: ReturnType<typeof memoryStore>; canton?: ReturnType<typeof fakeCanton>; cantonBalance?: bigint; open?: OpenState; allocations?: AllocationView[]; holdings?: string[]; tx?: (hash: Hex) => ApiTx } = { legs: () => [] }) {
   const evm = o.evm ?? fakeEvm();
   const canton = o.canton ?? fakeCanton();
   const store = o.store ?? memoryStore();
@@ -92,6 +92,7 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   const session: Session = {
     move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
     open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
+    holdingIds: vi.fn(async () => new Set<string>(o.holdings ?? [])), removeRedeem: vi.fn(async () => {}), removeDeposit: vi.fn(async () => {}),
     adopt: vi.fn((kind, request) => adoptRecord(kind, request, { account: evm.evm.account, party: PARTY, config, store, allocations: async () => o.allocations ?? [], openRequests: () => session.open() })),
   };
   return { session, evm, canton, store, move };

@@ -15,6 +15,7 @@ import ed25519
 # What the service lets an account sign: a create of a template ("#package:Module:Entity") or an exercise of one choice ("#package:Module:Entity#Choice").
 ALLOCATION_WITHDRAW = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw"   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
 DEPOSIT_ARCHIVE = "#canton-zk-evm:Zk.Chain:DepositRequest#Archive"
+REDEEM_ARCHIVE = "#canton-zk-evm:Zk.Chain:RedeemRequest#Archive"   # an account removes its own open redeem request (see `check_take_back`)
 DEFAULT_ALLOW = (
     "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance",
     "#canton-zk-evm:Zk.Chain:DepositRequest",
@@ -23,6 +24,7 @@ DEFAULT_ALLOW = (
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept",
     ALLOCATION_WITHDRAW,
     DEPOSIT_ARCHIVE,
+    REDEEM_ARCHIVE,
 )
 CHAIN_CREATES = DEFAULT_ALLOW[:2]   # these creates name the chain's parties as observers: they are checked against the configured ones
 CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
@@ -813,7 +815,7 @@ class Accounts:
             raise HttpError(403, f"{wanted} is not on this service's list of allowed commands (name the package, not its id)")
         if kind == "CreateCommand":
             self.check_create(party, wanted, args.get("createArguments"))
-        elif wanted in (ALLOCATION_WITHDRAW, DEPOSIT_ARCHIVE):
+        elif wanted in (ALLOCATION_WITHDRAW, DEPOSIT_ARCHIVE, REDEEM_ARCHIVE):
             self.check_take_back(party, wanted, args.get("contractId"))
         return commands
 
@@ -830,6 +832,12 @@ class Accounts:
         the builder leaves it out from then). It may archive its own open DepositRequest once the allocation it names is gone or past that time. Neither can touch a deposit the builder can still settle."""
         if not isinstance(contract, str):
             raise HttpError(400, "an ExerciseCommand names its contract id")
+        if wanted == REDEEM_ARCHIVE:
+            # A redeem request locks nothing and its holder is its only signatory: the holder can already make its release fail by spending the holdings it names, and the builder reads only active requests.
+            # So the account may remove any open request of its own, and nothing else.
+            if not any(r["contractId"] == contract and (r["arguments"] or {}).get("holder") == party for r in self.open(party)["redeemRequests"]):
+                raise HttpError(404, "this account has no such open redeem request")
+            return
         allocations = {a["contractId"]: a for a in self.allocations(party)["allocations"]}
         if wanted == ALLOCATION_WITHDRAW:
             found = allocations.get(contract)
@@ -924,7 +932,7 @@ class Accounts:
                 raise HttpError(403, f"this transaction would cost more than the {self.max_traffic} that this service allows one")
             self.prepared.put(hashlib.sha256(tx.encode()).hexdigest(), {"party": party, "version": version, "hash": base64.b64decode(made["preparedTransactionHash"]),
                                                                        "cost": cost, "template": template, "record_by": record_by}, pending_owner(ip), party)
-        return {"party": party, "preparedTransaction": tx, "preparedTransactionHash": made["preparedTransactionHash"], "hashingSchemeVersion": version}
+        return {"party": party, "preparedTransaction": tx, "preparedTransactionHash": made["preparedTransactionHash"], "hashingSchemeVersion": version, "maxRecordTime": request["maxRecordTime"]}
 
     def execute(self, body: dict, ip: str) -> dict:
         tx = text(body, "preparedTransaction", MAX_BODY)

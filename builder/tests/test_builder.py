@@ -353,6 +353,16 @@ class Payments(LegCase):
             with mock.patch.object(b, "utcnow", lambda now=now: datetime(now, 6, 1, tzinfo=timezone.utc)):
                 self.assertEqual(b.build_block(s.cfg)["legs"], legs, now)
 
+    def test_a_payment_two_minutes_before_its_settle_before_is_still_included(self):
+        now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"settleBefore": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")}   # inside the deposit margin, which a payment does not have
+        with mock.patch.object(b, "utcnow", lambda: now):
+            result = b.build_block(s.cfg)
+        self.assertTrue(result["committed"], result)
+        self.assertEqual(result["legs"], 1)
+        self.assertEqual(result["leftOut"], [])
+
     def test_a_settle_before_that_cannot_be_read_means_the_payment_is_left_out(self):
         s, t = self.setup_pay()
         s.ledger.views["alloc-1"] = {"settleBefore": "tomorrow"}
@@ -490,6 +500,45 @@ class Deposits(LegCase):
         s.ledger.views["alloc-d1"] = {"settleBefore": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")}
         with mock.patch.object(b, "utcnow", lambda: now):
             self.assertEqual(b.build_block(s.cfg)["legs"], 1)
+
+    def late_proof(self, delay_minutes, expires_minutes=6):
+        """A deposit that expires `expires_minutes` after the build, whose proof takes `delay_minutes`: what build_block does, and the clock at the end."""
+        now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        s, t = self.setup_dep()
+        s.ledger.views["alloc-d1"] = {"settleBefore": (now + timedelta(minutes=expires_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        clock = [now]
+        real_prove = b.prove
+
+        def slow_prove(*a, **k):
+            proven = real_prove(*a, **k)
+            clock[0] = now + timedelta(minutes=delay_minutes)
+            return proven
+        return s, t, clock, mock.patch.object(b, "utcnow", lambda: clock[0]), mock.patch.object(b, "prove", slow_prove)
+
+    def test_a_proof_that_comes_within_a_minute_of_the_deposits_time_is_dropped_and_not_submitted(self):
+        s, t, clock, now, prove = self.late_proof(delay_minutes=5.5)   # 30 s left when the proof is done
+        with now, prove:
+            with self.assertRaises(b.StaleProof):
+                b.build_block(s.cfg)
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertIn(t["hash"], self.in_pool(s))   # reth is back at Canton's head and the transaction waits in the pool
+
+    def test_after_a_dropped_proof_the_block_is_built_again_without_that_deposit(self):
+        s, t, clock, now, prove = self.late_proof(delay_minutes=5.5)
+        with now:
+            with prove, self.assertRaises(b.StaleProof):
+                b.build_block(s.cfg)
+            result = b.build_block(s.cfg)   # the clock is where the late proof left it: the deposit is within the settle margin now
+        self.assertTrue(result["committed"], result)
+        self.assertEqual(result["legs"], 0)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t["hash"]])
+        self.assertIn("too near", result["leftOut"][0]["reason"])
+
+    def test_a_proof_with_a_minute_or_more_to_spare_is_submitted(self):
+        s, t, clock, now, prove = self.late_proof(delay_minutes=4.5)   # 90 s left
+        with now, prove:
+            self.assertEqual(b.build_block(s.cfg)["legs"], 1)
+        self.assertEqual(len(s.ledger.submitted), 1)
 
     def test_an_allocation_of_another_instrument_means_the_claim_is_left_out(self):
         for instrument in ({"admin": "adm", "id": "TKX"}, {"admin": "other", "id": "TKB"}):
@@ -1887,6 +1936,29 @@ class CommandLine(Case):
         self.assertEqual(built.call_args.args[0].max_block_tx_bytes, 1234)
         for bad in ("0", "-5", "abc"):
             self.assert_failure(self.run_main(self.setup({}), "--max-block-tx-bytes", bad), "max-block-tx-bytes")
+
+    def test_the_settle_margin_is_300_seconds_unless_the_environment_or_the_command_line_says_otherwise(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CZE_SETTLE_MARGIN_SECONDS", None)
+            self.assertEqual(b.parser().parse_args(["once"]).settle_margin_seconds, 300)
+            os.environ["CZE_SETTLE_MARGIN_SECONDS"] = "120"
+            self.assertEqual(b.parser().parse_args(["once"]).settle_margin_seconds, 120)
+            self.assertEqual(b.parser().parse_args(["once", "--settle-margin-seconds", "45"]).settle_margin_seconds, 45)
+
+    def test_the_settle_margin_reaches_the_build_and_one_outside_its_range_is_one_json_line(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        with mock.patch.object(b, "build_block", wraps=b.build_block) as built:
+            code, out = self.run_main(s, "--settle-margin-seconds", "90")
+        self.assertEqual((code, out["committed"]), (0, True))
+        self.assertEqual(built.call_args.args[0].settle_margin_seconds, 90)
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        with mock.patch.object(b, "build_block", wraps=b.build_block) as built:
+            self.run_main(s, "--settle-margin-seconds", "60")
+        self.assertEqual(built.call_args.args[0].settle_margin_seconds, 60)
+        for bad in ("-1", "0", "59", "86400", "abc"):
+            s = self.setup({})
+            self.assert_failure(self.run_main(s, "--settle-margin-seconds", bad), "settle-margin-seconds")
+            self.assertEqual(s.reth.engine_calls, [])
 
     def test_a_bad_disclosed_file_is_one_json_line_before_anything_moves(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

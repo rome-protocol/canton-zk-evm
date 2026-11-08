@@ -583,6 +583,7 @@ export const bridgeReads = {
   twins: async (signal: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview,
   tx: async (hash: string, signal: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx,
   leg: async (id: string, signal: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem,
-  /** The newest transactions the address sent. */
-  sentTxs: async (a: string, limit: number, signal: AbortSignal) => (await call(`${of(a, "/txs")}?limit=${limit}${directionQuery("sent")}`, [200], signal)).body as Page<TxListItem>,
+  /** The newest transactions the address sent; `before` is the `next` of a page, for the page after it. */
+  sentTxs: async (a: string, limit: number, signal: AbortSignal, before?: string) =>
+    (await call(`${of(a, "/txs")}?limit=${limit}${directionQuery("sent")}${before === undefined ? "" : `&before=${encodeURIComponent(before)}`}`, [200], signal)).body as Page<TxListItem>,
 };

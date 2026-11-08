@@ -39,6 +39,16 @@ describe("the API client", () => {
     same(tokenAddress().createdBy!, FIELDS.createdBy);
   });
 
+  it("asks for the page after a cursor of the account's sent transactions, and for the first page without one", async () => {
+    answer(200, { items: [], next: null });
+    const signal = AbortSignal.timeout(20_000);
+    await bridgeReads.sentTxs("0xab", 50, signal);
+    await bridgeReads.sentTxs("0xab", 50, signal, "12:3");
+    const [first, second] = vi.mocked(fetch).mock.calls.map((c) => String(c[0]));
+    expect(first).not.toContain("before=");
+    expect(second).toMatch(/limit=50.*&before=12%3A3/);
+  });
+
   it("sets no timeout on a request unless the caller gives a signal (a CSV export or a statistic may take long), and passes the Bridge page's through", async () => {
     answer(200, status());
     await getStatus();

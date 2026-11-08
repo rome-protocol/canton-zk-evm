@@ -107,7 +107,8 @@ export function rpcResult(c: Chain, account: string, method: string, params: any
 }
 
 /** What a test adds to the chain: `wrapped` lists wCC (Canton Coin as an ERC-20), `wrapper` lists the twin of the chain's own coin (WtROME). */
-export interface Extra { wrapped?: boolean; wrapper?: boolean }
+/** `custody` is what the gateway holds on Canton of wCC, in base units (default none). */
+export interface Extra { wrapped?: boolean; wrapper?: boolean; custody?: string }
 /** The explorer's /api/twins: the twin registry's address, the vault, the twin TKA, and the tokens a test asks for. */
 export const twinsOverview = (registryService: string, extra: Extra = {}) => ({
   through: 1, registryService, vaults: [{ address: VAULT, codeHash: "0x00" }],
@@ -115,7 +116,7 @@ export const twinsOverview = (registryService: string, extra: Extra = {}) => ({
     { [ERC20]: TKA, symbol: "TKA", name: "Test token A", decimals: 18, supply: "0", vaultBalance: "0", matched: true, locks: 0, releases: 0, through: 1 },
     ...(extra.wrapper ? [{ [ERC20]: WTROME, symbol: "WtROME", name: "Wrapped tROME", decimals: 18, supply: "0", vaultBalance: "0", matched: true, locks: 0, releases: 0, through: 1 }] : []),
   ],
-  canton: extra.wrapped ? [{ [ERC20]: WCC, symbol: "wCC", name: "Wrapped Canton Coin", decimals: 10, instrumentAdmin: CC_ADMIN, instrumentId: "Amulet", custody: "0", custodyDecimals: 10, holdings: 0, supply: "0", supplyBlock: 1, matched: true, ledgerOffset: 1, readAt: "2026-11-07T10:00:00Z" }] : [],
+  canton: extra.wrapped ? [{ [ERC20]: WCC, symbol: "wCC", name: "Wrapped Canton Coin", decimals: 10, instrumentAdmin: CC_ADMIN, instrumentId: "Amulet", custody: extra.custody ?? "0", custodyDecimals: 10, holdings: 0, supply: "0", supplyBlock: 1, matched: true, ledgerOffset: 1, readAt: "2026-11-07T10:00:00Z" }] : [],
   legs: [],
 });
 
