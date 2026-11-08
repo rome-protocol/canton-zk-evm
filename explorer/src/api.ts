@@ -320,7 +320,7 @@ export interface UpdateItem { updateId: string; recordTime: string; effectiveAt:
 /** The legs of a block by kind; a payment here is one that is neither a lock nor a release. */
 export interface UpdateLegs { total: number; deposit: number; withdrawal: number; payment: number; lock: number; release: number }
 /**
- * What the Linked to Canton list adds to an update, each null where nothing holds it. `status` and `attempts` come from the producer's journal (`first`: committed on the first attempt,
+ * What the External calls list adds to an update, each null where nothing holds it. `status` and `attempts` come from the producer's journal (`first`: committed on the first attempt,
  * `retried`: after more); `settleSeconds` runs from `settleFrom` (the proof's start, or the block's own timestamp) to Canton's record time; `legs` waits for the block's legs to be indexed.
  */
 export interface UpdateRow extends UpdateItem {
@@ -336,7 +336,7 @@ export interface UpdateView {
 export type UpdateFilter = "all" | "first" | "retried" | "refused" | "legs";
 export type UpdateOrder = "desc" | "asc";
 export type CantonWindow = "24h" | "7d";
-/** The figures of the Linked to Canton header, from the hourly rollup. */
+/** The figures of the External calls header, from the hourly rollup. */
 export interface CantonStats {
   asOf: string | null; dataSince: string | null; blocks: number; retriedBlocks: number;
   attempts: { submitted: number; committed: number; refused: number; pending: number; other: number; since: string | null };

@@ -50,7 +50,7 @@ async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
   });
 }
 
-describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
+describe.skipIf(!TEST_URL)("the External calls view", () => {
   checkRequired();
 
   it("works out the attempts, the settlement time and the legs of each block", async () => {

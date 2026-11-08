@@ -41,7 +41,7 @@ describe("the Canton updates page", () => {
 
   it("names the page so the link is obvious, says what an update carries, and shows the block, the number of EVM transactions and the record time of each", async () => {
     await open({ updates: () => reply(page([item(4, { txCount: 7 }), item(3, { block: null, txCount: null })])) });
-    expect(screen.getByRole("heading", { name: "Linked to Canton" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "External calls" })).toBeInTheDocument();
     expect(screen.getByText("carries one block and all of its EVM transactions", { exact: false })).toBeInTheDocument();
     expect(rows()[0]).toHaveTextContent(/Block 4\s*7 EVM transactions/);
     expect(rows()[0]).toHaveTextContent("2026-10-04T01:37:14");
@@ -60,7 +60,8 @@ describe("the Canton updates page", () => {
     await open();
     expect(screen.getByText(/The offset and the synchronizer of an update are on its page/)).toBeInTheDocument();
     expect(screen.queryByText(/builder's own completion offset/)).toBeNull();
-    expect(screen.getByText(/^Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof\.$/)).toBeInTheDocument();
+    expect(screen.getByText("One Canton transaction per block; the confirmers' external call checks its proof.")).toBeInTheDocument();
+    expect(screen.getByText(/^An external call is a Canton feature that lets a participant call out during a transaction\. Ostia's confirmers use it to check each block's proof\. Each Canton update carries one block and all of its EVM transactions\.$/)).toBeInTheDocument();
   });
 
   it("pages by the server's cursor", async () => {
@@ -329,7 +330,7 @@ describe("one Canton update", () => {
 });
 const NONE = { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 };
 
-describe("the Linked to Canton view: header, rows, tabs and sort", () => {
+describe("the External calls view: header, rows, tabs and sort", () => {
   const open = async (h: Parameters<typeof route>[0] = {}) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);

@@ -288,7 +288,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         break;
     }
   }
-  // The Linked to Canton view (server/indexer/canton-view.ts) counts an attempt in the hour it was submitted in, whenever its answer comes: leave that hour as the mark.
+  // The External calls view (server/indexer/canton-view.ts) counts an attempt in the hour it was submitted in, whenever its answer comes: leave that hour as the mark.
   if (counted.size) {
     const ids = [...counted];
     await c.query("insert into canton_view_dirty (at) select min(submitted_at) from block_attempts where attempt_id = any($1::bigint[]) having min(submitted_at) is not null", [ids]);
@@ -318,7 +318,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
  */
 export async function joinAttempts(pool: Pool): Promise<void> {
   // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
-  // The attempts it settles move the counts of the hour they were submitted in: that hour is left as a mark for the Linked to Canton view.
+  // The attempts it settles move the counts of the hour they were submitted in: that hour is left as a mark for the External calls view.
   await pool.query(
     // The attempt was not committed as far as the journal knows, so a resolved_at it has is the time of something else (the next run's restart): the block's record time replaces it.
     `with u as (update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
@@ -333,7 +333,7 @@ export async function joinAttempts(pool: Pool): Promise<void> {
   const best = `select a.attempt_id from block_attempts a
                   where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed')
                   order by coalesce(a.outcome = 'committed', false) desc, a.cut_at desc, a.attempt_id desc limit 1`;
-  // A block newly joined, or moved to another attempt, has its row of the Linked to Canton view worked out again from the attempt it is joined to now.
+  // A block newly joined, or moved to another attempt, has its row of the External calls view worked out again from the attempt it is joined to now.
   const reopen = `, r as (update canton_updates c set ${REOPEN} from m where c.update_id = m.update_id returning c.record_time)
     insert into canton_view_dirty (at) select min(record_time) from r having min(record_time) is not null`;
   await pool.query(

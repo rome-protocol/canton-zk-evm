@@ -398,6 +398,7 @@ describe("the numbers, from the stats routes", () => {
     expect(noteOf(tile("Proof time · last hour"))).toBe("Proved with ZisK, 4 blocks in the last hour.");
     expect(shown(tile("Canton commit time · last hour"))).toBe("Canton commit time · last hour0.59 s p95 0.60 ssent → recorded");
     expect(noteOf(tile("Canton commit time · last hour"))).toBe("From the block being sent to Canton to Canton's record time.");
+    expect(within(tile("Canton commit time · last hour")).getByRole("link", { name: "Canton commit time" })).toHaveAttribute("href", "/canton");
   });
 
   it("shows the rate now with the busiest minute of the day, and says when it was", async () => {

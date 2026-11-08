@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * The Linked to Canton tab row at the width of a phone, in a real browser: the page's own stylesheets (styles.css, canton.css) around the markup of the row (the
+ * The External calls tab row at the width of a phone, in a real browser: the page's own stylesheets (styles.css, canton.css) around the markup of the row (the
  * same classes as Canton.tsx and Seg.tsx). The last tab must be reachable: the tab group stays inside the row, and scrolls sideways when its tabs need more than the row has,
  * so that no tab is cut where it cannot be scrolled to. The page itself must not scroll sideways. Runs when PLAYWRIGHT_CORE names a playwright-core (the `bridge-page`
  * job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
@@ -23,7 +23,7 @@ const html = () => `<!doctype html><html lang="en"><head><meta charset="utf-8"><
   </div>
 </div></div></body></html>`;
 
-describe.skipIf(!core)("the Linked to Canton tab row, on a phone", () => {
+describe.skipIf(!core)("the External calls tab row, on a phone", () => {
   let browser: any, server: Server, base = "";
   beforeAll(async () => {
     server = createServer((req, res) => {

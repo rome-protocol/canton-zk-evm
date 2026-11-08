@@ -217,7 +217,7 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
   };
 }
 
-/** The header figures of the Linked to Canton view: 120 blocks, 3 of them retried, 128 commit attempts of which 120 committed, 5 were refused and 3 got no answer. */
+/** The header figures of the External calls view: 120 blocks, 3 of them retried, 128 commit attempts of which 120 committed, 5 were refused and 3 got no answer. */
 export const cantonStats = (over: Partial<CantonStats> = {}): CantonStats => ({
   asOf: "2026-10-04T01:59:30.000Z", dataSince: "2026-09-20T00:00:00.000Z", blocks: 120, retriedBlocks: 3,
   attempts: { submitted: 128, committed: 120, refused: 5, pending: 0, other: 3, since: "2026-09-21T00:00:00.000Z" }, successRate: 0.9375,
@@ -225,7 +225,7 @@ export const cantonStats = (over: Partial<CantonStats> = {}): CantonStats => ({
   legs: { deposit: 12, withdrawal: 4, payment: 30, lock: 6, release: 2, total: 54 }, ...over,
 });
 
-/** A row of the Linked to Canton list as the route gives it, from a journal that holds the block: committed on the first attempt, with no legs. */
+/** A row of the External calls list as the route gives it, from a journal that holds the block: committed on the first attempt, with no legs. */
 export const rowFields = (over: Partial<UpdateRow> = {}): Pick<UpdateRow, "status" | "attempts" | "refused" | "settleSeconds" | "settleFrom" | "submittedTemplate" | "submittedChoice" | "legs"> => ({
   status: "first", attempts: 1, refused: 0, settleSeconds: 9.4, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 }, ...over,
 });

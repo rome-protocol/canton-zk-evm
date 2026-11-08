@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type StatsMetric, type StatsSeries, type StatsSpread, type StatsSummary, type StatsWindow } from "../api.ts";
+import { getCantonStats, getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type StatsMetric, type StatsSeries, type StatsSpread, type StatsSummary, type StatsWindow } from "../api.ts";
 import { CardHead, DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Info } from "../components/Info.tsx";
-import { compactCount, count, nb, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
+import { compactCount, count, nb, pct, peakCount, plural, rate, sec, short, span, trim, units, utcDate, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 import { CantonAssets } from "./StatsTwins.tsx";
 
@@ -57,6 +57,28 @@ function Reliability({ s }: { s: StatsSummary }) {
         <ul className="lostlist">{s.lost.listed.slice(0, 10).map((i) => <li key={i.txHash}><Link className="mono" to={`/tx/${i.txHash}`}>{short(i.txHash)}</Link> <span className="muted small">{pointTime(i.at, false)} UTC · {i.reason ?? "no reason recorded"}</span></li>)}</ul>
       )}
       <p className="card-note small muted">Blocks refused by Canton: {count(s.attempts.refused)} of {plural(s.attempts.total, "attempt")}. Attempts that failed: {count(s.attempts.failed)}. Cut and not taken: {count(s.attempts.notTaken)}. Empty blocks: {count(s.blocks.empty)}.</p>
+    </section>
+  );
+}
+/** The figures of the External calls page in a card: the block commits over 24 hours, from the same route and rollup as that page's header. */
+function ExternalCalls() {
+  const q = useQuery({ queryKey: ["canton", "stats", "24h"], queryFn: () => getCantonStats("24h"), refetchInterval: 30_000 });
+  const s = q.data;
+  const a = s?.attempts, t = s?.settlement;
+  return (
+    <section className="card panel ext-calls" aria-labelledby="ext-h">
+      <CardHead title={<span id="ext-h">External calls</span>} sub="block commits to Canton" info="An external call is a Canton feature that lets a participant call out during a transaction. Ostia's confirmers use it to check each block's proof. Each block is one Canton transaction."
+        action={<Link className="csv" to="/canton">See every block <Icon name="next" /></Link>} />
+      {q.isError && !s ? <p className="muted small chart-msg">The figures cannot be read right now.</p>
+        : !s || !a || !t ? <p className="muted small chart-msg" aria-busy="true">Reading…</p> : (
+          <div className="cells">
+            <Cell k="Blocks committed" v={count(s.blocks)} sub={s.dataSince ? `since ${utcDate(Date.parse(s.dataSince))}` : "none yet"} />
+            <Cell k="Success rate" v={s.successRate === null ? DASH : pct(s.successRate)} sub={a.submitted > 0 ? `${count(a.committed)} of ${count(a.submitted - a.pending)} answered attempts` : "no commit attempt yet"} />
+            <Cell k="Settlement time" v={t.averageSeconds === null ? DASH : <>{sec(t.averageSeconds)}{t.p95Seconds !== null && <> <small>p95 {t.p95Capped ? "> " : ""}{sec(t.p95Seconds)}</small></>}</>} sub={t.blocks > 0 ? `average over ${plural(t.blocks, "block")}, last 24 hours` : "no timed block in the last 24 hours"} />
+            <Cell k="Retried" v={count(s.retriedBlocks)} sub="blocks committed after a retry" />
+            <Cell k="Refused" v={count(a.refused)} sub="commits Canton refused" />
+          </div>
+        )}
     </section>
   );
 }
@@ -186,6 +208,7 @@ export function Stats() {
             <Tile k="Delayed by a redo" v={count(s.txs.delayedByRedo)} sub={s.txs.delayedByRedo === 1 ? "transaction" : "transactions"} info="Every transaction, whoever sent it, carried by a block attempt that did not commit and then made final in a later block." />
           </div>
           <Reliability s={s} />
+          <ExternalCalls />
           <div className="cols">
             <ChartCard title="Time to final" sub={`accepted to final on Canton, per ${step}`} window={window} kind="lines" fmt={secs} point={sec} parts={[{ metric: "time_to_final_p50", name: "median", tone: "a" }, { metric: "time_to_final_p95", name: "p95", tone: "b" }]} />
             <ChartCard title="Proof time" sub={`ZisK's time per block, per ${step}`} window={window} kind="lines" fmt={secs} point={sec} parts={[{ metric: "proof_time_p50", name: "median", tone: "a" }, { metric: "proof_time_p95", name: "p95", tone: "b" }]} />

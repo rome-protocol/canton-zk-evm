@@ -47,10 +47,10 @@ export function CantonUpdates() {
   return (
     <>
       <div className="ptitle">
-        <h1>Linked to Canton</h1><span className="muted">each block and the Canton update that settled it</span><span className="grow" />
+        <h1>External calls</h1><span className="muted">One Canton transaction per block; the confirmers' external call checks its proof.</span><span className="grow" />
         <Link className="small" to="/swaps">Swaps</Link>
       </div>
-      <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof.</div>
+      <div className="note">An external call is a Canton feature that lets a participant call out during a transaction. Ostia's confirmers use it to check each block's proof. Each Canton update carries one block and all of its EVM transactions.</div>
       <CantonHeader />
       <div className="list-h canton-tools">
         <Seg label="Show blocks" value={filter} onPick={setFilter} options={TABS.map((t) => ({ id: t.id, text: t.label, title: t.title }))} />
@@ -344,7 +344,7 @@ export function CantonUpdate() {
   const u = q.data!;
   return (
     <>
-      <div className="crumbs"><Link to="/canton">Linked to Canton</Link> / Update {u.updateId.slice(0, 12)}…</div>
+      <div className="crumbs"><Link to="/canton">External calls</Link> / Update {u.updateId.slice(0, 12)}…</div>
       <div className="ptitle">
         <h1>Canton update</h1><span className="chip chip-final"><i className="dot" />Final on Canton</span>
         {u.block !== null && <span className="muted">the record of block {u.block}</span>}
