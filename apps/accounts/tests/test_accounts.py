@@ -22,7 +22,7 @@ class FakeLedger:
     """Answers the endpoints the service uses, records every call, and can be told to refuse."""
     def __init__(self):
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
-        self.created, self.allocations = {}, []   # created events by template (a read of open contracts); (contract id, view) of the Allocation interface
+        self.created, self.allocations, self.transfers = {}, [], []   # created events by template (a read of open contracts); (contract id, view) of the Allocation and of the TransferInstruction interface
         self.rights = []   # the parties the service's user can act as
         self.archived = set()   # contract ids the participant's own events show archived (the rest show as created)
         self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
@@ -75,6 +75,9 @@ class FakeLedger:
             if template in self.created:
                 return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": e}}} for e in self.created[template]]}
             return 200, {"activeAtOffset": 9, "activeContracts": [{}] * min(self.open.get(template, 0), body["maxPageSize"])}
+        if path.endswith("/active-contracts-page") and "TransferInstructionV1:TransferInstruction" in json.dumps(body):
+            return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
+                "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:TransferInstructionV1:TransferInstruction", "viewValue": view}]}}}} for cid, view in self.transfers]}
         if path.endswith("/active-contracts-page") and "AllocationV1:Allocation" in json.dumps(body):
             return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:AllocationV1:Allocation", "viewValue": view}]}}}} for cid, view in self.allocations]}
@@ -128,7 +131,7 @@ class Case(unittest.TestCase):
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
         headers = dict(headers or {})
         if signed and (path in ("/accounts/v1/prepare", "/accounts/v1/execute", "/accounts/v1/faucet")
-                       or path.startswith(("/accounts/v1/holdings/", "/accounts/v1/allocations/", "/accounts/v1/open/", "/accounts/v1/registry/"))) and "X-Account-Signature" not in headers:
+                       or path.startswith(("/accounts/v1/holdings/", "/accounts/v1/allocations/", "/accounts/v1/open/", "/accounts/v1/transfers/", "/accounts/v1/registry/"))) and "X-Account-Signature" not in headers:
             headers["X-Account-Signature"] = self.account_signature(method, path, data or b"", seed, at)
         r = urllib.request.Request(self.base + path, data, headers, method=method)
         try:
@@ -894,6 +897,29 @@ class AllocationsAndOpen(Case):
         sent = self.calls_to("/active-contracts-page")[0][2]
         self.assertEqual(sent["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.ALLOCATION)
 
+    def test_the_transfers_the_party_sends_or_is_offered(self):
+        self.make_account()
+        stranger, other = "other::1220" + "99" * 32, "third::1220" + "88" * 32
+        move = lambda sender, receiver, amount="3.0": {"transfer": {"sender": sender, "receiver": receiver, "amount": amount, "instrumentId": {"admin": "reg::1", "id": "TKB"}, "requestedAt": "2026-11-09T10:00:00Z",
+                                                                  "executeBefore": "2026-11-10T10:00:00Z", "inputHoldingCids": ["h1"], "meta": {"values": {}}}, "status": {"tag": "TransferPendingReceiverAcceptance", "value": {}}}
+        self.ledger.transfers = [("t1", move(stranger, PARTY)), ("t2", move(PARTY, stranger, "1.5")), ("t3", move(stranger, other)), ("t4", {"status": None})]   # t3 is not the account's, t4 has no transfer
+        status, out, _ = self.req("GET", f"/accounts/v1/transfers/{PARTY}")
+        self.assertEqual(status, 200)
+        self.assertEqual([(t["contractId"], t["transfer"]["sender"] == PARTY, t["transfer"]["amount"]) for t in out["transfers"]], [("t1", False, "3.0"), ("t2", True, "1.5")])
+        self.assertEqual(out["transfers"][0]["transfer"], {k: v for k, v in move(stranger, PARTY)["transfer"].items() if k not in ("inputHoldingCids", "meta")})   # the holdings and the meta are not passed on
+        self.assertEqual((out["transfers"][0]["status"], out["more"]), ({"tag": "TransferPendingReceiverAcceptance", "value": {}}, False))
+        sent = self.calls_to("/active-contracts-page")[0][2]
+        self.assertEqual(sent["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.TRANSFER_INSTRUCTION)
+
+    def test_the_transfers_are_bounded_and_need_the_accounts_signature(self):
+        self.make_account()
+        stranger = "other::1220" + "99" * 32
+        self.ledger.transfers = [(f"t{i}", {"transfer": {"sender": stranger, "receiver": PARTY, "amount": "1.0", "instrumentId": {"admin": "reg::1", "id": "TKB"}}}) for i in range(A.TRANSFERS_MAX + 5)]
+        out = self.req("GET", f"/accounts/v1/transfers/{PARTY}")[1]
+        self.assertEqual((len(out["transfers"]), out["more"]), (A.TRANSFERS_MAX, True))
+        self.assertEqual(self.req("GET", f"/accounts/v1/transfers/{PARTY}", signed=False)[0], 401)
+        self.assertEqual(self.req("GET", f"/accounts/v1/transfers/{'bridge::1220' + 'ff' * 32}")[0], 404)   # an account the service did not make
+
     def test_the_open_requests_the_party_made(self):
         self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
         self.make_account()
@@ -955,7 +981,7 @@ class AllocationsAndOpen(Case):
 
     def test_both_need_the_account_signature_and_an_account_the_service_made(self):
         self.make_account()
-        for what in ("allocations", "open"):
+        for what in ("allocations", "open", "transfers"):
             self.assertEqual(self.req("GET", f"/accounts/v1/{what}/{PARTY}", signed=False)[0], 401, what)
             self.assertEqual(self.req("GET", f"/accounts/v1/{what}/{PARTY}", seed=OTHER_SEED)[0], 401, what)
             self.assertEqual(self.req("GET", f"/accounts/v1/{what}/nobody::1220" + "0" * 64)[0], 404, what)
@@ -1302,6 +1328,48 @@ class RegistryRelay(OutsideCase):
         self.assertEqual((status, out), (200, FACTORY))
         # the party is the account's proof, not the registry's business; the token and the contact go along
         self.assertEqual(self.outside.calls, [("/scan-proxy/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": {"x": 1}}, "Bearer " + HANDLE, A.USER_AGENT)])
+
+    def transfer_factory(self, body=None, admin=ADMIN, **kw):
+        return self.req("POST", f"/accounts/v1/registry/{admin}/transfer-factory", {"party": PARTY, "choiceArguments": {"x": 1}, "excludeDebugFields": True} if body is None else body, **kw)
+
+    def test_the_transfer_factory_goes_to_the_registry_and_the_answer_comes_back_as_it_is(self):
+        self.outside.answer = {**FACTORY, "transferKind": "offer"}
+        self.with_registry()
+        status, out, _ = self.transfer_factory()
+        self.assertEqual((status, out), (200, self.outside.answer))
+        self.assertEqual(self.outside.calls, [("/scan-proxy/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": {"x": 1}, "excludeDebugFields": True}, "Bearer " + HANDLE, A.USER_AGENT)])
+
+    def test_the_transfer_factory_has_the_same_limits_as_the_allocation_factory(self):
+        self.with_registry(account_rate=A.Limiter(2, 60))
+        self.assertEqual(self.transfer_factory(admin="DSO::1220" + "ee" * 32)[0], 404)   # an admin with no registry (counts against the rate, and asks nobody)
+        self.assertEqual(self.outside.calls, [])
+        self.assertEqual([self.transfer_factory()[0] for _ in range(2)], [200, 429])
+        self.assertEqual(len(self.outside.calls), 1)
+
+    def test_the_transfer_factory_needs_the_accounts_signature_and_a_small_request_and_answer(self):
+        self.with_registry()
+        self.assertEqual(self.transfer_factory(signed=False)[0], 401)
+        self.assertEqual(self.transfer_factory(seed=OTHER_SEED)[0], 401)
+        self.assertEqual(self.transfer_factory({"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.transfer_factory({"party": PARTY, "pad": "x" * A.RELAY_MAX_BODY})[0], 400)
+        self.assertEqual(self.outside.calls, [])
+        self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER + 10)}
+        self.assertEqual(self.transfer_factory()[0], 502)
+        self.outside.raw = b"[1]"
+        self.assertEqual(self.transfer_factory()[0], 502)   # not a JSON object
+        self.outside.raw = None
+        self.outside.status, self.outside.raw = 302, b"{}"
+        status, out, _ = self.transfer_factory()
+        self.assertEqual((status, out["registryStatus"]), (502, 302))   # a redirect is not followed
+
+    def test_the_transfer_factory_peer_is_checked_and_the_deadline_holds(self):
+        self.with_registry()
+        with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
+            self.assertEqual(self.transfer_factory()[0], 502)
+        self.assertEqual(self.outside.calls, [])
+        with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.2), self.on_connect(before=lambda: time.sleep(0.3)):
+            self.assertEqual(self.transfer_factory()[0], 502)
+        self.assertEqual(self.outside.calls, [])
 
     def test_the_accept_context_of_an_instruction(self):
         self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}

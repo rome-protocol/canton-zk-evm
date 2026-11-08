@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A stand-in for a token registry, for the accounts service's Canton test only. The local network has no Canton Coin, so no scan proxy: this serves the token standard's
-off-chain API (POST /registry/allocation-instruction/v1/allocation-factory and POST /registry/transfer-instruction/v1/<id>/choice-contexts/accept) with the answers that
-the test writes into <answers>/allocation-factory.json and <answers>/accept.json, and only to a request that carries the bearer token in <token file>.
+off-chain API (POST /registry/allocation-instruction/v1/allocation-factory, POST /registry/transfer-instruction/v1/transfer-factory and POST
+/registry/transfer-instruction/v1/<id>/choice-contexts/accept) with the answers that the test writes into <answers>/allocation-factory.json, <answers>/transfer-factory.json
+and <answers>/accept.json, and only to a request that carries the bearer token in <token file>.
 Usage: fake_registry.py <port> <answers directory> <token file>"""
 import http.server, os, re, sys
 
@@ -15,7 +16,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
-        name = "allocation-factory.json" if self.path == "/registry/allocation-instruction/v1/allocation-factory" else "accept.json" if ACCEPT.fullmatch(self.path) else None
+        name = ("allocation-factory.json" if self.path == "/registry/allocation-instruction/v1/allocation-factory" else "transfer-factory.json" if self.path == "/registry/transfer-instruction/v1/transfer-factory"
+                else "accept.json" if ACCEPT.fullmatch(self.path) else None)
         path = os.path.join(answers, name) if name else None
         if self.headers.get("authorization") != "Bearer " + open(bearer_file).read().strip():
             status, data = 401, b"{}"
