@@ -24,6 +24,7 @@ import { notify } from "./notify.ts";
 import { repairTrexProxies } from "./proxies.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { rollupStats, type RollupResult } from "./stats.ts";
+import { refreshCantonView, type ViewResult } from "./canton-view.ts";
 import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import { checkBalances, type BalanceCheck } from "./balances.ts";
@@ -414,6 +415,7 @@ export function createIndexer(o: IndexerOptions) {
 
   /** The stats rollups, up to the open minute (design section 8). Safe to run again. */
   const rollupStatsOnce = (stopped?: () => boolean): Promise<RollupResult> => rollupStats(o.pool, { now, stopped });
+  const cantonViewOnce = (stopped?: () => boolean): Promise<ViewResult> => refreshCantonView(o.pool, { now, stopped });
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
@@ -572,6 +574,11 @@ export function createIndexer(o: IndexerOptions) {
         } catch (e) {
           log(`indexer (stats): ${(e as Error).message}`);
         }
+        try {
+          await cantonViewOnce(() => stopRequested);
+        } catch (e) {
+          log(`indexer (canton view): ${(e as Error).message}`);
+        }
         for (let waited = 0; running && waited < rollupMs; waited += 50) await sleep(50);
       }
     };
@@ -667,7 +674,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, balancesOnce, checkOnce, auditOnce, rollupStatsOnce, loadJournal, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, balancesOnce, checkOnce, auditOnce, rollupStatsOnce, cantonViewOnce, loadJournal, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;

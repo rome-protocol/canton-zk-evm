@@ -5,8 +5,8 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import type { ChainRest, TxListItem } from "./chain-rest.ts";
-import { traceKey } from "./chain-rest.ts";
+import type { ChainRest, TxListItem, UpdateFilter, UpdateRow } from "./chain-rest.ts";
+import { STATS_WINDOWS, traceKey } from "./chain-rest.ts";
 import { FIELDS, REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, aroundOf, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
@@ -224,16 +224,53 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ frames, truncated: t.truncated }, F.trace)), "immutable");
   }
 
+  const UPDATE_FILTERS = ["all", "first", "retried", "refused", "legs"] as const;
+
+  /** An update in the fields of the list: its legs by kind in a block of their own. */
+  const updateOut = (u: UpdateRow) => ({ ...pick(u, F.updateItem), legs: u.legs && pick(u.legs, F.updateLegs) });
+
   async function updates(q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "text"]);
-    return cached(ok(page(await rest.updates(before, limit), limit, (u) => keyOf(u.micros, u.updateId), F.updateItem)), "list");
+    const f = q.get("filter") ?? "all", format = q.get("format"), order = q.get("order") ?? "desc";
+    if (!(UPDATE_FILTERS as readonly string[]).includes(f)) throw new BadRequest(`filter is one of ${UPDATE_FILTERS.join(", ")}.`);
+    if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    if (order !== "desc" && order !== "asc") throw new BadRequest("order is desc (newest first) or asc (oldest first).");
+    const filter = f as UpdateFilter;
+    if (format === "csv") return updatesCsv(q, filter, order === "asc");
+    // A key belongs to the way it was given: `before` pages newest first, `after` pages oldest first.
+    if (order === "asc" && q.has("before")) throw new BadRequest("before pages the newest first; with order=asc the key is after.");
+    if (order === "desc" && q.has("after")) throw new BadRequest("after pages the oldest first, with order=asc; the key of the newest first is before.");
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get(order === "asc" ? "after" : "before"), ["int", "text"]);
+    const p = pageOf(await rest.updates(before, limit, filter, order === "asc"), limit, (u) => keyOf(u.micros, u.updateId));
+    return cached(ok(pick({ items: p.items.map(updateOut), next: p.next }, F.page)), "list");
+  }
+
+  /** The newest (or oldest) updates of the filter as a file, with the columns of the list: a bounded export, not a way to walk the chain. */
+  async function updatesCsv(q: URLSearchParams, filter: UpdateFilter, asc: boolean): Promise<Answer> {
+    const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+    const rows = (await rest.updates(null, limit, filter, asc)).slice(0, limit);
+    const lines = ["block,time,transactions,status,attempts,refused_attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id"];
+    const secs = (n: number | null) => (n === null ? null : n.toFixed(3));
+    for (const u of rows) {
+      const choice = u.submittedTemplate === null || u.submittedChoice === null ? null : `${u.submittedTemplate.split(":").pop()} ${u.submittedChoice}`;
+      lines.push([u.block, u.recordTime, u.txCount, u.status, u.attempts, u.refused, secs(u.settleSeconds), u.settleFrom, choice, u.legs?.total ?? null, u.legs?.deposit ?? null, u.legs?.withdrawal ?? null, u.legs?.payment ?? null, u.legs?.lock ?? null, u.legs?.release ?? null, u.updateId].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="canton-updates.csv"' } }, "list");
+  }
+
+  async function cantonStats(q: URLSearchParams): Promise<Answer> {
+    const w = q.get("window") ?? "24h";
+    if (!(w in STATS_WINDOWS)) throw new BadRequest(`window is one of ${Object.keys(STATS_WINDOWS).join(", ")}.`);
+    const s = await rest.cantonStats(w as keyof typeof STATS_WINDOWS);
+    return cached(ok(pick({ ...s, attempts: pick(s.attempts, F.cantonStatsAttempts), settlement: pick(s.settlement, F.cantonStatsSettlement) }, F.cantonStats)), "list");
   }
 
   async function oneUpdate(id: string): Promise<Answer> {
     if (!UPDATE.test(id)) return fail(400, "A Canton update is named by its id, 1220 and 64 hex digits.");
     const u = await rest.update(id);
     if (!u) return fail(404, NOT_FOUND_HERE);
-    return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord) }, F.updateDetail)), "composite");
+    const view = pick({ attempts: u.view.attempts.map((a) => pick(a, F.updateAttempt)), timeline: u.view.timeline.map((t) => pick(t, F.updateStep)), proofCheck: pick(u.view.proofCheck, F.updateProofCheck) }, F.updateView);
+    return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord), legs: u.legs && pick(u.legs, F.updateLegs), view }, F.updateDetail)), "composite");
   }
 
   /** The EVM transactions an update settled: its block's, in order. */
@@ -268,6 +305,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     ["/api/txs/{hash}/token-transfers", (hash, q) => transfers(hash, q)],
     ["/api/txs/{hash}/trace", (hash, q) => trace(hash, q)],
     ["/api/canton/updates", (_, q) => updates(q)],
+    ["/api/canton/stats", (_, q) => cantonStats(q)],
     ["/api/canton/updates/{updateId}", (id) => oneUpdate(id)],
     ["/api/canton/updates/{updateId}/transactions", (id, q) => updateTxs(id, q)],
     ["/api/canton/updates/{updateId}/around", (id, q) => around(id, q)],

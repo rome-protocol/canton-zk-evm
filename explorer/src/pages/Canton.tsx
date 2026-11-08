@@ -1,14 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getBlock, getTx, getUpdate, getUpdateTxs, getUpdates, getUpdatesAround, type ApiBlock, type UpdateAroundItem, type UpdateDetail, type UpdateItem } from "../api.ts";
-import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
+import { getBlock, getTx, getUpdate, getUpdateTxs, getUpdates, getUpdatesAround, updatesCsvPath, type ApiBlock, type UpdateAroundItem, type UpdateDetail, type UpdateFilter, type UpdateOrder, type UpdateRow } from "../api.ts";
+import { DownloadLink, ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { CopyButton, HashLink, copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
+import { Seg } from "../components/Seg.tsx";
 import { bytesOf, count, duration, seconds, short, units, utc, utcDate } from "../format.ts";
 import { useLabels } from "../labels.ts";
 import { listPoll } from "../stats.ts";
@@ -19,40 +20,76 @@ import { Bad, Good } from "./BlockSides.tsx";
 import "./block.css";
 import "./canton.css";
 import { Info } from "../components/Info.tsx";
+import { ADVANCE_HELP, Attempts, CantonHeader, ChoiceName, LegsCell, ProofCheck, SETTLE_HELP, SettleCell, STATUS_HELP, StatusChip, Timeline, UpdateLegsSection } from "./CantonView.tsx";
 
 /** The reader's note, said once for both pages: what the offset is the offset of. */
 const READER = "on the reader's participant";
 
-/** The Canton updates that carry a block, newest first. Each offset is the one the reader party's participant gives it, never the builder's completion offset. */
+const TABS: { id: UpdateFilter; label: string; title: string }[] = [
+  { id: "all", label: "All", title: "Every Canton update that carries a block" },
+  { id: "first", label: "First attempt", title: "Blocks committed on the first attempt" },
+  { id: "retried", label: "Retried", title: "Blocks committed after more than one attempt" },
+  { id: "refused", label: "Refused", title: "Blocks that Canton refused at least once before one attempt committed" },
+  { id: "legs", label: "With legs", title: "Blocks that settled gateway legs" },
+];
+const EMPTY: Record<UpdateFilter, string> = {
+  all: "No Canton updates yet.", first: "No block in the producer's log was committed on its first attempt.",
+  retried: "No block in the producer's log needed a retry.", refused: "Canton has not refused a block in the producer's log.", legs: "No block has settled legs.",
+};
+
+/** The Canton updates that carry a block, one row per block. Each offset is the one the reader party's participant gives it, never the builder's completion offset. */
 export function CantonUpdates() {
   const live = useLive(["blocks"]);
-  const p = usePaged(["canton", "updates"], getUpdates, listPoll(live));
+  const [filter, setFilter] = useState<UpdateFilter>("all");
+  const [order, setOrder] = useState<UpdateOrder>("desc");
+  const p = usePaged(["canton", "updates", filter, order], (after) => getUpdates(after, filter, order), listPoll(live));
   const items = p.data?.items;
   return (
     <>
-      <div className="ptitle"><h1>Linked to Canton</h1><span className="muted">each Canton update and the block it settled</span><span className="grow" /><Link className="small" to="/swaps">Swaps</Link></div>
+      <div className="ptitle">
+        <h1>Linked to Canton</h1><span className="muted">each block and the Canton update that settled it</span><span className="grow" />
+        <Link className="small" to="/swaps">Swaps</Link>
+      </div>
       <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof.</div>
+      <CantonHeader />
+      <div className="list-h canton-tools">
+        <Seg label="Show blocks" value={filter} onPick={setFilter} options={TABS.map((t) => ({ id: t.id, text: t.label, title: t.title }))} />
+        <span className="grow" />
+        <Seg label="Order" value={order} onPick={setOrder} options={[{ id: "desc", text: "Newest" }, { id: "asc", text: "Oldest" }]} />
+        <DownloadLink href={updatesCsvPath(filter, order)} file="canton-updates.csv">CSV</DownloadLink>
+      </div>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the Canton updates…</LoadingCard> : (
         <section className="card" aria-label="Canton updates">
-          <div className="list-h"><span className="muted">{items.length ? "Newest first, by record time" : "No Canton updates yet."}</span><Pager p={p} label="Pages of Canton updates" /></div>
+          <div className="list-h"><span className="muted">{items.length ? `${order === "desc" ? "Newest" : "Oldest"} first, by record time` : EMPTY[filter]}</span><Pager p={p} label="Pages of Canton updates" oldestFirst={order === "asc"} /></div>
           <div className="scroll">
             <table className="tbl stk stk-linked">
-              <thead><tr><th>Canton update</th><th>EVM block</th><th className="r">EVM transactions</th><th>Record time</th><th className="r">Offset</th><th>Synchronizer</th></tr></thead>
+              <thead><tr>
+                <th>Canton update</th><th>EVM block</th><th className="r">EVM transactions</th>
+                <th>Status<Info about="the status">{STATUS_HELP}</Info></th>
+                <th>Choice<Info about="the choice">{ADVANCE_HELP}</Info></th>
+                <th>Legs<Info about="the legs">The gateway legs the block settled, by kind, as the EVM recorded them. A lock and a release are the payments a registered twin vault received or paid. Not shown until the block's legs are indexed.</Info></th>
+                <th className="r">Settlement time<Info about="the settlement time">{SETTLE_HELP}</Info></th>
+                <th>Record time</th>
+              </tr></thead>
               <tbody>
-                {items.map((u: UpdateItem) => (
+                {items.map((u: UpdateRow) => (
                   <tr key={u.updateId}>
                     <td className="k-u"><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
                     <td className="k-b">{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
                     <td className="r num k-n">{u.txCount === null ? <span className="muted">—</span> : <>{count(u.txCount)}<span className="k-label"> EVM {u.txCount === 1 ? "transaction" : "transactions"}</span></>}</td>
+                    <td className="k-st"><StatusChip u={u} /></td>
+                    <td className="k-c"><ChoiceName u={u} /></td>
+                    <td className="k-l"><LegsCell u={u} /></td>
+                    <td className="r k-s"><SettleCell u={u} /></td>
                     <td className="mono k-t">{u.recordTime}</td>
-                    <td className="r num k-o">{u.offset}</td>
-                    <td className="k-s"><HashLink value={u.synchronizer} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="muted small">Offsets as the reader party sees them<Info about="the offsets">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</Info></p>
+          <p className="muted small">
+            <b>Settlement time</b> runs from the start of the proof of the attempt that committed the block to Canton's record time; where the producer's log does not hold the block, from the block's own timestamp. The offset and the synchronizer of an update are on its page<Info about="the offsets">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</Info>
+          </p>
         </section>
       )}
     </>
@@ -300,6 +337,8 @@ export function CantonUpdate() {
   const q = useFollowing(["canton", "update", updateId], () => getUpdate(updateId), () => true);
   const blk = q.data?.block ?? null;
   const evm = useQuery({ queryKey: ["block", String(blk)], queryFn: () => getBlock(String(blk)), enabled: blk !== null });
+  // A link to the legs of an update (#legs) lands on them once the page is there.
+  useEffect(() => { if (q.data && window.location.hash === "#legs") document.getElementById("legs")?.scrollIntoView?.(); }, [q.data]);
   const wait = unready(q, "Reading the Canton update…");
   if (wait) return wait;
   const u = q.data!;
@@ -319,6 +358,7 @@ export function CantonUpdate() {
       </div>
       <p className="updid mono">{u.updateId} <CopyButton value={u.updateId} /></p>
       <div className="sides sides-join"><OnCanton u={u} now={now} /><Join hash={u.blockHash} /><OnEvm u={u} b={evm.data} failed={evm.isError} /></div>
+      {u.block !== null && <><Timeline u={u} /><Attempts u={u} /><ProofCheck u={u} /><UpdateLegsSection u={u} /></>}
       {u.block !== null ? <SettledTxs id={u.updateId} /> : <section className="card" aria-labelledby="settled-h"><div className="sec-h"><h3 id="settled-h">EVM transactions in this update</h3></div><p className="muted">This update carries no block.</p></section>}
       {evm.data?.canton && u.block !== null && <RecordHolds c={evm.data.canton} block={u.block} />}
       <Privacy chain={st?.chainName} />

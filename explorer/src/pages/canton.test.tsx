@@ -1,19 +1,21 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { UpdateAroundItem, UpdateDetail, UpdateItem } from "../api.ts";
-import { block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, tx, txItem, update } from "../test-utils.tsx";
+import type { UpdateAroundItem, UpdateDetail, UpdateRow } from "../api.ts";
+import { block, cantonStats, fakeApi, hash, NOT_FOUND, page, renderApp, reply, plainLeg, route, rowFields, tx, txItem, update, updateView } from "../test-utils.tsx";
 
 const SYNC = "da::1220" + "e8".repeat(32);
-const item = (n: number, over: Partial<UpdateItem> = {}): UpdateItem => ({
-  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, txCount: n % 3, ...over,
+const item = (n: number, over: Partial<UpdateRow> = {}): UpdateRow => ({
+  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, txCount: n % 3, ...rowFields(), ...over,
 });
 const near = (n: number, over: Partial<UpdateAroundItem> = {}): UpdateAroundItem => ({ ...item(n), submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", txCount: n * 2, ...over });
 const detail = (over: Partial<UpdateDetail> = {}): UpdateDetail => ({
   ...item(3), template: { packageId: "ccd743bc" + "ab".repeat(28), packageName: "zk-chain", module: "Zk.Chain", entity: "BlockRecord" }, contractId: "00be6996af" + "25".repeat(30), blockHash: hash(3),
   signatories: [{ role: "operator", party: "operator::1220" + "ab".repeat(32) }, { role: "confirmer", party: "confirmer::1220" + "cd".repeat(32) }],
-  producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "advance-3-1", argumentBytes: 2080, trafficBytes: null }, ...over,
+  producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "advance-3-1", argumentBytes: 2080, trafficBytes: null }, view: updateView(), ...over,
 });
 const NOW = Date.parse("2026-10-04T02:00:00Z");
 
@@ -21,7 +23,7 @@ describe("the Canton updates page", () => {
   const open = async (h: Parameters<typeof route>[0] = {}) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
-    const calls = fakeApi(route({ updates: () => reply(page([item(4), item(3)])), ...h }));
+    const calls = fakeApi(route({ updates: () => reply(page([item(4), item(3)])), cantonStats: () => reply(cantonStats()), ...h }));
     renderApp("/canton");
     await screen.findByRole("table");
     return calls;
@@ -32,7 +34,6 @@ describe("the Canton updates page", () => {
     await open();
     expect(rows()).toHaveLength(2);
     const r = within(rows()[0]!);
-    expect(rows()[0]).toHaveTextContent("64");
     expect(rows()[0]).toHaveTextContent("2026-10-04T01:37:14.230583Z");
     expect(r.getByRole("link", { name: "12200404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
     expect(r.getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
@@ -42,8 +43,8 @@ describe("the Canton updates page", () => {
     await open({ updates: () => reply(page([item(4, { txCount: 7 }), item(3, { block: null, txCount: null })])) });
     expect(screen.getByRole("heading", { name: "Linked to Canton" })).toBeInTheDocument();
     expect(screen.getByText("carries one block and all of its EVM transactions", { exact: false })).toBeInTheDocument();
-    expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Canton update", "EVM block", "EVM transactions", "Record time", "Offset", "Synchronizer"]);
-    expect(rows()[0]).toHaveTextContent(/Block 4\s*7 EVM transactions\s*2026-10-04T01:37:14/);
+    expect(rows()[0]).toHaveTextContent(/Block 4\s*7 EVM transactions/);
+    expect(rows()[0]).toHaveTextContent("2026-10-04T01:37:14");
     expect(rows()[1]).toHaveTextContent(/none\s*—/);
   });
 
@@ -55,9 +56,9 @@ describe("the Canton updates page", () => {
     expect(within(rows()[2]!).getByText("EVM transactions", { exact: false })).toBeInTheDocument();
   });
 
-  it("says in the table footer that the offsets are the reader's participant's, and keeps the page note to the one explanation", async () => {
+  it("says where the offsets are, and keeps the page note to the one explanation", async () => {
     await open();
-    expect(screen.getAllByText("on the reader's participant", { exact: false }).length).toBeGreaterThan(0);
+    expect(screen.getByText(/The offset and the synchronizer of an update are on its page/)).toBeInTheDocument();
     expect(screen.queryByText(/builder's own completion offset/)).toBeNull();
     expect(screen.getByText(/^Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof\.$/)).toBeInTheDocument();
   });
@@ -324,5 +325,271 @@ describe("one Canton update", () => {
     fakeApi(route({ update: () => reply({ error: NOT_FOUND }, 404) }));
     renderApp(`/canton/${update(9)}`);
     expect(await screen.findByRole("heading", { name: "Not found" })).toBeInTheDocument();
+  });
+});
+const NONE = { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 };
+
+describe("the Linked to Canton view: header, rows, tabs and sort", () => {
+  const open = async (h: Parameters<typeof route>[0] = {}) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const calls = fakeApi(route({ updates: () => reply(page([item(4), item(3)])), cantonStats: () => reply(cantonStats()), ...h }));
+    renderApp("/canton");
+    await screen.findByRole("table");
+    return calls;
+  };
+  const rows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
+  const figures = () => within(screen.getByRole("region", { name: "Figures of the Canton commits" }));
+  const tile = (name: string) => figures().getByText(name, { selector: ".stat-k", exact: false }).closest(".stat") as HTMLElement;
+
+  it("shows the header figures from the stats route: blocks, success rate, settlement time with its window, refused and retried, and legs by kind", async () => {
+    const calls = await open();
+    await figures().findByText("120");
+    expect(calls).toContain("/api/canton/stats?window=24h");
+    expect(tile("Blocks committed")).toHaveTextContent("since 2026-09-20");
+    expect(tile("Success rate")).toHaveTextContent("93.7%");
+    expect(tile("Success rate")).toHaveTextContent("120 of 128 answered commit attempts");
+    expect(tile("Settlement time")).toHaveTextContent("9.4 s");
+    expect(tile("Settlement time")).toHaveTextContent("p95 14.3 s");
+    expect(tile("Settlement time")).toHaveTextContent("average over 40 blocks, since 2026-10-03 02:00 UTC");
+    expect(tile("Refused or retried")).toHaveTextContent("5 refused");
+    expect(tile("Refused or retried")).toHaveTextContent("3 blocks committed after a retry");
+    expect(tile("Refused or retried")).toHaveTextContent("3 failed or not answered");
+    expect(tile("Legs settled")).toHaveTextContent("54");
+    for (const w of ["12 deposits", "30 payments", "4 withdrawals", "6 locks", "2 releases"]) expect(tile("Legs settled")).toHaveTextContent(w);
+  });
+
+  it("gives the definition of the success rate on hover, and reads the 7-day window when it is picked", async () => {
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    const calls = await open({ cantonStats: (path) => reply(cantonStats(path.includes("7d") ? { settlement: { ...cantonStats().settlement, window: "7d", blocks: 300 } } : {})) });
+    await figures().findByText("120");
+    await user.hover(within(tile("Success rate")).getByRole("button", { name: "About Success rate" }));
+    expect(await screen.findByText(/Commit attempts that committed over commit attempts submitted to Canton, counted from 2026-09-21/)).toBeInTheDocument();
+    await user.click(figures().getByRole("button", { name: "7 days" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/stats?window=7d"));
+    await vi.waitFor(() => expect(tile("Settlement time")).toHaveTextContent("average over 300 blocks, since 2026-10-03 02:00 UTC"));
+  });
+
+  it("leaves a figure out where nothing holds it: no rate with no attempt, no time with no timed block", async () => {
+    await open({ cantonStats: () => reply(cantonStats({ successRate: null, attempts: { submitted: 0, committed: 0, refused: 0, pending: 0, other: 0, since: null }, settlement: { ...cantonStats().settlement, blocks: 0, averageSeconds: null, p95Seconds: null } })) });
+    await figures().findByText("120");
+    expect(tile("Success rate")).toHaveTextContent("—");
+    expect(tile("Success rate")).toHaveTextContent("no commit attempt in the producer's log");
+    expect(tile("Settlement time")).toHaveTextContent("no timed block since 2026-10-03 02:00 UTC");
+    expect(within(tile("Settlement time")).queryByText(/^p95 /)).toBeNull();
+  });
+
+  it("says the figures cannot be read when the stats route fails, and still lists the updates", async () => {
+    await open({ cantonStats: () => reply({ error: "down" }, 503) });
+    expect(await screen.findByText("The explorer cannot read the figures right now.")).toBeInTheDocument();
+    expect(rows()).toHaveLength(2);
+  });
+
+  it("has a column for each of: update, block, EVM transactions, status, choice, legs, settlement time and record time", async () => {
+    await open();
+    const heads = within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent ?? "");
+    expect(heads).toHaveLength(8);
+    for (const [i, w] of ["Canton update", "EVM block", "EVM transactions", "Status", "Choice", "Legs", "Settlement time", "Record time"].entries()) expect(heads[i]).toContain(w);
+  });
+
+  it("shows a block committed on its first attempt, its choice as ZkChain then Advance, its legs by kind linked to the update, and its settlement time from the proof start", async () => {
+    await open({ updates: () => reply(page([item(4, { legs: { ...NONE, total: 3, deposit: 2, payment: 1 } })])) });
+    const r = within(rows()[0]!);
+    expect(r.getByText("First attempt")).toHaveClass("chip");
+    expect(rows()[0]).toHaveTextContent("ZkChain → Advance");
+    expect(r.getByRole("link", { name: "2 deposits, 1 payment" })).toHaveAttribute("href", `/canton/${update(4)}#legs`);
+    expect(rows()[0]).toHaveTextContent("9.4 s from proof start");
+  });
+
+  it("shows a block committed after retries with the number of attempts, and a settlement time from the block's time where the log does not hold the block", async () => {
+    await open({ updates: () => reply(page([item(4, { status: "retried", attempts: 3 }), item(3, { status: null, attempts: null, submittedTemplate: null, submittedChoice: null, settleFrom: "blockTime", settleSeconds: 12 })])) });
+    expect(within(rows()[0]!).getByText("After 3 attempts")).toHaveClass("chip-building");
+    expect(within(rows()[0]!).queryByText(/refused/)).toBeNull();
+    expect(rows()[1]).toHaveTextContent("12.0 s from block time");
+    expect(rows()[1]).toHaveTextContent("not in the producer's log");
+    expect(within(rows()[1]!).queryByText("First attempt")).toBeNull();
+    expect(rows()[1]).not.toHaveTextContent("Advance");
+  });
+
+  it("says how many of the attempts Canton refused on the row of the block that committed after them", async () => {
+    await open({ updates: () => reply(page([item(4, { status: "retried", attempts: 3, refused: 2 })])) });
+    expect(within(rows()[0]!).getByText("After 3 attempts (2 refused)")).toHaveClass("chip-building");
+  });
+
+  it("says none for a block with no legs, not indexed yet for one whose legs are not, and leaves the settlement time out where it is null", async () => {
+    await open({ updates: () => reply(page([item(4, { legs: NONE }), item(3, { legs: null, settleSeconds: null, settleFrom: null })])) });
+    expect(rows()[0]).toHaveTextContent("none");
+    expect(rows()[1]).toHaveTextContent("not indexed yet");
+    expect(rows()[1]).not.toHaveTextContent("from proof start");
+    expect(within(rows()[1]!).queryAllByRole("link", { name: /^\d+ (deposit|payment|withdrawal|lock|release)/ })).toHaveLength(0);
+  });
+
+  it("explains the settlement time in the footnote, and the choice's name once in its column help", async () => {
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    await open();
+    expect(screen.getByText(/runs from the start of the proof of the attempt that committed the block to Canton's record time/)).toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: "About the choice" }));
+    expect(await screen.findByText(/exercising the choice Advance on the chain's ZkChain contract/)).toBeInTheDocument();
+  });
+
+  it("filters by the tabs, asking the server for each and naming the empty list", async () => {
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    const calls = await open({ updates: (path) => reply(page(path.includes("filter=retried") ? [] : [item(4), item(3)])) });
+    const tabs = within(screen.getByRole("group", { name: "Show blocks" }));
+    expect(tabs.getAllByRole("button").map((b) => b.textContent)).toEqual(["All", "First attempt", "Retried", "Refused", "With legs"]);
+    expect(tabs.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(tabs.getByRole("button", { name: "Retried" }));
+    expect(await screen.findByText("No block in the producer's log needed a retry.")).toBeInTheDocument();
+    expect(calls).toContain("/api/canton/updates?limit=25&filter=retried");
+    await user.click(tabs.getByRole("button", { name: "Refused" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&filter=refused"));
+    await user.click(tabs.getByRole("button", { name: "With legs" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&filter=legs"));
+    await user.click(tabs.getByRole("button", { name: "First attempt" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&filter=first"));
+  });
+
+  it("sorts newest or oldest first, pages oldest first by after, and points the CSV at the filter and the order", async () => {
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    const calls = await open({ updates: (path) => reply(path.includes("after=u9") ? page([item(5)]) : path.includes("order=asc") ? page([item(1), item(2)], "u9") : page([item(4), item(3)])) });
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", "/api/canton/updates?format=csv&filter=all&order=desc");
+    await user.click(within(screen.getByRole("group", { name: "Order" })).getByRole("button", { name: "Oldest" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&order=asc"));
+    await screen.findByText("Oldest first, by record time");
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", "/api/canton/updates?format=csv&filter=all&order=asc");
+    await user.click(screen.getByRole("button", { name: "Newer page" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&after=u9&order=asc"));
+    await user.click(within(screen.getByRole("group", { name: "Show blocks" })).getByRole("button", { name: "Retried" }));
+    await vi.waitFor(() => expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", "/api/canton/updates?format=csv&filter=retried&order=asc"));
+  });
+
+  it("keeps every field on a 360 px screen: the rows stack as cards with each column placed, and the tiles, the timeline and the attempts wrap", () => {
+    const css = readFileSync(join(import.meta.dirname, "canton.css"), "utf8");
+    for (const k of ["k-u", "k-b", "k-n", "k-st", "k-c", "k-l", "k-s", "k-t"]) expect(css).toContain(`.stk-linked .${k} {`);
+    expect(css).not.toMatch(/\.stk-linked \.k-s[^}]*display: none/);
+    const phone = css;
+    expect(phone).toContain('grid-template-areas: "u u" "b n" "st s" "c c" "l l" "t t"');
+    // the tab row scrolls inside itself on a phone, as address.css does for its filter (the browser check of it is e2e/canton-phone.test.ts)
+    expect(css).toMatch(/\.canton-tools \.seg \{ min-width: 0; \}/);
+    expect(css).toMatch(/@media \(max-width: 720px\) \{\n  \.canton-tools \.seg \{ max-width: 100%; overflow-x: auto; \}/);
+    expect(css).toMatch(/\.canton-stats \.stat-wide \{ grid-column: span 2; \}/);
+    expect(css).toMatch(/\.legs-kinds \{ display: flex; flex-wrap: wrap;/);
+    expect(css).toMatch(/\.tl li \{ display: flex; flex-wrap: wrap;/);
+    expect(css).toMatch(/\.att-r \{ margin: 4px 0 0; overflow-wrap: anywhere;/);
+  });
+});
+
+describe("one Canton update: its timeline, attempts, proof check and legs", () => {
+  const open = async (h: Parameters<typeof route>[0] = {}) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const calls = fakeApi(route({ update: () => reply(detail()), around: () => reply({ items: [near(3)] }), ...h }));
+    renderApp(`/canton/${update(3)}`);
+    await screen.findByRole("heading", { name: "Canton update" });
+    return calls;
+  };
+  const sec = (name: string) => screen.getByRole("region", { name });
+
+  it("draws the five steps of the block's way to Canton in order, each with its time, the time since the one before and where it comes from", async () => {
+    await open();
+    const steps = within(sec("Timeline")).getAllByRole("listitem");
+    expect(steps.map((l) => l.querySelector(".tl-k")!.textContent)).toEqual(["Block built", "Proof started", "Proof done", "Submitted to Canton", "Committed on Canton"]);
+    expect(steps[0]).toHaveTextContent("01:37:10.200 UTC");
+    expect(steps[1]).toHaveTextContent("+0.20 s");
+    expect(steps[2]).toHaveTextContent("+9.60 s");
+    expect(steps[3]).toHaveTextContent("+0.10 s");
+    expect(steps[4]).toHaveTextContent("01:37:23.412 UTC");
+    expect(steps[4]).toHaveTextContent("+3.31 s");
+    expect(within(steps[0]!).getByText("producer log")).toHaveClass("tag");
+    expect(within(steps[4]!).getByText("Canton record time")).toHaveClass("tag");
+    expect(sec("Timeline")).toHaveTextContent("9.4 s from proof start to the record time");
+    expect(within(sec("Timeline")).queryByText(/producer's log does not hold this block/)).toBeNull();
+  });
+
+  it("draws only the steps it has when the producer's log does not hold the block, and says so", async () => {
+    await open({ update: () => reply(detail({ status: null, attempts: null, settleFrom: "blockTime", settleSeconds: 7, view: updateView({ attempts: [], timeline: [{ step: "built", at: "2026-10-04T01:37:16.000Z", source: "block" }, { step: "committed", at: "2026-10-04T01:37:23.412Z", source: "canton" }] }) })) });
+    const steps = within(sec("Timeline")).getAllByRole("listitem");
+    expect(steps).toHaveLength(2);
+    expect(within(steps[0]!).getByText("block timestamp")).toHaveClass("tag");
+    expect(sec("Timeline")).toHaveTextContent("7.0 s from block time to the record time");
+    expect(sec("Timeline")).toHaveTextContent("The producer's log does not hold this block");
+    expect(sec("Commit attempts")).toHaveTextContent("its attempts are not known");
+  });
+
+  it("says the block committed on its first attempt, with the proof time and when it was submitted and answered", async () => {
+    await open();
+    const a = sec("Commit attempts");
+    expect(a).toHaveTextContent("Committed on the first attempt.");
+    expect(within(a).getAllByRole("listitem")).toHaveLength(1);
+    expect(a).toHaveTextContent("Attempt 1");
+    expect(within(a).getByText("Committed")).toHaveClass("chip-final");
+    expect(a).toHaveTextContent("Proof took 9.60 s");
+    expect(a).toHaveTextContent("submitted 01:37:20.100 UTC");
+    expect(a).toHaveTextContent("answered 01:37:23.500 UTC (3.40 s later)");
+  });
+
+  it("lists every attempt with its outcome and the reason where one was recorded", async () => {
+    const base = updateView().attempts[0]!;
+    await open({ update: () => reply(detail({ status: "retried", attempts: 3, view: updateView({ attempts: [
+      { ...base, number: 1, outcome: "refused", reason: "proof does not match the block", committed: false },
+      { ...base, number: 2, outcome: "unknown", reason: null, committed: false, answeredAt: null },
+      { ...base, number: 3 },
+    ] }) })) });
+    const a = sec("Commit attempts");
+    expect(a).toHaveTextContent("Committed on attempt 3, after 2 attempts that did not commit.");
+    const items = within(a).getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    expect(within(items[0]!).getByText("Refused")).toHaveClass("chip-dropped");
+    expect(items[0]).toHaveTextContent("proof does not match the block");
+    expect(within(items[1]!).getByText("No answer")).toBeInTheDocument();
+    expect(items[1]).not.toHaveTextContent("answered");
+    expect(within(items[2]!).getByText("Committed")).toHaveClass("chip-final");
+  });
+
+  it("says plainly that the committed update is the evidence of the confirmers' check, and what is not visible, with the explorer's own comparison beside it", async () => {
+    await open();
+    const c = sec("Proof check");
+    expect(c).toHaveTextContent("The committed update is the evidence of that check");
+    expect(c).toHaveTextContent("Canton records it only if 1 confirmer accepted it");
+    expect(c).toHaveTextContent("Their own check time and result are not visible to the reader party; only the commit is.");
+    expect(c).toHaveTextContent("program and ZisK release are the pinned ones");
+    expect(c).toHaveTextContent("names this block's hash");
+  });
+
+  it("names a comparison that failed", async () => {
+    await open({ update: () => reply(detail({ view: updateView({ proofCheck: { evidence: "committed update", confirmers: 0, matchesPins: false, matchesBlock: false } }) })) });
+    expect(sec("Proof check")).toHaveTextContent("program or ZisK release is not the pinned one");
+    expect(sec("Proof check")).toHaveTextContent("does not name this block's hash");
+    expect(sec("Proof check")).toHaveTextContent("only if the confirmers accepted it");
+  });
+
+  it("says no comparison was made when the explorer has none", async () => {
+    await open({ update: () => reply(detail({ view: updateView({ proofCheck: { evidence: "committed update", confirmers: 1, matchesPins: null, matchesBlock: null } }) })) });
+    expect(sec("Proof check")).toHaveTextContent("not made for this block");
+  });
+
+  it("lists the legs of the block by kind, each linked to its own page, from the block's legs route", async () => {
+    const calls = await open({
+      update: () => reply(detail({ legs: { ...NONE, total: 2, deposit: 1, payment: 1 } })),
+      blockLegs: () => reply(page([plainLeg(), plainLeg({ kind: "payment", legId: hash(0x1f), legIndex: 2 })])),
+    });
+    const l = sec("Legs settled in this block");
+    await within(l).findAllByRole("link");
+    expect(l).toHaveTextContent("1 deposit, 1 payment");
+    expect(calls).toContain("/api/blocks/3/legs?limit=25");
+    expect(within(l).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual([`/leg/${hash(0x1e)}`, `/leg/${hash(0x1f)}`]);
+    expect(within(l).getAllByRole("listitem").map((i) => i.querySelector(".tag")!.textContent)).toEqual(["Deposit", "Payment"]);
+  });
+
+  it("says the block settled no legs without asking for them", async () => {
+    const calls = await open({ update: () => reply(detail({ legs: NONE })) });
+    expect(sec("Legs settled in this block")).toHaveTextContent("This block settled no legs.");
+    expect(calls.some((c) => c.includes("/legs"))).toBe(false);
+  });
+
+  it("says the legs are not indexed yet where the list has none", async () => {
+    const calls = await open({ update: () => reply(detail({ legs: null })) });
+    expect(sec("Legs settled in this block")).toHaveTextContent("The explorer has not indexed this block's legs yet.");
+    expect(calls.some((c) => c.includes("/legs"))).toBe(false);
   });
 });

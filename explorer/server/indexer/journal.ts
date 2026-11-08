@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { setHealth } from "./health.ts";
 import { isHexBytes } from "../hex.ts";
+import { ATTEMPT_SPAN_HOURS, REOPEN } from "./canton-view.ts";
 
 export const JOURNAL_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const CHUNK_LINES = 2000, READ_BYTES = 8 * 1024 * 1024, GAP_SHOWN_MS = 3_600_000, POOL_KEPT_DAYS = 30;
@@ -65,6 +66,7 @@ export function parseLine(raw: string): { line: JournalLine } | { bad: "malforme
 /** Applies the lines of one read, in the caller's transaction. Returns the number of lines that had no attempt to belong to. */
 async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> {
   let orphans = 0;
+  const counted = new Set<number>(); // attempts a line moved the counts of (submitted, answered, resolved, cancelled)
   const ids = new Map<string, number>();
   const pool = new Map<string, number>();
   const idOf = async (run: unknown, attempt: unknown): Promise<number | null> => {
@@ -200,6 +202,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       case "submitted": {
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
+        counted.add(id);
         await set(id, { submitted_at: t, command_id: text(ev.command_id, 200), argument_bytes: whole(ev.argument_bytes) });
         break;
       }
@@ -207,6 +210,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
         const outcome = text(ev.outcome, 40);
+        counted.add(id);
         await set(id, {
           answered_at: t, outcome, reason: text(ev.reason), update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset), traffic_bytes: whole(ev.traffic_bytes),
         });
@@ -244,6 +248,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         if (id === null) { orphans++; break; }
         const outcome = text(ev.outcome, 40) === "committed" ? "committed" : text(ev.outcome, 40);
         const known = text(ev.update_id, 200) !== null ? { update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset) } : {}; // a commit settled by its completion carries them
+        counted.add(id);
         await set(id, { resolved_at: t, resolved_outcome: outcome, ...known });
         if (outcome !== "committed") await putBack(id, t, outcome === "restarted" ? "the producer restarted before the block was answered" : "the block did not commit");
         break;
@@ -257,6 +262,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       case "cancelled": {
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
+        counted.add(id);
         await set(id, { outcome: "cancelled", reason: text(ev.reason) ?? text(ev.depends_on) });
         await putBack(id, t, "the block was cancelled");
         break;
@@ -282,6 +288,20 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         break;
     }
   }
+  // The Linked to Canton view (server/indexer/canton-view.ts) counts an attempt in the hour it was submitted in, whenever its answer comes: leave that hour as the mark.
+  if (counted.size) {
+    const ids = [...counted];
+    await c.query("insert into canton_view_dirty (at) select min(submitted_at) from block_attempts where attempt_id = any($1::bigint[]) having min(submitted_at) is not null", [ids]);
+    // A row already worked out whose block has one of these attempts among its tries (one that arrived or changed after the join) is worked out again, so it agrees with the update's page.
+    await c.query(
+      `with u as (update canton_updates c set ${REOPEN}
+                    from block_attempts x join blocks b on b.number = x.number join block_attempts a on a.attempt_id = b.attempt_id
+                   where x.attempt_id = any($1::bigint[]) and c.update_id = b.update_id and c.commit_attempts is not null and a.attempt_id <> x.attempt_id
+                     and x.cut_at <= a.cut_at and x.cut_at > a.cut_at - make_interval(hours => $2) returning c.record_time)
+       insert into canton_view_dirty (at) select min(record_time) from u having min(record_time) is not null`, [ids, ATTEMPT_SPAN_HOURS]);
+    // A late line lifts the "not in the journal" mark from the updates after its attempt.
+    await c.query("update canton_updates set no_journal = false where no_journal and record_time >= (select min(cut_at) from block_attempts where attempt_id = any($1::bigint[])) - interval '1 hour'", [ids]);
+  }
   if (pool.size) {
     await c.query(
       "insert into pool_samples (at, waiting) select * from unnest($1::timestamptz[], $2::int[]) on conflict (at) do update set waiting = excluded.waiting",
@@ -298,10 +318,12 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
  */
 export async function joinAttempts(pool: Pool): Promise<void> {
   // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
+  // The attempts it settles move the counts of the hour they were submitted in: that hour is left as a mark for the Linked to Canton view.
   await pool.query(
     // The attempt was not committed as far as the journal knows, so a resolved_at it has is the time of something else (the next run's restart): the block's record time replaces it.
-    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
-       from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed'`,
+    `with u as (update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
+                  from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed' returning a.submitted_at)
+     insert into canton_view_dirty (at) select min(submitted_at) from u having min(submitted_at) is not null`,
   );
   // An attempt the producer settled itself (unknown, then resolved committed) never had an update id: the indexed block gives it.
   await pool.query(
@@ -311,17 +333,20 @@ export async function joinAttempts(pool: Pool): Promise<void> {
   const best = `select a.attempt_id from block_attempts a
                   where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed')
                   order by coalesce(a.outcome = 'committed', false) desc, a.cut_at desc, a.attempt_id desc limit 1`;
+  // A block newly joined, or moved to another attempt, has its row of the Linked to Canton view worked out again from the attempt it is joined to now.
+  const reopen = `, r as (update canton_updates c set ${REOPEN} from m where c.update_id = m.update_id returning c.record_time)
+    insert into canton_view_dirty (at) select min(record_time) from r having min(record_time) is not null`;
   await pool.query(
-    `update blocks b set attempt_id = (${best})
+    `with m as (update blocks b set attempt_id = (${best})
       where b.attempt_id is null and b.number >= coalesce((select min(number) from block_attempts), 0)
-        and exists (select 1 from block_attempts a where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed'))`,
+        and exists (select 1 from block_attempts a where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed')) returning b.update_id)${reopen}`,
   );
   // A block that was joined to an attempt only settled as committed moves to one the producer itself saw committed, when that one arrives later.
   await pool.query(
-    `update blocks b set attempt_id = (${best})
+    `with m as (update blocks b set attempt_id = (${best})
       from block_attempts cur
       where cur.attempt_id = b.attempt_id and cur.resolved_outcome = 'committed' and cur.outcome is distinct from 'committed'
-        and exists (select 1 from block_attempts a where a.block_hash = b.hash and a.outcome = 'committed')`,
+        and exists (select 1 from block_attempts a where a.block_hash = b.hash and a.outcome = 'committed') returning b.update_id)${reopen}`,
   );
   await pool.query(
     `update canton_updates u set command_id = a.command_id, submitted_template = 'Zk.Chain:ZkChain', submitted_choice = 'Advance', argument_bytes = a.argument_bytes,

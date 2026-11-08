@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App, loadPages } from "./App.tsx";
-import type { SwapItem, BlockLeg, CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { SwapItem, BlockLeg, CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, CantonStats, UpdateDetail, UpdateRow, UpdateView, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 // The app fetches a page when its route is first visited; the tests have every page ready, so a route is drawn at once.
 await loadPages();
@@ -131,7 +131,7 @@ export function route(h: {
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   labels?: (path: string) => Reply;
-  swaps?: (payId: string, path: string) => Reply; legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; twins?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
+  swaps?: (payId: string, path: string) => Reply; legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; twins?: () => Reply; updates?: (path: string) => Reply; cantonStats?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -142,6 +142,7 @@ export function route(h: {
     if (kind === "blocks" && arg && sub === "record") return h.blockRecord ? h.blockRecord(decodeURIComponent(arg)) : gone();
     if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "stats") return h.cantonStats ? h.cantonStats(path) : gone();
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "transactions") return h.updateTxs ? h.updateTxs(decodeURIComponent(sub), path) : reply(page([]));
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
@@ -216,12 +217,36 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
   };
 }
 
+/** The header figures of the Linked to Canton view: 120 blocks, 3 of them retried, 128 commit attempts of which 120 committed, 5 were refused and 3 got no answer. */
+export const cantonStats = (over: Partial<CantonStats> = {}): CantonStats => ({
+  asOf: "2026-10-04T01:59:30.000Z", dataSince: "2026-09-20T00:00:00.000Z", blocks: 120, retriedBlocks: 3,
+  attempts: { submitted: 128, committed: 120, refused: 5, pending: 0, other: 3, since: "2026-09-21T00:00:00.000Z" }, successRate: 0.9375,
+  settlement: { window: "24h", from: "2026-10-03T02:00:00.000Z", to: "2026-10-04T02:00:00.000Z", blocks: 40, averageSeconds: 9.4, p95Seconds: 14.3, p95Capped: false, basis: "proofStart" },
+  legs: { deposit: 12, withdrawal: 4, payment: 30, lock: 6, release: 2, total: 54 }, ...over,
+});
+
+/** A row of the Linked to Canton list as the route gives it, from a journal that holds the block: committed on the first attempt, with no legs. */
+export const rowFields = (over: Partial<UpdateRow> = {}): Pick<UpdateRow, "status" | "attempts" | "refused" | "settleSeconds" | "settleFrom" | "submittedTemplate" | "submittedChoice" | "legs"> => ({
+  status: "first", attempts: 1, refused: 0, settleSeconds: 9.4, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 }, ...over,
+});
+
+/** The view of one update: five steps from the journal and one attempt that committed, with the explorer's own proof comparison. */
+export const updateView = (over: Partial<UpdateView> = {}): UpdateView => ({
+  attempts: [{ number: 1, outcome: "committed", reason: null, committed: true, cutAt: "2026-10-04T01:37:10.000Z", builtAt: "2026-10-04T01:37:10.200Z", proofStartedAt: "2026-10-04T01:37:10.400Z", proofEndedAt: "2026-10-04T01:37:20.000Z", proofOutcome: "ok", submittedAt: "2026-10-04T01:37:20.100Z", answeredAt: "2026-10-04T01:37:23.500Z" }],
+  timeline: [
+    { step: "built", at: "2026-10-04T01:37:10.200Z", source: "producer" }, { step: "proofStarted", at: "2026-10-04T01:37:10.400Z", source: "producer" }, { step: "proofDone", at: "2026-10-04T01:37:20.000Z", source: "producer" },
+    { step: "submitted", at: "2026-10-04T01:37:20.100Z", source: "producer" }, { step: "committed", at: "2026-10-04T01:37:23.412Z", source: "canton" },
+  ],
+  proofCheck: { evidence: "committed update", confirmers: 1, matchesPins: true, matchesBlock: true }, ...over,
+});
+
 /** The Canton update that carries block n, as its own route gives it: the reader's offset 52, the synchronizer, and what the producer submitted. */
 export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDetail {
   return {
     updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n, txCount: n % 3,
     template: { packageId: "ab".repeat(32), packageName: "zk-chain", module: "Zk.Chain", entity: "BlockRecord" }, contractId: "00" + "cc".repeat(32), blockHash: hash(n), signatories: [],
     producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "cmd-1", argumentBytes: 13760, trafficBytes: null },
+    ...rowFields(), view: updateView(),
     ...over,
   };
 }

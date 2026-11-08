@@ -141,7 +141,11 @@ export async function writeRegistry(c: Pick<PoolClient, "query">, registry: Chai
   // from the block of the read before may lie below the block the sums are counted up to): the sums over the legs are counted again.
   const known = (await c.query("select kind || ':' || encode(address, 'hex') as k from canton_registry union all select 'pin:' || encode(token, 'hex') from canton_twins")).rows.map((r) => r.k as string);
   const next = [...registry.contracts.map((e) => e.kind + ":" + e.address.slice(2)), ...registry.twins.map((t) => "pin:" + t.token.slice(2))];
-  if (next.some((k) => !known.includes(k)) || known.some((k) => !next.includes(k))) await resetTwinTotals(c);
+  if (next.some((k) => !known.includes(k)) || known.some((k) => !next.includes(k))) {
+    await resetTwinTotals(c);
+    // The legs of a block that were counted under the old registry may be classified differently now (a lock or a release is told by the vault and the pins): they are counted again.
+    await c.query("update canton_updates set legs_done = false where legs_done");
+  }
   const prev = (await c.query("select value from meta where key = 'registry_read_block'")).rows[0]?.value as string | undefined;
   const start = prev === undefined ? 0 : Number(prev);
   const addresses = registry.contracts.map((e) => bytea(e.address));
