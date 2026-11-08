@@ -427,7 +427,7 @@ describe("the External calls card", () => {
     expect(c.getByText("Success rate").parentElement).toHaveTextContent("from 2026-09-21");
     expect(c.getByText("Blocks committed").parentElement).toHaveTextContent("since 2026-09-20");
     expect(c.getByText("Retried").parentElement).toHaveTextContent("3");
-    expect(c.getByText("Retried").parentElement).toHaveTextContent("since 2026-09-20");
+    expect(c.getByText("Retried").parentElement).toHaveTextContent("from 2026-09-21");
     expect(c.getByText("Refused").parentElement).toHaveTextContent("5");
     expect(c.getByText("Refused").parentElement).toHaveTextContent("from 2026-09-21");
     expect(c.getByRole("link", { name: /See every block/ })).toHaveAttribute("href", "/canton");
