@@ -406,8 +406,8 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
     for (const width of [360, 1280]) {
       await page.setViewportSize({ width, height: 800 });
-      // At phone width the longer words of the Canton-side moves wrap (normal); at desktop width all four kinds of move keep each label and pop-up text on one line.
-      const lists = width >= 1280 ? [/^tROME on Ostia$/, /^TKA on Ostia$/, /^TKA on Canton$/, /^Canton Coin on Canton$/, /^wCC on Ostia$/] : [/^tROME on Ostia$/, /^TKA on Ostia$/];
+      // All five kinds of move, at both widths. Each label and its pop-up text stay on one line; at phone width a page-signed step (not a pop-up) may wrap, as text normally does.
+      const lists = [/^tROME on Ostia$/, /^TKA on Ostia$/, /^TKA on Canton$/, /^Canton Coin on Canton$/, /^wCC on Ostia$/];
       for (const [from, name] of lists.map((n) => ["From", n] as const)) {
         await pick(page, from, name);
         const details = page.locator("details.move-steps");
@@ -418,12 +418,12 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
         steps.forEach((st: any, i: number) => {
           const at = `${width}px, ${st.label}`;
           for (const [what, b] of [["label", st.labelBox], ["note", st.noteBox]] as const) {
-            if (what === "note" && !/MetaMask pop-up/.test(st.note)) continue;   // the long words of a step that is not a pop-up may wrap
+            if (!/MetaMask pop-up/.test(st.note) && (what === "note" || width < 1280)) continue;   // a step that is not a pop-up: its note may wrap, and at phone width its label too
             expect(b.lines, `${at}: ${what} is on ${b.lines} lines`).toBe(1);
             expect(b.height, `${at}: ${what} is ${b.height} px high`).toBeLessThanOrEqual(b.line * 1.5);
           }
           if (/MetaMask pop-up/.test(st.note)) popups++;
-          const flows = !/MetaMask pop-up/.test(st.note) && st.noteBox.lines > 1;   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
+          const flows = !/MetaMask pop-up/.test(st.note) && (st.noteBox.lines > 1 || st.labelBox.lines > 1);   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
           const sameRow = Math.min(st.labelBox.bottom, st.noteBox.bottom) - Math.max(st.labelBox.top, st.noteBox.top) > 2;
           if (flows) { /* wraps by design */ } else if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
           else expect(st.labelBox.bottom, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.top + 1);   // wrapped: one under the other

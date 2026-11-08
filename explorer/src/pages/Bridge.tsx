@@ -146,7 +146,7 @@ export function Bridge() {
       if (!same()) return account.close();
       holding.current = account;
       setPhase({ s: "ready", account });
-    } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e) }); }
+    } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName) }); }
   }
   async function getCanton(account: Account) {
     const mine = epoch.current, same = () => epoch.current === mine;
@@ -221,7 +221,7 @@ export function Bridge() {
             </>
           ) : (
             <>
-              <p className="lead">Sign one message in your wallet. It opens your Canton account. No gas and no new wallet. The same wallet opens the same account on any device.</p>
+              <p className="lead">Sign one message in your wallet. It opens your Canton account.{needCoin ? "" : " No gas and no new wallet."} The same wallet opens the same account on any device.</p>
               {needCoin && phase.s !== "working" ? (
                 <>
                   <p className="small" role="status">Get test {sym} first. Every move on {chain.chainName} needs a little for fees.</p>

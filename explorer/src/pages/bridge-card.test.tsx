@@ -310,7 +310,7 @@ describe("the folded steps line", () => {
     expect(steps).not.toHaveClass("steps");
     expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");
-    expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page with your Canton account/);
+    expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page/);
     expect(steps.textContent).toMatch(/1 in MetaMask, 1 by your Canton account\./);
   });
 });

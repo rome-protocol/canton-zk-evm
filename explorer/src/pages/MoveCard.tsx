@@ -259,7 +259,7 @@ export function MoveCard(p: MoveCardProps) {
           {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${config?.chain.coin.symbol ?? "Test coin"} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
           <details className="move-steps">
             <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
-            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
+            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page" : "Automatic"}</span></li>)}</ol>
             <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
           </details>
         </>
