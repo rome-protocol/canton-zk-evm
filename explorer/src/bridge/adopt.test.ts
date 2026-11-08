@@ -48,6 +48,13 @@ describe("a move kept from what Canton lists as open", () => {
       await expect(adopt(store, open())).rejects.toBeInstanceOf(NoLongerOpen);
       expect(keptMoves(store)).toEqual([]);
     });
+    it("keeps nothing and throws when a deposit's request is not open any more", async () => {
+      const store = memoryStore();
+      const request = dep();
+      await expect(adoptRecord("deposit", request, { ...o, store, allocations: async () => [alloc("d-1")], openRequests: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }) })).rejects.toBeInstanceOf(NoLongerOpen);
+      expect(keptMoves(store)).toEqual([]);
+      expect(await adoptRecord("deposit", request, { ...o, store, allocations: async () => [alloc("d-1")], openRequests: async () => ({ depositRequests: [request], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }) })).toBe("d-1");
+    });
     it("returns null and keeps nothing for a request this build cannot carry on, and never overwrites a kept record", async () => {
       const store = memoryStore();
       expect(await adopt(store, open(redeem({ ref: "" })), redeem({ ref: "" }))).toBeNull();

@@ -7,6 +7,8 @@ const HINT = "Search by block number, transaction or block hash, address, or Can
 const SHORT_HINT = "Block, transaction, address or Canton update";
 /** The header's box is narrower than the home page's, and says the same in fewer words. */
 const HEADER_HINT = "Block, transaction, address or Canton update id";
+/** At phone width the header's box is under the name and is no wider than the screen (328 px at 360), so its hint is shorter still. */
+const HEADER_SHORT_HINT = "Block, tx, address or Canton update";
 
 /** True where a typed "/" belongs to the field the person is typing in. */
 function typing(t: EventTarget | null): boolean {
@@ -54,7 +56,7 @@ export function SearchBox({ hero = false }: { hero?: boolean }) {
   return (
     <form className={`search${hero ? " hero-search" : ""}`} role="search" aria-label="Search" onSubmit={submit}>
       <Icon name="search" />
-      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} autoComplete="off" />
+      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : phone ? HEADER_SHORT_HINT : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} autoComplete="off" />
       {hero ? <button type="submit" className="btn">Search</button> : <kbd className="kbd" aria-hidden="true">/</kbd>}
     </form>
   );

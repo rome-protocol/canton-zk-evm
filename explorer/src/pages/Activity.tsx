@@ -50,7 +50,7 @@ function Row({ e, props, state, live, onCanton, busy, onContinue, canContinue = 
   return (
     <li className="act-row">
       <div className="act-top"><b>{whatMoved(e, props.pairs, props.chainName)}</b>{e.at > 0 && <span className="muted small">{dateTime(e.at)}</span>}</div>
-      <div className="act-marks"><MoveMarks marks={marks} link={false} /></div>
+      <div className="act-marks"><MoveMarks marks={marks} block={false} /></div>
       {where && <p className={`small ${note?.bad ? "bad" : "muted"}`}>{where}</p>}
       {(marks.block !== null || marks.updateId !== null) && (
         <p className="act-links small">

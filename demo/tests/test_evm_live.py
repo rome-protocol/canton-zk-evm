@@ -82,6 +82,17 @@ class LiveEvmTests(unittest.TestCase):
         self.assertEqual(evm.main(["chain"]), {"chainId": 193461})
         self.assertEqual(set(FakeChain.paths), {"/rpc"})
 
+    def test_every_rpc_request_carries_the_demo_user_agent(self):
+        seen = []
+        original = FakeChain.do_POST
+        def do_POST(handler):
+            seen.append(handler.headers["user-agent"])
+            original(handler)
+        with mock.patch.object(FakeChain, "do_POST", do_POST):
+            evm.rpc("eth_chainId", [])
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].startswith("ostia-demo/"), seen[0])
+
     def test_without_the_setting_it_is_reths_port_on_this_machine(self):
         del os.environ["CZE_RPC_URL"]
         self.assertEqual(evm.rpc_url(), "http://127.0.0.1:1")

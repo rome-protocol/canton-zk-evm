@@ -32,7 +32,7 @@ Replays are not guarded here: a second `Mint` with the same `reference` mints ag
 
 ## Accepting twins
 
-A lock mints a twin to a receiver party, and Canton refuses that mint when the receiver's participant has not vetted this package. So before a lock the receiver signs a `TwinAcceptance` naming the twins' admin (0.2.0 adds the template and nothing else; 0.1.0 contracts carry over). The admin is its only observer, so whoever reads as the admin (the builder, with `--read-as <gateway>`, and the registry service) sees every acceptance. A lock for a party with no active acceptance is refused by the registry service (409) and left out of the block by the builder. This is on main; DevNet runs commit 2857b00, which has twin 0.1.0 only and no acceptance, until the next deploy.
+A lock mints a twin to a receiver party, and Canton refuses that mint when the receiver's participant has not vetted this package. So before a lock the receiver signs a `TwinAcceptance` naming the twins' admin (0.2.0 adds the template and nothing else; 0.1.0 contracts carry over). The admin is its only observer, so whoever reads as the admin (the builder, with `--read-as <gateway>`, and the registry service) sees every acceptance. A lock for a party with no active acceptance is refused by the registry service (409) and left out of the block by the builder. DevNet has run this since 8 November 2026 (commit c350f87), with twin 0.1.0 and 0.2.0 vetted on both participants.
 
 ## Amounts
 

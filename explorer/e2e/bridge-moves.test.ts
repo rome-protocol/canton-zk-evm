@@ -63,7 +63,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (path === "/twin-registry/twin/v1/lock-parts") {
         const { receiver, ref } = JSON.parse(await body(req));
         chain.lastLock = { receiver, ref, lockId: lockIdOf(receiver, ref) };
-        return json(200, { lockId: chain.lastLock.lockId.slice(2), vaults: [VAULT] });   // the real registry answers the id without 0x
+        return json(200, { lockId: chain.lastLock.lockId.slice(2), receiver, ref, acceptance: "00" + "ac".repeat(33), vaults: [VAULT] });   // the real registry answers the id without 0x, and the receiver, the ref and its acceptance contract
       }
       if (path === "/accounts/v1/topology") {
         publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
@@ -179,7 +179,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   it("moves a token from Ostia to Canton: approve, then pay in, two pop-ups, then final", async () => {
     const page = await open("/bridge");
     await signedIn(page);
-    expect(await page.getByText("About 1 min · 2 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 2 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
@@ -293,7 +293,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^tROME on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
-    expect(await page.getByText("About 1 min · 3 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 3 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];
@@ -327,6 +327,11 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
     expect(await row.getByRole("link", { name: "Ostia block 36512" }).getAttribute("href")).toBe("/block/36512");
     expect(await row.getByRole("link", { name: "Canton update" }).getAttribute("href")).toBe("/canton/" + UPDATE_ID);
+    const dateUnderTitle = await page.locator(".act-row").evaluateAll((rows: HTMLElement[]) => rows.every((r) => {
+      const title = r.querySelector("b")!.getBoundingClientRect(), date = r.querySelector(".act-top > span")?.getBoundingClientRect();
+      return !date || date.top >= title.bottom - 1;
+    }));
+    expect(dateUnderTitle).toBe(true);   // at 360 px the date sits under the title, never beside it
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 150_000);

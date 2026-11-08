@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountSize, buttonOf, noteOf, progressWords, waitWords, type ButtonInput } from "./card.ts";
+import { amountSize, buttonOf, noteOf, progressWords, waitFor, waitWords, type ButtonInput } from "./card.ts";
 
 const base: ButtonInput = { connected: true, accountReady: true, config: "ready", amount: "ok", enough: true, symbol: "TKA", to: "Canton", move: { phase: "idle" } };
 
@@ -48,5 +48,12 @@ describe("the move button", () => {
   });
   it("shrinks the type of an amount as it grows", () => {
     expect(["5", "123456789", "1234567890", "12345678901234", "123456789012345", "1".repeat(22), "1".repeat(23), "1".repeat(61)].map(amountSize)).toEqual(["xl", "xl", "l", "l", "m", "m", "s", "s"]);
+  });
+});
+
+describe("how long a move is said to take", () => {
+  it("is about 1 min for a move with one pop-up and about 2 min for two or three (approve then pay; the tROME lock)", () => {
+    expect(waitFor(1)).toBe("About 1 min");
+    expect([2, 3].map(waitFor)).toEqual(["About 2 min", "About 2 min"]);
   });
 });

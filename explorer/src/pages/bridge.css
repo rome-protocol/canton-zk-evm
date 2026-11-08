@@ -85,7 +85,7 @@
 .bridge-page .act-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
 .bridge-page .act-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--line-2); min-width: 0; }
 .bridge-page .act-row:last-child { border-bottom: 0; padding-bottom: 0; }
-.bridge-page .act-top { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; }
+.bridge-page .act-top { display: flex; flex-direction: column; gap: 2px; }
 .bridge-page .act-top b { overflow-wrap: anywhere; }
 .bridge-page .act-links { display: flex; gap: 4px 14px; flex-wrap: wrap; }
 .bridge-page .act-row .btn { align-self: flex-start; }
