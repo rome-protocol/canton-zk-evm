@@ -101,7 +101,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
         ] });
       }
       if (path === `/accounts/v1/transfers/${party}`) {
-        const offer = { contractId: OFFER, transfer: { sender: SENDER, receiver: party, amount: "2.5000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" }, requestedAt: new Date(Date.now() - 60_000).toISOString(), executeBefore: new Date(Date.now() + 3600_000).toISOString() }, status: null };
+        const offer = { contractId: OFFER, packageName: "splice-amulet", transfer: { sender: SENDER, receiver: party, amount: "2.5000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" }, requestedAt: new Date(Date.now() - 60_000).toISOString(), executeBefore: new Date(Date.now() + 3600_000).toISOString() }, status: null };
         return json(200, { party, transfers: service.offered && !service.accepted ? [offer] : [], more: false });
       }
       if (path === `/accounts/v1/allocations/${party}`) return json(200, { allocations: [] });

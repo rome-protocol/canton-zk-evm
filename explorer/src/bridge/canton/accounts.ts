@@ -19,6 +19,8 @@ export interface TransferView {
   contractId: string;
   transfer: { sender: string; receiver: string; amount: string; instrumentId: { admin: string; id: string }; requestedAt?: string | null; executeBefore?: string | null };
   status?: unknown;
+  /** The ledger's package name of the template that implements the contract. */
+  packageName?: string | null;
 }
 export interface OpenRequest { contractId: string; arguments: Record<string, unknown> }
 /** What `GET /accounts/v1/open` says: the open requests, and the account's two standing acceptances (null when the account has none). */

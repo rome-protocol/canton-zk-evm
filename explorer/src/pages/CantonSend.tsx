@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AmountError, normaliseAmount } from "../bridge/amounts.ts";
 import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } from "../bridge/sendwords.ts";
-import type { Incoming, SendResult, Sender } from "../bridge/send.ts";
+import type { Incoming, SendResult, Sender, Sent } from "../bridge/send.ts";
 import type { Pair } from "../bridge/tokens.ts";
 import { GENERIC, moveWords, plainWords } from "../bridge/words.ts";
 
@@ -101,7 +101,7 @@ function Done({ done }: { done: { result: SendResult } }) {
   );
 }
 
-type Looked = { s: "loading" } | { s: "ready"; offers: Incoming[] } | { s: "failed" };
+type Looked = { s: "loading" } | { s: "ready"; offers: Incoming[]; sent: Sent[] } | { s: "failed" };
 
 /** "Incoming": the transfers offered to the account, each with Accept. The page looks when the account opens, after each accept and send, and when the person asks. */
 export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sender: Sender; pairs: Pair[]; refresh: number; onChanged(): void }) {
@@ -111,9 +111,9 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
   const [problem, setProblem] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string | null>(null);
   useEffect(() => {
-    if (pairs.length === 0) return;
+    if (pairs.length === 0) { setLooked({ s: "ready", offers: [], sent: [] }); return; }
     let live = true;
-    sender.incoming(pairs).then((offers) => { if (live) setLooked({ s: "ready", offers }); }, () => { if (live) setLooked({ s: "failed" }); });
+    sender.waiting(pairs).then(({ offers, sent }) => { if (live) setLooked({ s: "ready", offers, sent }); }, () => { if (live) setLooked({ s: "failed" }); });
     return () => { live = false; };
   }, [sender, pairs, again, refresh]);
 
@@ -123,12 +123,13 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
     try {
       await sender.accept(o);
       setAccepted(`${o.amount} ${o.pair.canton.symbol} is in your account.`);
-      setLooked((l) => (l.s === "ready" ? { s: "ready", offers: l.offers.filter((x) => x.id !== o.id) } : l));
+      setLooked((l) => (l.s === "ready" ? { ...l, offers: l.offers.filter((x) => x.id !== o.id) } : l));
       onChanged();
     } catch (e) { setProblem(problemWords(e, "accept")); }
     finally { setBusy(null); }
   };
   const offers = looked.s === "ready" ? looked.offers : [];
+  const sentOnes = looked.s === "ready" ? looked.sent : [];
   return (
     <div className="incoming" role="group" aria-labelledby="incoming-h">
       <div className="incoming-h"><h3 id="incoming-h">Incoming</h3><button type="button" className="link-b small" disabled={busy !== null} onClick={() => setAgain((n) => n + 1)}>Check again</button></div>
@@ -144,6 +145,16 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
             </li>
           ))}
         </ul>
+      )}
+      {sentOnes.length > 0 && (
+        <>
+          <p className="small muted">Sent by you, not accepted yet. The tokens are in the transfer until the receiver accepts.</p>
+          <ul className="offers">
+            {sentOnes.map((o) => (
+              <li key={o.id}><span className="offer-what"><b>{o.amount} {o.pair.canton.symbol}</b> <span className="muted small">to <span className="mono" title={o.to}>{shortAddress(o.to)}</span></span></span></li>
+            ))}
+          </ul>
+        </>
       )}
       {accepted && <p className="small" role="status">{accepted}</p>}
       {problem && <p className="small bad" role="alert">{problem}</p>}

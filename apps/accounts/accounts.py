@@ -987,25 +987,26 @@ class Accounts:
         raise HttpError(500, f"the account has more {what} than this service lists")
 
     def views(self, party: str, interface: str, what: str) -> list:
-        """(contract id, view) of the party's contracts of an interface."""
+        """(contract id, view, package name of the implementing template) of the party's contracts of an interface."""
         found = self.active(party, {"InterfaceFilter": {"value": {"interfaceId": interface, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}, what)
-        return [(e["contractId"], v.get("viewValue")) for e in found for v in e.get("interfaceViews") or []]
+        return [(e["contractId"], v.get("viewValue"), e.get("packageName")) for e in found for v in e.get("interfaceViews") or []]
 
     def holdings(self, party: str) -> dict:
         """The party's own CIP-0056 holdings (the Holding interface's view, owner = the party), all pages of one snapshot."""
         return {"party": party, "holdings": [{"contractId": cid, "instrumentId": v["instrumentId"], "amount": v["amount"], "locked": bool(v.get("lock"))}
-                                             for cid, v in self.views(party, HOLDING, "holdings") if isinstance(v, dict) and v.get("owner") == party]}   # a holding the party only observes is not its own
+                                             for cid, v, _ in self.views(party, HOLDING, "holdings") if isinstance(v, dict) and v.get("owner") == party]}   # a holding the party only observes is not its own
 
     def allocations(self, party: str) -> dict:
         """The party's own allocations (the Allocation interface's view, the party the sender of the leg): the contract id the participant committed, the specification and the holdings."""
-        return {"party": party, "allocations": [{"contractId": cid, "allocation": v["allocation"], "holdingCids": v.get("holdingCids", [])} for cid, v in self.views(party, ALLOCATION, "allocations")
+        return {"party": party, "allocations": [{"contractId": cid, "allocation": v["allocation"], "holdingCids": v.get("holdingCids", [])} for cid, v, _ in self.views(party, ALLOCATION, "allocations")
                                                 if isinstance(v, dict) and ((v.get("allocation") or {}).get("transferLeg") or {}).get("sender") == party]}
 
     def transfers(self, party: str) -> dict:
         """The transfers the party sends or is offered that are still waiting (the TransferInstruction interface's view, the party the sender or the receiver): the contract id and the transfer's
-        sender, receiver, amount, instrument and deadline, with the registry's status as it is. At most `TRANSFERS_MAX`, so an account that strangers offer transfers to has a bounded list."""
+        sender, receiver, amount, instrument and deadline, with the registry's status as it is, and the package name of the template that implements the contract (the ledger's, not the view's: the view is computed by that template's code, so
+        it cannot say what the contract is). At most `TRANSFERS_MAX`, so an account that strangers offer transfers to has a bounded list."""
         keep = ("sender", "receiver", "amount", "instrumentId", "requestedAt", "executeBefore")
-        found = [{"contractId": cid, "transfer": {k: v["transfer"].get(k) for k in keep}, "status": v.get("status")} for cid, v in self.views(party, TRANSFER_INSTRUCTION, "transfers")
+        found = [{"contractId": cid, "transfer": {k: v["transfer"].get(k) for k in keep}, "status": v.get("status"), "packageName": package} for cid, v, package in self.views(party, TRANSFER_INSTRUCTION, "transfers")
                  if isinstance(v, dict) and isinstance(v.get("transfer"), dict) and party in (v["transfer"].get("sender"), v["transfer"].get("receiver"))]
         return {"party": party, "transfers": found[:TRANSFERS_MAX], "more": len(found) > TRANSFERS_MAX}
 

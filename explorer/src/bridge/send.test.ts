@@ -3,7 +3,7 @@ import { AmountError } from "./amounts.ts";
 import { AccountsError, type Holding, type OpenState, type TransferView } from "./canton/accounts.ts";
 import { TRANSFER_PAST_MS, TRANSFER_WINDOW_MS, type Built } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
-import { createSender, offersOf } from "./send.ts";
+import { createSender, offersOf, sentOf } from "./send.ts";
 import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } from "./sendwords.ts";
 import type { Pair } from "./tokens.ts";
 
@@ -79,6 +79,10 @@ describe("sending on Canton", () => {
   it("says it is done when the registry completes it at once, and waiting when the receiver has to accept", async () => {
     expect((await sender({ kind: "direct" }).sender.send(COIN, "1", OTHER)).waiting).toBe(false);
     expect((await sender({ kind: "offer" }).sender.send(COIN, "1", OTHER)).waiting).toBe(true);
+    for (const kind of ["self", "unknown", ""]) expect((await sender({ kind }).sender.send(COIN, "1", OTHER)).waiting, kind).toBe(true);   // only an explicit `direct` is done
+    const silent = sender();
+    silent.client.transferFactory.mockResolvedValueOnce({ factoryId: "factory1", choiceContext: { choiceContextData: { values: {} }, disclosedContracts: [] } } as never);   // a registry that says nothing about how
+    expect((await silent.sender.send(COIN, "1", OTHER)).waiting).toBe(true);
   });
   it("sends a twin through the twin's own admin, with its implementing package", async () => {
     const t = sender({ holdings: [held("t1", "3.0", TWIN)] });
@@ -112,7 +116,7 @@ describe("sending on Canton", () => {
   it("does nothing for an account that was let go, and passes the service's refusal on", async () => {
     const gone = sender({ closed: true });
     await expect(gone.sender.send(COIN, "1", OTHER)).rejects.toMatchObject({ code: "account_closed" });
-    await expect(gone.sender.incoming([COIN])).rejects.toMatchObject({ code: "account_closed" });
+    await expect(gone.sender.waiting([COIN])).rejects.toMatchObject({ code: "account_closed" });
     expect(gone.client.holdings).not.toHaveBeenCalled();
     const refused = sender();
     refused.client.transferFactory.mockRejectedValueOnce(new AccountsError("not-found", 404, "no registry"));
@@ -121,28 +125,52 @@ describe("sending on Canton", () => {
   });
 });
 
-const view = (contractId: string, over: Partial<TransferView["transfer"]> = {}): TransferView => ({
-  contractId, transfer: { sender: OTHER, receiver: PARTY, amount: "5.0000000000", instrumentId: { admin: DSO, id: "Amulet" }, requestedAt: "2026-11-09T11:00:00Z", executeBefore: "2026-11-10T11:00:00Z", ...over },
+const view = (contractId: string, over: Partial<TransferView["transfer"]> = {}, packageName: string | null = "splice-amulet"): TransferView => ({
+  contractId, packageName, transfer: { sender: OTHER, receiver: PARTY, amount: "5.0000000000", instrumentId: { admin: DSO, id: "Amulet" }, requestedAt: "2026-11-09T11:00:00Z", executeBefore: "2026-11-10T11:00:00Z", ...over },
 });
 
 describe("incoming transfers", () => {
   it("lists the offers to the account for tokens the page lists, and leaves out the rest", () => {
     const views = [
       view("a"), view("own", { sender: PARTY, receiver: OTHER }), view("to-other", { receiver: id("bridge", 0x99) }), view("lapsed", { executeBefore: "2026-11-09T11:59:59Z" }),
-      view("unlisted", { instrumentId: { admin: DSO, id: "Unlisted" } }), view("odd", { amount: "1.00000000001" }), view("twin", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }),
+      view("unlisted", { instrumentId: { admin: DSO, id: "Unlisted" } }), view("odd", { amount: "1.00000000001" }), view("twin", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }, "ostia-twin"),
+      view("lookalike", {}, "some-other-package"), view("no-package", {}, null), view("twin-in-coins-package", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id } }),
       view("unknown-package", { instrumentId: { admin: DSO, id: "TKB" } }),
     ];
     const offers = offersOf(views, PARTY, [COIN, TWIN, OTHER_TOKEN], NOW);
     expect(offers.map((o) => [o.id, o.amount, o.pair.canton.symbol, o.from])).toEqual([["a", "5", "Canton Coin", OTHER], ["twin", "0.5", "TKA", OTHER]]);
-    expect(offers[0]!.until).toBe(Date.parse("2026-11-10T11:00:00Z"));
+    expect(offers[0]!.until).toBe(Date.parse("2026-11-10T11:00:00Z"));   // a contract whose package is not the token's implementation is not listed, whatever its view says
+  });
+  it("lists the account's own sends that nobody accepted, lapsed ones too, for the same tokens and packages", () => {
+    const views = [
+      view("a"), view("mine", { sender: PARTY, receiver: OTHER, amount: "2.5" }), view("mine-lapsed", { sender: PARTY, receiver: OTHER, executeBefore: "2026-11-09T11:59:59Z" }),
+      view("mine-twin", { sender: PARTY, receiver: OTHER, instrumentId: { admin: GATEWAY, id: TWIN.canton.id } }, "ostia-twin"), view("mine-lookalike", { sender: PARTY, receiver: OTHER }, "some-other-package"),
+      view("mine-unlisted", { sender: PARTY, receiver: OTHER, instrumentId: { admin: DSO, id: "Unlisted" } }),
+    ];
+    expect(sentOf(views, PARTY, [COIN, TWIN]).map((o) => [o.id, o.amount, o.pair.canton.symbol, o.to])).toEqual([["mine", "2.5", "Canton Coin", OTHER], ["mine-lapsed", "5", "Canton Coin", OTHER], ["mine-twin", "5", "TKA", OTHER]]);
   });
   it("accepts an offer with the registry's accept context of its token, as the account", async () => {
     const t = sender();
     t.client.transfers.mockResolvedValueOnce({ transfers: [view("offer1")], more: false });
-    const [offer] = await t.sender.incoming([COIN]);
+    const [offer] = (await t.sender.waiting([COIN])).offers;
     await t.sender.accept(offer!);
     expect(t.client.acceptContext).toHaveBeenCalledWith(key, DSO, "offer1", PARTY);
     expect(t.submitted[0]!.command).toMatchObject({ ExerciseCommand: { contractId: "offer1", choice: "TransferInstruction_Accept" } });
     expect(t.submitted[0]!.intent).toMatchObject({ party: PARTY, contractId: "offer1", implementation: "splice-amulet" });
+  });
+  it("accepts an offer of a twin with the twin's implementing package, from the twin's own registry", async () => {
+    const t = sender();
+    t.client.transfers.mockResolvedValueOnce({ transfers: [view("offer2", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }, "ostia-twin")], more: false });
+    const [offer] = (await t.sender.waiting([COIN, TWIN])).offers;
+    await t.sender.accept(offer!);
+    expect(t.client.acceptContext).toHaveBeenCalledWith(key, GATEWAY, "offer2", PARTY);
+    expect(t.submitted[0]!.intent).toMatchObject({ contractId: "offer2", implementation: "ostia-twin" });
+  });
+  it("reads once for both the offers to the account and its own sends", async () => {
+    const t = sender();
+    t.client.transfers.mockResolvedValueOnce({ transfers: [view("in"), view("out", { sender: PARTY, receiver: OTHER })], more: false });
+    const { offers, sent } = await t.sender.waiting([COIN]);
+    expect([offers.map((o) => o.id), sent.map((o) => o.id)]).toEqual([["in"], ["out"]]);
+    expect(t.client.transfers).toHaveBeenCalledTimes(1);
   });
 });

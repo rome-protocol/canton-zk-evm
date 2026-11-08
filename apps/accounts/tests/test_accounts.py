@@ -77,7 +77,7 @@ class FakeLedger:
             return 200, {"activeAtOffset": 9, "activeContracts": [{}] * min(self.open.get(template, 0), body["maxPageSize"])}
         if path.endswith("/active-contracts-page") and "TransferInstructionV1:TransferInstruction" in json.dumps(body):
             return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
-                "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:TransferInstructionV1:TransferInstruction", "viewValue": view}]}}}} for cid, view in self.transfers]}
+                "contractId": cid, "packageName": "splice-amulet", "interfaceViews": [{"interfaceId": "pkg:TransferInstructionV1:TransferInstruction", "viewValue": view}]}}}} for cid, view in self.transfers]}
         if path.endswith("/active-contracts-page") and "AllocationV1:Allocation" in json.dumps(body):
             return 200, {"activeAtOffset": 9, "activeContracts": [{"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "interfaceViews": [{"interfaceId": "pkg:AllocationV1:Allocation", "viewValue": view}]}}}} for cid, view in self.allocations]}
@@ -908,6 +908,7 @@ class AllocationsAndOpen(Case):
         self.assertEqual([(t["contractId"], t["transfer"]["sender"] == PARTY, t["transfer"]["amount"]) for t in out["transfers"]], [("t1", False, "3.0"), ("t2", True, "1.5")])
         self.assertEqual(out["transfers"][0]["transfer"], {k: v for k, v in move(stranger, PARTY)["transfer"].items() if k not in ("inputHoldingCids", "meta")})   # the holdings and the meta are not passed on
         self.assertEqual((out["transfers"][0]["status"], out["more"]), ({"tag": "TransferPendingReceiverAcceptance", "value": {}}, False))
+        self.assertEqual([t["packageName"] for t in out["transfers"]], ["splice-amulet", "splice-amulet"])   # the ledger's package name of each contract
         sent = self.calls_to("/active-contracts-page")[0][2]
         self.assertEqual(sent["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.TRANSFER_INSTRUCTION)
 

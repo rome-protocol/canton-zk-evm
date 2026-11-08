@@ -18,7 +18,7 @@ export function canSend(pair: Pair): boolean {
 export interface SendResult {
   /** The Canton update that holds the transfer, for the explorer's link. */
   updateId: string;
-  /** The receiver has to accept it first (an offer); otherwise it is in their account. */
+  /** The receiver has to accept it first (an offer, or the registry did not say it was done); it is in their account only when the registry says `direct`. */
   waiting: boolean;
 }
 
@@ -34,30 +34,57 @@ export interface Incoming {
   until: number | null;
 }
 
+/** A transfer the account sent that its receiver has not accepted yet: the tokens are in it, not in the receiver's account. */
+export interface Sent {
+  id: string;
+  pair: Pair;
+  amount: string;
+  to: string;
+}
+
 export interface Sender {
   /** Sends `amount` (typed) of the pair's token to `receiver`. Signs one Canton command. */
   send(pair: Pair, amount: string, receiver: string): Promise<SendResult>;
-  /** The transfers waiting for this account to accept, for the tokens of `pairs`. */
-  incoming(pairs: Pair[]): Promise<Incoming[]>;
+  /** The transfers waiting for this account to accept, and the ones it sent that are not accepted yet, for the tokens of `pairs` (one read). */
+  waiting(pairs: Pair[]): Promise<{ offers: Incoming[]; sent: Sent[] }>;
   /** Accepts one. Signs one Canton command. */
   accept(offer: Incoming): Promise<void>;
   /** Whether this page can send the token (and accept it): the package that implements it is known. */
   can(pair: Pair): boolean;
 }
 
-/** The transfers of `views` that the account is offered: it is the receiver, and the token is one the page lists and can accept (a lapsed offer, and an amount that is not a decimal of at most 10 places, are left out). */
+/** The pair a transfer view is about, when the page can show it: the token is one the page lists and can sign for, the contract is implemented by that token's package (the view alone is computed by the contract's own code, so it is not trusted for this),
+ * and the amount is a decimal of at most 10 places. */
+function listed(v: TransferView, pairs: Pair[]): { pair: Pair; amount: string } | null {
+  const t = v.transfer;
+  const pair = pairs.find((p) => p.canton.admin === t.instrumentId?.admin && p.canton.id === t.instrumentId?.id);
+  if (!pair || !canSend(pair) || v.packageName !== implementationOf(pair.canton.id)) return null;
+  try { return { pair, amount: showUnits(parseAmount(String(t.amount), 10).twin, 10) }; } catch { return null; }
+}
+
+/** The transfers of `views` that the account is offered: it is the receiver, and the token is one the page lists and can accept (a lapsed offer is left out). */
 export function offersOf(views: TransferView[], party: string, pairs: Pair[], now = Date.now()): Incoming[] {
   const out: Incoming[] = [];
   for (const v of views) {
     const t = v.transfer;
     if (!t || t.receiver !== party || t.sender === party) continue;
-    const pair = pairs.find((p) => p.canton.admin === t.instrumentId?.admin && p.canton.id === t.instrumentId?.id);
-    if (!pair || !canSend(pair)) continue;
+    const shown = listed(v, pairs);
+    if (!shown) continue;
     const until = typeof t.executeBefore === "string" ? Date.parse(t.executeBefore) : NaN;
     if (!Number.isNaN(until) && until <= now) continue;
-    let amount: string;
-    try { amount = showUnits(parseAmount(String(t.amount), 10).twin, 10); } catch { continue; }
-    out.push({ id: v.contractId, pair, amount, from: t.sender, until: Number.isNaN(until) ? null : until });
+    out.push({ id: v.contractId, ...shown, from: t.sender, until: Number.isNaN(until) ? null : until });
+  }
+  return out;
+}
+
+/** The transfers of `views` that the account sent and that nobody has accepted: its tokens are in them until the receiver accepts. A lapsed one is kept, since its tokens are still in it. */
+export function sentOf(views: TransferView[], party: string, pairs: Pair[]): Sent[] {
+  const out: Sent[] = [];
+  for (const v of views) {
+    const t = v.transfer;
+    if (!t || t.sender !== party || t.receiver === party) continue;
+    const shown = listed(v, pairs);
+    if (shown) out.push({ id: v.contractId, ...shown, to: t.receiver });
   }
   return out;
 }
@@ -86,11 +113,12 @@ export function createSender(a: Pick<Account, "key" | "party" | "client" | "subm
       const factory = await a.client.transferFactory(a.key, instrument.admin, a.party, asked.intent.args);
       open();
       const updateId = await a.submit(transfer(a.party, t, { contractId: factory.factoryId, ...factoryChoice(factory) }));
-      return { updateId, waiting: factory.transferKind === "offer" };
+      return { updateId, waiting: factory.transferKind !== "direct" };   // only the registry saying `direct` makes it done; anything else (or nothing) is waiting
     },
-    async incoming(pairs) {
+    async waiting(pairs) {
       open();
-      return offersOf((await a.client.transfers(a.key, a.party)).transfers, a.party, pairs, now());
+      const { transfers } = await a.client.transfers(a.key, a.party);
+      return { offers: offersOf(transfers, a.party, pairs, now()), sent: sentOf(transfers, a.party, pairs) };
     },
     async accept(offer) {
       open();

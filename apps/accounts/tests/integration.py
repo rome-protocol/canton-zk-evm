@@ -289,6 +289,7 @@ class AccountsOnCanton(unittest.TestCase):
                 self.assertEqual((offered["transfer"]["sender"], offered["transfer"]["receiver"], float(offered["transfer"]["amount"]), offered["transfer"]["instrumentId"]), (party, party2, 3.0, {"admin": registry, "id": demo.INSTRUMENT}))
                 [own] = until("the offer for the sender", lambda: service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"])
                 self.assertEqual(own["contractId"], offered["contractId"])
+                self.assertTrue(offered["packageName"] and own["packageName"] == offered["packageName"])   # the ledger names the package that implements the contract
                 self.assertEqual(service(f"/accounts/v1/holdings/{party2}", key=key2), (200, {"party": party2, "holdings": []}))   # nothing arrives before it is accepted
 
                 status, context = service(f"/accounts/v1/registry/{registry}/transfer-instruction/{offered['contractId']}/accept-context", {"party": party2, "meta": {}, "excludeDebugFields": True}, key2)

@@ -5,7 +5,7 @@ import { userEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountsError } from "../bridge/canton/accounts.ts";
-import type { Incoming, Sender } from "../bridge/send.ts";
+import type { Incoming, Sender, Sent } from "../bridge/send.ts";
 import type { Pair } from "../bridge/tokens.ts";
 import { AccountPanel } from "./AccountPanel.tsx";
 
@@ -21,7 +21,7 @@ const offer = (n: number, amount = "5"): Incoming => ({ id: `offer${n}`, pair: C
 function fake(over: Partial<Sender> = {}) {
   const sender: Sender = {
     send: vi.fn(async () => ({ updateId: "1220" + "ee".repeat(32), waiting: true })),
-    incoming: vi.fn(async () => [] as Incoming[]),
+    waiting: vi.fn(async () => ({ offers: [] as Incoming[], sent: [] as Sent[] })),
     accept: vi.fn(async () => {}),
     can: () => true,
     ...over,
@@ -129,14 +129,14 @@ describe("Incoming", () => {
     show(fake());
     expect(await incoming().findByText("No transfers are waiting for you.")).toBeInTheDocument();
     cleanup();
-    show(fake({ incoming: vi.fn(async () => [offer(1), offer(2, "0.25")]) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [] })) }));
     const rows = await incoming().findAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual(["5 Canton Coin from bridge::1220…cdcdAccept", "0.25 Canton Coin from bridge::1220…cdcdAccept"]);
   });
 
   it("accepts one: the balance is read again, the offer goes and the page says it is in the account", async () => {
     const user = userEvent.setup();
-    const sender = fake({ incoming: vi.fn(async () => [offer(1), offer(2, "0.25")]) });
+    const sender = fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [] })) });
     const changed = vi.fn();
     show(sender, { onChanged: changed });
     const [first] = await incoming().findAllByRole("button", { name: "Accept" });
@@ -151,16 +151,30 @@ describe("Incoming", () => {
 
   it("keeps the offer and says why in plain words when the accept fails", async () => {
     const user = userEvent.setup();
-    show(fake({ incoming: vi.fn(async () => [offer(1)]), accept: vi.fn(async () => { throw new AccountsError("unavailable", 502, "x"); }) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [] })), accept: vi.fn(async () => { throw new AccountsError("unavailable", 502, "x"); }) }));
     await user.click(await incoming().findByRole("button", { name: "Accept" }));
     expect(await incoming().findByRole("alert")).toHaveTextContent("The bridge is busy or restarting. Try again in a moment.");
     expect(incoming().getByRole("button", { name: "Accept" })).toBeEnabled();
   });
 
+  it("lists the account's own sends that are not accepted yet, with a plain line", async () => {
+    show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [{ id: "s1", pair: COIN, amount: "2.5", to: OTHER }] })) }));
+    expect(await incoming().findByText(/Sent by you, not accepted yet/)).toBeInTheDocument();
+    expect(incoming().getByText(/2.5 Canton Coin/)).toBeInTheDocument();
+    expect(incoming().queryByRole("button", { name: "Accept" })).toBeNull();
+  });
+
+  it("does not look forever when the page lists no tokens", async () => {
+    const sender = fake();
+    render(<MemoryRouter><AccountPanel wallet={"0x" + "11".repeat(20)} party={PARTY} pairs={[]} held={{}} chainName="Ostia" sender={sender} /></MemoryRouter>);
+    expect(await incoming().findByText("No transfers are waiting for you.")).toBeInTheDocument();
+    expect(sender.waiting).not.toHaveBeenCalled();
+  });
+
   it("looks again when asked, and says when it cannot look", async () => {
     const user = userEvent.setup();
-    const look = vi.fn().mockRejectedValueOnce(new AccountsError("network", 0, "x")).mockResolvedValueOnce([offer(1)]);
-    show(fake({ incoming: look }));
+    const look = vi.fn().mockRejectedValueOnce(new AccountsError("network", 0, "x")).mockResolvedValueOnce({ offers: [offer(1)], sent: [] });
+    show(fake({ waiting: look }));
     expect(await incoming().findByRole("alert")).toHaveTextContent("Could not look for transfers just now.");
     await user.click(incoming().getByRole("button", { name: "Check again" }));
     expect(await incoming().findByText(/5 Canton Coin/)).toBeInTheDocument();
@@ -168,7 +182,7 @@ describe("Incoming", () => {
   });
 
   it("uses no technical names", async () => {
-    show(fake({ incoming: vi.fn(async () => [offer(1)]) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [] })) }));
     await incoming().findByRole("button", { name: "Accept" });
     expect(screen.getByRole("region", { name: "Your addresses" }).textContent).not.toMatch(/party|instruction|preapproval|allocation|holding/i);
   });
