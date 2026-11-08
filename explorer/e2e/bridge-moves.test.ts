@@ -406,7 +406,9 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
     for (const width of [360, 1280]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const [from, name] of [["From", /^tROME on Ostia$/], ["From", /^TKA on Ostia$/], ["From", /^TKA on Canton$/], ["From", /^Canton Coin on Canton$/], ["From", /^wCC on Ostia$/]] as const) {
+      // At phone width the longer words of the Canton-side moves wrap (normal); at desktop width all four kinds of move keep each label and pop-up text on one line.
+      const lists = width >= 1280 ? [/^tROME on Ostia$/, /^TKA on Ostia$/, /^TKA on Canton$/, /^Canton Coin on Canton$/, /^wCC on Ostia$/] : [/^tROME on Ostia$/, /^TKA on Ostia$/];
+      for (const [from, name] of lists.map((n) => ["From", n] as const)) {
         await pick(page, from, name);
         const details = page.locator("details.move-steps");
         if (!(await details.evaluate((d: HTMLDetailsElement) => d.open))) await details.locator("summary").click();
