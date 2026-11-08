@@ -122,7 +122,7 @@ describe("what moved, and the marks a row starts from", () => {
     const row = (kind: Entry["kind"], asset: Address): Entry => ({ ref: "r", kind, asset, amount: "5", account: ME, party: PARTY, at: 0, tx: null, block: null, done: false, stage: "start" });
     expect(whatMoved(row("lock", TKA), pairs, "Ostia")).toBe("5 TKA to Canton");
     expect(whatMoved(row("redeem", TKA), pairs, "Ostia")).toBe("5 TKA to Ostia");
-    expect(whatMoved(row("deposit", WCC), pairs, "Ostia")).toBe("5 CC to Ostia");
+    expect(whatMoved(row("deposit", WCC), pairs, "Ostia")).toBe("5 Canton Coin to Ostia");
     expect(whatMoved(row("withdraw", WCC), pairs, "Ostia")).toBe("5 wCC to Canton");
     expect(whatMoved(row("lock", ("0x" + "7".repeat(40)) as Address), pairs, "Ostia")).toBe("5 tokens to Canton");
   });

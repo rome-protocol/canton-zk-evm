@@ -8,7 +8,7 @@ import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
 import { entryOf, finished, remember } from "../bridge/activity.ts";
 import { pairsOf } from "../bridge/tokens.ts";
-import { depositIdOf, releaseIdOf, saveCheckpoint, type Checkpoint, type MoveState } from "../bridge/moves/state.ts";
+import { depositIdOf, keptMoves, releaseIdOf, saveCheckpoint, type Checkpoint, type MoveState } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import { Activity, type ActivityProps } from "./Activity.tsx";
 import { CC_ADMIN, config, FIELD, fakeEvm, finalTx, fakeSession, GATEWAY_PARTY, leg, ME, memoryStore, PARTY, TKA, VAULT, WCC, WTROME } from "./bridge-fakes.ts";
@@ -47,7 +47,7 @@ describe("the bar under the card", () => {
 
     await set({ phase: "signing-canton" });
     const bar = await screen.findByRole("region", { name: "Move on its way" });
-    expect(bar).toHaveTextContent("5 CC to Ostia");
+    expect(bar).toHaveTextContent("5 Canton Coin to Ostia");
     expect(bar).toHaveTextContent("Signing on Canton…");
     expect(marks()).toEqual(["Sent: waiting", "Proven: waiting", "Final: waiting"]);
 
@@ -109,7 +109,7 @@ describe("the Activity list", () => {
     saveCheckpoint(store, ck({ ref: "open-1", input: deposit, stage: "start", at: NOW }));
     show({ store, read: async () => answer({ status: "final", success: true, block: { ...IN_BLOCK, updateId: "1220abcd" } }) });
     const [open, done] = rows();
-    expect(within(open!).getByText("5 CC to Ostia")).toBeInTheDocument();
+    expect(within(open!).getByText("5 Canton Coin to Ostia")).toBeInTheDocument();
     expect(within(open!).getByText("Saved. Not signed on Canton yet.")).toBeInTheDocument();
     expect(within(open!).getByRole("listitem", { name: "Final: waiting" })).toBeInTheDocument();
     expect(within(done!).getByText("1.5 TKA to Canton")).toBeInTheDocument();
@@ -205,6 +205,18 @@ describe("the Activity list", () => {
       expect(made.evm.calls[0]!.args).toContain(ME);   // released to the recipient the request names
       await waitFor(() => expect(finished(store).map((e) => [e.ref, e.amount])).toEqual([["other-1", "3"]]));
       expect(await screen.findAllByRole("listitem").then((l) => l.filter((x) => x.classList.contains("act-row")))).toHaveLength(1);   // the record kept now is the row; the other-device row is gone
+    });
+    it("keeps nothing, says so, and drops the row when Canton no longer lists the move by the time Continue is pressed", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], open: openWith([request()]) });
+      made.session.open = vi.fn().mockResolvedValueOnce(openWith([request()])).mockResolvedValue(openWith([]));
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Release on Ostia" }));
+      expect(await screen.findByText("This move is no longer open on Canton.")).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText("3 TKA to Ostia")).toBeNull());   // the list was read again
+      expect(keptMoves(store)).toEqual([]);   // no record was kept
+      expect(made.evm.calls).toEqual([]);
     });
     it("is not listed twice when this browser keeps its record, or has written it down as done", async () => {
       const store = memoryStore();

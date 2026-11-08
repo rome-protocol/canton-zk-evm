@@ -5,7 +5,7 @@ import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
-import { depositIdOf, keptMoves, listMoves, loadCheckpoint, lockIdOf, releaseIdOf, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
+import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
 const [ME, GATEWAY, VAULT, TKA, WTROME, WCC] = [addr("1"), addr("2"), ("0x" + "cd".repeat(20)) as Address, addr("a"), addr("b"), addr("c")];
@@ -94,7 +94,7 @@ function setup(o: SetupOptions = {}) {
     allocateDeposit: async (a) => void (canton.calls.push("allocateDeposit"), canton.args.push(a)),
     signDeposit: async (a) => void (canton.calls.push("signDeposit"), canton.args.push(a)), waitDeposit: async () => void canton.calls.push("waitDeposit"),
   };
-  const lockParts = vi.fn(o.lockParts ?? (async (a: { receiver: string; ref: string }) => ({ lockId: lockIdOf(a.receiver, a.ref), vaults: [VAULT], acceptance: "00ab" })));
+  const lockParts = vi.fn(o.lockParts ?? (async (a: { receiver: string; ref: string }) => ({ lockId: lockIdOf(a.receiver, a.ref).slice(2), vaults: [VAULT], acceptance: "00ab" })));
   const deps: Deps = {
     config: o.config ?? config, evm: evm.evm, canton, registry: { lockParts }, store, locks: "locks" in o ? o.locks! : memoryLocks(), sleep: async () => {}, newRef: o.newRef ?? (() => "ref-1"), maxPolls: o.maxPolls ?? 5,
     api: { tx: o.tx ?? (async () => (answers.length > 1 ? answers.shift()! : answers[0] ?? null)) },
@@ -150,6 +150,28 @@ describe("move 1: lock a token with a twin, Ostia to Canton", () => {
     expect(s).toMatchObject({ phase: "failed", reason: expect.stringContaining("accepted twins"), from: "sending-evm", kept: false });
     expect(t.evm.calls).toEqual([]);
     expect(listMoves(t.store)).toEqual([]);
+  });
+  it("takes the registry's lock id in either form: without 0x as the registry writes it, with 0x, or in capitals", async () => {
+    const id = lockIdOf(PARTY, "ref-1");
+    for (const answer of [id.slice(2), id, id.toUpperCase().replace("0X", "0x"), id.slice(2).toUpperCase()]) {
+      const t = setup({ lockParts: async () => ({ lockId: answer }), txs: [final([lockLeg()])] });
+      expect(await t.move.start(input)).toMatchObject({ phase: "final" });
+    }
+  });
+  it("matches an id of the chain with and without 0x as 32 bytes, and nothing else", () => {
+    const id = lockIdOf(PARTY, "ref-1");
+    expect(idBytes(id)).toBe(id.slice(2));
+    expect(sameId(id, id.slice(2))).toBe(true);
+    expect(sameId(id.slice(2).toUpperCase(), id)).toBe(true);
+    expect(sameId(id, "0x" + "00".repeat(32))).toBe(false);
+    expect(sameId(id.slice(0, 40), id.slice(0, 40))).toBe(false);   // not 32 bytes: never the same
+    expect(sameId("", "")).toBe(false);
+    expect(sameId(undefined, id)).toBe(false);
+    expect(sameId("0x" + "zz".repeat(32), "0x" + "zz".repeat(32))).toBe(false);
+  });
+  it("is final when the explorer writes the lock's leg id without 0x", async () => {
+    const t = setup({ txs: [final([leg({ kind: "payment", legId: lockIdOf(PARTY, "ref-1").slice(2) })])] });
+    expect(await t.move.start(input)).toMatchObject({ phase: "final" });
   });
   it("sends nothing when the registry's lock id is not the one the payer works out", async () => {
     const t = setup({ lockParts: async () => ({ lockId: "0x" + "00".repeat(32) }) });

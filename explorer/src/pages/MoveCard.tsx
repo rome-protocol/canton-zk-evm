@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
-import { AmountError, maxText, parseAmount, showUnits } from "../bridge/amounts.ts";
+import { AmountError, maxText, parseAmount, showBalance } from "../bridge/amounts.ts";
 import { continueWords, entryOf, recordOf } from "../bridge/activity.ts";
-import { amountSize, buttonOf, noteOf, progressWords } from "../bridge/card.ts";
+import { amountSize, buttonOf, noteOf, progressWords, WAIT_WORDS } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
@@ -162,7 +162,7 @@ export function MoveCard(p: MoveCardProps) {
   const flip = () => setSel({ pair: pair?.key ?? null, from: from === "ostia" ? "canton" : "ostia" });
 
   const chip = (side: Side): string => (side === "ostia" ? (p.account ? short(p.account, 6, 4) : "Not connected") : session ? short(session.party, 10, 4) : "Not opened");
-  const shown = (b: bigint | null, side: Side) => (b === null ? "–" : showUnits(b, tokenDecimals(side)));
+  const shown = (b: bigint | null, side: Side) => (b === null ? "–" : showBalance(b, tokenDecimals(side)));
   // A keypad set to a comma-decimal language offers only the comma: one comma and no point is read as the decimal point. Anything else (two commas, a comma and a point) is left for the amount check to refuse.
   const edit = (t: string) => { setText(/^[^.,]*,[^.,]*$/.test(t) ? t.replace(",", ".") : t); setProblem(null); };
   const locked = running || move.phase === "paused" || (move.phase === "failed" && move.kept);
@@ -219,7 +219,7 @@ export function MoveCard(p: MoveCardProps) {
           {extra}
           {p.faucet && bal.gas === 0n && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
           <details className="steps">
-            <summary><span>About 30 s · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
+            <summary><span>{WAIT_WORDS} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
             <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className="muted small">{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
             <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
           </details>

@@ -13,7 +13,7 @@ const pairs = pairsOf(config, "gateway::1220aa");
 
 describe("the pairs this build supports", () => {
   it("are the twins (the chain's coin first, under its own name) and the wrapped tokens, and nothing else", () => {
-    expect(pairs.map((p) => [p.kind, p.ostia.symbol, p.canton.symbol, p.native])).toEqual([["twin", "tROME", "tROME", true], ["twin", "TKA", "TKA", false], ["wrapped", "wCC", "CC", false], ["wrapped", "wTKB", "TKB", false]]);
+    expect(pairs.map((p) => [p.kind, p.ostia.symbol, p.canton.symbol, p.native])).toEqual([["twin", "tROME", "tROME", true], ["twin", "TKA", "TKA", false], ["wrapped", "wCC", "Canton Coin", false], ["wrapped", "wTKB", "TKB", false]]);
     expect(pairs[1]!.canton).toEqual({ symbol: "TKA", admin: "gateway::1220aa", id: `erc20:${"aa".repeat(20)}`, decimals: 10 });
     expect(pairs[2]!.canton).toMatchObject({ admin: "DSO::1220cd", id: "Amulet", decimals: 10 });
   });
@@ -24,9 +24,12 @@ describe("the pairs this build supports", () => {
   it("make two groups of the same tokens, and a search finds a token by its name, its address or its id", () => {
     const g = groupsOf(pairs);
     expect(g.ostia.map((t) => t.symbol)).toEqual(["tROME", "TKA", "wCC", "wTKB"]);
-    expect(g.canton.map((t) => t.symbol)).toEqual(["tROME", "TKA", "CC", "TKB"]);
+    expect(g.canton.map((t) => t.symbol)).toEqual(["tROME", "TKA", "Canton Coin", "TKB"]);
     expect(search(g.ostia, pairs, "tk").map((t) => t.symbol)).toEqual(["TKA", "wTKB"]);
-    expect(search(g.canton, pairs, "amulet").map((t) => t.symbol)).toEqual(["CC"]);
+    expect(search(g.canton, pairs, "cc").map((t) => t.symbol)).toEqual(["Canton Coin"]);
+    expect(search(g.ostia, pairs, "cc").map((t) => t.symbol)).toEqual(["wCC"]);
+    expect(search(g.canton, pairs, "wtkb").map((t) => t.symbol)).toEqual(["TKB"]);
+    expect(search(g.canton, pairs, "amulet").map((t) => t.symbol)).toEqual(["Canton Coin"]);
     expect(search(g.ostia, pairs, "AAAA").map((t) => t.symbol)).toEqual(["TKA"]);
     expect(search(g.ostia, pairs, "nothing like it")).toEqual([]);
     expect(search(g.ostia, pairs, "  ")).toHaveLength(4);
@@ -35,7 +38,7 @@ describe("the pairs this build supports", () => {
     const g = groupsOf(pairs);
     expect(factsOf(g.ostia[1]!, pairs, "Ostia")).toEqual([{ label: "Address", value: a("a") }, { label: "Decimals", value: "18" }, { label: "Twin of", value: "TKA on Canton" }]);
     expect(factsOf(g.canton[1]!, pairs, "Ostia")).toEqual([{ label: "Token id", value: `erc20:${"aa".repeat(20)}` }, { label: "Decimals", value: "10" }, { label: "Twin of", value: "TKA on Ostia" }]);
-    expect(factsOf(g.ostia[2]!, pairs, "Ostia")[2]).toEqual({ label: "Twin of", value: "CC on Canton (wrapped here)" });
+    expect(factsOf(g.ostia[2]!, pairs, "Ostia")[2]).toEqual({ label: "Twin of", value: "Canton Coin on Canton (wrapped here)" });
     expect(factsOf(g.ostia[0]!, pairs, "Ostia")[0]!.label).toBe("Wrapped form's address");
   });
 });
@@ -46,7 +49,7 @@ describe("what a token arrives as", () => {
     expect([coin.ostia.symbol, coin.wrapped]).toEqual(["tROME", "WtROME"]);
     expect([arrivesAs(coin, "ostia"), arrivesAs(coin, "canton")]).toEqual(["tROME", "WtROME"]);
     expect([arrivesAs(twin, "ostia"), arrivesAs(twin, "canton"), twin.wrapped]).toEqual(["TKA", "TKA", null]);
-    expect([arrivesAs(cc, "ostia"), arrivesAs(cc, "canton")]).toEqual(["CC", "wCC"]);
+    expect([arrivesAs(cc, "ostia"), arrivesAs(cc, "canton")]).toEqual(["Canton Coin", "wCC"]);
   });
   it("is named in the redeem step of the chain's coin", () => {
     expect(stepsOf("redeem", "tROME", true, "Ostia", "WtROME").map((s) => s.text)).toContain("Release WtROME on Ostia");

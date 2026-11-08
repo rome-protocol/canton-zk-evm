@@ -63,7 +63,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (path === "/twin-registry/twin/v1/lock-parts") {
         const { receiver, ref } = JSON.parse(await body(req));
         chain.lastLock = { receiver, ref, lockId: lockIdOf(receiver, ref) };
-        return json(200, { lockId: chain.lastLock.lockId, vaults: [VAULT] });
+        return json(200, { lockId: chain.lastLock.lockId.slice(2), vaults: [VAULT] });   // the real registry answers the id without 0x
       }
       if (path === "/accounts/v1/topology") {
         publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
@@ -169,7 +169,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
   }
-  /** Opens the token picker of a field and takes a token of it (named as the picker names it, "CC on Canton"). */
+  /** Opens the token picker of a field and takes a token of it (named as the picker names it, "Canton Coin on Canton"). */
   async function pick(page: any, field: "From" | "To", name: RegExp) {
     await page.getByRole("button", { name: new RegExp(`^${field} token`) }).click();
     await page.getByRole("dialog").getByRole("button", { name }).click();
@@ -179,7 +179,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   it("moves a token from Ostia to Canton: approve, then pay in, two pop-ups, then final", async () => {
     const page = await open("/bridge");
     await signedIn(page);
-    expect(await page.getByText("About 30 s · 2 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 2 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
@@ -232,7 +232,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await page.getByRole("button", { name: "Swap direction" }).click();
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
     expect(seen.executed).toBe(1);
@@ -251,9 +251,9 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     service.extra = { wrapped: true };
     const page = await open("/bridge");
     await signedIn(page);
-    await pick(page, "From", /^CC on Canton$/);
+    await pick(page, "From", /^Canton Coin on Canton$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
     expect(seen.factoryAsked).toBe(1);   // the registry's allocation factory was asked once, through the account service
@@ -275,7 +275,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^wCC on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 30 s · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];
@@ -293,7 +293,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^tROME on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
-    expect(await page.getByText("About 30 s · 3 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 3 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];

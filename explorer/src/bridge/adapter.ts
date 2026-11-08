@@ -5,7 +5,7 @@ import { AccountsError, factoryChoice, type AccountsClient, type Holding } from 
 import { allocate, depositRequest, redeemRequest, type Allocation, type Built, type Chain } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
 import { Refused, Waited, type CantonAdapter } from "./moves/moves.ts";
-import { depositIdOf } from "./moves/state.ts";
+import { depositIdOf, sameId } from "./moves/state.ts";
 
 export interface AdapterDeps {
   client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory">;
@@ -48,7 +48,7 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
     throw new Waited("Canton has not shown this step yet. Continue to look again; nothing is signed twice.");
   }
   const hasRedeem = async (ref: string) => (await open()).redeemRequests.some((r) => r.arguments.ref === ref);
-  const hasDeposit = async (id: string) => (await open()).depositRequests.some((r) => typeof r.arguments.depositId === "string" && bare(r.arguments.depositId) === bare(id));
+  const hasDeposit = async (id: string) => (await open()).depositRequests.some((r) => sameId(r.arguments.depositId, id));
 
   return {
     party: () => d.party,
@@ -72,7 +72,7 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
       await d.submit(allocate(d.party, d.chain, a, { contractId: factory.factoryId, ...factoryChoice(factory) }));
     },
     async signDeposit({ label, depositId, recipient }) {
-      if (depositIdOf(d.party, label).toLowerCase() !== depositId.toLowerCase()) throw new Refused("This deposit's id is not the one its label makes. Nothing was signed.");
+      if (!sameId(depositIdOf(d.party, label), depositId)) throw new Refused("This deposit's id is not the one its label makes. Nothing was signed.");
       if (await hasDeposit(depositId)) return;
       const made: { cid?: string } = {};
       await until(async () => (made.cid = (await allocationOf(label))?.contractId) !== undefined, 10);   // the allocation was made a moment ago: its read may lag

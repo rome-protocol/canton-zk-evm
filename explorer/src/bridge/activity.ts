@@ -3,7 +3,7 @@
 import type { Address, Hex } from "viem";
 import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { Marks } from "./marks.ts";
-import { depositIdOf, keptMoves, STAGES, type Checkpoint, type MoveKind, type MoveState, type Step, type StoreLike } from "./moves/state.ts";
+import { depositIdOf, keptMoves, sameId, STAGES, type Checkpoint, type MoveKind, type MoveState, type Step, type StoreLike } from "./moves/state.ts";
 import { typedAmount } from "./adopt.ts";
 import type { Pair } from "./tokens.ts";
 
@@ -92,8 +92,8 @@ export const recordOf = (kept: Checkpoint[], current: string | null | undefined)
 export function openOnCanton(e: Entry, open: Pick<OpenState, "redeemRequests" | "depositRequests">): boolean {
   if (e.kind === "redeem") return open.redeemRequests.some((r) => r.arguments.ref === e.ref);
   if (e.kind === "deposit") {
-    const id = depositIdOf(e.party, e.ref).slice(2).toLowerCase();
-    return open.depositRequests.some((r) => typeof r.arguments.depositId === "string" && r.arguments.depositId.replace(/^0x/, "").toLowerCase() === id);
+    const id = depositIdOf(e.party, e.ref);
+    return open.depositRequests.some((r) => sameId(r.arguments.depositId, id));
   }
   return false;
 }
@@ -147,7 +147,7 @@ export function continueWords(e: Entry, chainName: string, onCanton = false): st
   return `Continue to ${e.kind === "lock" || e.kind === "withdraw" ? "Canton" : chainName}`;
 }
 
-/** What moved, in words: "5 CC to Ostia" ("tokens" where this build no longer lists the token; "Tokens to Ostia" where the amount is not known). */
+/** What moved, in words: "5 Canton Coin to Ostia" ("tokens" where this build no longer lists the token; "Tokens to Ostia" where the amount is not known). */
 export function whatMoved(e: Entry, pairs: Pair[], chainName: string): string {
   const pair = pairs.find((p) => same(p.erc20, e.asset));
   const toCanton = e.kind === "lock" || e.kind === "withdraw";

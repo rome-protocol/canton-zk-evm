@@ -24,8 +24,10 @@ export interface Pair {
 export interface Token { key: string; pair: string; side: Side; symbol: string; decimals: number }
 
 const bare = (a: string) => a.replace(/^0x/, "").toLowerCase();
-/** A wrapped token's name on Canton: "wCC" is "CC". */
-const cantonName = (wrapped: string, id: string) => (/^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : id);
+/** Canton's own coin is an instrument called "Amulet": people know it as Canton Coin. */
+export const CANTON_COIN = "Canton Coin";
+/** A wrapped token's name on Canton: Canton Coin for the Amulet instrument, otherwise "wTKB" is "TKB" (or the instrument's id when the symbol does not start with w). */
+const cantonName = (wrapped: string, id: string) => (id === "Amulet" ? CANTON_COIN : /^w[A-Z]/.test(wrapped) ? wrapped.slice(1) : id);
 
 /** The pairs this build can move. `gateway` is the Canton party that issues the twins on Canton (the build's chain gateway). */
 export function pairsOf(config: BridgeConfig, gateway: string): Pair[] {
@@ -51,13 +53,13 @@ export function groupsOf(pairs: Pair[]): { ostia: Token[]; canton: Token[] } {
   return { ostia: pairs.map((p) => row(p, "ostia")), canton: pairs.map((p) => row(p, "canton")) };
 }
 
-/** The tokens whose symbol, address or id has `query` in it (case does not matter). */
+/** The tokens whose symbol, address or id has `query` in it (case does not matter). A Canton token is also found by the name of its pair on Ostia, so "cc" finds Canton Coin. */
 export function search(list: Token[], pairs: Pair[], query: string): Token[] {
   const q = query.trim().toLowerCase();
   if (q === "") return list;
   return list.filter((t) => {
     const p = pairs.find((x) => x.key === t.pair)!;
-    return [t.symbol, t.side === "ostia" ? p.erc20 : p.canton.id, t.side === "canton" ? p.canton.admin : ""].some((s) => s.toLowerCase().includes(q));
+    return [t.symbol, t.side === "ostia" ? p.erc20 : p.canton.id, t.side === "canton" ? p.canton.admin : "", t.side === "canton" ? p.ostia.symbol : ""].some((s) => s.toLowerCase().includes(q));
   });
 }
 

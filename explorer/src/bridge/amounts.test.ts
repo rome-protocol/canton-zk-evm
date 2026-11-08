@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AmountError, maxText, parseAmount, showUnits, tenDecimals } from "./amounts.ts";
+import { AmountError, maxText, parseAmount, showBalance, showUnits, tenDecimals } from "./amounts.ts";
 
 describe("tenDecimals", () => {
   it("writes a Canton amount with exactly ten decimals", () => {
@@ -44,5 +44,25 @@ describe("showing amounts", () => {
     expect(maxText(10n ** 7n, 18)).toBe("");
     expect(maxText(0n, 6)).toBe("");
     expect(parseAmount(maxText(123456789012345678n, 18), 18).base).toBe(123456789000000000n);
+  });
+});
+
+describe("showBalance", () => {
+  it("shows at most 6 decimals, cut down, with the whole part and no trailing zeros", () => {
+    expect(showBalance(1234567890123456789n, 18)).toBe("1.234567");
+    expect(showBalance(1999999999999999999n, 18)).toBe("1.999999");
+    expect(showBalance(20n * 10n ** 18n, 18)).toBe("20");
+    expect(showBalance(15n * 10n ** 17n, 18)).toBe("1.5");
+    expect(showBalance(123456789n * 10n ** 18n + 5n, 18)).toBe("123456789");
+    expect(showBalance(0n, 18)).toBe("0");
+  });
+  it("shows a balance too small for 6 decimals as less than the least it shows, and leaves short tokens as they are", () => {
+    expect(showBalance(999999999999n, 18)).toBe("<0.000001");
+    expect(showBalance(1234567n, 6)).toBe("1.234567");
+    expect(showBalance(15n * 10n ** 9n, 10)).toBe("1.5");
+    expect(showBalance(12345678901n, 10)).toBe("1.234567");
+  });
+  it("leaves Max exact", () => {
+    expect(maxText(1234567890123456789n, 18)).toBe("1.2345678901");
   });
 });

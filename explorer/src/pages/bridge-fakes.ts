@@ -5,8 +5,8 @@ import type { ApiTx, BlockLeg } from "../api.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { createMove, type CantonAdapter, type LocksLike } from "../bridge/moves/moves.ts";
-import { lockIdOf, saveCheckpoint, type StoreLike } from "../bridge/moves/state.ts";
-import { depositRecord, redeemRecord } from "../bridge/adopt.ts";
+import { lockIdOf, type StoreLike } from "../bridge/moves/state.ts";
+import { adoptRecord } from "../bridge/adopt.ts";
 import { track } from "../bridge/activity.ts";
 import type { AllocationView, OpenState } from "../bridge/canton/accounts.ts";
 import type { Session } from "../bridge/session.ts";
@@ -83,19 +83,14 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   const canton = o.canton ?? fakeCanton();
   const store = o.store ?? memoryStore();
   const move = createMove({
-    config, evm: evm.evm, canton, registry: { lockParts: async (a) => ({ lockId: lockIdOf(a.receiver, a.ref), vaults: [VAULT] }) }, store, locks: memoryLocks(), sleep: async () => {}, newRef: () => "ref-1", maxPolls: 5,
+    config, evm: evm.evm, canton, registry: { lockParts: async (a) => ({ lockId: lockIdOf(a.receiver, a.ref).slice(2), vaults: [VAULT] }) }, store, locks: memoryLocks(), sleep: async () => {}, newRef: () => "ref-1", maxPolls: 5,
     api: { tx: async (h) => o.tx?.(h) ?? finalTx(o.legs("ref-1")) }, leg: async () => null, sentSince: async () => [],
   });
   const stop = track(move, store);
   const session: Session = {
     move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
     open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
-    adopt: vi.fn(async (kind, request) => {
-      const record = kind === "redeem" ? redeemRecord(request, { account: evm.evm.account, party: PARTY, config }) : await depositRecord(request, { account: evm.evm.account, party: PARTY, config, allocations: async () => o.allocations ?? [] });
-      if (record === null) return null;
-      if (!move.kept().some((c) => c.ref === record.ref)) saveCheckpoint(store, record);
-      return record.ref;
-    }),
+    adopt: vi.fn((kind, request) => adoptRecord(kind, request, { account: evm.evm.account, party: PARTY, config, store, allocations: async () => o.allocations ?? [], openRequests: () => session.open() })),
   };
   return { session, evm, canton, store, move };
 }

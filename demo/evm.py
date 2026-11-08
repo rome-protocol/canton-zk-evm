@@ -123,6 +123,9 @@ def load_key(folder: Path, who: str) -> str:
     return "0x" + (folder / f"{who}.key").read_text().strip()
 
 
+USER_AGENT = "ostia-demo/1 Rome Protocol rome@romeprotocol.com"   # the site's edge refuses Python's default User-Agent (403, error code 1010)
+
+
 def rpc_url() -> str:
     return os.environ.get("CZE_RPC_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', 8545)}"
 
@@ -130,7 +133,7 @@ def rpc_url() -> str:
 def rpc(method: str, params: list):
     url = rpc_url()
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-    with urllib.request.urlopen(urllib.request.Request(url, body, {"content-type": "application/json"}), timeout=60) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, body, {"content-type": "application/json", "user-agent": USER_AGENT}), timeout=60) as r:
         reply = json.load(r)
     if "error" in reply:
         raise SystemExit(f"{method} failed: {reply['error']}")
