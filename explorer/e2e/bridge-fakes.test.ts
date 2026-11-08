@@ -1,6 +1,6 @@
 import { encodeFunctionData, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { allocate, depositRequest, redeemRequest, type Chain as CantonChain } from "../src/bridge/canton/commands.ts";
+import { acceptTransfer, allocate, depositRequest, redeemRequest, transfer, transferTimes, type Chain as CantonChain } from "../src/bridge/canton/commands.ts";
 import { choiceOf, factoryChoice } from "../src/bridge/canton/accounts.ts";
 import { keyFromSignature } from "../src/bridge/canton/key.ts";
 import { signPrepared, UnexpectedTransaction } from "../src/bridge/canton/sign.ts";
@@ -8,7 +8,7 @@ import { erc20Abi, gatewayAbi, vaultAbi, wrapperAbi } from "../src/bridge/evm/ab
 import { BUILD_PINS, loadBridgeConfig } from "../src/bridge/evm/config.ts";
 import { viemAdapter } from "../src/bridge/evm/adapter.ts";
 import { releaseIdOf } from "../src/bridge/moves/state.ts";
-import { allocationFactory, CC_ADMIN, CC_HOLDING, freshChain, GATEWAY, twinsOverview, ME_BALANCE, preparedAllocation, preparedDeposit, preparedRedeem, rpcResult, sendTransaction, TKA, txAnswer, VAULT, VAULT_CODE, WCC, WTROME } from "./bridge-fakes.ts";
+import { allocationFactory, CC_ADMIN, CC_HOLDING, freshChain, GATEWAY, twinsOverview, ME_BALANCE, preparedAccept, preparedAllocation, preparedDeposit, preparedRedeem, preparedTransfer, rpcResult, sendTransaction, TKA, transferFactory, txAnswer, VAULT, VAULT_CODE, WCC, WTROME } from "./bridge-fakes.ts";
 
 // The fakes of the browser tests of moves, checked here without a browser: what the page would reject in them is rejected here first.
 const PARTY = "alice::1220" + "ab".repeat(32);
@@ -47,6 +47,29 @@ describe("the fake account service's prepared allocation and deposit request", (
     const prepared = await preparedDeposit(PARTY, (built.command as { CreateCommand: { createArguments: Record<string, unknown> } }).CreateCommand.createArguments);
     expect((await signPrepared(key, built.intent, prepared)).length).toBe(64);
     await expect(signPrepared(key, (await depositRequest(PARTY, chain, "00" + "de".repeat(40), ME, "ref-9")).intent, prepared)).rejects.toThrow(UnexpectedTransaction);
+  });
+});
+
+describe("the fake account service's prepared transfer and accept", () => {
+  const instrument = { admin: CC_ADMIN, id: "Amulet" };
+  const sent = (amount: string, receiver = "bob::1220" + "cd".repeat(32)) => {
+    const f = transferFactory("offer");
+    return transfer(PARTY, { ...instrument, instrumentId: instrument.id, receiver, amount, inputHoldings: [CC_HOLDING], ...transferTimes(Date.parse("2026-11-09T12:00:00Z")) }, { contractId: f.factoryId, ...factoryChoice(f) });
+  };
+  it("is a transfer the page's own checks sign, and not one for another amount or receiver", async () => {
+    const key = await keyFromSignature("0x" + "11".repeat(32) + "22".repeat(32) + "1b");
+    const built = sent("5.0000000000");
+    const prepared = await preparedTransfer(PARTY, (built.command as { ExerciseCommand: { contractId: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand, "splice-amulet");
+    expect((await signPrepared(key, built.intent, prepared)).length).toBe(64);
+    await expect(signPrepared(key, sent("6.0000000000").intent, prepared)).rejects.toThrow(UnexpectedTransaction);
+    await expect(signPrepared(key, sent("5.0000000000", "eve::1220" + "ee".repeat(32)).intent, prepared)).rejects.toThrow(UnexpectedTransaction);
+  });
+  it("is an accept the page's own checks sign, and not one for another offer", async () => {
+    const key = await keyFromSignature("0x" + "11".repeat(32) + "22".repeat(32) + "1b");
+    const built = acceptTransfer(PARTY, "00" + "b1".repeat(40), { context: { values: {} }, disclosedContracts: [] });
+    const prepared = await preparedAccept(PARTY, (built.command as { ExerciseCommand: { contractId: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand, "splice-amulet");
+    expect((await signPrepared(key, built.intent, prepared)).length).toBe(64);
+    await expect(signPrepared(key, acceptTransfer(PARTY, "00" + "b2".repeat(40), { context: { values: {} }, disclosedContracts: [] }).intent, prepared)).rejects.toThrow(UnexpectedTransaction);
   });
 });
 

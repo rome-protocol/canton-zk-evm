@@ -219,3 +219,33 @@ export const allocationFactory = () => {
   const f = FIXTURES.find((x) => x.name === "exercise-allocate")! as unknown as { command: { ExerciseCommand: { contractId: string } }; disclosedContracts: unknown[] };
   return { factoryId: f.command.ExerciseCommand.contractId, choiceContext: { choiceContextData: { values: {} }, disclosedContracts: f.disclosedContracts } };
 };
+
+/** The service's answer to a prepare of the transfer factory's `TransferFactory_Transfer` for `party`: the fixture's exercise (a real transfer of the test token), with the factory, the arguments and the instrument's package put in. The registry's context stays the fixture's. */
+export async function preparedTransfer(party: string, command: { contractId: string; choiceArgument: Record<string, unknown> }, implementation: string, now = Date.now()) {
+  const tx = fixture("exercise-transfer");
+  const node = rootOf(tx);
+  if (node.oneofKind !== "exercise") throw new Error("the fixture is not an exercise");
+  node.exercise.contractId = command.contractId;
+  node.exercise.actingParties = [party];
+  node.exercise.packageName = implementation;
+  node.exercise.chosenValue = fill(node.exercise.chosenValue!, command.choiceArgument, "", ["extraArgs.context"]);
+  return encoded(party, tx, now);
+}
+
+/** The service's answer to a prepare of `TransferInstruction_Accept` for `party`: the fixture's accept (a real one), with the offer and the instrument's package put in. */
+export async function preparedAccept(party: string, command: { contractId: string; choiceArgument: Record<string, unknown> }, implementation: string, now = Date.now()) {
+  const tx = fixture("exercise-accept");
+  const node = rootOf(tx);
+  if (node.oneofKind !== "exercise") throw new Error("the fixture is not an exercise");
+  node.exercise.contractId = command.contractId;
+  node.exercise.actingParties = [party];
+  node.exercise.packageName = implementation;
+  node.exercise.chosenValue = fill(node.exercise.chosenValue!, command.choiceArgument, "", ["extraArgs.context"]);
+  return encoded(party, tx, now);
+}
+
+/** The registry's answer for a transfer factory: the fixture's rules as the factory, and how the transfer is carried out (`offer`: the receiver has to accept it). */
+export const transferFactory = (transferKind: "offer" | "direct") => {
+  const f = FIXTURES.find((x) => x.name === "exercise-transfer")! as unknown as { command: { ExerciseCommand: { contractId: string } }; disclosedContracts: unknown[] };
+  return { factoryId: f.command.ExerciseCommand.contractId, transferKind, choiceContext: { choiceContextData: { values: {} }, disclosedContracts: f.disclosedContracts } };
+};

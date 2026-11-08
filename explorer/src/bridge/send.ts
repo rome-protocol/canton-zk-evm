@@ -4,7 +4,7 @@ import { parseAmount, showUnits, tenDecimals } from "./amounts.ts";
 import { cover } from "./adapter.ts";
 import type { Account } from "./account.ts";
 import { acceptChoice, factoryChoice, type TransferView } from "./canton/accounts.ts";
-import { acceptTransfer, implementationOf, transfer } from "./canton/commands.ts";
+import { acceptTransfer, implementationOf, transfer, transferTimes } from "./canton/commands.ts";
 import { Refused } from "./moves/moves.ts";
 import type { Pair } from "./tokens.ts";
 import { checkAmount, checkReceiver } from "./sendwords.ts";
@@ -81,12 +81,11 @@ export function createSender(a: Pick<Account, "key" | "party" | "client" | "subm
         try { cover(held, instrument, tenDecimals(units)); } catch { throw e; }
         throw new Refused("Part of your tokens is held by a redeem that is still open. Finish it, or remove it in Activity, then try again.");
       }
-      const t = { admin: instrument.admin, instrumentId: instrument.id, receiver: to, amount: tenDecimals(units), inputHoldings: inputs };
-      const at = now();
-      const asked = transfer(a.party, t, { contractId: "", context: { values: {} }, disclosedContracts: [] }, at);
+      const t = { admin: instrument.admin, instrumentId: instrument.id, receiver: to, amount: tenDecimals(units), inputHoldings: inputs, ...transferTimes(now()) };   // the times the registry is asked for are the times the account signs
+      const asked = transfer(a.party, t, { contractId: "", context: { values: {} }, disclosedContracts: [] });
       const factory = await a.client.transferFactory(a.key, instrument.admin, a.party, asked.intent.args);
       open();
-      const updateId = await a.submit(transfer(a.party, t, { contractId: factory.factoryId, ...factoryChoice(factory) }, at));
+      const updateId = await a.submit(transfer(a.party, t, { contractId: factory.factoryId, ...factoryChoice(factory) }));
       return { updateId, waiting: factory.transferKind === "offer" };
     },
     async incoming(pairs) {
