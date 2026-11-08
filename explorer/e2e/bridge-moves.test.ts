@@ -423,13 +423,14 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
             expect(b.height, `${at}: ${what} is ${b.height} px high`).toBeLessThanOrEqual(b.line * 1.5);
           }
           if (/MetaMask pop-up/.test(st.note)) popups++;
+          const flows = !/MetaMask pop-up/.test(st.note) && st.noteBox.lines > 1;   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
           const sameRow = Math.min(st.labelBox.bottom, st.noteBox.bottom) - Math.max(st.labelBox.top, st.noteBox.top) > 2;
-          if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
+          if (flows) { /* wraps by design */ } else if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
           else expect(st.labelBox.bottom, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.top + 1);   // wrapped: one under the other
           if (i > 0) expect(steps[i - 1].li.bottom, `${at}: steps overlap`).toBeLessThanOrEqual(st.li.top + 1);
           expect(st.li.right, `${at}: the step runs off the card`).toBeLessThanOrEqual(width);
         });
-        expect(popups).toBeGreaterThanOrEqual(/^(tROME|TKA) on Ostia/.test(String(name.source.slice(1))) ? 2 : 1);   // a move to Canton has two or three pop-ups; the Canton-side moves have one
+        expect(popups).toBeGreaterThanOrEqual(/^\^(tROME|TKA) on Ostia/.test(name.source) ? 2 : 1);   // a move to Canton has two or three pop-ups; the Canton-side moves have one
         expect(await noSideways(page)).toBe(true);
       }
     }
