@@ -404,10 +404,16 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
   it("shows a block committed after retries with the number of attempts, and a settlement time from the block's time where the log does not hold the block", async () => {
     await open({ updates: () => reply(page([item(4, { status: "retried", attempts: 3 }), item(3, { status: null, attempts: null, submittedTemplate: null, submittedChoice: null, settleFrom: "blockTime", settleSeconds: 12 })])) });
     expect(within(rows()[0]!).getByText("After 3 attempts")).toHaveClass("chip-building");
+    expect(within(rows()[0]!).queryByText(/refused/)).toBeNull();
     expect(rows()[1]).toHaveTextContent("12.0 s from block time");
     expect(rows()[1]).toHaveTextContent("not in the producer's log");
     expect(within(rows()[1]!).queryByText("First attempt")).toBeNull();
     expect(rows()[1]).not.toHaveTextContent("Advance");
+  });
+
+  it("says how many of the attempts Canton refused on the row of the block that committed after them", async () => {
+    await open({ updates: () => reply(page([item(4, { status: "retried", attempts: 3, refused: 2 })])) });
+    expect(within(rows()[0]!).getByText("After 3 attempts (2 refused)")).toHaveClass("chip-building");
   });
 
   it("says none for a block with no legs, not indexed yet for one whose legs are not, and leaves the settlement time out where it is null", async () => {
@@ -421,7 +427,7 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
   it("explains the settlement time in the footnote, and the choice's name once in its column help", async () => {
     const user = userEvent.setup({ advanceTimers: () => {} });
     await open();
-    expect(screen.getByText(/runs from the start of the block's proof to Canton's record time/)).toBeInTheDocument();
+    expect(screen.getByText(/runs from the start of the proof of the attempt that committed the block to Canton's record time/)).toBeInTheDocument();
     await user.hover(screen.getByRole("button", { name: "About the choice" }));
     expect(await screen.findByText(/exercising the choice Advance on the chain's ZkChain contract/)).toBeInTheDocument();
   });
@@ -430,11 +436,13 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
     const user = userEvent.setup({ advanceTimers: () => {} });
     const calls = await open({ updates: (path) => reply(page(path.includes("filter=retried") ? [] : [item(4), item(3)])) });
     const tabs = within(screen.getByRole("group", { name: "Show blocks" }));
-    expect(tabs.getAllByRole("button").map((b) => b.textContent)).toEqual(["All", "First attempt", "Retried", "With legs"]);
+    expect(tabs.getAllByRole("button").map((b) => b.textContent)).toEqual(["All", "First attempt", "Retried", "Refused", "With legs"]);
     expect(tabs.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
     await user.click(tabs.getByRole("button", { name: "Retried" }));
     expect(await screen.findByText("No block in the producer's log needed a retry.")).toBeInTheDocument();
     expect(calls).toContain("/api/canton/updates?limit=25&filter=retried");
+    await user.click(tabs.getByRole("button", { name: "Refused" }));
+    await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&filter=refused"));
     await user.click(tabs.getByRole("button", { name: "With legs" }));
     await vi.waitFor(() => expect(calls).toContain("/api/canton/updates?limit=25&filter=legs"));
     await user.click(tabs.getByRole("button", { name: "First attempt" }));

@@ -2,7 +2,7 @@
  * The Linked to Canton view: what each block's Canton update says beyond the update itself, and the rollup behind the header (migration 0049).
  *
  * Three passes fill the open rows of `canton_updates`, each over rows still open (a partial index each), oldest first, a batch at a time:
- *   attempts  the commit attempts of the block's number up to the one that committed, and the settlement time from the proof start, once the producer's journal
+ *   attempts  the commit attempts of the block's number up to the one that committed (and how many Canton refused), and the settlement time from the proof start, once the producer's journal
  *             has joined the block to its attempt;
  *   settle    for a block the journal does not hold: the settlement time from the block's own timestamp (whole seconds, the builder's clock);
  *   legs      the block's legs by kind, once every gateway's legs and the twin legs of the block are indexed (an earlier block is closed with the counts it had).
@@ -16,6 +16,21 @@ const HOUR = 3_600_000, DAY = 86_400_000;
 export const BATCH = 5000, MAX_BATCHES = 20, KEPT_HIST_DAYS = 8;
 /** How far before the committed attempt another attempt of the same block number still counts as a try of that block (an earlier run of the same number is not). One rule for the row and for the update's page. */
 export const ATTEMPT_SPAN_HOURS = 6;
+/** How far the journal must have moved past an update with no attempt joined to it before the update is marked as not in the journal (a late journal line lifts the mark). */
+export const NO_JOURNAL_GRACE_HOURS = 6;
+
+/**
+ * Which attempts count as tries of a block: the one rule of the row and of the update's page. An attempt of the same number that was submitted, cut within the window before the one that
+ * committed, not from a run flagged as a test (the hourly rollup leaves those out too), and not naming another parent block (another chain instance of the same height). `x` is the attempt
+ * considered, `r` its run, `cut` and `parent` the committing attempt's cut time and parent hash, `hours` the window.
+ */
+export const sameTry = (x: string, r: string, cut: string, parent: string, hours: string): string =>
+  `${x}.submitted_at is not null and ${x}.cut_at <= ${cut} and ${x}.cut_at > ${cut} - make_interval(hours => ${hours}) and coalesce(${r}.settings->>'test', '') <> 'true'
+   and (${x}.parent_hash is null or ${parent} is null or ${x}.parent_hash = ${parent})`;
+/** An attempt Canton refused and that was not found committed after all. */
+export const REFUSED = (x: string): string => `${x}.outcome = 'refused' and ${x}.resolved_outcome is distinct from 'committed'`;
+/** Opens a row to be worked out again by the attempts step, where a join moved or an attempt arrived late. */
+export const REOPEN = "commit_attempts = null, refused_attempts = null, settle_from = null, settle_seconds = null, no_journal = false";
 
 interface Touched { min: number | null; max: number | null; rows: number }
 const none = (): Touched => ({ min: null, max: null, rows: 0 });
@@ -32,18 +47,31 @@ async function touched(db: Pool | PoolClient, cte: string, values: unknown[]): P
   return { min: r.lo === null ? null : Number(r.lo), max: r.hi === null ? null : Number(r.hi), rows: r.n };
 }
 
-/** Commit attempts and the settlement time from the proof start, for the blocks the journal has joined to their attempt. */
+/** Commit attempts (and how many Canton refused) and the settlement time from the proof start, for the blocks the journal has joined to their attempt. */
 const ATTEMPTS = `
-  with open as (select u.update_id, u.record_time from canton_updates u where u.commit_attempts is null and u.record_time >= $1
+  with open as (select u.update_id, u.record_time from canton_updates u where u.commit_attempts is null and not u.no_journal and u.record_time >= $1
                    and exists (select 1 from blocks b join block_attempts a on a.attempt_id = b.attempt_id where b.update_id = u.update_id)
                  order by u.record_time limit $2),
-  pick as (select distinct on (o.update_id) o.update_id, o.record_time, b.number, b.timestamp as bts, a.attempt_id, a.cut_at, a.proof_started_at
+  pick as (select distinct on (o.update_id) o.update_id, o.record_time, b.number, b.timestamp as bts, a.attempt_id, a.cut_at, a.parent_hash, a.proof_started_at
              from open o join blocks b on b.update_id = o.update_id join block_attempts a on a.attempt_id = b.attempt_id order by o.update_id, b.number),
+  tries as (select p.update_id, count(*)::int as n, count(*) filter (where ${REFUSED("x")})::int as refused
+              from pick p join block_attempts x on x.number = p.number and x.attempt_id <> p.attempt_id left join producer_runs r on r.run_id = x.run_id
+             where ${sameTry("x", "r", "p.cut_at", "p.parent_hash", "$3")} group by p.update_id),
   u as (update canton_updates c set
-          commit_attempts = 1 + (select count(*) from block_attempts x where x.number = p.number and x.attempt_id <> p.attempt_id and x.submitted_at is not null and x.cut_at <= p.cut_at and x.cut_at > p.cut_at - make_interval(hours => $3)),
+          commit_attempts = 1 + coalesce(t.n, 0), refused_attempts = coalesce(t.refused, 0),
           settle_from = case when p.proof_started_at is not null then 'proof_start' else 'block_time' end,
           settle_seconds = case when extract(epoch from p.record_time - coalesce(p.proof_started_at, p.bts)) >= 0 then extract(epoch from p.record_time - coalesce(p.proof_started_at, p.bts)) end
-        from pick p where c.update_id = p.update_id returning c.record_time)`;
+        from pick p left join tries t on t.update_id = p.update_id where c.update_id = p.update_id returning c.record_time)`;
+
+/**
+ * An update after the journal's first line whose block the journal never joined (a gap, a run whose lines were lost) is marked once the journal has moved well past it, so it leaves the open
+ * index and is not looked at on every pass. A journal line that arrives late for it lifts the mark (journal.ts).
+ */
+const MARK_NO_JOURNAL = `
+  update canton_updates u set no_journal = true
+   where u.commit_attempts is null and not u.no_journal and u.record_time >= $1
+     and u.record_time < (select max(cut_at) from block_attempts) - make_interval(hours => $2)
+     and not exists (select 1 from blocks b join block_attempts a on a.attempt_id = b.attempt_id where b.update_id = u.update_id)`;
 
 /** The settlement time from the block's timestamp, for an update that has no journal behind it. */
 const SETTLE = `
@@ -85,6 +113,7 @@ async function fillOpenRows(pool: Pool, stopped: () => boolean): Promise<Touched
     all = merge(all, here);
     if (here.rows === 0) break;
   }
+  if (journalFrom !== null && !stopped()) await pool.query(MARK_NO_JOURNAL, [journalFrom, NO_JOURNAL_GRACE_HOURS]);
   return all;
 }
 

@@ -324,7 +324,7 @@ export interface UpdateLegs { total: number; deposit: number; withdrawal: number
  * `retried`: after more); `settleSeconds` runs from `settleFrom` (the proof's start, or the block's own timestamp) to Canton's record time; `legs` waits for the block's legs to be indexed.
  */
 export interface UpdateRow extends UpdateItem {
-  status: "first" | "retried" | null; attempts: number | null; settleSeconds: number | null; settleFrom: "proofStart" | "blockTime" | null;
+  status: "first" | "retried" | null; attempts: number | null; /** How many of the attempts Canton refused. */ refused: number | null; settleSeconds: number | null; settleFrom: "proofStart" | "blockTime" | null;
   submittedTemplate: string | null; submittedChoice: string | null; legs: UpdateLegs | null;
 }
 export interface UpdateAttempt { number: number; outcome: string; reason: string | null; committed: boolean; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; proofOutcome: string | null; submittedAt: string | null; answeredAt: string | null }
@@ -333,7 +333,7 @@ export interface UpdateView {
   attempts: UpdateAttempt[]; timeline: TimelineStep[];
   proofCheck: { evidence: "committed update"; confirmers: number; matchesPins: boolean | null; matchesBlock: boolean | null };
 }
-export type UpdateFilter = "all" | "first" | "retried" | "legs";
+export type UpdateFilter = "all" | "first" | "retried" | "refused" | "legs";
 export type UpdateOrder = "desc" | "asc";
 export type CantonWindow = "24h" | "7d";
 /** The figures of the Linked to Canton header, from the hourly rollup. */

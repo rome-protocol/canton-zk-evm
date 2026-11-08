@@ -29,11 +29,12 @@ const TABS: { id: UpdateFilter; label: string; title: string }[] = [
   { id: "all", label: "All", title: "Every Canton update that carries a block" },
   { id: "first", label: "First attempt", title: "Blocks committed on the first attempt" },
   { id: "retried", label: "Retried", title: "Blocks committed after more than one attempt" },
+  { id: "refused", label: "Refused", title: "Blocks that Canton refused at least once before one attempt committed" },
   { id: "legs", label: "With legs", title: "Blocks that settled gateway legs" },
 ];
 const EMPTY: Record<UpdateFilter, string> = {
   all: "No Canton updates yet.", first: "No block in the producer's log was committed on its first attempt.",
-  retried: "No block in the producer's log needed a retry.", legs: "No block has settled legs.",
+  retried: "No block in the producer's log needed a retry.", refused: "Canton has not refused a block in the producer's log.", legs: "No block has settled legs.",
 };
 
 /** The Canton updates that carry a block, one row per block. Each offset is the one the reader party's participant gives it, never the builder's completion offset. */
@@ -87,7 +88,7 @@ export function CantonUpdates() {
             </table>
           </div>
           <p className="muted small">
-            <b>Settlement time</b> runs from the start of the block's proof to Canton's record time; where the producer's log does not hold the block, from the block's own timestamp. The offset and the synchronizer of an update are on its page<Info about="the offsets">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</Info>
+            <b>Settlement time</b> runs from the start of the proof of the attempt that committed the block to Canton's record time; where the producer's log does not hold the block, from the block's own timestamp. The offset and the synchronizer of an update are on its page<Info about="the offsets">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</Info>
           </p>
         </section>
       )}

@@ -7,7 +7,7 @@ import { ChainDbError } from "../chain-db.ts";
 import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.ts";
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 import { addHists, quantile } from "../indexer/stats-hist.ts";
-import { ATTEMPT_SPAN_HOURS } from "../indexer/canton-view.ts";
+import { ATTEMPT_SPAN_HOURS, sameTry } from "../indexer/canton-view.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 /** A Canton amount's own scale (Daml Numeric 10): the unit of a Canton token's custody, on the token page and on the twins page. */
@@ -73,6 +73,8 @@ export interface UpdateRow extends UpdateItem {
   status: UpdateStatus | null;
   /** Submissions to Canton for the block up to and including the one that committed. */
   attempts: number | null;
+  /** Of those attempts, the ones Canton refused (and that were not found committed after all). Null with `attempts`. */
+  refused: number | null;
   /** Seconds from `settleFrom` to Canton's record time; null when not worked out or when the two clocks disagree. */
   settleSeconds: number | null;
   /** `proofStart` (the proof's start in the producer's journal) or `blockTime` (the block's own timestamp, whole seconds). */
@@ -80,7 +82,7 @@ export interface UpdateRow extends UpdateItem {
   submittedTemplate: string | null; submittedChoice: string | null;
   legs: UpdateLegs | null;
 }
-export type UpdateFilter = "all" | "first" | "retried" | "legs";
+export type UpdateFilter = "all" | "first" | "retried" | "refused" | "legs";
 export interface AttemptItem { number: number; outcome: string; reason: string | null; committed: boolean; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; proofOutcome: string | null; submittedAt: string | null; answeredAt: string | null }
 export interface TimelineStep { step: "built" | "proofStarted" | "proofDone" | "submitted" | "committed"; at: string; source: "producer" | "block" | "canton" }
 export interface UpdateView {
@@ -307,15 +309,15 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
   });
 
   const LEGS_COLS = "u.legs_done, u.legs_total, u.legs_deposit, u.legs_withdrawal, u.legs_payment, u.legs_lock, u.legs_release";
-  const rowSelect = `${updateSelect}, u.commit_attempts, u.settle_seconds, u.settle_from, u.submitted_template, u.submitted_choice, ${LEGS_COLS}`;
+  const rowSelect = `${updateSelect}, u.commit_attempts, u.refused_attempts, u.settle_seconds, u.settle_from, u.submitted_template, u.submitted_choice, ${LEGS_COLS}`;
   const legsOf = (r: Row): UpdateLegs | null => (r.legs_done ? { total: r.legs_total, deposit: r.legs_deposit, withdrawal: r.legs_withdrawal, payment: r.legs_payment, lock: r.legs_lock, release: r.legs_release } : null);
   const updateRow = (r: Row): UpdateRow => ({
-    ...updateItem(r), status: r.commit_attempts === null ? null : r.commit_attempts > 1 ? "retried" : "first", attempts: r.commit_attempts, settleSeconds: r.settle_seconds,
+    ...updateItem(r), status: r.commit_attempts === null ? null : r.commit_attempts > 1 ? "retried" : "first", attempts: r.commit_attempts, refused: r.refused_attempts, settleSeconds: r.settle_seconds,
     settleFrom: r.settle_from === "proof_start" ? "proofStart" : r.settle_from === "block_time" ? "blockTime" : null, submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, legs: legsOf(r),
   });
-  const FILTER_SQL: Record<UpdateFilter, string> = { all: "", first: "and u.commit_attempts = 1", retried: "and u.commit_attempts > 1", legs: "and u.legs_total > 0" };
+  const FILTER_SQL: Record<UpdateFilter, string> = { all: "", first: "and u.commit_attempts = 1", retried: "and u.commit_attempts > 1", refused: "and u.refused_attempts > 0", legs: "and u.legs_total > 0" };
 
-  /** Canton updates, newest first (or oldest first with `asc`), after the key (record time in microseconds, update id); `filter` keeps the ones committed on the first attempt, after more, or with legs. */
+  /** Canton updates, newest first (or oldest first with `asc`), after the key (record time in microseconds, update id); `filter` keeps the ones committed on the first attempt, after more, after a refused attempt, or with legs. */
   async function updates(before: (number | string)[] | null, limit: number, filter: UpdateFilter = "all", asc = false): Promise<(UpdateRow & { micros: number })[]> {
     const [at, id] = before ?? [null, null];
     const op = asc ? ">" : "<", dir = asc ? "asc" : "desc";
@@ -358,7 +360,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
   /** The attempts that led to a block's commit, its timeline and the check of its proof. */
   async function viewOf(updateId: string, recordTime: string, signatories: { role: string }[]): Promise<UpdateView> {
     const [b] = await query(
-      `select b.number, ${MS("b.timestamp")} as ts, b.attempt_id, a.cut_at as cut_at_raw, ${MS("a.built_at")} as built_at, ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at,
+      `select b.number, ${MS("b.timestamp")} as ts, b.attempt_id, a.cut_at as cut_at_raw, a.parent_hash as parent_raw, ${MS("a.built_at")} as built_at, ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at,
               ${MS("a.submitted_at")} as submitted_at, p.matches_pins, p.matches_block
          from blocks b left join block_attempts a on a.attempt_id = b.attempt_id left join proofs p on p.number = b.number where b.update_id = $1 order by b.number limit 1`, [updateId]);
     const proofCheck = { evidence: "committed update" as const, confirmers: signatories.filter((x) => x.role === "confirmer").length, matchesPins: b?.matches_pins ?? null, matchesBlock: b?.matches_block ?? null };
@@ -376,7 +378,8 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
       const rows = await query(
         `select x.attempt_id, x.outcome, x.resolved_outcome, x.reason, ${MS("x.cut_at")} as cut_at, ${MS("x.built_at")} as built_at, ${MS("x.proof_started_at")} as proof_started_at, ${MS("x.proof_ended_at")} as proof_ended_at,
                 x.proof_outcome, ${MS("x.submitted_at")} as submitted_at, ${MS("x.answered_at")} as answered_at
-           from block_attempts x where x.number = $1 and (x.attempt_id = $2 or (x.submitted_at is not null and x.cut_at <= $3 and x.cut_at > $3::timestamptz - make_interval(hours => $4))) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw, ATTEMPT_SPAN_HOURS]);
+           from block_attempts x left join producer_runs r on r.run_id = x.run_id
+          where x.number = $1 and (x.attempt_id = $2 or (${sameTry("x", "r", "$3::timestamptz", "$5::bytea", "$4")})) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw, ATTEMPT_SPAN_HOURS, b.parent_raw]);
       attempts = rows.map((x, i) => ({
         number: i + 1, outcome: Number(x.attempt_id) === Number(b.attempt_id) ? "committed" : x.outcome ?? (x.resolved_outcome === "committed" ? "committed" : x.resolved_outcome) ?? "unknown", reason: x.reason,
         committed: Number(x.attempt_id) === Number(b.attempt_id), cutAt: isoTime(x.cut_at), builtAt: x.built_at, proofStartedAt: x.proof_started_at, proofEndedAt: x.proof_ended_at, proofOutcome: x.proof_outcome, submittedAt: x.submitted_at, answeredAt: x.answered_at,

@@ -5,6 +5,8 @@
 set local lock_timeout = '5s';
 alter table canton_updates
   add column commit_attempts smallint,          -- submissions to Canton for this block's number up to and including the one that committed; null when the journal does not hold the block
+  add column refused_attempts smallint,         -- of those, the ones Canton refused (and that were not found committed after all); null when commit_attempts is
+  add column no_journal      boolean not null default false,  -- the journal holds no attempt for the block and has moved well past it: not looked at again until a late journal line arrives
   add column settle_seconds  double precision,  -- the Canton record time less the block's proof start (settle_from 'proof_start') or less the block's own timestamp ('block_time'); null when negative (clocks)
   add column settle_from     text check (settle_from in ('proof_start', 'block_time')),  -- null until worked out
   add column legs_done       boolean not null default false,  -- the leg columns below are final: every gateway's legs and the twin legs of the block are indexed
@@ -16,9 +18,11 @@ alter table canton_updates
   add column legs_release    integer not null default 0;
 -- The reads: by the update's key (record_time, update_id), for a filter, and the two passes that fill the columns look only at rows still open.
 create index canton_updates_retried_idx on canton_updates (record_time desc, update_id desc) where commit_attempts > 1;
+create index canton_updates_refused_idx on canton_updates (record_time desc, update_id desc) where refused_attempts > 0;
 create index canton_updates_first_idx on canton_updates (record_time desc, update_id desc) where commit_attempts = 1;
 create index canton_updates_with_legs_idx on canton_updates (record_time desc, update_id desc) where legs_total > 0;
-create index canton_updates_attempts_open_idx on canton_updates (record_time) where commit_attempts is null;
+create index canton_updates_attempts_open_idx on canton_updates (record_time) where commit_attempts is null and not no_journal;
+create index canton_updates_no_journal_idx on canton_updates (record_time) where no_journal;
 create index canton_updates_settle_open_idx on canton_updates (record_time) where settle_from is null;
 create index canton_updates_legs_open_idx on canton_updates (record_time) where not legs_done;
 -- The rollup of attempts by the hour they were submitted in reads this.

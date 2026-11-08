@@ -78,14 +78,15 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(body(await get("/api/canton/updates?order=asc")).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(1), id(2), id(3)]);
     const first = body(await get("/api/canton/updates?order=asc&limit=2"));
     expect(body(await get(`/api/canton/updates?order=asc&limit=2&after=${first.next}`)).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(3)]);
+    expect((await get("/api/canton/updates?filter=refused")).status).toBe(200);
     for (const bad of ["filter=x", "order=up", "format=xml", "order=asc&before=1:ab", "after=1:ab"]) expect((await get(`/api/canton/updates?${bad}`)).status, bad).toBe(400);
     const csv = await get("/api/canton/updates?filter=legs&format=csv");
     expect(csv.headers?.["content-type"]).toBe("text/csv; charset=utf-8");
     const lines = (csv.body as string).trimEnd().split("\r\n");
-    expect(lines[0]).toBe("block,time,transactions,status,attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id");
+    expect(lines[0]).toBe("block,time,transactions,status,attempts,refused_attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id");
     expect(lines).toHaveLength(2);
     expect(lines[1]!.split(",")[0]).toBe("2");
-    expect(lines[1]!.split(",")[8]).toBe("1");
+    expect(lines[1]!.split(",")[9]).toBe("1");
     const stats = body(await get("/api/canton/stats"));
     same(stats, F.cantonStats);
     same(stats.attempts, F.cantonStatsAttempts);

@@ -246,6 +246,8 @@ table canton_updates
   column traffic_bytes integer
   column completion_offset bigint
   column commit_attempts smallint
+  column refused_attempts smallint
+  column no_journal boolean not null default false
   column settle_seconds double precision
   column settle_from text
   column legs_done boolean not null default false
@@ -261,11 +263,13 @@ table canton_updates
   constraint canton_updates_reader_template_fkey FOREIGN KEY (reader_template) REFERENCES canton_templates(id)
   constraint canton_updates_settle_from_check CHECK ((settle_from = ANY (ARRAY['proof_start'::text, 'block_time'::text])))
   constraint canton_updates_synchronizer_fkey FOREIGN KEY (synchronizer) REFERENCES canton_synchronizers(id)
-  CREATE INDEX canton_updates_attempts_open_idx ON public.canton_updates USING btree (record_time) WHERE (commit_attempts IS NULL)
+  CREATE INDEX canton_updates_attempts_open_idx ON public.canton_updates USING btree (record_time) WHERE ((commit_attempts IS NULL) AND (NOT no_journal))
   CREATE INDEX canton_updates_first_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (commit_attempts = 1)
   CREATE INDEX canton_updates_legs_open_idx ON public.canton_updates USING btree (record_time) WHERE (NOT legs_done)
+  CREATE INDEX canton_updates_no_journal_idx ON public.canton_updates USING btree (record_time) WHERE no_journal
   CREATE INDEX canton_updates_record_time_id_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC)
   CREATE INDEX canton_updates_record_time_idx ON public.canton_updates USING btree (record_time)
+  CREATE INDEX canton_updates_refused_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (refused_attempts > 0)
   CREATE INDEX canton_updates_retried_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (commit_attempts > 1)
   CREATE INDEX canton_updates_settle_open_idx ON public.canton_updates USING btree (record_time) WHERE (settle_from IS NULL)
   CREATE INDEX canton_updates_unjoined_idx ON public.canton_updates USING btree (record_time) WHERE (command_id IS NULL)

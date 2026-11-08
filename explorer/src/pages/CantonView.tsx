@@ -16,10 +16,10 @@ const DASH = <span className="muted">—</span>;
 export const ADVANCE_HELP = "Each block is committed by exercising the choice Advance on the chain's ZkChain contract on Canton. The confirmers' external call checks the block's proof inside it.";
 
 /** Where a settlement time starts, in words: the column help says it once, and each row names its own start. */
-export const SETTLE_HELP = "From the start of the block's proof, as the producer's log has it, to Canton's record time. A block the log does not hold is timed from the block's own timestamp (whole seconds, on the producer's clock). A time that would be negative, because the two clocks disagree, is left out.";
+export const SETTLE_HELP = "From the start of the proof of the attempt that committed the block, as the producer's log has it, to Canton's record time (time spent on earlier attempts is not in it). A block the log does not hold is timed from the block's own timestamp (whole seconds, on the producer's clock). A time that would be negative, because the two clocks disagree, is left out.";
 const FROM: Record<NonNullable<UpdateRow["settleFrom"]>, string> = { proofStart: "from proof start", blockTime: "from block time" };
 
-export const STATUS_HELP = "How many times the block was submitted to Canton before it committed, from the producer's log. A block the log does not hold has no status. A refused attempt makes no Canton update, so it is no row: it is counted in the header and listed on the page of the update that commits the block.";
+export const STATUS_HELP = "How many times the block was submitted to Canton before it committed, from the producer's log. A block the log does not hold has no status. A refused attempt makes no Canton update, so it is no row of its own: it is counted in the header, shown on the row of the update that commits the block, and listed on that update's page.";
 
 /** The kinds of leg a block carries, in the order the header and the rows name them. A lock and a release are the payments a registered twin vault received or paid. */
 const KINDS = [["deposit", "deposit"], ["payment", "payment"], ["withdrawal", "withdrawal"], ["lock", "lock"], ["release", "release"]] as const;
@@ -30,11 +30,11 @@ export function legsWords(l: UpdateLegs): string {
 }
 
 /** Who the commit took: the first attempt, or the attempt that got through after refusals. Null where the producer's log does not hold the block. */
-export function StatusChip({ u }: { u: Pick<UpdateRow, "status" | "attempts"> }) {
+export function StatusChip({ u }: { u: Pick<UpdateRow, "status" | "attempts" | "refused"> }) {
   if (u.status === null || u.attempts === null) return <span className="muted">not in the producer's log</span>;
   return u.status === "first"
     ? <span className="chip chip-final"><i className="dot" />First attempt</span>
-    : <span className="chip chip-building"><i className="dot" />{`After ${u.attempts} attempts`}</span>;
+    : <span className="chip chip-building"><i className="dot" />{`After ${u.attempts} attempts`}{u.refused ? ` (${u.refused} refused)` : ""}</span>;
 }
 
 /** The choice a block was committed with, as the log recorded it: "ZkChain → Advance". */
@@ -87,7 +87,7 @@ function Tiles({ s }: { s: CantonStats }) {
         info={`Commit attempts that committed over commit attempts submitted to Canton${a.since ? `, counted from ${utcDate(Date.parse(a.since))}` : ""}. An attempt that was refused, failed, was not taken, was cancelled or never got an answer counts against it. An attempt still waiting for its answer is left out until it has one. Attempts of test runs are left out.`} />
       <Tile k="Settlement time" v={st.averageSeconds === null ? DASH : sec(st.averageSeconds)} small={st.p95Seconds === null ? undefined : `p95 ${st.p95Capped ? "> " : ""}${sec(st.p95Seconds)}`}
         sub={st.blocks > 0 ? `average over ${plural(st.blocks, "block")}, ${sinceWord(st.from)}` : `no timed block ${sinceWord(st.from)}`}
-        info="From the start of the block's proof to Canton's record time, for blocks the producer's log holds, over the window picked above. The p95 is read from buckets 5% wide, so it is at most 5% above the true value." />
+        info="From the start of the proof of the attempt that committed the block to Canton's record time, for blocks the producer's log holds, over the window picked above. The p95 is read from buckets 5% wide, so it is at most 5% above the true value." />
       <Tile k="Refused or retried" v={count(a.refused)} small="refused" sub={`${plural(s.retriedBlocks, "block")} committed after a retry${a.other > 0 ? ` · ${count(a.other)} failed or not answered` : ""}`}
         info="Refused: Canton refused the command (the reason is on the page of the update the block was committed in). Retried: the block was committed, but not on its first attempt. Failed or not answered: failed, not taken, cancelled, or never answered." />
       <Tile wide k="Legs settled" v={count(s.legs.total)} sub={<span className="legs-kinds">{KINDS.map(([k, one]) => <span key={k}>{plural(s.legs[k], one)}</span>)}</span>} info="Legs the gateway recorded in committed blocks, by kind. A lock and a release are the payments a registered twin vault received or paid; a payment here is any other." />

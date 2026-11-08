@@ -6,8 +6,9 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../t
 import { createChainRest } from "../rest/chain-rest.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { refreshCantonView } from "./canton-view.ts";
-import { resetTwinTotals } from "./custody.ts";
-import { RUN1, Run, appendLines, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
+import { resetTwinTotals, writeRegistry } from "./custody.ts";
+import { joinAttempts } from "./journal.ts";
+import { RUN1, RUN2, RUN3, Run, appendLines, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
 
 afterAll(removeFolders);
 const opened: Indexer[] = [];
@@ -58,11 +59,11 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       await refreshCantonView(pool, { now: () => now });
       const row = (n: number) => one(pool, "select * from canton_updates where update_id = $1", [chain.blocks[n - 1]!.record.updateId]);
       const first = await row(1), second = await row(2), third = await row(3);
-      expect(first).toMatchObject({ commit_attempts: 1, settle_from: "proof_start" });
+      expect(first).toMatchObject({ commit_attempts: 1, refused_attempts: 0, settle_from: "proof_start" });
       expect(first.settle_seconds).toBeCloseTo(6.8, 3);
-      expect(second).toMatchObject({ commit_attempts: 2, settle_from: "proof_start", legs_done: true, legs_total: 1, legs_withdrawal: 1, legs_deposit: 0, legs_payment: 0 });
+      expect(second).toMatchObject({ commit_attempts: 2, refused_attempts: 1, settle_from: "proof_start", legs_done: true, legs_total: 1, legs_withdrawal: 1, legs_deposit: 0, legs_payment: 0 });
       // block 3 has no journal behind it: no attempts, and the time runs from the block's own timestamp, in whole seconds
-      expect(third).toMatchObject({ commit_attempts: null, settle_from: "block_time", legs_done: true, legs_total: 0 });
+      expect(third).toMatchObject({ commit_attempts: null, refused_attempts: null, settle_from: "block_time", legs_done: true, legs_total: 0 });
       const ts = Number((await one(pool, "select extract(epoch from timestamp) as t from blocks where number = 3")).t);
       expect(third.settle_seconds).toBeCloseTo(Date.parse(chain.blocks[2]!.record.recordTime) / 1000 - ts, 3);
     });
@@ -158,15 +159,126 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
     });
   });
 
-  it("opens the rows again when the twin sums are counted again, and counts their legs once more", async () => {
+  it("opens the rows again when the registry changes, not when the twin sums are counted again for a block indexed again", async () => {
     await inDb(async (pool) => {
       const { now } = await setup(pool);
       await refreshCantonView(pool, { now: () => now });
-      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(3);
+      const done = async () => Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n);
+      expect(await done()).toBe(3);
+      // a block indexed again rewrites the same logs: its legs stay counted
       await resetTwinTotals(pool);
-      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(0);
+      expect(await done()).toBe(3);
+      // a gateway added to the registry changes which legs count: the rows are counted again once its legs are indexed
+      await writeRegistry(pool, { gatewayParty: "party", contracts: [{ address: "0x" + "07".repeat(20), codeHash: "0x" + "01".repeat(32), kind: "gateway" }], twins: [] }, 1, 3);
+      expect(await done()).toBe(0);
+      await pool.query("update canton_registry set legs_cursor = 3");
       await refreshCantonView(pool, { now: () => now });
-      expect(Number((await one(pool, "select count(*) as n from canton_updates where legs_done")).n)).toBe(3);
+      expect(await done()).toBe(3);
+    });
+  });
+
+  it("counts the refused attempts of a block, lists them under the refused filter, and leaves out test runs and another chain instance's attempts", async () => {
+    await inDb(async (pool) => {
+      const { chain, dir, now } = await setup(pool);
+      const t2 = Date.parse(chain.blocks[1]!.record.recordTime), b2 = chain.blocks[1]!.block;
+      // two more refused attempts of number 2 inside the window: one from a run flagged as a test, one that names another parent block
+      const extra = (run: Run, at: number, attempt: number, parent: string) => {
+        run.add(at, "cut", { attempt, number: 2, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+        run.add(at + 10, "built", { attempt, block_hash: "0x" + "ab".repeat(32), parent_hash: parent, tx_hashes: [], gas_used: 0, legs: 0, rebuilds: 0, left_out: [] });
+        run.add(at + 20, "submitted", { attempt, command_id: `ostia-770101-2-t-${attempt}`, argument_bytes: 10 });
+        run.add(at + 900, "answered", { attempt, outcome: "refused", reason: "rejected", update_id: null, completion_offset: null });
+      };
+      const test = new Run(RUN2), other = new Run(RUN3);
+      test.start(t2 - 50_000, { gather_ms: 0, test: true });
+      extra(test, t2 - 40_000, 1, b2.parentHash);
+      other.start(t2 - 50_000);
+      extra(other, t2 - 35_000, 1, "0x" + "cd".repeat(32));
+      appendLines(dir, "2026-10-21.jsonl", [...test.lines, ...other.lines]);
+      await opened[0]!.loadJournal();
+      await refreshCantonView(pool, { now: () => now });
+      const id = chain.blocks[1]!.record.updateId;
+      expect(await one(pool, "select commit_attempts, refused_attempts from canton_updates where update_id = $1", [id])).toMatchObject({ commit_attempts: 2, refused_attempts: 1 });
+      const rest = createChainRest(pool, () => now);
+      expect((await rest.update(id))!.view.attempts).toHaveLength(2);
+      expect((await rest.updates(null, 10, "refused")).map((r) => [r.updateId, r.refused, r.attempts])).toEqual([[id, 1, 2]]);
+      expect((await rest.updates(null, 10, "refused", true)).map((r) => r.updateId)).toEqual([id]);
+    });
+  });
+
+  it("works a row out again when an attempt of its block arrives after the join", async () => {
+    await inDb(async (pool) => {
+      const { chain, dir, now } = await setup(pool);
+      await refreshCantonView(pool, { now: () => now });
+      const id = chain.blocks[1]!.record.updateId, t2 = Date.parse(chain.blocks[1]!.record.recordTime);
+      expect(await one(pool, "select commit_attempts, refused_attempts from canton_updates where update_id = $1", [id])).toMatchObject({ commit_attempts: 2, refused_attempts: 1 });
+      // another refused try of the same number, from a run read later, cut before the others
+      const late = new Run(RUN2), at = t2 - 40_000;
+      late.start(at - 1000);
+      late.add(at, "cut", { attempt: 1, number: 2, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      late.add(at + 10, "built", { attempt: 1, block_hash: "0x" + "ab".repeat(32), parent_hash: chain.blocks[1]!.block.parentHash, tx_hashes: [], gas_used: 0, legs: 0, rebuilds: 0, left_out: [] });
+      late.add(at + 20, "submitted", { attempt: 1, command_id: "ostia-770101-2-late-1", argument_bytes: 10 });
+      late.add(at + 900, "answered", { attempt: 1, outcome: "refused", reason: "rejected", update_id: null, completion_offset: null });
+      appendLines(dir, "2026-10-21.jsonl", late.lines);
+      await opened[0]!.loadJournal();
+      expect(await one(pool, "select commit_attempts, refused_attempts from canton_updates where update_id = $1", [id])).toMatchObject({ commit_attempts: null, refused_attempts: null });
+      await refreshCantonView(pool, { now: () => now });
+      expect(await one(pool, "select commit_attempts, refused_attempts from canton_updates where update_id = $1", [id])).toMatchObject({ commit_attempts: 3, refused_attempts: 2 });
+      expect((await createChainRest(pool, () => now).update(id))!.view.attempts).toHaveLength(3);
+    });
+  });
+
+  it("works a row out again when the join moves to another attempt of the block", async () => {
+    await inDb(async (pool) => {
+      const { chain, now } = await setup(pool);
+      await refreshCantonView(pool, { now: () => now });
+      const id = chain.blocks[1]!.record.updateId, hash = chain.blocks[1]!.block.hash;
+      // the attempt the block is joined to was only settled as committed; one the producer itself saw committed arrives later, with a later proof start
+      await pool.query("update block_attempts set outcome = 'unknown', resolved_outcome = 'committed' where attempt_id = (select attempt_id from blocks where update_id = $1)", [id]);
+      await pool.query(
+        `insert into block_attempts (run_id, attempt_seq, number, block_hash, parent_hash, strategy, cut_reason, cut_at, proof_started_at, submitted_at, outcome, update_id)
+         select run_id, 99, number, block_hash, parent_hash, strategy, cut_reason, cut_at + interval '1 second', proof_started_at + interval '2 seconds', submitted_at, 'committed', update_id
+           from block_attempts where attempt_id = (select attempt_id from blocks where update_id = $1)`, [id]);
+      await joinAttempts(pool);
+      expect(await one(pool, "select commit_attempts, settle_seconds, settle_from from canton_updates where update_id = $1", [id])).toMatchObject({ commit_attempts: null, settle_seconds: null, settle_from: null });
+      await refreshCantonView(pool, { now: () => now });
+      const row = await one(pool, "select commit_attempts, settle_seconds from canton_updates where update_id = $1", [id]);
+      expect(row.commit_attempts).toBe(3);
+      expect(row.settle_seconds).toBeCloseTo(6.8 - 2, 3);
+      const d = (await createChainRest(pool, () => now).update(id))!;
+      expect(d.view.attempts).toHaveLength(3);
+      expect(d.view.attempts.at(-1)).toMatchObject({ committed: true });
+    });
+  });
+
+  it("marks an update the journal never joined once the journal is well past it, and looks again when a late line arrives", async () => {
+    await inDb(async (pool) => {
+      const { chain, dir, now } = await setup(pool);
+      await refreshCantonView(pool, { now: () => now });
+      const id = chain.blocks[2]!.record.updateId, t3 = Date.parse(chain.blocks[2]!.record.recordTime);
+      const flags = () => one(pool, "select no_journal, commit_attempts from canton_updates where update_id = $1", [id]);
+      const open = async () => Number((await one(pool, "select count(*) as n from canton_updates where commit_attempts is null and not no_journal and record_time >= (select min(cut_at) - interval '1 hour' from block_attempts)")).n);
+      expect(await flags()).toMatchObject({ no_journal: false, commit_attempts: null });
+      expect(await open()).toBe(1);
+      // the journal moves 8 hours on, with an attempt of a block this chain does not hold
+      const far = new Run(RUN3), at = t3 + 8 * 3_600_000;
+      far.start(at - 1000);
+      far.add(at, "cut", { attempt: 1, number: 99, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      far.add(at + 10, "built", { attempt: 1, block_hash: "0x" + "ee".repeat(32), parent_hash: "0x" + "ef".repeat(32), tx_hashes: [], gas_used: 0, legs: 0, rebuilds: 0, left_out: [] });
+      far.add(at + 20, "submitted", { attempt: 1, command_id: "ostia-770101-99-far-1", argument_bytes: 10 });
+      appendLines(dir, "2026-10-21.jsonl", far.lines);
+      await opened[0]!.loadJournal();
+      await refreshCantonView(pool, { now: () => now });
+      expect(await flags()).toMatchObject({ no_journal: true, commit_attempts: null });
+      expect(await open()).toBe(0);
+      // a line for the block that arrives late lifts the mark, and the row is worked out
+      const late = new Run(RUN2);
+      late.start(t3 - 9000);
+      late.committed(1, 3, chain);
+      appendLines(dir, "2026-10-21.jsonl", late.lines);
+      await opened[0]!.loadJournal();
+      expect(await flags()).toMatchObject({ no_journal: false });
+      await refreshCantonView(pool, { now: () => now });
+      expect(await flags()).toMatchObject({ no_journal: false, commit_attempts: 1 });
     });
   });
 
@@ -181,6 +293,7 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       expect(ids(await rest.updates(null, 10, "all", true))).toEqual([id(1), id(2), id(3)]);
       expect(ids(await rest.updates(null, 10, "first"))).toEqual([id(1)]);
       expect(ids(await rest.updates(null, 10, "retried"))).toEqual([id(2)]);
+      expect(ids(await rest.updates(null, 10, "refused"))).toEqual([id(2)]);
       expect(ids(await rest.updates(null, 10, "legs"))).toEqual([id(2)]);
       // keys page both ways
       const page = await rest.updates(null, 1);
@@ -190,9 +303,9 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       const up = await rest.updates([page[0]!.micros, page[0]!.updateId], 5, "all", true);
       expect(up).toEqual([]);
       const [two] = await rest.updates(null, 1, "retried");
-      expect(two).toMatchObject({ status: "retried", attempts: 2, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 1, withdrawal: 1, deposit: 0, payment: 0, lock: 0, release: 0 } });
+      expect(two).toMatchObject({ status: "retried", attempts: 2, refused: 1, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 1, withdrawal: 1, deposit: 0, payment: 0, lock: 0, release: 0 } });
       const [three] = await rest.updates(null, 1);
-      expect(three).toMatchObject({ status: null, attempts: null, settleFrom: "blockTime", submittedTemplate: null, legs: { total: 0 } });
+      expect(three).toMatchObject({ status: null, attempts: null, refused: null, settleFrom: "blockTime", submittedTemplate: null, legs: { total: 0 } });
     });
   });
 

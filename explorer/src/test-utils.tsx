@@ -226,8 +226,8 @@ export const cantonStats = (over: Partial<CantonStats> = {}): CantonStats => ({
 });
 
 /** A row of the Linked to Canton list as the route gives it, from a journal that holds the block: committed on the first attempt, with no legs. */
-export const rowFields = (over: Partial<UpdateRow> = {}): Pick<UpdateRow, "status" | "attempts" | "settleSeconds" | "settleFrom" | "submittedTemplate" | "submittedChoice" | "legs"> => ({
-  status: "first", attempts: 1, settleSeconds: 9.4, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 }, ...over,
+export const rowFields = (over: Partial<UpdateRow> = {}): Pick<UpdateRow, "status" | "attempts" | "refused" | "settleSeconds" | "settleFrom" | "submittedTemplate" | "submittedChoice" | "legs"> => ({
+  status: "first", attempts: 1, refused: 0, settleSeconds: 9.4, settleFrom: "proofStart", submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", legs: { total: 0, deposit: 0, withdrawal: 0, payment: 0, lock: 0, release: 0 }, ...over,
 });
 
 /** The view of one update: five steps from the journal and one attempt that committed, with the explorer's own proof comparison. */

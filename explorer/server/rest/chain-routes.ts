@@ -224,7 +224,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ frames, truncated: t.truncated }, F.trace)), "immutable");
   }
 
-  const UPDATE_FILTERS = ["all", "first", "retried", "legs"] as const;
+  const UPDATE_FILTERS = ["all", "first", "retried", "refused", "legs"] as const;
 
   /** An update in the fields of the list: its legs by kind in a block of their own. */
   const updateOut = (u: UpdateRow) => ({ ...pick(u, F.updateItem), legs: u.legs && pick(u.legs, F.updateLegs) });
@@ -248,11 +248,11 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   async function updatesCsv(q: URLSearchParams, filter: UpdateFilter, asc: boolean): Promise<Answer> {
     const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
     const rows = (await rest.updates(null, limit, filter, asc)).slice(0, limit);
-    const lines = ["block,time,transactions,status,attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id"];
+    const lines = ["block,time,transactions,status,attempts,refused_attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id"];
     const secs = (n: number | null) => (n === null ? null : n.toFixed(3));
     for (const u of rows) {
       const choice = u.submittedTemplate === null || u.submittedChoice === null ? null : `${u.submittedTemplate.split(":").pop()} ${u.submittedChoice}`;
-      lines.push([u.block, u.recordTime, u.txCount, u.status, u.attempts, secs(u.settleSeconds), u.settleFrom, choice, u.legs?.total ?? null, u.legs?.deposit ?? null, u.legs?.withdrawal ?? null, u.legs?.payment ?? null, u.legs?.lock ?? null, u.legs?.release ?? null, u.updateId].map(csvCell).join(","));
+      lines.push([u.block, u.recordTime, u.txCount, u.status, u.attempts, u.refused, secs(u.settleSeconds), u.settleFrom, choice, u.legs?.total ?? null, u.legs?.deposit ?? null, u.legs?.withdrawal ?? null, u.legs?.payment ?? null, u.legs?.lock ?? null, u.legs?.release ?? null, u.updateId].map(csvCell).join(","));
     }
     const answer = ok(lines.join("\r\n") + "\r\n");
     return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="canton-updates.csv"' } }, "list");
