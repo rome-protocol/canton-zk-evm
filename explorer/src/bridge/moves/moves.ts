@@ -6,6 +6,7 @@ import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
 import { approveCall, claimCall, definitelyNotSent, payCall, releaseCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
 import { UnexpectedTransaction } from "../canton/sign.ts";
+import { Unanswered } from "../canton/accounts.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
   clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, sameId, saveCheckpoint, TAKE_BACK_STAGES, transition,
@@ -26,6 +27,10 @@ export interface CantonAdapter {
    * the person's continue waits again. (Any other error is a failure of the step.)
    */
   waitRedeem(ref: string): Promise<void>;
+  /** Removes the account's open redeem request with `ref` (archives it); does nothing when there is none. A request locks nothing, so this can be done at any time; the move gives a redeem up only when its release is not made. */
+  cancelRedeem(ref: string): Promise<void>;
+  /** Looks only, signs nothing: whether the step is on Canton now (the redeem request with this ref, the allocation under this label, or the deposit request with this id). */
+  appeared(a: { redeem: string } | { allocation: string } | { deposit: Hex }): Promise<boolean>;
   /** A deposit's first Canton step: allocate the tokens under `label`. The move saves a checkpoint when it returns. */
   allocateDeposit(a: { instrument: { admin: string; id: string }; amount: string; label: string }): Promise<void>;
   /** Its second step: the deposit request, which uses that allocation. */
@@ -62,6 +67,8 @@ export interface Deps {
   leg(id: Hex): Promise<{ txHash: string | null } | null>;
   /** The final transactions `account` sent with a nonce of `nonce` or more, oldest first, from the explorer. */
   sentSince(account: Address, nonce: number): Promise<Hex[]>;
+  /** What the gateway holds on Canton of the wrapped token (base units of `decimals`), or null where that is not known. A withdrawal of more is never taken into a block. */
+  custody?(wrapped: Address): Promise<{ amount: bigint; decimals: number } | null>;
   store: StoreLike | null;
   /** Web Locks (`webLocks()`), or null where there are none: then nothing runs, rather than running without the guard against a second tab. */
   locks: LocksLike | null;
@@ -74,10 +81,14 @@ export interface Deps {
 
 /** How long before a deposit's time to settle the page still sends its claim: a claim sent closer than this may not be in a block in time, and a claim left out of every block holds up the account's later transactions. */
 export const CLAIM_MARGIN_MS = 10 * 60_000;
-/** How long after a deposit's time to settle its tokens may be taken back: the account service wants 60 seconds (its TAKE_BACK_MARGIN, Canton's default record-time tolerance), and this page's clock is not the service's: never below it. */
-export const TAKE_BACK_AFTER_MS = 60_000;
+/** How long after a deposit's time to settle its tokens may be taken back: the account service wants 60 seconds (its TAKE_BACK_MARGIN, Canton's default record-time tolerance), and this page's clock is not the service's: never below it, and with room for this page's clock running ahead of the service's. */
+export const TAKE_BACK_AFTER_MS = 90_000;
 export { TAKE_BACK_STAGES };
+/** How long past the time Canton can record a command (the service's `maxRecordTime`) the page still waits before it signs the step again. */
+export const RECORD_MARGIN_MS = 30_000;
 /** The stages from which a deposit's request is on the ledger and its claim is only asked of the wallet or waited for. */
+/** The stages from which a redeem's request may be open on Canton. */
+const REDEEM_OPEN_STAGES: readonly Checkpoint["stage"][] = ["signing", "canton", "evm", "wallet", "sent"];
 const REQUEST_ON_LEDGER: readonly Checkpoint["stage"][] = ["evm", "wallet", "sent"];
 
 /** The explorer's own answer for a transaction; a 404 is a transaction it has not seen yet. */
@@ -87,8 +98,25 @@ export const explorerTx = async (hash: Hex): Promise<ApiTx | null> => {
 export const explorerLeg: Deps["leg"] = async (id) => {
   try { return await bridgeReads.leg(id, timeoutSignal()!); } catch (e) { if (e instanceof ApiError && e.status === 404) return null; throw e; }
 };
-export const explorerSentSince: Deps["sentSince"] = async (account, nonce) =>
-  (await bridgeReads.sentTxs(account, 50, timeoutSignal()!)).items.filter((t) => t.nonce >= nonce).sort((a, b) => a.nonce - b.nonce).map((t) => t.hash as Hex);
+/** The most pages of an account's sends one look reads (50 each): past it the look is incomplete, which keeps the move waiting rather than guessing. */
+const SENT_PAGES = 20;
+export const explorerSentSince: Deps["sentSince"] = async (account, nonce) => {
+  const found: { hash: string; nonce: number }[] = [];
+  let before: string | undefined;
+  for (let i = 0; i < SENT_PAGES; i++) {
+    const page = await bridgeReads.sentTxs(account, 50, timeoutSignal()!, before);
+    found.push(...page.items.filter((t) => t.nonce >= nonce));
+    // The newest come first: once a send below the saved nonce is listed, every send from the saved nonce on is in `found`.
+    if (page.next == null || page.items.some((t) => t.nonce < nonce)) return found.sort((a, b) => a.nonce - b.nonce).map((t) => t.hash as Hex);
+    before = page.next;
+  }
+  throw new Error("The account has too many later sends to list.");
+};
+/** What the gateway holds on Canton of a wrapped token, from the explorer (null where it does not list it). */
+export const explorerCustody: NonNullable<Deps["custody"]> = async (wrapped) => {
+  const c = (await bridgeReads.twins(timeoutSignal()!)).canton.find((x) => same(x.token, wrapped));
+  return c ? { amount: BigInt(c.custody), decimals: c.custodyDecimals } : null;
+};
 export const randomRef = (): string => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 /** A refusal with the words the person reads. */
@@ -287,11 +315,12 @@ export function createMove(d: Deps): Move {
   }
 
   async function prove(first: Hex, p: Plan) {
-    let tx = first, lost = false, legMissing = false;
+    let tx = first, lost = false, legMissing = false, seen = false;
     go({ phase: "proving", tx });
     for (let i = 0; i < (d.maxPolls ?? 200); i++) {
       const t = await d.api.tx(tx).catch(() => null);
       lost = t?.status === "dropped" || t?.status === "replaced";
+      seen = t?.status === "final" || t?.status === "proving";   // in a block already (a block being proven has it)
       legMissing = false;
       if (lost) {
         // A speed-up or a replacement in the wallet is another hash for the same move: find it by the move's id, or by the nonce. The progress is kept either way.
@@ -329,6 +358,8 @@ export function createMove(d: Deps): Move {
       const deadline = await d.canton.depositDeadline(ck!.ref).catch(() => null);
       if (deadline !== null && Date.now() >= deadline + TAKE_BACK_AFTER_MS) throw new Pause("The time to settle has run out: cancel the claim in your wallet, then take your tokens back on Canton.");
     }
+    // A withdrawal the builder leaves out of every block (more than the gateway holds, or over the withdrawal quota) stays in the wallet's queue and holds the account's later sends: say where to cancel it.
+    if (ck!.input.kind === "withdraw" && !lost && !seen) throw new Pause("This withdrawal has not been taken into a block. If it is still waiting in your wallet, cancel it there; nothing was burned.");
     if (lost) {
       save({ stage: "wallet", tx: undefined });
       throw new Waited("The transaction was replaced or dropped, and the explorer has not shown another one for this move. Continue to look again; nothing is sent until the wallet is asked.");
@@ -371,6 +402,25 @@ export function createMove(d: Deps): Move {
       if (!h) throw new Waited("This move is already on Ostia, and the explorer has not shown its transaction yet. Reload this page to keep waiting.");
       return adopt(h, p);
     }
+    /**
+     * A Canton command whose execute got no definite answer may still be recorded until its record time: until then the step is only looked for. True: it is on Canton, do not sign. False: sign it
+     * (nothing was left in doubt, or the time has passed). Waited: it may still come.
+     */
+    const onCanton = async (what: Parameters<CantonAdapter["appeared"]>[0]): Promise<boolean> => {
+      const by = ck!.cantonBy;
+      if (by === undefined) return false;
+      if (await d.canton.appeared(what)) { save({ cantonBy: undefined }); return true; }
+      if (Date.now() <= by + RECORD_MARGIN_MS) throw new Waited("Canton has not shown this step yet, and it may still take it. Continue to look again; nothing is signed again until its time to take it has passed.");
+      save({ cantonBy: undefined });
+      return false;
+    };
+    /** Signs a Canton command; an answer that never came is remembered with the time Canton can still record it by, and the move pauses. */
+    const signStep = (f: () => Promise<void>) => sign(async () => {
+      try { await f(); } catch (e) {
+        if (e instanceof Unanswered) { save({ cantonBy: e.recordBy }); throw new Pause("Canton did not say whether it took this step. Continue to look: nothing is signed again until Canton shows it, or until its time to take it has passed."); }
+        throw e;
+      }
+    });
     const waitCanton = async (wait: () => Promise<void>) => { go({ phase: "waiting-canton", ref }); await wait(); save({ stage: "evm" }); };
     const sign = (f: () => Promise<void>) => { if (state.phase !== "signing-canton") go({ phase: "signing-canton" }); return f(); };
     switch (input.kind) {
@@ -397,8 +447,8 @@ export function createMove(d: Deps): Move {
         if (at() === "start" || at() === "signing") {
           gate("Your redeem is saved. Continue to sign it on Canton.");
           save({ stage: "signing" });
-          await sign(() => d.canton.signRedeem({ asset: p.asset.address, amount: tenDecimals(p.twin), recipient: c.to!, ref }));
-          save({ stage: "canton" });
+          if (!(await onCanton({ redeem: ref }))) await signStep(() => d.canton.signRedeem({ asset: p.asset.address, amount: tenDecimals(p.twin), recipient: c.to!, ref }));
+          save({ stage: "canton", cantonBy: undefined });
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitRedeem(ref));
         gate("Canton has your redeem. Continue to ask your wallet for the release.");
@@ -413,13 +463,13 @@ export function createMove(d: Deps): Move {
         if (at() === "start" || at() === "signing") {
           gate("Your deposit is saved. Continue to allocate the tokens on Canton.");
           save({ stage: "signing" });
-          await sign(() => d.canton.allocateDeposit(a));
-          save({ stage: "allocated" });
+          if (!(await onCanton({ allocation: ref }))) await signStep(() => d.canton.allocateDeposit(a));
+          save({ stage: "allocated", cantonBy: undefined });
         }
         if (at() === "allocated") {
           gate("The tokens are allocated on Canton. Continue to send the deposit request.");
-          await sign(() => d.canton.signDeposit({ ...a, depositId: p.id!, recipient: c.account }));
-          save({ stage: "canton" });
+          if (!(await onCanton({ deposit: p.id! }))) await signStep(() => d.canton.signDeposit({ ...a, depositId: p.id!, recipient: c.account }));
+          save({ stage: "canton", cantonBy: undefined });
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitDeposit(p.id!));
         gate("Canton has your deposit. Continue to ask your wallet for the claim.");
@@ -437,6 +487,9 @@ export function createMove(d: Deps): Move {
       case "withdraw": {
         gate("Your withdrawal is saved. Continue to ask your wallet.");
         await enough(p.asset, p.base);
+        // The builder takes a withdrawal into a block only when the gateway's holdings on Canton cover it: one above them would wait in the wallet for ever.
+        const held = await d.custody?.(p.asset.address).catch(() => null);
+        if (held && p.base * 10n ** BigInt(held.decimals) > held.amount * 10n ** BigInt(p.asset.decimals)) throw new Refused(`The bridge holds less ${p.asset.symbol} on Canton than this, so the withdrawal would not be taken into a block. Withdraw a smaller amount.`);
         return last(p, "withdraw", () => d.evm.withdraw(d.config.gateway, p.asset.address, p.base, c.party), withdrawCall(d.config.gateway, p.asset.address, p.base, c.party));
       }
     }
@@ -508,6 +561,12 @@ export function createMove(d: Deps): Move {
       throw e;
     }
   }
+  /** Removes a redeem's request on Canton, unless its release is made already (the request is then spent) or still waiting in the wallet (it must be cancelled there first). */
+  async function removeRedeem(c: Checkpoint): Promise<void> {
+    if (await d.evm.used(d.config.gateway, releaseIdOf(c.vault, c.ref))) return;
+    if ((c.stage === "wallet" || c.stage === "sent") && (await pendingInWallet(c))) throw new Refused("The release of this redeem is still waiting in your wallet. Cancel it in your wallet first, then give this move up.");
+    try { await d.canton.cancelRedeem(c.ref); } catch (e) { if (!permanent(e)) throw e; }   // a request the service will not remove cannot be helped by waiting; the record may go
+  }
   /** A kept move of this account and party that no other tab is working on, under its lock. */
   async function withRecord<T>(id: string, f: (c: Checkpoint | null) => Promise<T>): Promise<T> {
     if (running) throw new Refused("A move is running; wait until it stops before giving it up.");
@@ -561,6 +620,8 @@ export function createMove(d: Deps): Move {
         if (c !== null && c.input.kind === "deposit" && TAKE_BACK_STAGES.includes(c.stage)) {
           try { await takeBackCanton(c, false); } catch (e) { if (!(opts?.leaveLocked === true && e instanceof CannotTakeBack)) throw e; }
         }
+        // A redeem request is open on Canton from its first Canton step: it is removed before the record goes (unless the release was made, which burned what it named), so no dead request is left.
+        if (c !== null && c.input.kind === "redeem" && REDEEM_OPEN_STAGES.includes(c.stage)) await removeRedeem(c);
         clearCheckpoint(d.store, id);
       });
       finish(id);

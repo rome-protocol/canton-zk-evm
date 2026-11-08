@@ -30,7 +30,7 @@ export type MoveState =
 const NEXT: Record<Phase, Phase[]> = {
   idle: ["paused", "signing-canton", "waiting-canton", "sending-evm", "proving", "failed"],
   paused: ["idle"],
-  "signing-canton": ["waiting-canton", "failed"],
+  "signing-canton": ["waiting-canton", "paused", "failed"],
   "waiting-canton": ["sending-evm", "paused", "failed"],
   "sending-evm": ["sending-evm", "proving", "paused", "failed"],
   proving: ["proving", "final", "paused", "failed"],
@@ -78,6 +78,8 @@ export interface Checkpoint {
   stage: (typeof STAGES)[number];
   /** The step the wallet is asked for, the exact call it makes, and the nonce the send took: a guess (a lower bound) until the wallet returns the hash, then the transaction's own. */
   step?: Step; call?: Call; nonce?: number; tx?: Hex;
+  /** Set when a Canton command's execute got no definite answer: the time (ms) Canton can still record it by. Until then the step is only looked for, never signed again. */
+  cantonBy?: number;
   /** When the record was last written (ms). A record more than 30 days old is no longer listed. */
   at?: number;
 }

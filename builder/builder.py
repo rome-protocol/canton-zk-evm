@@ -71,6 +71,10 @@ class ForeignHead(HeadMismatch):
     """Canton's head is a block reth does not have: nobody here can say what to build on, so the producer stops."""
 
 
+class StaleProof(BuilderError):
+    """A deposit of the block can no longer be settled by the time the Advance would reach Canton (its allocation's settle-before time is within PROOF_MARGIN): the proof is dropped and the block is built again, without that deposit."""
+
+
 class ReaderMissing(BuilderError):
     """--twin-registry-url is set but --read-as does not give the chain's gateway: no acceptance can be read, so a producer stops."""
 
@@ -1240,6 +1244,7 @@ def waiting_legs(left_out: list) -> bool:
 # While the legs are paused, or when a block's withdrawals would take an instrument over the quota, Canton refuses the Advance of a block
 # that carries a leg. The builder reads both from the chain contract it cuts the block on and leaves those legs out, so such a block is never
 # proven. A chain contract of an earlier version has none of the fields, and nothing here applies to it.
+PROOF_MARGIN = timedelta(seconds=60)   # just before the Advance is sent: a block whose earliest deposit expires within this is dropped and built again
 SETTLE_MARGIN = timedelta(minutes=5)   # a deposit leg is left out unless its allocation outlives the block by this much: proving and committing take time after the check, well under this
 LEDGER_MARGIN = timedelta(seconds=5)   # the builder's clock is not Canton's: a pause is treated as in force a few seconds past its end, a tally as counted a few seconds longer
 # What the chain contract's own Daml says when it refuses a block for them (Chain.daml), in whole sentences. A text that merely contains some of these
@@ -1393,6 +1398,7 @@ class Canton:
         self.quota_limits = True   # whether a release is held to the withdrawal quota (match_legs sets it from its `limits`)
         self.lists: dict = {} if lists is None else lists   # name -> a list read from Canton for this block (the caller's dict, so that every pass of the block shares it), or the ListUnreadable that its read ended in (see `listed`)
         self.acceptances_read: set = set()   # (contract id, receiver) of the TwinAcceptance contracts that were read and count, for this block
+        self.deadlines: dict = {}   # deposit request contract id -> the settle-before time (UTC) of the allocation a DepositLeg used; the block's final legs give the earliest
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     def listed(self, name: str, read):
@@ -1616,6 +1622,7 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         return allocation_in_use(r["allocation"], taken)
 
     request = first_fit(requests, problem, "")
+    canton.deadlines[request["contractId"]] = datetime.fromisoformat(canton.allocations[request["allocation"]]["settlement"]["settleBefore"])
     leg_out = {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
     with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, request["allocation"]))
     if claimed is not None:
@@ -2232,6 +2239,7 @@ class Built:
     checked_input: bool = False   # the pre-check already made input.bin of this very block in `attempt_dir`
     disclosed: list = field(default_factory=list)   # the allocations of the venue trades in `legs`, passed with Advance next to --disclosed
     extra_gateways: list = field(default_factory=list)   # Advance's extraGateways: an entry (address, accountNodes, storageNodes, legs) for each registered gateway
+    deposit_deadline: datetime | None = None   # the earliest settle-before time among the allocations the block's deposit legs use; None when it has none
 
 
 @dataclass
@@ -2446,7 +2454,8 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=by_gateway.get("", []), leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
-                 disclosed=venue_disclosed(legs, canton), extra_gateways=extra)
+                 disclosed=venue_disclosed(legs, canton), extra_gateways=extra,
+                 deposit_deadline=min((canton.deadlines[x["value"]["request"]] for x in legs if x.get("tag") == "DepositLeg"), default=None))
 
 
 @dataclass
@@ -2558,7 +2567,10 @@ class Reply:
 
 def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attempt: "Attempt") -> Submission:
     """The first half of the third stage, for the thread that owns reth, the journal and the files: writes the argument and the command to disk and
-    the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet."""
+    the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet. A block whose earliest deposit expires within PROOF_MARGIN
+    is refused first (StaleProof): a proof that came late must never carry an expired deposit to Canton."""
+    if built.deposit_deadline is not None and utcnow() + PROOF_MARGIN >= built.deposit_deadline:
+        raise StaleProof(f"a deposit of block {built.n} can be settled until {built.deposit_deadline.isoformat()}, less than {PROOF_MARGIN.total_seconds():g} s from now: the proof is dropped and the block is built again")
     n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
                 "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}

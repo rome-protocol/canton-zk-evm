@@ -4,7 +4,7 @@ import type { Address, Hex } from "viem";
 import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { Marks } from "./marks.ts";
 import { depositIdOf, keptMoves, sameId, STAGES, type Checkpoint, type MoveKind, type MoveState, type Step, type StoreLike } from "./moves/state.ts";
-import { typedAmount } from "./adopt.ts";
+import { holdingsOf, typedAmount } from "./adopt.ts";
 import type { Pair } from "./tokens.ts";
 
 /** One move, finished or not, as the Activity list and the bar under the card show it. */
@@ -99,13 +99,15 @@ export function openOnCanton(e: Entry, open: Pick<OpenState, "redeemRequests" | 
 }
 
 /** An open request of the account that no row here accounts for: a move started in another browser. `request` is what Canton lists; `canContinue` is false where this build cannot carry it on. */
-export interface Elsewhere { entry: Entry; kind: "redeem" | "deposit"; request: OpenRequest; canContinue: boolean }
+export interface Elsewhere { entry: Entry; kind: "redeem" | "deposit"; request: OpenRequest; canContinue: boolean;
+  /** A redeem whose holdings are not all among the account's holdings any more: it can never be released, and can only be removed. */
+  spent?: boolean }
 
 /**
  * The account's open requests on Canton with no row here, newest-unknown first. A redeem names its token and amount (and can be carried on where the bridge moves that token); a deposit names
  * neither until its allocation is read, so its row says only that a deposit is open.
  */
-export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequests">, rows: Entry[], o: { account: Address; party: string; pairs: Pair[] }): Elsewhere[] {
+export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequests">, rows: Entry[], o: { account: Address; party: string; pairs: Pair[]; held?: ReadonlySet<string> | null }): Elsewhere[] {
   const out: Elsewhere[] = [];
   const base = { account: o.account, party: o.party, at: 0, tx: null, block: null, done: false, stage: "canton" as const, elsewhere: true };
   for (const r of open.redeemRequests) {
@@ -113,7 +115,8 @@ export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequ
     if (typeof ref !== "string" || (typeof holder === "string" && holder !== o.party) || rows.some((e) => e.kind === "redeem" && e.ref === ref)) continue;
     const asset = (typeof erc20 === "string" ? `0x${erc20.replace(/^0x/, "").toLowerCase()}` : "0x") as Address;
     const known = o.pairs.some((p) => p.kind === "twin" && same(p.erc20, asset));
-    out.push({ kind: "redeem", request: r, canContinue: known && typeof amount === "string", entry: { ...base, ref, kind: "redeem", asset, amount: typeof amount === "string" ? typedAmount(amount) : "" } });
+    const spent = o.held != null && !holdingsOf(r).every((h) => o.held!.has(h));
+    out.push({ kind: "redeem", request: r, canContinue: known && typeof amount === "string" && !spent, spent, entry: { ...base, ref, kind: "redeem", asset, amount: typeof amount === "string" ? typedAmount(amount) : "" } });
   }
   for (const r of open.depositRequests) {
     const label = r.arguments.label, depositor = r.arguments.depositor;

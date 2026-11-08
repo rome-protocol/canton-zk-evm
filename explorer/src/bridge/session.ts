@@ -9,7 +9,7 @@ import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
-import { createMove, explorerLeg, explorerSentSince, explorerTx, randomRef, webLocks, type Move } from "./moves/moves.ts";
+import { createMove, explorerCustody, explorerLeg, explorerSentSince, explorerTx, randomRef, webLocks, type Move } from "./moves/moves.ts";
 import { keptMoves, moveStore, type Checkpoint } from "./moves/state.ts";
 
 export interface Session {
@@ -24,6 +24,10 @@ export interface Session {
   kept(): Checkpoint[];
   /** What the account service says is open for the account (GET /accounts/v1/open): its redeem and deposit requests. One signed look, so it is asked for once, not on a timer. */
   open(): Promise<OpenState>;
+  /** The contract ids of every holding of the account on Canton (locked or not): a redeem whose holdings are gone is told from one that can still be released. */
+  holdingIds(): Promise<Set<string>>;
+  /** Removes the account's open redeem request with this ref (one this browser has no record of). It signs one Canton command and never asks the wallet. */
+  removeRedeem(ref: string): Promise<void>;
   /**
    * Keeps a record here for a redeem or a deposit that Canton lists as open but this browser has no record of (it was started in another browser), so the move can be carried on like any kept
    * move. Returns the record's ref, or null when this build cannot carry it on (its token is not one the bridge moves, or its allocation is gone). It never signs, sends or asks the wallet.
@@ -41,7 +45,7 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
   const canton = cantonAdapter({ client: account.client, key: account.key, party: account.party, chain: account.chain, submit: account.submit, sleep });
   const store = moveStore();
   const move = createMove({
-    config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince,
+    config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince, custody: explorerCustody,
     store, locks: webLocks(), sleep, newRef: randomRef,
   });
   const stop = track(move, store);
@@ -50,9 +54,11 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
     open: () => account.client.openRequests(account.key, account.party),
     cantonBalance: async (instrument) => holdingsOf(await account.client.holdings(account.key, account.party), instrument),
     kept: () => keptMoves(store, { account: evm.account, party: account.party }),
+    holdingIds: async () => new Set((await account.client.holdings(account.key, account.party)).map((h) => h.contractId)),
+    removeRedeem: (ref) => canton.cancelRedeem(ref),
     adopt: (kind, request) => adoptRecord(kind, request, {
       account: evm.account, party: account.party, config, store,
-      allocations: () => account.client.allocations(account.key, account.party), openRequests: () => account.client.openRequests(account.key, account.party),
+      allocations: () => account.client.allocations(account.key, account.party), holdingIds: async () => new Set((await account.client.holdings(account.key, account.party)).map((h) => h.contractId)), openRequests: () => account.client.openRequests(account.key, account.party),
     }),
   };
 }

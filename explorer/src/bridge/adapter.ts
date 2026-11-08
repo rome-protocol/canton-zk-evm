@@ -2,7 +2,7 @@
 // nothing again for a ref, a label or a deposit id that is already there: a reload may come before or after a command reached the ledger, and the move cannot tell which.
 import type { Address, Hex } from "viem";
 import { AccountsError, factoryChoice, withdrawChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
-import { allocate, archiveDepositRequest, depositRequest, redeemRequest, withdrawAllocation, type Allocation, type Built, type Chain } from "./canton/commands.ts";
+import { allocate, archiveDepositRequest, archiveRedeemRequest, depositRequest, redeemRequest, withdrawAllocation, type Allocation, type Built, type Chain } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
 import { permanent, Refused, Waited, type CantonAdapter } from "./moves/moves.ts";
 import { depositIdOf, sameId } from "./moves/state.ts";
@@ -24,10 +24,10 @@ export interface AdapterDeps {
 const units = (amount: string): bigint => { const [whole = "0", fraction = ""] = amount.split("."); return BigInt(whole) * 10n ** 10n + BigInt(fraction.padEnd(10, "0").slice(0, 10)); };
 const bare = (hexText: string) => hexText.replace(/^0x/, "").toLowerCase();
 
-/** The fewest unlocked holdings of the instrument (the largest first) that cover the amount. */
-export function cover(held: Holding[], instrument: { admin: string; id: string }, amount: string): string[] {
+/** The fewest unlocked holdings of the instrument (the largest first) that cover the amount, leaving out the ids in `exclude` (holdings that an open request already names). */
+export function cover(held: Holding[], instrument: { admin: string; id: string }, amount: string, exclude: ReadonlySet<string> = new Set()): string[] {
   const need = units(amount);
-  const mine = held.filter((h) => !h.locked && h.instrumentId.admin === instrument.admin && h.instrumentId.id === instrument.id).sort((a, b) => (units(a.amount) < units(b.amount) ? 1 : units(a.amount) > units(b.amount) ? -1 : 0));
+  const mine = held.filter((h) => !h.locked && !exclude.has(h.contractId) && h.instrumentId.admin === instrument.admin && h.instrumentId.id === instrument.id).sort((a, b) => (units(a.amount) < units(b.amount) ? 1 : units(a.amount) > units(b.amount) ? -1 : 0));
   const picked: string[] = [];
   let sum = 0n;
   for (const h of mine) { if (sum >= need) break; picked.push(h.contractId); sum += units(h.amount); }
@@ -53,12 +53,31 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
   return {
     party: () => d.party,
 
+    async appeared(a) {
+      if ("redeem" in a) return hasRedeem(a.redeem);
+      if ("allocation" in a) return (await allocationOf(a.allocation)) !== undefined;
+      return hasDeposit(a.deposit);
+    },
+
     async signRedeem(a) {
-      if (await hasRedeem(a.ref)) return;
-      const holdings = cover(await d.client.holdings(d.key, d.party), { admin: d.chain.gateway, id: `erc20:${bare(a.asset)}` }, a.amount);
+      const requests = (await open()).redeemRequests;
+      if (requests.some((r) => r.arguments.ref === a.ref)) return;
+      // A request does not lock its holdings, but the release of one burns them: a second request must not name holdings that another open request names.
+      const named = new Set(requests.flatMap((r) => (Array.isArray(r.arguments.holdings) ? r.arguments.holdings.filter((h): h is string => typeof h === "string") : [])));
+      const held = await d.client.holdings(d.key, d.party), instrument = { admin: d.chain.gateway, id: `erc20:${bare(a.asset)}` };
+      let holdings: string[];
+      try { holdings = cover(held, instrument, a.amount, named); } catch (e) {
+        if (!(e instanceof Refused) || named.size === 0) throw e;
+        try { cover(held, instrument, a.amount); } catch { throw e; }   // not enough even with them: the plain refusal
+        throw new Refused("Part of your tokens is held by another redeem that is still open. Release it, or remove it in Activity, then try again.");
+      }
       await d.submit(redeemRequest(d.party, d.chain, a.asset as Address, holdings, a.amount, a.recipient, a.ref));
     },
     waitRedeem: (ref) => until(() => hasRedeem(ref)),
+    async cancelRedeem(ref) {
+      const request = (await open()).redeemRequests.find((r) => r.arguments.ref === ref);
+      if (request) await d.submit(archiveRedeemRequest(d.party, request.contractId));
+    },
 
     async allocateDeposit({ instrument, amount, label }) {
       if (await allocationOf(label)) return;

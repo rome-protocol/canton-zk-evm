@@ -241,6 +241,35 @@ describe("the Activity list", () => {
       expect(await screen.findByText(/Started in another browser\. Canton has it/)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Release|Continue/ })).toBeNull();
     });
+    it("a redeem whose holdings were spent says so, has no release button, and is removed from its row", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], holdings: ["live-1"], open: openWith([request({ holdings: ["gone-1"] })]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      expect(within(row).getByText(/Its tokens were spent by another move.*Remove it/)).toBeInTheDocument();
+      expect(within(row).queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+      await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(made.session.removeRedeem).toHaveBeenCalledWith("other-1"));
+      expect(made.evm.calls).toEqual([]);
+    });
+    it("a redeem whose holdings are all there can be released, and can be removed too", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], holdings: ["live-1", "live-2"], open: openWith([request({ holdings: ["live-1"] })]) });
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      expect(within(row).getByRole("button", { name: "Release on Ostia" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    });
+    it("says why a removal failed and keeps the row", async () => {
+      const store = memoryStore();
+      const made = fakeSession({ store, legs: () => [], open: openWith([request()]) });
+      (made.session.removeRedeem as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("The bridge's account service does not allow this."));
+      show({ store, session: made.session });
+      const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      expect(screen.getByText("3 TKA to Ostia")).toBeInTheDocument();
+    });
     it("names the chain's own coin that comes back as its wrapped form", async () => {
       const store = memoryStore();
       const { session } = fakeSession({ store, legs: () => [], open: openWith([request({ [FIELD]: bare(WTROME) })]) });
@@ -286,7 +315,7 @@ describe("the Activity list", () => {
       const hash = ("0x" + "cd".repeat(32)) as Hex;
       const store = memoryStore();
       saveCheckpoint(store, ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash }));
-      const session = { move: { state: { phase: "proving", tx: hash }, current: "r9", subscribe: () => () => {} }, kept: () => [ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash })], open: async () => ({ redeemRequests: [], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), party: PARTY } as unknown as Session;
+      const session = { move: { state: { phase: "proving", tx: hash }, current: "r9", subscribe: () => () => {} }, kept: () => [ck({ ref: "r9", input: redeem, to: ME, stage: "sent", tx: hash })], open: async () => ({ redeemRequests: [], depositRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), party: PARTY, holdingIds: async () => new Set<string>() } as unknown as Session;
       render(<MemoryRouter><MoveBar session={session} pairs={pairs} chainName="Ostia" read={read} pollMs={20} /><Activity account={ME} session={session} store={store} pairs={pairs} chainName="Ostia" onConnect={vi.fn()} onOpenAccount={vi.fn()} read={read} pollMs={20} /></MemoryRouter>);
       await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(2));
       const hashes = read.mock.calls.map((c) => (c as unknown[])[0]);

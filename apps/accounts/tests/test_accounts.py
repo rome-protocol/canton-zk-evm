@@ -403,6 +403,42 @@ class TakeBack(Case):
         self.assertEqual(self.archive("00" + "e5" * 40)[0], 404)
         self.assertEqual(self.calls_to("/prepare"), [])
 
+    def redeem_request(self, cid="00" + "f6" * 40, holder=None):
+        self.ledger.created = {A.REDEEM: [{"contractId": cid, "createArgument": {"holder": holder or PARTY, "ref": "r1", "holdings": []}}]}
+
+    def archive_redeem(self, cid="00" + "f6" * 40):
+        return self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": A.REDEEM, "contractId": cid, "choice": "Archive", "choiceArgument": {}}}]})
+
+    def test_the_redeem_archive_is_on_the_built_in_list(self):
+        self.assertIn(A.REDEEM_ARCHIVE, A.DEFAULT_ALLOW)
+        self.assertEqual(A.open_limits_from(A.DEFAULT_ALLOW, 3, None), {ACCEPT: 1, DEPOSIT: 3})
+
+    def test_an_account_removes_its_own_open_redeem_request_at_any_time(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
+        self.redeem_request()
+        status, out, _ = self.archive_redeem()
+        self.assertEqual((status, out["hashingSchemeVersion"]), (200, "HASHING_SCHEME_VERSION_V2"))
+        self.assertEqual(self.calls_to("/prepare")[0][2]["commands"][0]["ExerciseCommand"]["choice"], "Archive")
+
+    def test_only_the_accounts_own_open_redeem_request_is_removed(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
+        self.redeem_request(holder=self.stranger)
+        self.assertEqual(self.archive_redeem()[0], 404)   # another party's request
+        self.redeem_request()
+        self.assertEqual(self.archive_redeem("00" + "e7" * 40)[0], 404)   # one that is not there
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deployment_that_does_not_list_the_redeem_archive_refuses_it(self):
+        self.start(allow=(*A.DEFAULT_ALLOW[:-1], A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
+        self.redeem_request()
+        self.assertEqual(self.archive_redeem()[0], 403)
+
+    def test_prepare_says_the_time_it_can_be_recorded_by(self):
+        self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
+        self.redeem_request()
+        _, out, _ = self.archive_redeem()
+        self.assertEqual(out["maxRecordTime"], self.calls_to("/prepare")[0][2]["maxRecordTime"])
+
     def test_a_deployment_that_does_not_list_them_refuses_both(self):
         self.start(allow=A.DEFAULT_ALLOW[:5])
         self.allocate(self.at(self.NOW - 3600))
