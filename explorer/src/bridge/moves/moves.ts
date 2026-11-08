@@ -86,6 +86,8 @@ export const TAKE_BACK_AFTER_MS = 90_000;
 export { TAKE_BACK_STAGES };
 /** How long past the time Canton can record a command (the service's `maxRecordTime`) the page still waits before it signs the step again: the page's clock is not the sequencer's, so this leaves room for it running well ahead. */
 export const RECORD_MARGIN_MS = 120_000;
+/** The time a command may be recorded after it is prepared when nothing better is known (the account service's window). */
+export const PROVISIONAL_RECORD_MS = 11 * 60_000;
 /** The stages from which a redeem's request may be open on Canton. */
 const REDEEM_OPEN_STAGES: readonly Checkpoint["stage"][] = ["signing", "canton", "evm", "wallet", "sent"];
 /** The stages from which a deposit's request is on the ledger and its claim is only asked of the wallet or waited for. */
@@ -233,7 +235,9 @@ export function createMove(d: Deps): Move {
     if (list === null) return { hash: null, complete: false };
     for (const h of list) {
       const t = await d.api.tx(h).catch(() => null);
-      if (t && makesCall(t, c)) return { hash: h, complete: true };
+      // A listed transaction that cannot be read could be the call: the look stays incomplete.
+      if (!t) return { hash: null, complete: false };
+      if (makesCall(t, c)) return { hash: h, complete: true };
     }
     // Complete: the list holds a final transaction for every nonce from the saved one up to the final count, and none is the call. Waiting longer cannot change that.
     const final = await d.evm.nonce().catch(() => null);
@@ -416,11 +420,16 @@ export function createMove(d: Deps): Move {
     };
     /** Signs a Canton command; an answer that never came is remembered with the time Canton can still record it by, and the move pauses. */
     const signStep = (f: () => Promise<void>) => sign(async () => {
+      // Saved before the execute: a tab closed while it is out leaves the time Canton can still record the step by (the longest the account service allows), so a later look does not sign again at once.
+      save({ cantonBy: Date.now() + PROVISIONAL_RECORD_MS });
       try { await f(); } catch (e) {
+        if (!(e instanceof Unanswered)) save({ cantonBy: undefined });
         if (e instanceof Unanswered) { save({ cantonBy: e.recordBy }); throw new Pause("Canton did not say whether it took this step. Continue to look: nothing is signed again until Canton shows it, or until its time to take it has passed."); }
         throw e;
       }
     });
+    // A redeem resumed after its Canton step (the record is at the gate before the release): its request must still be open, or another browser removed it and a release would have no Canton side.
+    const resumedForRelease = input.kind === "redeem" && at() === "evm";
     const waitCanton = async (wait: () => Promise<void>) => { go({ phase: "waiting-canton", ref }); await wait(); save({ stage: "evm" }); };
     const sign = (f: () => Promise<void>) => { if (state.phase !== "signing-canton") go({ phase: "signing-canton" }); return f(); };
     switch (input.kind) {
@@ -452,6 +461,11 @@ export function createMove(d: Deps): Move {
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitRedeem(ref));
         gate("Canton has your redeem. Continue to ask your wallet for the release.");
+        if (resumedForRelease && !(await d.canton.appeared({ redeem: ref }))) {
+          clearCheckpoint(d.store, ref);
+          ck = null;
+          throw new Refused("Canton no longer shows this redeem (it was removed, perhaps in another window), so nothing was released and your wallet was not asked. Start the redeem again if you still want it.");
+        }
         // The vault may have been drained since the redeem was signed (or a release from it reverted): release from one that holds the amount. The release id follows the vault, so it is worked out again and saved.
         const vault = await pickVault(p.asset, p.base, ck!.vault);
         let q = p;

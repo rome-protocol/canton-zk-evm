@@ -112,10 +112,12 @@ export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequ
   const base = { account: o.account, party: o.party, at: 0, tx: null, block: null, done: false, stage: "canton" as const, elsewhere: true };
   for (const r of open.redeemRequests) {
     const ref = r.arguments.ref, erc20 = r.arguments.token, amount = r.arguments.amount, holder = r.arguments.holder;
-    if (typeof ref !== "string" || (typeof holder === "string" && holder !== o.party) || rows.some((e) => e.kind === "redeem" && e.ref === ref)) continue;
+    if (typeof ref !== "string" || (typeof holder === "string" && holder !== o.party) || rows.some((e) => e.kind === "redeem" && e.ref === ref && !e.done)) continue;
+    // A request still open for a redeem this browser has finished is a dead duplicate: it is listed as spent, so it can be removed.
+    const finished = rows.some((e) => e.kind === "redeem" && e.ref === ref && e.done);
     const asset = (typeof erc20 === "string" ? `0x${erc20.replace(/^0x/, "").toLowerCase()}` : "0x") as Address;
     const known = o.pairs.some((p) => p.kind === "twin" && same(p.erc20, asset));
-    const spent = o.held != null && !holdingsOf(r).every((h) => o.held!.has(h));
+    const spent = finished || (o.held != null && !holdingsOf(r).every((h) => o.held!.has(h)));
     out.push({ kind: "redeem", request: r, canContinue: known && typeof amount === "string" && !spent, spent, entry: { ...base, ref, kind: "redeem", asset, amount: typeof amount === "string" ? typedAmount(amount) : "" } });
   }
   for (const r of open.depositRequests) {

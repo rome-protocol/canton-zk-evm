@@ -72,7 +72,7 @@ export function fakeCanton(): CantonAdapter & { calls: string[]; deadline: numbe
   const calls: string[] = [];
   const canton: CantonAdapter & { calls: string[]; deadline: number | null } = {
     calls, deadline: Date.now() + 90 * 60_000, party: () => PARTY,
-    signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"), cancelRedeem: async () => void calls.push("cancelRedeem"), appeared: async () => false,
+    signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"), cancelRedeem: async () => void calls.push("cancelRedeem"), appeared: async (a) => "redeem" in a,
     allocateDeposit: async () => void calls.push("allocateDeposit"), signDeposit: async () => void calls.push("signDeposit"), waitDeposit: async () => void calls.push("waitDeposit"),
     depositDeadline: async () => canton.deadline, recoverDeposit: async () => void calls.push("recoverDeposit"),
   };

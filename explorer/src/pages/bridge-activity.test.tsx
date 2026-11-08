@@ -201,6 +201,7 @@ describe("the Activity list", () => {
     it("is listed with what it moves, says another browser started it, and carries on from its row: one release, asked of the wallet once", async () => {
       const store = memoryStore();
       const made = fakeSession({ store, legs: () => [], open: openWith([request()]), tx: () => finalTx([leg({ kind: "payment", legId: releaseIdOf(VAULT, "other-1") }, TKA)]) });
+      made.session.open = vi.fn(async () => openWith(made.evm.calls.length > 0 ? [] : [request()]));   // the release archives the request
       show({ store, session: made.session });
       const row = (await screen.findByText("3 TKA to Ostia")).closest("li")!;
       expect(within(row).getByText("Started in another browser. Canton has it. Release it on Ostia.")).toBeInTheDocument();
@@ -231,8 +232,12 @@ describe("the Activity list", () => {
       show({ store, session });
       await waitFor(() => expect(session.open).toHaveBeenCalled());
       await new Promise((r) => setTimeout(r, 20));
-      expect(rows()).toHaveLength(2);
-      expect(screen.queryByText(/another browser/)).toBeNull();
+      expect(rows()).toHaveLength(3);
+      // The request of the kept record is not listed again; the one for the finished redeem is a dead duplicate, listed as spent so it can be removed.
+      const dead = screen.getByText(/Its tokens were spent by another move.*Remove it/).closest("li")!;
+      expect(within(dead).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+      expect(within(dead).queryByRole("button", { name: /Release|Continue/ })).toBeNull();
+      expect(screen.queryAllByText(/Started in another browser/)).toHaveLength(1);
     });
     it("is a plain row without a button where this build does not move the token", async () => {
       const store = memoryStore();

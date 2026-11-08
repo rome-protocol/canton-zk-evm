@@ -301,12 +301,22 @@ describe("move 2: a twin back, Canton to Ostia", () => {
     const store = memoryStore();
     keep(store, { input, stage: "canton" });
     const t = setup({ store, txs: [final([releaseLeg()])] });
+    t.canton.seen = () => true;
     expect(await t.move.resume()).toMatchObject({ phase: "paused" });
     expect(t.canton.calls).toEqual(["waitRedeem"]);
     expect(t.evm.calls).toEqual([]);
     expect(await t.move.proceed()).toMatchObject({ phase: "final" });
-    expect(t.canton.calls).toEqual(["waitRedeem"]);
+    expect(t.canton.calls).toEqual(["waitRedeem", "appeared"]);   // the request is looked for once more before the wallet is asked
     expect(t.evm.calls.map((c) => c.name)).toEqual(["release"]);
+  });
+  it("a redeem whose request was removed elsewhere before the release is refused in words, the record goes, and the wallet is never asked", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "evm" });
+    const t = setup({ store });
+    await t.move.resume();
+    expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: false, reason: expect.stringContaining("no longer shows this redeem") });
+    expect(loadCheckpoint(store)).toBeNull();
+    expect(t.evm.calls).toEqual([]);
   });
   it("L6: signs for a vault that holds the amount, not the first one", async () => {
     const two = { ...config, vaults: [VAULT, VAULT2] };
@@ -894,6 +904,14 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     expect(sentSince).toHaveBeenCalledWith(ME, 7);
     expect(t.evm.calls).toEqual([]);
   });
+  it("a listed transaction of the account that cannot be read keeps the look incomplete: the move waits and the wallet is not asked again", async () => {
+    const store = memoryStore();
+    keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
+    const t = setup({ store, sentSince: async () => [OTHER], tx: async () => { throw new Error("429"); }, evm: fakeEvm({ nonce: 8 }) });
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true });
+    expect(t.evm.calls).toEqual([]);
+    expect(loadCheckpoint(store)).toMatchObject({ stage: "wallet", step: "withdraw" });
+  });
   it("H3: an unrelated transaction at the saved nonce is not taken for the withdrawal: nothing is adopted, and the person's continue sends it", async () => {
     const store = memoryStore();
     keep(store, { input: withdraw, stage: "wallet", step: "withdraw", nonce: 7, call });
@@ -1156,13 +1174,14 @@ describe("a failed release, a drained vault, a lock re-read, and waits that run 
     const store = memoryStore();
     keep(store, { input: redeem, stage: "sent", step: "release", nonce: 8, tx: OTHER });
     const t = setup({ store, tx: async (h) => (h === OTHER ? reverted : final([leg({ kind: "payment", legId: releaseIdOf(VAULT, "ref-1") })])) });
+    t.canton.seen = () => true;
     expect(await t.move.resume()).toMatchObject({ phase: "paused", note: "The transaction failed on Ostia; nothing moved. Continue to try again." });
     expect(loadCheckpoint(store)).toMatchObject({ stage: "evm" });
     expect(loadCheckpoint(store)!.tx).toBeUndefined();
     expect(t.evm.calls).toEqual([]);
     expect(await t.move.proceed()).toMatchObject({ phase: "final" });
     expect(t.evm.calls.map((c) => c.name)).toEqual(["release"]);
-    expect(t.canton.calls).toEqual([]);
+    expect(t.canton.calls).toEqual(["appeared"]);   // only a look at the request before the wallet is asked again: nothing is signed
   });
   it("M12: a withdrawal that failed on Ostia (nothing burnt) is sent again on continue", async () => {
     const t = setup({ tx: async (h) => (h === hashOf(1) ? reverted : made(call, [withdrawLeg()])) });
@@ -1175,6 +1194,7 @@ describe("a failed release, a drained vault, a lock re-read, and waits that run 
     keep(store, { input: redeem, stage: "evm" });
     const two = { ...config, vaults: [VAULT, VAULT2] };
     const t = setup({ store, config: two, evm: fakeEvm({ vaultBalance: { [VAULT]: 1n, [VAULT2]: 10n ** 21n } }), tx: async () => final([leg({ kind: "payment", legId: releaseIdOf(VAULT2, "ref-1") })]) });
+    t.canton.seen = () => true;
     expect(await t.move.resume()).toMatchObject({ phase: "paused" });
     expect(await t.move.proceed()).toMatchObject({ phase: "final" });
     expect(t.evm.calls).toEqual([{ name: "release", args: [VAULT2, "ref-1", TKA, ME, 2n * 10n ** 18n] }]);
@@ -1183,6 +1203,7 @@ describe("a failed release, a drained vault, a lock re-read, and waits that run 
     const store = memoryStore();
     keep(store, { input: redeem, stage: "evm" });
     const t = setup({ store, evm: fakeEvm({ vaultBalance: { [VAULT]: 1n } }) });
+    t.canton.seen = () => true;
     await t.move.resume();
     expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("vault does not hold") });
     expect(t.evm.calls).toEqual([]);
@@ -1257,6 +1278,14 @@ describe("a Canton command that got no answer is not signed again until its time
     expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("may still take it") });
     expect(t.canton.calls).toEqual(["appeared"]);                   // it only looked
     expect(loadCheckpoint(t.store)).toMatchObject({ stage: "signing", cantonBy: by });
+  });
+  it("redeem: the time Canton can still record the step by is saved before the execute, so a tab closed mid-execute does not sign again at once", async () => {
+    const t = setup();
+    let during: number | undefined;
+    t.canton.signRedeem = async () => { during = loadCheckpoint(t.store)?.cantonBy; };
+    await t.move.start(redeem);
+    expect(during).toBeGreaterThan(Date.now() + 5 * 60_000);
+    expect(loadCheckpoint(t.store)!.cantonBy).toBeUndefined();   // cleared once Canton took it
   });
   it("redeem: once the request is on Canton the move goes on without signing, and clears the time", async () => {
     const t = setup({ txs: [final([releaseLeg()])] });
