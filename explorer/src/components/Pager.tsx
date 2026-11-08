@@ -29,15 +29,15 @@ export function usePaged<P extends Page<unknown>>(key: readonly unknown[], read:
 
 type Paged = Pick<ReturnType<typeof usePaged>, "page" | "hasPrev" | "hasNext" | "first" | "prev" | "forward">;
 
-/** First, back, the page number and forward. Hidden when the list fits one page. */
-export function Pager({ p, label }: { p: Paged; label: string }) {
+/** First, back, the page number and forward. Hidden when the list fits one page. A list that runs oldest first names back "Older page" and forward "Newer page". */
+export function Pager({ p, label, oldestFirst = false }: { p: Paged; label: string; oldestFirst?: boolean }) {
   if (!p.hasPrev && !p.hasNext) return null;
   return (
     <nav className="pager" aria-label={label}>
       <button type="button" disabled={!p.hasPrev} onClick={p.first}>First</button>
-      <button type="button" disabled={!p.hasPrev} onClick={p.prev} aria-label="Newer page">‹</button>
+      <button type="button" disabled={!p.hasPrev} onClick={p.prev} aria-label={oldestFirst ? "Older page" : "Newer page"}>‹</button>
       <span className="pager-n" aria-current="page">Page {p.page}</span>
-      <button type="button" disabled={!p.hasNext} onClick={p.forward} aria-label="Older page">›</button>
+      <button type="button" disabled={!p.hasNext} onClick={p.forward} aria-label={oldestFirst ? "Newer page" : "Older page"}>›</button>
     </nav>
   );
 }

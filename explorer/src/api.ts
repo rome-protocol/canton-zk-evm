@@ -317,13 +317,41 @@ export interface LegItem { gateway?: string | null; legIndex: number; txIndex: n
 export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null;
   /** How many EVM transactions the update settled (its block's); null for an update that carries no block. */
   txCount: number | null }
-export interface UpdateDetail extends UpdateItem {
+/** The legs of a block by kind; a payment here is one that is neither a lock nor a release. */
+export interface UpdateLegs { total: number; deposit: number; withdrawal: number; payment: number; lock: number; release: number }
+/**
+ * What the Linked to Canton list adds to an update, each null where nothing holds it. `status` and `attempts` come from the producer's journal (`first`: committed on the first attempt,
+ * `retried`: after more); `settleSeconds` runs from `settleFrom` (the proof's start, or the block's own timestamp) to Canton's record time; `legs` waits for the block's legs to be indexed.
+ */
+export interface UpdateRow extends UpdateItem {
+  status: "first" | "retried" | null; attempts: number | null; settleSeconds: number | null; settleFrom: "proofStart" | "blockTime" | null;
+  submittedTemplate: string | null; submittedChoice: string | null; legs: UpdateLegs | null;
+}
+export interface UpdateAttempt { number: number; outcome: string; reason: string | null; committed: boolean; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; proofOutcome: string | null; submittedAt: string | null; answeredAt: string | null }
+export interface TimelineStep { step: "built" | "proofStarted" | "proofDone" | "submitted" | "committed"; at: string; source: "producer" | "block" | "canton" }
+export interface UpdateView {
+  attempts: UpdateAttempt[]; timeline: TimelineStep[];
+  proofCheck: { evidence: "committed update"; confirmers: number; matchesPins: boolean | null; matchesBlock: boolean | null };
+}
+export type UpdateFilter = "all" | "first" | "retried" | "legs";
+export type UpdateOrder = "desc" | "asc";
+export type CantonWindow = "24h" | "7d";
+/** The figures of the Linked to Canton header, from the hourly rollup. */
+export interface CantonStats {
+  asOf: string | null; dataSince: string | null; blocks: number; retriedBlocks: number;
+  attempts: { submitted: number; committed: number; refused: number; other: number; since: string | null };
+  successRate: number | null;
+  settlement: { window: CantonWindow; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; basis: "proofStart" };
+  legs: UpdateLegs;
+}
+export interface UpdateDetail extends UpdateRow {
   template: { packageId: string; packageName: string | null; module: string; entity: string };
   contractId: string | null;
   blockHash: string | null;
   signatories: { role: string; party: string }[];
   /** What the producer's journal says it submitted for the update; null when the journal does not hold it. */
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
+  view: UpdateView;
 }
 
 /** An update in the window around one. The template and the choice are what the producer's log says it submitted, null where the log does not hold the update; `txCount` is the block's. */
@@ -354,7 +382,12 @@ export const getBlockLegs = async (id: string, after: string | null, limit = PAG
 export interface LegListItem extends LegItem { block: number; txHash: string | null; party: string | null; twin: "lock" | "release" | null }
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;
 export const getLeg = async (id: string) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200])).body as LegListItem;
-export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
+/** The Canton updates of a filter, newest first or oldest first. The cursor is `before` newest first and `after` oldest first; null asks for the first page. */
+export const getUpdates = async (cursorKey: string | null, filter: UpdateFilter = "all", order: UpdateOrder = "desc", limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor(order === "asc" ? "after" : "before", cursorKey)}${filter === "all" ? "" : `&filter=${filter}`}${order === "asc" ? "&order=asc" : ""}`, [200])).body as Page<UpdateRow>;
+/** The updates of the filter as a file, with the list's columns. */
+export const updatesCsvPath = (filter: UpdateFilter, order: UpdateOrder) => `/api/canton/updates?format=csv&filter=${filter}&order=${order}`;
+/** The header's figures; the window is the one of the settlement time. */
+export const getCantonStats = async (window: CantonWindow) => (await call(`/api/canton/stats?window=${window}`, [200])).body as CantonStats;
 /** The EVM transactions one Canton update settled: its block's, in order. */
 export const getUpdateTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getUpdate = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}`, [200])).body as UpdateDetail;

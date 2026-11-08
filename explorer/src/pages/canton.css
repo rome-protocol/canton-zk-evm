@@ -19,16 +19,43 @@
   .tbl.stk tr { display: grid; gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--line-2); }
   .stk tr:last-child { border-bottom: 0; }
   .tbl.stk td { display: block; padding: 0; border: 0; white-space: normal; text-align: left; min-width: 0; overflow-wrap: anywhere; }
-  .stk-linked tr { grid-template-columns: auto 1fr; grid-template-areas: "u u" "b n" "t t"; }
   .stk-linked .k-u { grid-area: u; }
   .stk-linked .k-b { grid-area: b; }
   .stk-linked .k-n { grid-area: n; }
   .stk-linked .k-t { grid-area: t; font-size: 12px; color: var(--muted); }
-  .tbl.stk-linked .k-o, .tbl.stk-linked .k-s { display: none; }
   .stk-settled tr { grid-template-columns: auto auto 1fr; grid-template-areas: "h h h" "f a t"; }
   .stk-settled .k-h { grid-area: h; }
   .stk-settled .k-f { grid-area: f; }
   .stk-settled .k-a { grid-area: a; }
   .stk-settled .k-to { grid-area: t; }
   .tbl.stk-settled .k-p { display: none; }
+}
+
+/* The Linked to Canton view: the header figures, the tools row, the timeline and the attempts. */
+.canton-stats { margin-bottom: 14px; }
+.canton-stats .stat-wide { grid-column: span 2; }
+.legs-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.canton-tools { gap: 10px; }
+.nowrap { white-space: nowrap; }
+.tbl .info { margin-left: 4px; }
+.tl, .att, .leg-list { list-style: none; margin: 0; padding: 0; }
+.tl li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 7px 0; border-bottom: 1px solid var(--line-2); }
+.tl li:last-child { border-bottom: 0; }
+.tl-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--canton); align-self: center; flex: none; }
+.tl-k { font-weight: 600; min-width: 11em; }
+.tl-t { font-size: 13px; }
+.att li { padding: 9px 0; border-bottom: 1px solid var(--line-2); }
+.att li:last-child { border-bottom: 0; }
+.att-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.att-r { margin: 4px 0 0; overflow-wrap: anywhere; }
+.att-t { margin: 4px 0 0; overflow-wrap: anywhere; }
+.leg-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 0; border-bottom: 1px solid var(--line-2); min-width: 0; overflow-wrap: anywhere; }
+.leg-list li:last-child { border-bottom: 0; }
+@media (max-width: 720px) {
+  .tl-k { min-width: 0; flex: 1 1 100%; }
+  .stk-linked tr { grid-template-columns: 1fr 1fr; grid-template-areas: "u u" "b n" "st s" "c c" "l l" "t t"; }
+  .stk-linked .k-st { grid-area: st; }
+  .stk-linked .k-c { grid-area: c; }
+  .stk-linked .k-l { grid-area: l; }
+  .stk-linked .k-s { grid-area: s; }
 }
