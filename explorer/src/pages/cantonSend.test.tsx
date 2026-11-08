@@ -16,13 +16,15 @@ const TKA: Pair = { key: "twin:a", kind: "twin", native: false, wrapped: null, e
 const held = { [COIN.key]: 20n * 10n ** 10n, [TKA.key]: 0n };
 
 afterEach(cleanup);
+const mine = (n: number, amount = "2.5", lapsed = false): Sent => ({ id: `sent${n}`, pair: COIN, amount, to: OTHER, until: null, lapsed });
 const offer = (n: number, amount = "5"): Incoming => ({ id: `offer${n}`, pair: COIN, amount, from: OTHER, until: null });
 
 function fake(over: Partial<Sender> = {}) {
   const sender: Sender = {
     send: vi.fn(async () => ({ updateId: "1220" + "ee".repeat(32), waiting: true })),
-    waiting: vi.fn(async () => ({ offers: [] as Incoming[], sent: [] as Sent[] })),
+    waiting: vi.fn(async () => ({ offers: [] as Incoming[], sent: [] as Sent[], more: false })),
     accept: vi.fn(async () => {}),
+    takeBack: vi.fn(async () => {}),
     can: () => true,
     ...over,
   };
@@ -129,14 +131,14 @@ describe("Incoming", () => {
     show(fake());
     expect(await incoming().findByText("No transfers are waiting for you.")).toBeInTheDocument();
     cleanup();
-    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [] })) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [], more: false })) }));
     const rows = await incoming().findAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual(["5 Canton Coin from bridge::1220…cdcdAccept", "0.25 Canton Coin from bridge::1220…cdcdAccept"]);
   });
 
   it("accepts one: the balance is read again, the offer goes and the page says it is in the account", async () => {
     const user = userEvent.setup();
-    const sender = fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [] })) });
+    const sender = fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [], more: false })) });
     const changed = vi.fn();
     show(sender, { onChanged: changed });
     const [first] = await incoming().findAllByRole("button", { name: "Accept" });
@@ -151,17 +153,60 @@ describe("Incoming", () => {
 
   it("keeps the offer and says why in plain words when the accept fails", async () => {
     const user = userEvent.setup();
-    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [] })), accept: vi.fn(async () => { throw new AccountsError("unavailable", 502, "x"); }) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [], more: false })), accept: vi.fn(async () => { throw new AccountsError("unavailable", 502, "x"); }) }));
     await user.click(await incoming().findByRole("button", { name: "Accept" }));
     expect(await incoming().findByRole("alert")).toHaveTextContent("The bridge is busy or restarting. Try again in a moment.");
     expect(incoming().getByRole("button", { name: "Accept" })).toBeEnabled();
   });
 
   it("lists the account's own sends that are not accepted yet, with a plain line", async () => {
-    show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [{ id: "s1", pair: COIN, amount: "2.5", to: OTHER }] })) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [mine(1)], more: false })) }));
     expect(await incoming().findByText(/Sent by you, not accepted yet/)).toBeInTheDocument();
     expect(incoming().getByText(/2.5 Canton Coin/)).toBeInTheDocument();
     expect(incoming().queryByRole("button", { name: "Accept" })).toBeNull();
+  });
+
+  it("takes back an unaccepted send: the balance is read again, the row goes and the page says the tokens are back", async () => {
+    const user = userEvent.setup();
+    const sender = fake({ waiting: vi.fn(async () => ({ offers: [], sent: [mine(1), mine(2, "1")], more: false })) });
+    const changed = vi.fn();
+    show(sender, { onChanged: changed });
+    const [first] = await incoming().findAllByRole("button", { name: "Take back" });
+    await user.click(first!);
+    await waitFor(() => expect(incoming().getByText("2.5 Canton Coin is back in your account.")).toBeInTheDocument());
+    expect(sender.takeBack).toHaveBeenCalledOnce();
+    expect(sender.takeBack).toHaveBeenCalledWith(expect.objectContaining({ id: "sent1" }));
+    expect(changed).toHaveBeenCalledOnce();
+    expect(incoming().getAllByRole("listitem")).toHaveLength(1);
+    expect(incoming().getAllByRole("button", { name: "Take back" })).toHaveLength(1);
+  });
+
+  it("says a lapsed send was not accepted in time, and still offers Take back", async () => {
+    show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [mine(1, "2.5", true), mine(2, "1")], more: false })) }));
+    const rows = await incoming().findAllByRole("listitem");
+    expect(rows[0]!.textContent).toBe("2.5 Canton Coin to bridge::1220…cdcd, not accepted in timeTake back");
+    expect(rows[1]!.textContent).toBe("1 Canton Coin to bridge::1220…cdcdTake back");
+    expect(incoming().getAllByRole("button", { name: "Take back" })).toHaveLength(2);
+  });
+
+  it("keeps the send and says why in plain words when the take back fails", async () => {
+    const user = userEvent.setup();
+    const refused = vi.fn(async () => { throw new AccountsError("refused", 422, "INVALID_ARGUMENT instruction"); });
+    show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [mine(1)], more: false })), takeBack: refused }));
+    await user.click(await incoming().findByRole("button", { name: "Take back" }));
+    const alert = await incoming().findByRole("alert");
+    expect(alert).toHaveTextContent("Canton did not take this back. The receiver may have accepted it just now. Nothing was changed.");
+    expect(alert.textContent).not.toMatch(/INVALID|422|instruction/i);
+    expect(incoming().getByRole("button", { name: "Take back" })).toBeEnabled();
+  });
+
+  it("says when the read has more transfers than it returned, and not otherwise", async () => {
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [], more: true })) }));
+    expect(await incoming().findByText("More transfers are waiting than shown here.")).toBeInTheDocument();
+    cleanup();
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [], more: false })) }));
+    await incoming().findByRole("button", { name: "Accept" });
+    expect(incoming().queryByText(/More transfers are waiting/)).toBeNull();
   });
 
   it("does not look forever when the page lists no tokens", async () => {
@@ -173,7 +218,7 @@ describe("Incoming", () => {
 
   it("looks again when asked, and says when it cannot look", async () => {
     const user = userEvent.setup();
-    const look = vi.fn().mockRejectedValueOnce(new AccountsError("network", 0, "x")).mockResolvedValueOnce({ offers: [offer(1)], sent: [] });
+    const look = vi.fn().mockRejectedValueOnce(new AccountsError("network", 0, "x")).mockResolvedValueOnce({ offers: [offer(1)], sent: [], more: false });
     show(fake({ waiting: look }));
     expect(await incoming().findByRole("alert")).toHaveTextContent("Could not look for transfers just now.");
     await user.click(incoming().getByRole("button", { name: "Check again" }));
@@ -182,7 +227,7 @@ describe("Incoming", () => {
   });
 
   it("uses no technical names", async () => {
-    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [] })) }));
+    show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [], more: false })) }));
     await incoming().findByRole("button", { name: "Accept" });
     expect(screen.getByRole("region", { name: "Your addresses" }).textContent).not.toMatch(/party|instruction|preapproval|allocation|holding/i);
   });

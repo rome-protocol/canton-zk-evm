@@ -143,6 +143,21 @@ export function acceptTransfer(party: string, instruction: string, registry: { c
   };
 }
 
+/**
+ * The token standard's `TransferInstruction_Withdraw`: the account takes back a transfer it sent that its receiver has not accepted (the standard lets only the sender do it). The tokens return to the
+ * account. The context and the contracts are the registry's. `implementation` is the package of the instrument. Like the accept: one contract, the account as the only actor, the interface and the
+ * package that implements it; the transaction may carry a ledger time bound, as the registry's context sets it.
+ */
+export function withdrawTransfer(party: string, instruction: string, registry: { context: object; disclosedContracts: DisclosedContract[] }, implementation = "splice-amulet"): Built {
+  const args = { extraArgs: { context: registry.context, meta: { values: {} } } };
+  const template = { packageName: "splice-api-token-transfer-instruction-v1", ...TRANSFER_INSTRUCTION };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: instruction, choice: "TransferInstruction_Withdraw", choiceArgument: args } },
+    intent: { party, kind: "exercise", template, interface: TRANSFER_INSTRUCTION, choice: "TransferInstruction_Withdraw", contractId: instruction, args, ignore: ["extraArgs.context"], implementation, ledgerTimes: true },
+    disclosedContracts: registry.disclosedContracts,
+  };
+}
+
 const ALLOCATION = { module: "Splice.Api.Token.AllocationV1", entity: "Allocation" };
 /**
  * The token standard's `Allocation_Withdraw`: the account takes back an allocation it sent (the tokens of a deposit that cannot settle). The standard lets only the sender do it. The context and the

@@ -436,6 +436,48 @@ class TakeBack(Case):
         self.redeem_request()
         self.assertEqual(self.archive_redeem()[0], 403)
 
+    OFFER = "00" + "ab" * 40
+
+    def transfer_offer(self, sender=None, receiver=None, cid=OFFER, before=None):
+        self.ledger.transfers.append((cid, {"transfer": {"sender": sender or PARTY, "receiver": receiver or self.stranger, "amount": "3.0", "instrumentId": {"admin": "reg::1", "id": "TKB"},
+                                                         "requestedAt": "2026-11-09T10:00:00Z", "executeBefore": before or self.at(self.NOW + 3600)}}))
+
+    def withdraw_transfer(self, cid=OFFER):
+        return self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {
+            "templateId": A.TRANSFER_INSTRUCTION, "contractId": cid, "choice": "TransferInstruction_Withdraw", "choiceArgument": {"extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}}}]})
+
+    def test_the_transfer_withdraw_is_on_the_built_in_list_and_needs_no_open_limit(self):
+        self.assertIn(A.TRANSFER_WITHDRAW, A.DEFAULT_ALLOW)
+        self.assertEqual(A.open_limits_from(A.DEFAULT_ALLOW, 3, None), {ACCEPT: 1, DEPOSIT: 3})
+
+    def test_an_account_takes_back_a_transfer_it_sent_whether_or_not_the_offer_has_lapsed(self):
+        self.transfer_offer()
+        self.transfer_offer(cid="00" + "ac" * 40, before=self.at(self.NOW - 3600))
+        for cid in (self.OFFER, "00" + "ac" * 40):
+            status, out, _ = self.withdraw_transfer(cid)
+            self.assertEqual((status, out["hashingSchemeVersion"]), (200, "HASHING_SCHEME_VERSION_V2"), cid)
+        self.assertEqual([c[2]["commands"][0]["ExerciseCommand"]["choice"] for c in self.calls_to("/prepare")], ["TransferInstruction_Withdraw"] * 2)
+
+    def test_an_account_does_not_take_back_a_transfer_it_did_not_send(self):
+        self.transfer_offer(sender=self.stranger, receiver=PARTY)   # offered to the account: the account is the receiver
+        self.transfer_offer(sender=self.stranger, receiver="third::1220" + "88" * 32, cid="00" + "ad" * 40)
+        self.assertEqual(self.withdraw_transfer()[0], 404)
+        self.assertEqual(self.withdraw_transfer("00" + "ad" * 40)[0], 404)
+        self.assertEqual(self.withdraw_transfer("00" + "ae" * 40)[0], 404)   # one that is not there
+        self.assertEqual(self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": A.TRANSFER_INSTRUCTION, "choice": "TransferInstruction_Withdraw"}}]})[0], 400)
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_transfer_is_taken_back_though_strangers_offered_more_than_the_list_holds(self):
+        for i in range(A.TRANSFERS_MAX + 5):
+            self.transfer_offer(sender=self.stranger, receiver=PARTY, cid="00" + "%02x" % (i % 256) * 40)
+        self.transfer_offer()
+        self.assertEqual(self.withdraw_transfer()[0], 200)
+
+    def test_a_deployment_that_does_not_list_the_transfer_withdraw_refuses_it(self):
+        self.start(allow=tuple(e for e in A.DEFAULT_ALLOW if e != A.TRANSFER_WITHDRAW))
+        self.transfer_offer()
+        self.assertEqual(self.withdraw_transfer()[0], 403)
+
     def test_prepare_says_the_time_it_can_be_recorded_by(self):
         self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
         self.redeem_request()
@@ -905,12 +947,29 @@ class AllocationsAndOpen(Case):
         self.ledger.transfers = [("t1", move(stranger, PARTY)), ("t2", move(PARTY, stranger, "1.5")), ("t3", move(stranger, other)), ("t4", {"status": None})]   # t3 is not the account's, t4 has no transfer
         status, out, _ = self.req("GET", f"/accounts/v1/transfers/{PARTY}")
         self.assertEqual(status, 200)
-        self.assertEqual([(t["contractId"], t["transfer"]["sender"] == PARTY, t["transfer"]["amount"]) for t in out["transfers"]], [("t1", False, "3.0"), ("t2", True, "1.5")])
-        self.assertEqual(out["transfers"][0]["transfer"], {k: v for k, v in move(stranger, PARTY)["transfer"].items() if k not in ("inputHoldingCids", "meta")})   # the holdings and the meta are not passed on
-        self.assertEqual((out["transfers"][0]["status"], out["more"]), ({"tag": "TransferPendingReceiverAcceptance", "value": {}}, False))
+        self.assertEqual([(t["contractId"], t["transfer"]["sender"] == PARTY, t["transfer"]["amount"]) for t in out["transfers"]], [("t2", True, "1.5"), ("t1", False, "3.0")])   # its own send first
+        self.assertEqual(out["transfers"][1]["transfer"], {k: v for k, v in move(stranger, PARTY)["transfer"].items() if k not in ("inputHoldingCids", "meta")})   # the holdings and the meta are not passed on
+        self.assertEqual((out["transfers"][1]["status"], out["more"]), ({"tag": "TransferPendingReceiverAcceptance", "value": {}}, False))
         self.assertEqual([t["packageName"] for t in out["transfers"]], ["splice-amulet", "splice-amulet"])   # the ledger's package name of each contract
         sent = self.calls_to("/active-contracts-page")[0][2]
         self.assertEqual(sent["eventFormat"]["filtersByParty"][PARTY]["cumulative"][0]["identifierFilter"]["InterfaceFilter"]["value"]["interfaceId"], A.TRANSFER_INSTRUCTION)
+
+    def test_the_accounts_own_sends_come_first_and_each_group_newest_first(self):
+        self.make_account()
+        stranger = "other::1220" + "99" * 32
+        move = lambda sender, receiver, at: {"transfer": {"sender": sender, "receiver": receiver, "amount": "1.0", "instrumentId": {"admin": "reg::1", "id": "TKB"}, "requestedAt": at}}
+        self.ledger.transfers = [("o1", move(stranger, PARTY, "2026-11-09T10:00:00Z")), ("s1", move(PARTY, stranger, "2026-11-09T09:00:00Z")), ("o2", move(stranger, PARTY, "2026-11-09T11:00:00Z")),
+                                 ("s2", move(PARTY, stranger, "2026-11-09T09:30:00Z")), ("s3", {"transfer": {**move(PARTY, stranger, "")["transfer"], "requestedAt": None}})]
+        out = self.req("GET", f"/accounts/v1/transfers/{PARTY}")[1]
+        self.assertEqual([t["contractId"] for t in out["transfers"]], ["s2", "s1", "s3", "o2", "o1"])
+
+    def test_the_accounts_own_sends_stay_in_the_list_when_strangers_offer_more_than_it_holds(self):
+        self.make_account()
+        stranger = "other::1220" + "99" * 32
+        view = lambda sender, receiver: {"transfer": {"sender": sender, "receiver": receiver, "amount": "1.0", "instrumentId": {"admin": "reg::1", "id": "TKB"}, "requestedAt": "2026-11-09T10:00:00Z"}}
+        self.ledger.transfers = [(f"t{i}", view(stranger, PARTY)) for i in range(A.TRANSFERS_MAX + 5)] + [("mine", view(PARTY, stranger))]
+        out = self.req("GET", f"/accounts/v1/transfers/{PARTY}")[1]
+        self.assertEqual((out["transfers"][0]["contractId"], len(out["transfers"]), out["more"]), ("mine", A.TRANSFERS_MAX, True))
 
     def test_the_transfers_are_bounded_and_need_the_accounts_signature(self):
         self.make_account()
@@ -1378,6 +1437,15 @@ class RegistryRelay(OutsideCase):
         status, out, _ = self.accept()
         self.assertEqual((status, out), (200, self.outside.answer))
         self.assertEqual(self.outside.calls[0][:2], (f"/scan-proxy/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/accept", {"meta": {}, "excludeDebugFields": True}))
+
+    def test_the_withdraw_context_of_a_transfer_instruction(self):
+        self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
+        self.with_registry()
+        status, out, _ = self.req("POST", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/{INSTRUCTION}/withdraw-context", {"party": PARTY, "meta": {}, "excludeDebugFields": True})
+        self.assertEqual((status, out), (200, self.outside.answer))
+        self.assertEqual(self.outside.calls[0][:2], (f"/scan-proxy/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/withdraw", {"meta": {}, "excludeDebugFields": True}))
+        self.assertEqual(self.req("POST", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/nope/withdraw-context", {"party": PARTY})[0], 404)
+        self.assertEqual(self.req("POST", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/{INSTRUCTION}/reject-context", {"party": PARTY})[0], 404)   # nothing else is relayed
 
     def test_the_withdraw_context_of_an_allocation(self):
         self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}

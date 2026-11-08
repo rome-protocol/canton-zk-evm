@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AmountError } from "./amounts.ts";
 import { AccountsError, type Holding, type OpenState, type TransferView } from "./canton/accounts.ts";
-import { TRANSFER_PAST_MS, TRANSFER_WINDOW_MS, type Built } from "./canton/commands.ts";
+import { TRANSFER_PAST_MS, TRANSFER_WINDOW_MS, transferTimes, type Built } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
 import { createSender, offersOf, sentOf } from "./send.ts";
 import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } from "./sendwords.ts";
@@ -53,10 +53,19 @@ function sender(o: { holdings?: Holding[]; open?: OpenState; kind?: string; clos
     transferFactory: vi.fn(async (_k: CantonKey, _admin: string, _party: string, _args: object) => ({ factoryId: "factory1", transferKind: o.kind ?? "offer", choiceContext: { choiceContextData: { values: { x: 1 } }, disclosedContracts: [DISCLOSED] } })),
     transfers: vi.fn(async () => ({ transfers: [] as TransferView[], more: false })),
     acceptContext: vi.fn(async () => ({ choiceContextData: { values: {} }, disclosedContracts: [] })),
+    transferWithdrawContext: vi.fn(async () => ({ choiceContextData: { values: { withdraw: 1 } }, disclosedContracts: [DISCLOSED] })),
   };
   const account = { key, party: PARTY, client, closed: o.closed ?? false, submit: vi.fn(async (b: Built) => { submitted.push(b); return "update1"; }) };
   return { client, account, submitted, sender: createSender(account as never, () => NOW) };
 }
+
+describe("the transfer window", () => {
+  it("is asked for a minute in the past and good for an hour", () => {
+    expect(TRANSFER_PAST_MS).toBe(60_000);
+    expect(TRANSFER_WINDOW_MS).toBe(3_600_000);
+    expect(transferTimes(NOW)).toEqual({ requestedAt: "2026-11-09T11:59:00.000Z", executeBefore: "2026-11-09T13:00:00.000Z" });
+  });
+});
 
 describe("sending on Canton", () => {
   it("asks the registry's transfer factory for exactly the transfer it will sign, then signs it: the person's receiver, amount, instrument and the account's own unlocked holdings", async () => {
@@ -136,10 +145,16 @@ describe("incoming transfers", () => {
       view("unlisted", { instrumentId: { admin: DSO, id: "Unlisted" } }), view("odd", { amount: "1.00000000001" }), view("twin", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }, "ostia-twin"),
       view("lookalike", {}, "some-other-package"), view("no-package", {}, null), view("twin-in-coins-package", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id } }),
       view("unknown-package", { instrumentId: { admin: DSO, id: "TKB" } }),
+      view("self", { sender: PARTY, receiver: PARTY }),   // sender and receiver are the account: a transfer the page refuses to make, and not an offer to it
     ];
     const offers = offersOf(views, PARTY, [COIN, TWIN, OTHER_TOKEN], NOW);
     expect(offers.map((o) => [o.id, o.amount, o.pair.canton.symbol, o.from])).toEqual([["a", "5", "Canton Coin", OTHER], ["twin", "0.5", "TKA", OTHER]]);
     expect(offers[0]!.until).toBe(Date.parse("2026-11-10T11:00:00Z"));   // a contract whose package is not the token's implementation is not listed, whatever its view says
+  });
+  it("lists the offers newest first, the ones with no time last", () => {
+    const at = (n: number) => `2026-11-09T0${n}:00:00Z`;
+    const views = [view("old", { requestedAt: at(1) }), view("none", { requestedAt: null }), view("new", { requestedAt: at(3) }), view("mid", { requestedAt: at(2) }), view("mid2", { requestedAt: at(2) })];
+    expect(offersOf(views, PARTY, [COIN], NOW).map((o) => o.id)).toEqual(["new", "mid", "mid2", "old", "none"]);
   });
   it("lists the account's own sends that nobody accepted, lapsed ones too, for the same tokens and packages", () => {
     const views = [
@@ -148,6 +163,42 @@ describe("incoming transfers", () => {
       view("mine-unlisted", { sender: PARTY, receiver: OTHER, instrumentId: { admin: DSO, id: "Unlisted" } }),
     ];
     expect(sentOf(views, PARTY, [COIN, TWIN]).map((o) => [o.id, o.amount, o.pair.canton.symbol, o.to])).toEqual([["mine", "2.5", "Canton Coin", OTHER], ["mine-lapsed", "5", "Canton Coin", OTHER], ["mine-twin", "5", "TKA", OTHER]]);
+  });
+  it("marks a send whose time is past as lapsed, and lists the account's sends newest first", () => {
+    const views = [
+      view("old", { sender: PARTY, receiver: OTHER, requestedAt: "2026-11-09T09:00:00Z", executeBefore: "2026-11-09T10:00:00Z" }),
+      view("new", { sender: PARTY, receiver: OTHER, requestedAt: "2026-11-09T11:00:00Z", executeBefore: "2026-11-09T12:00:01Z" }),
+      view("edge", { sender: PARTY, receiver: OTHER, requestedAt: "2026-11-09T10:00:00Z", executeBefore: "2026-11-09T12:00:00Z" }),
+      view("no-time", { sender: PARTY, receiver: OTHER, requestedAt: null, executeBefore: null }),
+    ];
+    expect(sentOf(views, PARTY, [COIN], NOW).map((o) => [o.id, o.lapsed])).toEqual([["new", false], ["edge", true], ["old", true], ["no-time", false]]);
+  });
+  it("takes back a send with the registry's withdraw context of its token, as the account", async () => {
+    const t = sender();
+    t.client.transfers.mockResolvedValueOnce({ transfers: [view("out", { sender: PARTY, receiver: OTHER })], more: false });
+    const [mine] = (await t.sender.waiting([COIN])).sent;
+    await t.sender.takeBack(mine!);
+    expect(t.client.transferWithdrawContext).toHaveBeenCalledWith(key, DSO, "out", PARTY);
+    expect(t.submitted[0]!.command).toMatchObject({ ExerciseCommand: { contractId: "out", choice: "TransferInstruction_Withdraw", choiceArgument: { extraArgs: { context: { values: { withdraw: 1 } } } } } });
+    expect(t.submitted[0]!.intent).toMatchObject({ party: PARTY, contractId: "out", choice: "TransferInstruction_Withdraw", implementation: "splice-amulet" });
+    expect(t.submitted[0]!.disclosedContracts).toEqual([DISCLOSED]);
+  });
+  it("takes back a twin send from the twin's registry with the twin's package, and does nothing for an account that was let go", async () => {
+    const t = sender();
+    t.client.transfers.mockResolvedValueOnce({ transfers: [view("out2", { sender: PARTY, receiver: OTHER, instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }, "ostia-twin")], more: false });
+    const [mine] = (await t.sender.waiting([COIN, TWIN])).sent;
+    await t.sender.takeBack(mine!);
+    expect(t.client.transferWithdrawContext).toHaveBeenCalledWith(key, GATEWAY, "out2", PARTY);
+    expect(t.submitted[0]!.intent).toMatchObject({ contractId: "out2", implementation: "ostia-twin" });
+    const gone = sender({ closed: true });
+    await expect(gone.sender.takeBack(mine!)).rejects.toThrow(/account/);
+    expect(gone.client.transferWithdrawContext).not.toHaveBeenCalled();
+    expect(gone.submitted).toEqual([]);
+  });
+  it("passes on that more transfers are waiting than were read", async () => {
+    const t = sender();
+    t.client.transfers.mockResolvedValueOnce({ transfers: [], more: true });
+    expect((await t.sender.waiting([COIN])).more).toBe(true);
   });
   it("accepts an offer with the registry's accept context of its token, as the account", async () => {
     const t = sender();

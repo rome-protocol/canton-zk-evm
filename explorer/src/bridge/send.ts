@@ -3,8 +3,8 @@
 import { parseAmount, showUnits, tenDecimals } from "./amounts.ts";
 import { cover } from "./adapter.ts";
 import type { Account } from "./account.ts";
-import { acceptChoice, factoryChoice, type TransferView } from "./canton/accounts.ts";
-import { acceptTransfer, implementationOf, transfer, transferTimes } from "./canton/commands.ts";
+import { acceptChoice, factoryChoice, withdrawChoice, type TransferView } from "./canton/accounts.ts";
+import { acceptTransfer, implementationOf, transfer, transferTimes, withdrawTransfer } from "./canton/commands.ts";
 import { Refused } from "./moves/moves.ts";
 import type { Pair } from "./tokens.ts";
 import { checkAmount, checkReceiver } from "./sendwords.ts";
@@ -40,15 +40,21 @@ export interface Sent {
   pair: Pair;
   amount: string;
   to: string;
+  /** When the offer lapses (ms since 1970), or null. */
+  until: number | null;
+  /** The offer's time is past: the receiver can no longer accept it, and the tokens are still in it until the account takes them back. */
+  lapsed: boolean;
 }
 
 export interface Sender {
   /** Sends `amount` (typed) of the pair's token to `receiver`. Signs one Canton command. */
   send(pair: Pair, amount: string, receiver: string): Promise<SendResult>;
   /** The transfers waiting for this account to accept, and the ones it sent that are not accepted yet, for the tokens of `pairs` (one read). */
-  waiting(pairs: Pair[]): Promise<{ offers: Incoming[]; sent: Sent[] }>;
+  waiting(pairs: Pair[]): Promise<{ offers: Incoming[]; sent: Sent[]; more: boolean }>;
   /** Accepts one. Signs one Canton command. */
   accept(offer: Incoming): Promise<void>;
+  /** Takes back a transfer the account sent that nobody accepted (the standard's withdraw): the tokens return to the account. Signs one Canton command. */
+  takeBack(sent: Sent): Promise<void>;
   /** Whether this page can send the token (and accept it): the package that implements it is known. */
   can(pair: Pair): boolean;
 }
@@ -62,9 +68,13 @@ function listed(v: TransferView, pairs: Pair[]): { pair: Pair; amount: string } 
   try { return { pair, amount: showUnits(parseAmount(String(t.amount), 10).twin, 10) }; } catch { return null; }
 }
 
-/** The transfers of `views` that the account is offered: it is the receiver, and the token is one the page lists and can accept (a lapsed offer is left out). */
+const requestedAt = (v: TransferView): number => { const at = Date.parse(String(v.transfer?.requestedAt)); return Number.isNaN(at) ? 0 : at; };
+/** Newest first (a transfer with no time last); a stable sort, so equal times keep the order the service gave. */
+const newestFirst = <T>(list: [at: number, item: T][]): T[] => list.map((x, i) => [x, i] as const).sort(([[a], i], [[b], j]) => b - a || i - j).map(([[, item]]) => item);
+
+/** The transfers of `views` that the account is offered: it is the receiver, and the token is one the page lists and can accept (a lapsed offer is left out), newest first. */
 export function offersOf(views: TransferView[], party: string, pairs: Pair[], now = Date.now()): Incoming[] {
-  const out: Incoming[] = [];
+  const out: [number, Incoming][] = [];
   for (const v of views) {
     const t = v.transfer;
     if (!t || t.receiver !== party || t.sender === party) continue;
@@ -72,21 +82,24 @@ export function offersOf(views: TransferView[], party: string, pairs: Pair[], no
     if (!shown) continue;
     const until = typeof t.executeBefore === "string" ? Date.parse(t.executeBefore) : NaN;
     if (!Number.isNaN(until) && until <= now) continue;
-    out.push({ id: v.contractId, ...shown, from: t.sender, until: Number.isNaN(until) ? null : until });
+    out.push([requestedAt(v), { id: v.contractId, ...shown, from: t.sender, until: Number.isNaN(until) ? null : until }]);
   }
-  return out;
+  return newestFirst(out);
 }
 
-/** The transfers of `views` that the account sent and that nobody has accepted: its tokens are in them until the receiver accepts. A lapsed one is kept, since its tokens are still in it. */
-export function sentOf(views: TransferView[], party: string, pairs: Pair[]): Sent[] {
-  const out: Sent[] = [];
+/** The transfers of `views` that the account sent and that nobody has accepted: its tokens are in them until the receiver accepts. A lapsed one is kept (marked `lapsed`), since its tokens are still in it
+ * until the account takes them back. Newest first. */
+export function sentOf(views: TransferView[], party: string, pairs: Pair[], now = Date.now()): Sent[] {
+  const out: [number, Sent][] = [];
   for (const v of views) {
     const t = v.transfer;
     if (!t || t.sender !== party || t.receiver === party) continue;
     const shown = listed(v, pairs);
-    if (shown) out.push({ id: v.contractId, ...shown, to: t.receiver });
+    if (!shown) continue;
+    const until = typeof t.executeBefore === "string" ? Date.parse(t.executeBefore) : NaN;
+    out.push([requestedAt(v), { id: v.contractId, ...shown, to: t.receiver, until: Number.isNaN(until) ? null : until, lapsed: !Number.isNaN(until) && until <= now }]);
   }
-  return out;
+  return newestFirst(out);
 }
 
 /** The sender and the receiver of the account `a`. `now` is the clock the transfer's times are made from. */
@@ -117,14 +130,20 @@ export function createSender(a: Pick<Account, "key" | "party" | "client" | "subm
     },
     async waiting(pairs) {
       open();
-      const { transfers } = await a.client.transfers(a.key, a.party);
-      return { offers: offersOf(transfers, a.party, pairs, now()), sent: sentOf(transfers, a.party, pairs) };
+      const { transfers, more } = await a.client.transfers(a.key, a.party);
+      return { offers: offersOf(transfers, a.party, pairs, now()), sent: sentOf(transfers, a.party, pairs, now()), more };
     },
     async accept(offer) {
       open();
       const registry = acceptChoice(await a.client.acceptContext(a.key, offer.pair.canton.admin, offer.id, a.party));
       open();
       await a.submit(acceptTransfer(a.party, offer.id, registry, implementationOf(offer.pair.canton.id)));
+    },
+    async takeBack(sent) {
+      open();
+      const registry = withdrawChoice(await a.client.transferWithdrawContext(a.key, sent.pair.canton.admin, sent.id, a.party));
+      open();
+      await a.submit(withdrawTransfer(a.party, sent.id, registry, implementationOf(sent.pair.canton.id)));
     },
   };
 }

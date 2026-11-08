@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { fromBase64 } from "../src/bridge/canton/key.ts";
 import { partyOf } from "../src/bridge/canton/topology.ts";
-import { CC_ADMIN, CC_HOLDING, freshChain, preparedAccept, preparedTransfer, rpcResult, TKA, transferFactory, twinsOverview } from "./bridge-fakes.ts";
+import { CC_ADMIN, CC_HOLDING, freshChain, preparedAccept, preparedTransfer, preparedWithdraw, rpcResult, TKA, transferFactory, twinsOverview } from "./bridge-fakes.ts";
 
 /**
  * Send on Canton and Incoming, in a real browser at 360 px: the built pages (BRIDGE_E2E_DIST, as for bridge-account.test.ts), the same wallet that signs with a fixed key, and a fake account service whose
@@ -25,19 +25,19 @@ const STATUS = {
 };
 const GATEWAY_PARTY = "gateway::1220" + "03".repeat(32);   // the build's settings (the job sets VITE_CHAIN_GATEWAY to this)
 const RECEIVER = "bridge::1220" + "ab".repeat(32), SENDER = "friend::1220" + "cd".repeat(32);
-const OFFER = "00" + "b1".repeat(40), SEND_UPDATE = "1220" + "ef".repeat(32);
+const OFFER = "00" + "b1".repeat(40), SENT = "00" + "b2".repeat(40), SEND_UPDATE = "1220" + "ef".repeat(32);
 
 const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = ""; req.on("data", (c) => (t += c)); req.on("end", () => done(t)); });
 
 describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
   const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`);
   const chain = freshChain();
-  const seen = { signRequests: 0, walletSends: 0, factories: [] as any[], prepares: [] as any[], executed: 0, verified: 0, accepts: 0 };
-  const service = { kind: "offer" as "offer" | "direct", prepared: null as null | { hash: string }, offered: false, accepted: false, sendFails: false };
+  const seen = { signRequests: 0, walletSends: 0, factories: [] as any[], prepares: [] as any[], executed: 0, verified: 0, accepts: 0, withdraws: 0 };
+  const service = { kind: "offer" as "offer" | "direct", prepared: null as null | { hash: string; choice: string }, offered: false, accepted: false, sendFails: false, sentOnes: false, takenBack: false };
   let server: Server, browser: any, party = "", publicKey: Uint8Array = new Uint8Array();
   beforeEach(() => {
-    Object.assign(seen, { signRequests: 0, walletSends: 0, factories: [], prepares: [], executed: 0, verified: 0, accepts: 0 });
-    Object.assign(service, { kind: "offer", prepared: null, offered: false, accepted: false, sendFails: false });
+    Object.assign(seen, { signRequests: 0, walletSends: 0, factories: [], prepares: [], executed: 0, verified: 0, accepts: 0, withdraws: 0 });
+    Object.assign(service, { kind: "offer", prepared: null, offered: false, accepted: false, sendFails: false, sentOnes: false, takenBack: false });
   });
 
   beforeAll(async () => {
@@ -65,17 +65,26 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
         seen.accepts++;
         return json(200, { choiceContextData: { values: {} }, disclosedContracts: [] });
       }
+      if (/^\/accounts\/v1\/registry\/[^/]+\/transfer-instruction\/[^/]+\/withdraw-context$/.test(path)) {
+        seen.withdraws++;
+        return json(200, { choiceContextData: { values: {} }, disclosedContracts: [] });
+      }
       if (path === "/accounts/v1/prepare") {
         const first = JSON.parse(await body(req)).commands[0];
         seen.prepares.push(first);
         if (first.ExerciseCommand?.choice === "TransferFactory_Transfer") {
           const prepared = await preparedTransfer(party, first.ExerciseCommand, "splice-amulet");
-          service.prepared = { hash: prepared.preparedTransactionHash };
+          service.prepared = { hash: prepared.preparedTransactionHash, choice: "send" };
           return json(200, prepared);
         }
         if (first.ExerciseCommand?.choice === "TransferInstruction_Accept") {
           const prepared = await preparedAccept(party, first.ExerciseCommand, "splice-amulet");
-          service.prepared = { hash: prepared.preparedTransactionHash };
+          service.prepared = { hash: prepared.preparedTransactionHash, choice: "accept" };
+          return json(200, prepared);
+        }
+        if (first.ExerciseCommand?.choice === "TransferInstruction_Withdraw") {
+          const prepared = await preparedWithdraw(party, first.ExerciseCommand, "splice-amulet");
+          service.prepared = { hash: prepared.preparedTransactionHash, choice: "withdraw" };
           return json(200, prepared);
         }
         return json(409, { error: "already_accepted", message: "the account already has this acceptance open" });   // the two standing acceptances
@@ -86,7 +95,8 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
         const ok = verify(null, Buffer.from(service.prepared!.hash, "base64"), key, Buffer.from(partySignatures[0].signature, "base64"));
         seen.executed++;
         if (ok) seen.verified++;
-        if (ok && service.offered) service.accepted = true;
+        if (ok && service.prepared!.choice === "accept") service.accepted = true;
+        if (ok && service.prepared!.choice === "withdraw") service.takenBack = true;
         return json(200, { updateId: SEND_UPDATE });
       }
       if (path === `/accounts/v1/open/${party}`) {
@@ -97,12 +107,15 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
         return json(200, { holdings: [
           { contractId: "00" + "ee".repeat(40), instrumentId: { admin: GATEWAY_PARTY, id: `erc20:${TKA.slice(2)}` }, amount: "20.0000000000", locked: false },
           { contractId: CC_HOLDING, instrumentId: { admin: CC_ADMIN, id: "Amulet" }, amount: "20.0000000000", locked: false },
+          ...(service.takenBack ? [{ contractId: "00" + "e3".repeat(40), instrumentId: { admin: CC_ADMIN, id: "Amulet" }, amount: "2.5000000000", locked: false }] : []),
           ...(service.accepted ? [{ contractId: "00" + "e2".repeat(40), instrumentId: { admin: CC_ADMIN, id: "Amulet" }, amount: "2.5000000000", locked: false }] : []),
         ] });
       }
       if (path === `/accounts/v1/transfers/${party}`) {
         const offer = { contractId: OFFER, packageName: "splice-amulet", transfer: { sender: SENDER, receiver: party, amount: "2.5000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" }, requestedAt: new Date(Date.now() - 60_000).toISOString(), executeBefore: new Date(Date.now() + 3600_000).toISOString() }, status: null };
-        return json(200, { party, transfers: service.offered && !service.accepted ? [offer] : [], more: false });
+        const mine = (contractId: string, executeBefore: number) => ({ contractId, packageName: "splice-amulet", transfer: { sender: party, receiver: SENDER, amount: "2.5000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" }, requestedAt: new Date(Date.now() - 7200_000).toISOString(), executeBefore: new Date(executeBefore).toISOString() }, status: null });
+        const sentOnes = service.sentOnes && !service.takenBack ? [mine(SENT, Date.now() - 3600_000)] : [];   // a send whose hour is past
+        return json(200, { party, transfers: [...sentOnes, ...(service.offered && !service.accepted ? [offer] : [])], more: false });
       }
       if (path === `/accounts/v1/allocations/${party}`) return json(200, { allocations: [] });
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
@@ -226,6 +239,30 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
     await incoming.getByText("2.5 Canton Coin is in your account.").waitFor({ timeout: 30_000 });
     expect(seen.accepts).toBe(1);
     expect(seen.prepares.filter((p) => p.ExerciseCommand?.choice === "TransferInstruction_Accept")).toHaveLength(1);
+    expect(seen.verified).toBe(seen.executed);
+    expect(await incoming.getByRole("listitem").count()).toBe(0);
+    await page.getByRole("list", { name: "On Canton" }).getByText("22.5").waitFor({ timeout: 30_000 });   // the balance is read again
+    expect(seen.signRequests).toBe(1);
+    expect(seen.walletSends).toBe(0);
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 120_000);
+
+  it("shows a send nobody accepted in time with Take back, takes it back with the account's key and shows the balance after", async () => {
+    service.sentOnes = true;
+    const page = await open("/bridge");
+    await signedIn(page);
+    const incoming = page.getByRole("group", { name: "Incoming" });
+    const row = incoming.getByRole("listitem");
+    await row.waitFor();
+    expect(await row.textContent()).toBe("2.5 Canton Coin to friend::1220…cdcd, not accepted in timeTake back");
+    expect(await inside(page)).toBe(true);
+    expect(await noSideways(page)).toBe(true);
+    expect(await page.getByRole("list", { name: "On Canton" }).getByRole("listitem").filter({ hasText: "Canton Coin" }).textContent()).toBe("Canton Coin20");
+    await incoming.getByRole("button", { name: "Take back" }).click();
+    await incoming.getByText("2.5 Canton Coin is back in your account.").waitFor({ timeout: 30_000 });
+    expect(seen.withdraws).toBe(1);
+    expect(seen.prepares.filter((p) => p.ExerciseCommand?.choice === "TransferInstruction_Withdraw")).toHaveLength(1);
     expect(seen.verified).toBe(seen.executed);
     expect(await incoming.getByRole("listitem").count()).toBe(0);
     await page.getByRole("list", { name: "On Canton" }).getByText("22.5").waitFor({ timeout: 30_000 });   // the balance is read again

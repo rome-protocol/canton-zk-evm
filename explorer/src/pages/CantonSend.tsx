@@ -7,9 +7,13 @@ import type { Pair } from "../bridge/tokens.ts";
 import { GENERIC, moveWords, plainWords } from "../bridge/words.ts";
 
 /** What went wrong with a send or an accept, in plain words. A refusal by Canton says what it most likely means for a person. */
-function problemWords(e: unknown, what: "send" | "accept"): string {
+function problemWords(e: unknown, what: "send" | "accept" | "takeback"): string {
   const x = e as { name?: unknown; kind?: unknown; message?: unknown } | null;
-  if (x?.name === "AccountsError" && x.kind === "refused") return what === "send" ? "Canton did not take this transfer. The receiver may not be set up for this token yet. Nothing was sent." : "Canton did not take this transfer. It may have been taken back or have run out of time. Nothing was changed.";
+  if (x?.name === "AccountsError" && x.kind === "refused") {
+    return what === "send" ? "Canton did not take this transfer. The receiver may not be set up for this token yet. Nothing was sent."
+      : what === "takeback" ? "Canton did not take this back. The receiver may have accepted it just now. Nothing was changed. Check again in a moment."
+      : "Canton did not take this transfer. It may have been taken back or have run out of time. Nothing was changed.";
+  }
   const known = plainWords(e);
   return known === GENERIC && e instanceof Error ? moveWords(e.message) : known;   // the page's own sentences (a refusal to spend tokens that are held elsewhere) pass through moveWords
 }
@@ -101,7 +105,7 @@ function Done({ done }: { done: { result: SendResult } }) {
   );
 }
 
-type Looked = { s: "loading" } | { s: "ready"; offers: Incoming[]; sent: Sent[] } | { s: "failed" };
+type Looked = { s: "loading" } | { s: "ready"; offers: Incoming[]; sent: Sent[]; more: boolean } | { s: "failed" };
 
 /** "Incoming": the transfers offered to the account, each with Accept. The page looks when the account opens, after each accept and send, and when the person asks. */
 export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sender: Sender; pairs: Pair[]; refresh: number; onChanged(): void }) {
@@ -111,9 +115,9 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
   const [problem, setProblem] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string | null>(null);
   useEffect(() => {
-    if (pairs.length === 0) { setLooked({ s: "ready", offers: [], sent: [] }); return; }
+    if (pairs.length === 0) { setLooked({ s: "ready", offers: [], sent: [], more: false }); return; }
     let live = true;
-    sender.waiting(pairs).then(({ offers, sent }) => { if (live) setLooked({ s: "ready", offers, sent }); }, () => { if (live) setLooked({ s: "failed" }); });
+    sender.waiting(pairs).then(({ offers, sent, more }) => { if (live) setLooked({ s: "ready", offers, sent, more }); }, () => { if (live) setLooked({ s: "failed" }); });
     return () => { live = false; };
   }, [sender, pairs, again, refresh]);
 
@@ -126,6 +130,17 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
       setLooked((l) => (l.s === "ready" ? { ...l, offers: l.offers.filter((x) => x.id !== o.id) } : l));
       onChanged();
     } catch (e) { setProblem(problemWords(e, "accept")); }
+    finally { setBusy(null); }
+  };
+  const takeBack = async (o: Sent) => {
+    if (busy) return;
+    setBusy(o.id); setProblem(null); setAccepted(null);
+    try {
+      await sender.takeBack(o);
+      setAccepted(`${o.amount} ${o.pair.canton.symbol} is back in your account.`);
+      setLooked((l) => (l.s === "ready" ? { ...l, sent: l.sent.filter((x) => x.id !== o.id) } : l));
+      onChanged();
+    } catch (e) { setProblem(problemWords(e, "takeback")); }
     finally { setBusy(null); }
   };
   const offers = looked.s === "ready" ? looked.offers : [];
@@ -148,14 +163,18 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
       )}
       {sentOnes.length > 0 && (
         <>
-          <p className="small muted">Sent by you, not accepted yet. The tokens are in the transfer until the receiver accepts.</p>
+          <p className="small muted">Sent by you, not accepted yet. The tokens are in the transfer until the receiver accepts, or you take them back.</p>
           <ul className="offers">
             {sentOnes.map((o) => (
-              <li key={o.id}><span className="offer-what"><b>{o.amount} {o.pair.canton.symbol}</b> <span className="muted small">to <span className="mono" title={o.to}>{shortAddress(o.to)}</span></span></span></li>
+              <li key={o.id}>
+                <span className="offer-what"><b>{o.amount} {o.pair.canton.symbol}</b> <span className="muted small">to <span className="mono" title={o.to}>{shortAddress(o.to)}</span>{o.lapsed ? ", not accepted in time" : ""}</span></span>
+                <button type="button" className="btn ghost" disabled={busy !== null} onClick={() => takeBack(o)}>{busy === o.id ? "Taking back…" : "Take back"}</button>
+              </li>
             ))}
           </ul>
         </>
       )}
+      {looked.s === "ready" && looked.more && <p className="small muted">More transfers are waiting than shown here.</p>}
       {accepted && <p className="small" role="status">{accepted}</p>}
       {problem && <p className="small bad" role="alert">{problem}</p>}
     </div>

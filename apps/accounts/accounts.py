@@ -14,6 +14,7 @@ import ed25519
 
 # What the service lets an account sign: a create of a template ("#package:Module:Entity") or an exercise of one choice ("#package:Module:Entity#Choice").
 ALLOCATION_WITHDRAW = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw"   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
+TRANSFER_WITHDRAW = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Withdraw"   # an account takes back a transfer it sent that nobody accepted (see `check_take_back`)
 DEPOSIT_ARCHIVE = "#canton-zk-evm:Zk.Chain:DepositRequest#Archive"
 REDEEM_ARCHIVE = "#canton-zk-evm:Zk.Chain:RedeemRequest#Archive"   # an account removes its own open redeem request (see `check_take_back`)
 DEFAULT_ALLOW = (
@@ -22,6 +23,7 @@ DEFAULT_ALLOW = (
     "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept",
+    TRANSFER_WITHDRAW,
     ALLOCATION_WITHDRAW,
     DEPOSIT_ARCHIVE,
     REDEEM_ARCHIVE,
@@ -55,7 +57,7 @@ AUTH_WINDOW = 60         # seconds of clock difference an account signature may 
 FAILED_VERIFIES = 10     # signatures that fail to verify, per client in a minute, before the service stops verifying for that client
 HEALTH_TTL = 5           # seconds /healthz is answered from the last check
 TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
-RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context|allocation/(00[0-9a-f]{20,252})/withdraw-context)\Z")
+RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-factory|transfer-instruction/(00[0-9a-f]{20,252})/(accept|withdraw)-context|allocation/(00[0-9a-f]{20,252})/withdraw-context)\Z")
 TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
@@ -722,7 +724,7 @@ class Accounts:
                     self.authenticate(party, method, path, raw, auth, ip)
                     self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
                 if relay:
-                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body, relay[4], relay[2] == "transfer-factory")
+                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body, relay[5], relay[2] == "transfer-factory", relay[4])
                 return route(body, ip)
         elif method == "GET":
             m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open|transfers)/([^/]+)", path)
@@ -733,9 +735,9 @@ class Accounts:
                 return getattr(self, m.group(1))(party)
         raise HttpError(404, "no such route")
 
-    def relay(self, admin: str, instruction, body: dict, allocation=None, transfer_factory: bool = False) -> dict:
+    def relay(self, admin: str, instruction, body: dict, allocation=None, transfer_factory: bool = False, choice: str = "accept") -> dict:
         """Read-only relay to the token standard's off-chain API of the registry of `admin`: the allocation factory or the transfer factory, or (for a transfer instruction's contract id)
-        the choice context of its acceptance, or (for an allocation's contract id) the choice context of its withdrawal. The body goes on without `party`, the answer as it is."""
+        the choice context of its acceptance or of its withdrawal (`choice`), or (for an allocation's contract id) the choice context of its withdrawal. The body goes on without `party`, the answer as it is."""
         self.known(body.get("party"))
         if admin not in self.registries:
             raise HttpError(404, "this service has no registry for that instrument admin")
@@ -743,7 +745,7 @@ class Accounts:
         if len(json.dumps(payload, separators=(",", ":"))) > RELAY_MAX_BODY:
             raise HttpError(400, f"the request is longer than {RELAY_MAX_BODY} bytes")
         url, bearer_file = self.registries[admin]
-        path = (f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept" if instruction else f"/registry/allocations/v1/{allocation}/choice-contexts/withdraw" if allocation
+        path = (f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/{choice}" if instruction else f"/registry/allocations/v1/{allocation}/choice-contexts/withdraw" if allocation
                 else "/registry/transfer-instruction/v1/transfer-factory" if transfer_factory else "/registry/allocation-instruction/v1/allocation-factory")
         return outside_post(url, path, payload, bearer_file, "the token registry")
 
@@ -817,7 +819,7 @@ class Accounts:
             raise HttpError(403, f"{wanted} is not on this service's list of allowed commands (name the package, not its id)")
         if kind == "CreateCommand":
             self.check_create(party, wanted, args.get("createArguments"))
-        elif wanted in (ALLOCATION_WITHDRAW, DEPOSIT_ARCHIVE, REDEEM_ARCHIVE):
+        elif wanted in (ALLOCATION_WITHDRAW, TRANSFER_WITHDRAW, DEPOSIT_ARCHIVE, REDEEM_ARCHIVE):
             self.check_take_back(party, wanted, args.get("contractId"))
         return commands
 
@@ -834,6 +836,12 @@ class Accounts:
         the builder leaves it out from then). It may archive its own open DepositRequest once the allocation it names is gone or past that time. Neither can touch a deposit the builder can still settle."""
         if not isinstance(contract, str):
             raise HttpError(400, "an ExerciseCommand names its contract id")
+        if wanted == TRANSFER_WITHDRAW:
+            # The standard lets only the sender withdraw a transfer instruction, and a transfer waits for its receiver, not for the builder: so the account may withdraw any waiting transfer it sent, at any time
+            # (a lapsed one included: that is the one it has to take back). It cannot withdraw an offer made to it (there it is the receiver), and the read is not capped (a flood of offers cannot hide its own).
+            if not any(cid == contract and isinstance(v, dict) and (v.get("transfer") or {}).get("sender") == party for cid, v, _ in self.views(party, TRANSFER_INSTRUCTION, "transfers")):
+                raise HttpError(404, "this account has no such transfer that it sent")
+            return
         if wanted == REDEEM_ARCHIVE:
             # A redeem request locks nothing and its holder is its only signatory: the holder can already make its release fail by spending the holdings it names, and the builder reads only active requests.
             # So the account may remove any open request of its own, and nothing else.
@@ -1004,10 +1012,13 @@ class Accounts:
     def transfers(self, party: str) -> dict:
         """The transfers the party sends or is offered that are still waiting (the TransferInstruction interface's view, the party the sender or the receiver): the contract id and the transfer's
         sender, receiver, amount, instrument and deadline, with the registry's status as it is, and the package name of the template that implements the contract (the ledger's, not the view's: the view is computed by that template's code, so
-        it cannot say what the contract is). At most `TRANSFERS_MAX`, so an account that strangers offer transfers to has a bounded list."""
+        it cannot say what the contract is). The account's own sends come first, then the offers made to it, each newest first. At most `TRANSFERS_MAX`, so an account that strangers offer transfers to has a bounded list."""
         keep = ("sender", "receiver", "amount", "instrumentId", "requestedAt", "executeBefore")
         found = [{"contractId": cid, "transfer": {k: v["transfer"].get(k) for k in keep}, "status": v.get("status"), "packageName": package} for cid, v, package in self.views(party, TRANSFER_INSTRUCTION, "transfers")
                  if isinstance(v, dict) and isinstance(v.get("transfer"), dict) and party in (v["transfer"].get("sender"), v["transfer"].get("receiver"))]
+        # The account's own sends come first, then the offers made to it, each newest first (a stable sort: ties keep the ledger's order), so a flood of offers cannot push its own sends out of the bounded list.
+        found.sort(key=lambda t: str(t["transfer"].get("requestedAt") or ""), reverse=True)
+        found.sort(key=lambda t: t["transfer"].get("sender") != party)
         return {"party": party, "transfers": found[:TRANSFERS_MAX], "more": len(found) > TRANSFERS_MAX}
 
     def open(self, party: str) -> dict:
