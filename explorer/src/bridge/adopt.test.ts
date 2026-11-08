@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AllocationView } from "./canton/accounts.ts";
-import { depositRecord, redeemRecord, typedAmount } from "./adopt.ts";
-import { depositIdOf } from "./moves/state.ts";
-import { config, FIELD, ME, PARTY, TKA, CC_ADMIN, WCC } from "../pages/bridge-fakes.ts";
+import { adoptRecord, depositRecord, NoLongerOpen, redeemRecord, typedAmount } from "./adopt.ts";
+import type { OpenState } from "./canton/accounts.ts";
+import { depositIdOf, keptMoves } from "./moves/state.ts";
+import { config, FIELD, memoryStore, ME, PARTY, TKA, CC_ADMIN, WCC } from "../pages/bridge-fakes.ts";
 
 const o = { account: ME, party: PARTY, config };
 const redeem = (a: Record<string, unknown> = {}) => ({ contractId: "00", arguments: { holder: PARTY, [FIELD]: TKA.slice(2), amount: "1.5000000000", recipient: ME.slice(2), ref: "r-1", ...a } });
@@ -33,5 +34,28 @@ describe("a move kept from what Canton lists as open", () => {
     expect(await depositRecord(dep(), { ...o, allocations: async () => [] })).toBeNull();
     expect(await depositRecord(dep(), { ...o, allocations: async () => [alloc("d-1", "5.0000000000", "Other")] })).toBeNull();
     expect(await depositRecord(dep("d-1", { depositor: "bob::1220" + "cd".repeat(32) }), some)).toBeNull();
+  });
+  describe("adoptRecord", () => {
+    const open = (...redeemRequests: ReturnType<typeof redeem>[]): OpenState => ({ depositRequests: [], redeemRequests, twinAcceptance: null, withdrawalAcceptance: null });
+    const adopt = (store: ReturnType<typeof memoryStore>, openNow: OpenState, request = redeem()) => adoptRecord("redeem", request, { ...o, store, allocations: async () => [], openRequests: async () => openNow });
+    it("keeps the record of a request that is still open, and returns its ref", async () => {
+      const store = memoryStore();
+      expect(await adopt(store, open(redeem()))).toBe("r-1");
+      expect(keptMoves(store).map((c) => c.ref)).toEqual(["r-1"]);
+    });
+    it("keeps nothing and throws when the request is not open any more", async () => {
+      const store = memoryStore();
+      await expect(adopt(store, open())).rejects.toBeInstanceOf(NoLongerOpen);
+      expect(keptMoves(store)).toEqual([]);
+    });
+    it("returns null and keeps nothing for a request this build cannot carry on, and never overwrites a kept record", async () => {
+      const store = memoryStore();
+      expect(await adopt(store, open(redeem({ ref: "" })), redeem({ ref: "" }))).toBeNull();
+      expect(keptMoves(store)).toEqual([]);
+      await adopt(store, open(redeem()));
+      const first = store.getItem([...store.map.keys()].find((k) => k.endsWith("r-1"))!);
+      await adopt(store, open(redeem()));
+      expect(store.getItem([...store.map.keys()].find((k) => k.endsWith("r-1"))!)).toBe(first);
+    });
   });
 });

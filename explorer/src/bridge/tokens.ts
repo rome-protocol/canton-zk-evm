@@ -53,13 +53,13 @@ export function groupsOf(pairs: Pair[]): { ostia: Token[]; canton: Token[] } {
   return { ostia: pairs.map((p) => row(p, "ostia")), canton: pairs.map((p) => row(p, "canton")) };
 }
 
-/** The tokens whose symbol, address or id has `query` in it (case does not matter). */
+/** The tokens whose symbol, address or id has `query` in it (case does not matter). A Canton token is also found by the name of its pair on Ostia, so "cc" finds Canton Coin. */
 export function search(list: Token[], pairs: Pair[], query: string): Token[] {
   const q = query.trim().toLowerCase();
   if (q === "") return list;
   return list.filter((t) => {
     const p = pairs.find((x) => x.key === t.pair)!;
-    return [t.symbol, t.side === "ostia" ? p.erc20 : p.canton.id, t.side === "canton" ? p.canton.admin : ""].some((s) => s.toLowerCase().includes(q));
+    return [t.symbol, t.side === "ostia" ? p.erc20 : p.canton.id, t.side === "canton" ? p.canton.admin : "", t.side === "canton" ? p.ostia.symbol : ""].some((s) => s.toLowerCase().includes(q));
   });
 }
 

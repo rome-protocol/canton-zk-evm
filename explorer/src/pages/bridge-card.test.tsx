@@ -272,7 +272,7 @@ describe("the token picker", () => {
     show();
     await userEvent.click(screen.getByRole("button", { name: /^From token/ }));
     await userEvent.type(screen.getByRole("searchbox", { name: "Search tokens" }), "cc");
-    expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["wCCon Ostia"]);
+    expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["wCCon Ostia", "Canton Coinon Canton"]);
     await userEvent.clear(screen.getByRole("searchbox"));
     await userEvent.type(screen.getByRole("searchbox"), "coin");
     expect(within(screen.getByRole("dialog")).getAllByRole("listitem").map((l) => l.querySelector(".pick")!.textContent)).toEqual(["Canton Coinon Canton"]);

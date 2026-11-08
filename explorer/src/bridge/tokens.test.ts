@@ -26,6 +26,9 @@ describe("the pairs this build supports", () => {
     expect(g.ostia.map((t) => t.symbol)).toEqual(["tROME", "TKA", "wCC", "wTKB"]);
     expect(g.canton.map((t) => t.symbol)).toEqual(["tROME", "TKA", "Canton Coin", "TKB"]);
     expect(search(g.ostia, pairs, "tk").map((t) => t.symbol)).toEqual(["TKA", "wTKB"]);
+    expect(search(g.canton, pairs, "cc").map((t) => t.symbol)).toEqual(["Canton Coin"]);
+    expect(search(g.ostia, pairs, "cc").map((t) => t.symbol)).toEqual(["wCC"]);
+    expect(search(g.canton, pairs, "wtkb").map((t) => t.symbol)).toEqual(["TKB"]);
     expect(search(g.canton, pairs, "amulet").map((t) => t.symbol)).toEqual(["Canton Coin"]);
     expect(search(g.ostia, pairs, "AAAA").map((t) => t.symbol)).toEqual(["TKA"]);
     expect(search(g.ostia, pairs, "nothing like it")).toEqual([]);

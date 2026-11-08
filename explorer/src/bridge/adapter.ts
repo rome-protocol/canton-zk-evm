@@ -48,7 +48,7 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
     throw new Waited("Canton has not shown this step yet. Continue to look again; nothing is signed twice.");
   }
   const hasRedeem = async (ref: string) => (await open()).redeemRequests.some((r) => r.arguments.ref === ref);
-  const hasDeposit = async (id: string) => (await open()).depositRequests.some((r) => typeof r.arguments.depositId === "string" && sameId(r.arguments.depositId, id));
+  const hasDeposit = async (id: string) => (await open()).depositRequests.some((r) => sameId(r.arguments.depositId, id));
 
   return {
     party: () => d.party,

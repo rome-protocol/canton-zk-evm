@@ -5,8 +5,8 @@ import type { ApiTx, BlockLeg } from "../api.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { createMove, type CantonAdapter, type LocksLike } from "../bridge/moves/moves.ts";
-import { lockIdOf, saveCheckpoint, type StoreLike } from "../bridge/moves/state.ts";
-import { depositRecord, NoLongerOpen, redeemRecord, stillOpen } from "../bridge/adopt.ts";
+import { lockIdOf, type StoreLike } from "../bridge/moves/state.ts";
+import { adoptRecord } from "../bridge/adopt.ts";
 import { track } from "../bridge/activity.ts";
 import type { AllocationView, OpenState } from "../bridge/canton/accounts.ts";
 import type { Session } from "../bridge/session.ts";
@@ -90,13 +90,7 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   const session: Session = {
     move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
     open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
-    adopt: vi.fn(async (kind, request) => {
-      const record = kind === "redeem" ? redeemRecord(request, { account: evm.evm.account, party: PARTY, config }) : await depositRecord(request, { account: evm.evm.account, party: PARTY, config, allocations: async () => o.allocations ?? [] });
-      if (record === null) return null;
-      if (!stillOpen(request, await session.open())) throw new NoLongerOpen();
-      if (!move.kept().some((c) => c.ref === record.ref)) saveCheckpoint(store, record);
-      return record.ref;
-    }),
+    adopt: vi.fn((kind, request) => adoptRecord(kind, request, { account: evm.evm.account, party: PARTY, config, store, allocations: async () => o.allocations ?? [], openRequests: () => session.open() })),
   };
   return { session, evm, canton, store, move };
 }
