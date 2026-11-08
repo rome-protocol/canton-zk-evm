@@ -135,7 +135,7 @@ Ostia can run on a participant that is there already, such as a Splice validator
 
 **One confirmer.** One participant hosts every Ostia party, so the one sidecar beside it is the only confirmer. That is weaker than the local network, where two participants confirm each block with a sidecar each. It is fine for DevNet. Do not use it for anything of value.
 
-Ostia's DevNet runs this way as of 7 November 2026: one confirmer, on the participant that hosts every Ostia party, with threshold 1. A second participant is up with its own sidecar but hosts no party, so a 2-of-2 confirmation is not switched on. The sidecars of both participants run the `8a4e8cd` build. They had two `--key` entries, one for key A (release 1.3.1) and one for key B (release 1.3.2), so that blocks 0 to 15572 and blocks from 15573 both verified, until 12:06 UTC on 28 October; they have key B only since (see "Switching a running chain to a later fork or ZisK release" below).
+Ostia's DevNet runs this way as of 8 November 2026: one confirmer, on the participant that hosts every Ostia party, with threshold 1. A second participant is up with its own sidecar but hosts no party, so a 2-of-2 confirmation is not switched on. The sidecars of both participants run the `8a4e8cd` build. They had two `--key` entries, one for key A (release 1.3.1) and one for key B (release 1.3.2), so that blocks 0 to 15572 and blocks from 15573 both verified, until 12:06 UTC on 28 October; they have key B only since (see "Switching a running chain to a later fork or ZisK release" below).
 
 **What you need.**
 

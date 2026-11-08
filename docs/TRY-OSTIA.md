@@ -93,9 +93,9 @@ On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/bloc
 Anyone with MetaMask (or another browser wallet) can move tokens between Ostia and Canton on their own, on `https://ostia.devnet.romeprotocol.xyz/bridge`. DevNet only.
 
 1. Open `/bridge` and press Connect MetaMask. The page adds Ostia DevNet to the wallet if it is not there.
-2. Press Open my Canton account. MetaMask asks you to sign one message, which costs no gas. The first time it asks twice for the same message, so the page can check that your wallet signs it the same way each time. The page makes the Canton key from that signature, and Rome's validator hosts the account but cannot move what it holds: only that key signs for it. Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
+2. Press Open my Canton account. MetaMask asks you to sign one message, which costs no gas. The first time it asks twice for the same message, so the page can check that your wallet signs it the same way each time. The page makes the Canton key from that signature, and Rome's validator hosts the account but cannot sign for it: only that key does. Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
 3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's participant allows up to 1000 accounts.
-4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; MetaMask asks only for the Ostia steps. A card under the button lists the steps and the number of MetaMask pop-ups.
+4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; MetaMask asks only for the Ostia steps. A line under the button says about how long the move takes and how many MetaMask pop-ups it needs; open it to see each step.
 
 The four moves:
 
@@ -106,9 +106,9 @@ The four moves:
 | Canton Coin to Ostia: it arrives as the CC token. The page signs twice on Canton, you claim on Ostia | 1 | 56 s |
 | CC back to Canton Coin | 1 | 46 s |
 
-The times were measured on the live site on 8 November 2026 with a fresh wallet. The chain itself was final in about 10 seconds; the rest is the wallet and the page waiting for the proven block. Expect about 1 minute for a move with one pop-up and about 2 minutes for the tROME lock.
+The times were measured on the live site on 8 November 2026 with a fresh wallet. The chain itself was final in about 10 seconds; the rest is the wallet and the page waiting for the proven block. Expect about 1 minute for a move with one pop-up and about 2 minutes for a lock (two or three pop-ups).
 
-Each move shows three marks: Sent (the transaction has a hash, or the explorer has it), Proven (the zero-knowledge proof of its block has ended) and Final (the block is final on Canton and the transaction went through). Under them are links to the move's block on Ostia and to its Canton update. The Activity tab lists your moves, the unfinished ones and the ones started in another browser, and an unfinished move carries on from its row. A lock for an account that has not opted in is refused before anything is paid.
+Each move shows three marks: Sent (the transaction has a hash, or the explorer has it), Proven (the zero-knowledge proof of its block has ended) and Final (the block is final on Canton and the transaction went through). In the Activity tab each row links to the move's block on Ostia and to its Canton update. The Activity tab lists your moves, the unfinished ones and the ones started in another browser, and an unfinished move carries on from its row. A lock for an account that has not opted in is refused before anything is paid.
 
 ## Canton tokens on DevNet
 

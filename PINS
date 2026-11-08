@@ -43,7 +43,7 @@ EXPLORER_RUST_IMAGE_ID=sha256:3611cb0cae75965ac77adad12783922a7ae75a480ab7bf45dd
 EXPLORER_BROWSER_IMAGE=mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
 EXPLORER_BROWSER_IMAGE_ID=sha256:9cfdc77dc3be5a94cd5da6bbfae76431a80fd05ed3e49f3f6c04407efb270d71
 # Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.7.2
-# (GitHub release digital-asset/canton v3.7.2, 2026-11-04, the version Splice 0.10.1 ships; DevNet's validator runs Canton 3.7.1 from Splice 0.10.0) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
+# (GitHub release digital-asset/canton v3.7.2, 2026-11-04, the version Splice 0.10.1 ships; DevNet's validator runs Canton 3.7.2 from Splice 0.10.1) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
 # from Digital Asset's public registry. DPM_REGISTRY is where the SDK and the compiler are; dpm 1.0.22 is the released one.
 # network/canton/fetch.sh checks every SHA-256 below. The Canton jar comes from the release tarball (one file for every
 # platform) and is checked by the tarball's SHA-256 and by its own. The SDK manifest lists the exact version of each
