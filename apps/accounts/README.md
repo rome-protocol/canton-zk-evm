@@ -16,6 +16,7 @@ The token comes from `LEDGER_TOKEN` or `--token-file` (read again for each call,
 - `--chain-parties` (or the four `--chain-*` options) is set; without it the chain's creates are refused.
 - The reverse proxy uses `proxy_pass http://127.0.0.1:8081;` with no URI part and no prefix, so the path reaches the service unchanged.
 - `--client-ip-header`, `--trusted-proxies` and `--trusted-proxy-addresses` match the proxy chain: the header is read only from a trusted peer, and the client is the entry the nearest proxy wrote.
+- A service that passes its own `--allow` lists `'#canton-zk-evm:Zk.Chain:RedeemRequest#Archive'` (an exercise, so no `--open-limit`) as well as the two take-back entries (`Allocation_Withdraw`, `DepositRequest#Archive`); without it, every removal of a redeem request is a 403, and a page that gives a move up treats that as permanent. Check the running service's command line, not only the run script.
 - The participant's `max-self-allocated-parties` and `max-rights-per-user` are sized for the number of accounts the service may hold (both default to a low number, and `--accounts-per-day-total` only bounds a day).
 - One copy of the service runs, with `--state-file` on persistent disk: the pending entries, the limits and the replay memory are in its memory.
 

@@ -238,6 +238,17 @@ class AccountsOnCanton(unittest.TestCase):
                 self.assertEqual((status, refused.get("error")), (409, "not_yet"), (what, refused))
             status, _ = service("/accounts/v1/prepare", {"party": party, "commands": [{"ExerciseCommand": {**take_back_request["ExerciseCommand"], "contractId": "00" * 40}}]}, key)
             self.assertEqual(status, 404)
+            # A redeem request locks nothing, so its Archive is accepted at any time on the account's own request: prepared, signed and executed through the service, which is what a page's
+            # "give this move up" and Activity's "Remove" do. (The service's allow list holds `RedeemRequest#Archive` for it: integration.sh.) Once archived it is not the account's open request any
+            # more, so a second prepare, and one for a contract the account does not have, are 404.
+            redeem_cid = opened["redeemRequests"][0]["contractId"]
+            archive_redeem = {"ExerciseCommand": {"templateId": REDEEM, "contractId": redeem_cid, "choice": "Archive", "choiceArgument": {}}}
+            _, execute_redeem_archive = run(archive_redeem)
+            self.assertEqual(execute_redeem_archive()[0], 200)
+            until("the redeem request to be gone", lambda: not service(f"/accounts/v1/open/{party}", key=key)[1]["redeemRequests"])
+            for cid in (redeem_cid, "00" * 40):
+                status, _ = service("/accounts/v1/prepare", {"party": party, "commands": [{"ExerciseCommand": {**archive_redeem["ExerciseCommand"], "contractId": cid}}]}, key)
+                self.assertEqual(status, 404, cid)
             print("FIXTURE " + json.dumps({"name": "answers", "party": party, "allocations": service(f"/accounts/v1/allocations/{party}", key=key)[1], "open": opened}, sort_keys=True), flush=True)
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make
 

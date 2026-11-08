@@ -100,7 +100,7 @@ export function openOnCanton(e: Entry, open: Pick<OpenState, "redeemRequests" | 
 
 /** An open request of the account that no row here accounts for: a move started in another browser. `request` is what Canton lists; `canContinue` is false where this build cannot carry it on. */
 export interface Elsewhere { entry: Entry; kind: "redeem" | "deposit"; request: OpenRequest; canContinue: boolean;
-  /** A redeem whose holdings are not all among the account's holdings any more: it can never be released, and can only be removed. */
+  /** A redeem whose holdings are not all among the account's holdings any more, or a deposit that is finished here already (an extra request of the same label): it can never go on, and can only be removed. */
   spent?: boolean }
 
 /**
@@ -122,8 +122,12 @@ export function otherMoves(open: Pick<OpenState, "redeemRequests" | "depositRequ
   }
   for (const r of open.depositRequests) {
     const label = r.arguments.label, depositor = r.arguments.depositor;
-    if (typeof label !== "string" || (typeof depositor === "string" && depositor !== o.party) || rows.some((e) => e.kind === "deposit" && openOnCanton(e, { redeemRequests: [], depositRequests: [r] }))) continue;
-    out.push({ kind: "deposit", request: r, canContinue: true, entry: { ...base, ref: label, kind: "deposit", asset: "0x" as Address, amount: "" } });
+    if (typeof label !== "string" || (typeof depositor === "string" && depositor !== o.party)) continue;
+    const same = rows.filter((e) => e.kind === "deposit" && openOnCanton(e, { redeemRequests: [], depositRequests: [r] }));
+    if (same.some((e) => !e.done)) continue;
+    // A request still open for a deposit this browser has finished is a dead duplicate (its allocation was claimed by the request that went through): it is listed as spent, so it can be removed.
+    const spent = same.length > 0;
+    out.push({ kind: "deposit", request: r, canContinue: !spent, spent, entry: { ...base, ref: label, kind: "deposit", asset: "0x" as Address, amount: "" } });
   }
   return out;
 }

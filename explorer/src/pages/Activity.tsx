@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Address, Hex } from "viem";
 import type { ApiTx } from "../api.ts";
@@ -39,7 +39,7 @@ const RUNNING = ["signing-canton", "waiting-canton", "sending-evm", "proving"];
 function Row({ e, props, state, live, onCanton, busy, onContinue, canContinue = true, spent = false, onRemove }: {
   e: Entry; props: ActivityProps; state: MoveState; live: boolean; onCanton: boolean; busy: boolean; onContinue(e: Entry): void; canContinue?: boolean;
   spent?: boolean;
-  /** Removes the open request of a move started in another browser (a redeem). */
+  /** Removes the open request of a move started in another browser (a redeem, or an extra request of a deposit that is finished). */
   onRemove?: (e: Entry) => void;
 }) {
   // A finished move whose block and update are known is not looked up again.
@@ -48,7 +48,7 @@ function Row({ e, props, state, live, onCanton, busy, onContinue, canContinue = 
   useEffect(() => { if (e.done && !e.updateId && marks.updateId) rememberUpdate(props.store, e.ref, marks.updateId); }, [marks.updateId]);   // eslint-disable-line react-hooks/exhaustive-deps
   const note = live ? noteOf(state) : null;
   const running = live && RUNNING.includes(state.phase);
-  const where = running ? waitWords(state) ?? "" : note ? note.text : e.done ? "" : e.elsewhere ? `Started in another browser. ${!spent ? standing(e, props.chainName, onCanton) : "Its tokens were spent by another move, so it cannot be released. Remove it."}` : standing(e, props.chainName, onCanton);
+  const where = running ? waitWords(state) ?? "" : note ? note.text : e.done ? "" : e.elsewhere ? `Started in another browser. ${!spent ? standing(e, props.chainName, onCanton) : e.kind === "deposit" ? "This deposit is finished already, so this extra request cannot settle. Remove it." : "Its tokens were spent by another move, so it cannot be released. Remove it."}` : standing(e, props.chainName, onCanton);
   const mine = props.session !== null;
   return (
     <li className="act-row">
@@ -90,6 +90,13 @@ export function Activity(props: ActivityProps) {
     session.holdingIds().then((h) => { if (live) setHeld(h); }, () => {});
     return () => { live = false; };
   }, [session, stamp]);
+  // A move that reaches its end while the list is shown (started on the Move tab, or carried on from a row) has archived its request on Canton: what Canton says is open is read again,
+  // so the request is not listed as a dead duplicate of the move that was just finished.
+  const lastPhase = useRef(state.phase);
+  useEffect(() => {
+    if (state.phase === "final" && lastPhase.current !== "final") setStamp((n) => n + 1);
+    lastPhase.current = state.phase;
+  }, [state.phase]);
   const others = useMemo(() => (open && account && session ? otherMoves(open, rows, { account: account as Address, party: session.party, pairs: props.pairs, held }) : []), [open, held, rows, account, session, props.pairs]);
   const liveRef = session ? recordOf(session.kept(), session.move.current)?.ref : undefined;
 
@@ -118,7 +125,7 @@ export function Activity(props: ActivityProps) {
   const onRemove = useCallback(async (e: Entry) => {
     if (!session || busy) return;
     setBusy(true); setProblem(null);
-    try { await session.removeRedeem(e.ref); } catch (x) { setProblem(moveWords(x instanceof Error ? x.message : null)); }
+    try { await (e.kind === "deposit" ? session.removeDeposit(e.ref) : session.removeRedeem(e.ref)); } catch (x) { setProblem(moveWords(x instanceof Error ? x.message : null)); }
     finally { setBusy(false); setStamp((n) => n + 1); }
   }, [session, busy]);
 
@@ -128,7 +135,7 @@ export function Activity(props: ActivityProps) {
     <section className="card activity" aria-label="Activity">
       {rows.length === 0 && others.length === 0 ? <p className="muted">No moves yet. A move you make here is listed with how far it has got.</p> : (
         <ul className="act-list">
-          {others.map((o) => <Row key={`other:${o.entry.ref}`} e={o.entry} props={props} state={state} live={false} onCanton busy={busy || going} canContinue={o.canContinue} spent={o.spent} onContinue={onContinue} onRemove={o.kind === "redeem" ? onRemove : undefined} />)}
+          {others.map((o) => <Row key={`other:${o.entry.ref}`} e={o.entry} props={props} state={state} live={false} onCanton busy={busy || going} canContinue={o.canContinue} spent={o.spent} onContinue={onContinue} onRemove={o.kind === "redeem" || o.spent ? onRemove : undefined} />)}
           {rows.map((e) => <Row key={e.ref} e={e} props={props} state={state} live={e.ref === liveRef} onCanton={open !== null && openOnCanton(e, open)} busy={busy || (going && e.ref !== liveRef)} onContinue={onContinue} />)}
         </ul>
       )}

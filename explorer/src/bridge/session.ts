@@ -10,7 +10,7 @@ import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
 import { createMove, explorerCustody, explorerLeg, explorerSentSince, explorerTx, randomRef, Refused, webLocks, type Move } from "./moves/moves.ts";
-import { keptMoves, moveStore, type Checkpoint } from "./moves/state.ts";
+import { keptMoves, moveStore, depositIdOf, releaseIdOf, type Checkpoint } from "./moves/state.ts";
 
 export interface Session {
   /** Where the page and the moves meet: the card starts, continues and gives up moves here, and the in-flight bar and the Activity list read it. */
@@ -28,6 +28,8 @@ export interface Session {
   holdingIds(): Promise<Set<string>>;
   /** Removes the account's open redeem request with this ref (one this browser has no record of). It signs one Canton command and never asks the wallet. */
   removeRedeem(ref: string): Promise<void>;
+  /** Removes an extra open deposit request with this label, for a deposit this browser has finished (its allocation was claimed by the request that went through). It signs Canton commands and never asks the wallet. */
+  removeDeposit(label: string): Promise<void>;
   /**
    * Keeps a record here for a redeem or a deposit that Canton lists as open but this browser has no record of (it was started in another browser), so the move can be carried on like any kept
    * move. Returns the record's ref, or null when this build cannot carry it on (its token is not one the bridge moves, or its allocation is gone). It never signs, sends or asks the wallet.
@@ -38,12 +40,23 @@ export interface Session {
   close(): void;
 }
 
-/** Removes a redeem request another browser started, unless a transaction of the account is still waiting in Ostia's pool (it may be that redeem's release, which would be left with no Canton side). */
-export async function removeUnlessPending(evm: Pick<EvmAdapter, "nonce" | "pendingNonce">, cancel: () => Promise<void>): Promise<void> {
+/**
+ * Removes a redeem request another browser started, unless its release is already on Ostia (mined, perhaps not yet proven: the id is used at the latest block, and a block that Canton then
+ * refuses puts the release back in the pool with no Canton side) or a transaction of the account is still waiting in Ostia's pool (it may be that redeem's release).
+ * `used` says whether the release id is already used on Ostia; when it cannot be read, nothing is removed.
+ */
+export async function removeUnlessPending(evm: Pick<EvmAdapter, "nonce" | "pendingNonce">, cancel: () => Promise<void>, used: () => Promise<boolean> = async () => false): Promise<void> {
+  if (await used()) throw new Refused("Its release is already on Ostia; wait for it to finish.");
   const pool = await evm.pendingNonce?.().catch(() => null);
   const final = pool == null ? null : await evm.nonce().catch(() => null);
   if (pool != null && final !== null && pool > final) throw new Refused("A transaction of this account is still waiting; cancel it in your wallet first.");
   await cancel();
+}
+
+/** Whether the release of a redeem with this ref is used at the gateway, whichever configured vault it was made for (read at the latest block, so a mined release counts). */
+export async function releaseUsed(evm: Pick<EvmAdapter, "used">, config: Pick<BridgeConfig, "gateway" | "vaults">, ref: string): Promise<boolean> {
+  for (const vault of config.vaults) if (await evm.used(config.gateway, releaseIdOf(vault, ref))) return true;
+  return false;
 }
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -63,7 +76,8 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
     cantonBalance: async (instrument) => holdingsOf(await account.client.holdings(account.key, account.party), instrument),
     kept: () => keptMoves(store, { account: evm.account, party: account.party }),
     holdingIds: async () => new Set((await account.client.holdings(account.key, account.party)).map((h) => h.contractId)),
-    removeRedeem: (ref) => removeUnlessPending(evm, () => canton.cancelRedeem(ref)),
+    removeRedeem: (ref) => removeUnlessPending(evm, () => canton.cancelRedeem(ref), () => releaseUsed(evm, config, ref)),
+    removeDeposit: (label) => canton.recoverDeposit({ label, depositId: depositIdOf(account.party, label) }),
     adopt: (kind, request) => adoptRecord(kind, request, {
       account: evm.account, party: account.party, config, store,
       allocations: () => account.client.allocations(account.key, account.party), holdingIds: async () => new Set((await account.client.holdings(account.key, account.party)).map((h) => h.contractId)), openRequests: () => account.client.openRequests(account.key, account.party),
