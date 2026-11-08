@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
@@ -67,6 +67,40 @@ function TopBar({ status: s }: { status: ApiStatus }) {
   );
 }
 
+/** Room left over, in px, that the header keeps beyond what its parts need before the links are drawn inline: sub-pixel rounding must never put the last link on a second row. */
+const FIT_SLACK = 1;
+
+/**
+ * True when the header's parts (the name, every link, and the search box at its compact width) do not fit on one row, so the links are folded into the menu button.
+ * It measures each part's own width, which does not depend on whether the links are folded, so it cannot flip back and forth, and it stays right when a link is added or a font loads:
+ * the header, the name and every link are watched, and the check runs again when any of them changes size.
+ */
+function useFolded(header: RefObject<HTMLElement | null>, deps: readonly unknown[]): boolean {
+  const [folded, setFolded] = useState(false);
+  useLayoutEffect(() => {
+    const el = header.current;
+    if (!el) return;
+    const check = () => {
+      const css = getComputedStyle(el);
+      const gap = parseFloat(css.columnGap) || 0;
+      const room = el.clientWidth - (parseFloat(css.paddingLeft) || 0) - (parseFloat(css.paddingRight) || 0);
+      const links = [...el.querySelectorAll<HTMLElement>(".nav .navlink")];
+      const navGap = parseFloat(getComputedStyle(el.querySelector(".nav")!).columnGap) || 0;
+      const nav = links.reduce((n, a) => n + a.offsetWidth, 0) + navGap * Math.max(0, links.length - 1);
+      const others = [...el.querySelectorAll<HTMLElement>(".brand, .search-slot")];
+      const need = others.reduce((n, a) => n + a.offsetWidth, 0) + nav + gap * others.length;
+      setFolded(need + FIT_SLACK > room);
+    };
+    check();
+    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    watch?.observe(el);
+    for (const a of el.querySelectorAll(".brand, .nav .navlink")) watch?.observe(a);
+    void document.fonts?.ready.then(check);
+    return () => watch?.disconnect();
+  }, deps);
+  return folded;
+}
+
 /** The header every page has, and the line every page ends with. */
 export function Shell({ children }: { children: ReactNode }) {
   return <PaintedProvider><ShellBody>{children}</ShellBody></PaintedProvider>;
@@ -80,6 +114,10 @@ function ShellBody({ children }: { children: ReactNode }) {
   // The menu button is for phones, where the pages are folded away; choosing a page closes it.
   const [menu, setMenu] = useState(false);
   useEffect(() => setMenu(false), [pathname]);
+  // Above a phone the links share the header's row with the name and the search box; when they do not fit there, they fold into the same menu button (useFolded).
+  const header = useRef<HTMLElement>(null);
+  const folded = useFolded(header, [home, status?.chainName, status?.networkName]);
+  useEffect(() => { if (!folded) setMenu(false); }, [folded]);
   // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it, and again as the sections above it fill in
   // during the next two seconds, unless the reader has started to scroll.
   useEffect(() => {
@@ -99,7 +137,7 @@ function ShellBody({ children }: { children: ReactNode }) {
   return (
     <div className="page">
       {status && <TopBar status={status} />}
-      <header className="top">
+      <header ref={header} className={`top${home ? " home" : ""}${folded ? " folded" : ""}`}>
         <Link className="brand" to="/">
           <span className="mark" role="img" aria-label="Rome" />
           <span className="name">{name}</span>

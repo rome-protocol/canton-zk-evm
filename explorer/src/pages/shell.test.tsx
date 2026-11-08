@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, renderApp, route, status } from "../test-utils.tsx";
 
 const FOOTER = "Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
@@ -144,9 +144,20 @@ describe("the shell", () => {
     expect(nav).not.toHaveClass("open");
   });
 
+  it("lets Escape leave the search box, which is what closes it to its compact width", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const box = screen.getByRole("searchbox", { name: "Search" });
+    expect(box.closest(".search-slot")).not.toBeNull();
+    await userEvent.keyboard("/");
+    expect(box).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(box).not.toHaveFocus();
+  });
+
   it("sends what was typed to the search page, which opens what the server finds", async () => {
     const user = userEvent.setup();
-    const calls = fakeApi((p) => (p === "/api/search?q=3" ? { status: 200, body: { path: "/faucet" } } : { status: 200, body: status() }));
+    const calls = fakeApi((p) => (p === "/api/search?q=3" ? { status: 200, body: { path: "/faucet" } } : p === "/api/faucet" ? { status: 500, body: { error: "The faucet cannot be read right now." } } : { status: 200, body: status() }));
     renderApp("/");
     await user.type(screen.getByRole("searchbox", { name: "Search" }), "  3 {Enter}");
     expect(await screen.findByRole("heading", { name: "Faucet" })).toBeInTheDocument();
@@ -189,6 +200,82 @@ describe("the shell", () => {
     expect(screen.getByRole("heading", { name: "Not found" })).toBeInTheDocument();
     expect(screen.getByText("There is no page at this address.")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("link", { name: "Go to the home page" })).toHaveAttribute("href", "/"));
+  });
+});
+
+describe("the header's links, folded into the menu when the row cannot hold them", () => {
+  // jsdom lays nothing out: the widths the header measures (the header's room, the name, each link, the search slot) are set here, and the header's size change is signalled by hand.
+  const WIDTHS = { header: 1280, brand: 160, link: 80, slot: 210 };   // ten links of 80 px and the name and search box: 1170 px with the gaps counted as nil
+  let observed: (() => void)[] = [];
+  const widths = { ...WIDTHS };
+  const resize = async (header: number) => { widths.header = header; await act(async () => { observed.forEach((f) => f()); }); };
+  const saved = { offset: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth"), client: Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth") };
+  beforeEach(() => {
+    observed = [];
+    Object.assign(widths, WIDTHS);
+    vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { observed.push(cb); } observe() {} disconnect() {} unobserve() {} });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get(this: HTMLElement) {
+      return this.classList.contains("navlink") ? widths.link : this.classList.contains("brand") ? widths.brand : this.classList.contains("search-slot") ? widths.slot : 0;
+    } });
+    Object.defineProperty(Element.prototype, "clientWidth", { configurable: true, get(this: Element) { return this.tagName === "HEADER" ? widths.header : 0; } });
+  });
+  afterEach(() => {
+    if (saved.offset) Object.defineProperty(HTMLElement.prototype, "offsetWidth", saved.offset);
+    if (saved.client) Object.defineProperty(Element.prototype, "clientWidth", saved.client);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the links in the row while the name, the links and the search box fit, and folds them into the menu when they do not, and back", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const header = screen.getByRole("banner");
+    expect(header).not.toHaveClass("folded");
+    await resize(1100);
+    expect(header).toHaveClass("folded");
+    // exactly as wide as the parts need: the row holds them (the check leaves a pixel of slack, so a rounding never wraps the last link)
+    await resize(1170);
+    expect(header).toHaveClass("folded");
+    await resize(1171);
+    expect(header).not.toHaveClass("folded");
+  });
+
+  it("measures again when a link is added (a wider need folds the row at a width that held it before)", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const header = screen.getByRole("banner");
+    await resize(1300);
+    expect(header).not.toHaveClass("folded");
+    widths.link = 100;   // the links are wider now (a longer label, or a font that has just loaded)
+    await resize(1300);
+    expect(header).toHaveClass("folded");
+  });
+
+  it("needs no search box on the home page, whose big box sits in the page: the links fold later there", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/");
+    const header = screen.getByRole("banner");
+    await resize(960);   // 160 + 800 = 960, and a pixel of slack
+    expect(header).toHaveClass("folded");
+    await resize(961);
+    expect(header).not.toHaveClass("folded");
+  });
+
+  it("opens and closes the folded links with the menu button, and closes the menu when the row has room for the links again", async () => {
+    const user = userEvent.setup();
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    await resize(900);
+    const nav = screen.getByRole("navigation", { name: "Pages" });
+    const menu = within(screen.getByRole("banner")).getByRole("button", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(menu).toHaveAttribute("aria-controls", "pages");
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(nav).toHaveClass("open");
+    await resize(1400);
+    expect(screen.getByRole("banner")).not.toHaveClass("folded");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(nav).not.toHaveClass("open");
   });
 });
 
