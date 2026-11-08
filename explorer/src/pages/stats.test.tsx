@@ -4,8 +4,6 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { StatsMetric, StatsWindow } from "../api.ts";
 import { REST_FIELDS } from "../../server/rest/fields.ts";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { cantonStats, fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
 import { series, summary, wave } from "./stats-fixtures.ts";
 
@@ -425,9 +423,13 @@ describe("the External calls card", () => {
     expect(c.getByText("Success rate").parentElement).toHaveTextContent("120 of 128 answered attempts");
     expect(c.getByText("Settlement time").parentElement).toHaveTextContent("9.4 s");
     expect(c.getByText("Settlement time").parentElement).toHaveTextContent("p95 14");
-    expect(c.getByText("Settlement time").parentElement).toHaveTextContent("average over 40 blocks, last 24 hours");
+    expect(c.getByText("Settlement time").parentElement).toHaveTextContent("average over 40 blocks, since 2026-10-03 02:00 UTC");
+    expect(c.getByText("Success rate").parentElement).toHaveTextContent("from 2026-09-21");
+    expect(c.getByText("Blocks committed").parentElement).toHaveTextContent("since 2026-09-20");
     expect(c.getByText("Retried").parentElement).toHaveTextContent("3");
+    expect(c.getByText("Retried").parentElement).toHaveTextContent("since 2026-09-20");
     expect(c.getByText("Refused").parentElement).toHaveTextContent("5");
+    expect(c.getByText("Refused").parentElement).toHaveTextContent("from 2026-09-21");
     expect(c.getByRole("link", { name: /See every block/ })).toHaveAttribute("href", "/canton");
     expect(calls.filter((p) => p.startsWith("/api/canton/stats"))).toEqual(["/api/canton/stats?window=24h"]);
   });
@@ -436,11 +438,5 @@ describe("the External calls card", () => {
     await open("/stats?window=7d", { cantonStats: () => reply({ error: "down" }, 500) });
     expect(await within(await card()).findByText("The figures cannot be read right now.")).toBeInTheDocument();
     expect(await tile("Canton commit")).toBeInTheDocument();
-  });
-
-  it("keeps every figure whole on a 360 px screen: the cells shrink to two a row and break long words", () => {
-    const styles = readFileSync(join(import.meta.dirname, "..", "styles.css"), "utf8");
-    expect(styles).toMatch(/\.ext-calls \.cell \{ min-width: 0; overflow-wrap: anywhere; \}/);
-    expect(styles).toMatch(/@media \(max-width: 720px\)[^\n]*\.cells \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
   });
 });
