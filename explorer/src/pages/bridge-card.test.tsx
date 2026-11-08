@@ -142,7 +142,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ evm: fakeEvm({ balance: 0n, native: 10n ** 20n }), legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, WTROME)] });
     show({}, m);
     await choose("From", /^tROME on Ostia$/);
-    expect(screen.getByText(/About 1 min · 3 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 2 min · 3 MetaMask pop-ups/)).toBeInTheDocument();
     await type("2");
     await press("Move to Canton");
     await done();

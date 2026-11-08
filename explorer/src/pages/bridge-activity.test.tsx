@@ -118,6 +118,11 @@ describe("the Activity list", () => {
     expect(within(done!).getByRole("link", { name: "Ostia block 36512" })).toHaveAttribute("href", "/block/36512");
     expect(await within(done!).findByRole("link", { name: "Canton update" })).toHaveAttribute("href", "/canton/1220abcd");
     expect(within(open!).queryByRole("link")).toBeNull();
+    expect(within(done!).getAllByText(/block 36512/)).toHaveLength(1);
+    // The date sits under the title in every row, never beside it.
+    const top = (r: HTMLElement) => r.querySelector(".act-top")!;
+    expect(top(done!).children[0]!.tagName).toBe("B"); expect(top(done!).children[1]!.textContent).toBe("07 Nov 2026, 09:30:15 UTC");
+    expect(top(open!).children).toHaveLength(2);
   });
   it("does not read an approval as the move: a lock waiting on its approval shows no block and no Final", async () => {
     const store = memoryStore();

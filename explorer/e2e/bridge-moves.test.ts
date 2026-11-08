@@ -63,7 +63,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (path === "/twin-registry/twin/v1/lock-parts") {
         const { receiver, ref } = JSON.parse(await body(req));
         chain.lastLock = { receiver, ref, lockId: lockIdOf(receiver, ref) };
-        return json(200, { lockId: chain.lastLock.lockId.slice(2), vaults: [VAULT] });   // the real registry answers the id without 0x
+        return json(200, { lockId: chain.lastLock.lockId.slice(2), receiver, ref, acceptance: "00" + "ac".repeat(33), vaults: [VAULT] });   // the real registry answers the id without 0x, and the receiver, the ref and its acceptance contract
       }
       if (path === "/accounts/v1/topology") {
         publicKey = fromBase64(JSON.parse(await body(req)).publicKey);

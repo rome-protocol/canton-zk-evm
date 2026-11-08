@@ -118,6 +118,13 @@ describe("the twins page", () => {
     expect(rowOf(table, "wTKE")).toHaveTextContent("not known"); expect(rowOf(table, "wTKE")).toHaveTextContent("not compared");
   });
 
+  it("names the Amulet instrument Canton Coin", async () => {
+    await twins({ canton: [twinCanton({ token: addr(0xd4), symbol: "CC", instrumentId: "Amulet" })] });
+    const row = rowOf(await screen.findByRole("table", { name: "Canton token custody" }), "CC");
+    expect(row).toHaveTextContent("Canton Coin");
+    expect(row).not.toHaveTextContent("Amulet");
+  });
+
   it("lists the newest locks and releases with their leg, transaction, block and Canton update, each a link", async () => {
     await twins();
     const table = await screen.findByRole("table", { name: "Lock and release legs" });

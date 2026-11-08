@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BridgeConfig } from "./evm/config.ts";
 import { cantonSignatures, popups, stepsOf } from "./moves/steps.ts";
-import { arrivesAs, factsOf, groupsOf, inputOf, moveOf, pairsOf, search } from "./tokens.ts";
+import { arrivesAs, factsOf, groupsOf, inputOf, instrumentName, moveOf, pairsOf, search } from "./tokens.ts";
 
 const a = (c: string) => ("0x" + c.repeat(40)) as `0x${string}`;
 const config: BridgeConfig = {
@@ -16,6 +16,12 @@ describe("the pairs this build supports", () => {
     expect(pairs.map((p) => [p.kind, p.ostia.symbol, p.canton.symbol, p.native])).toEqual([["twin", "tROME", "tROME", true], ["twin", "TKA", "TKA", false], ["wrapped", "wCC", "Canton Coin", false], ["wrapped", "wTKB", "TKB", false]]);
     expect(pairs[1]!.canton).toEqual({ symbol: "TKA", admin: "gateway::1220aa", id: `erc20:${"aa".repeat(20)}`, decimals: 10 });
     expect(pairs[2]!.canton).toMatchObject({ admin: "DSO::1220cd", id: "Amulet", decimals: 10 });
+  });
+  it("name the live wrapped Canton Coin: the registry's symbol is CC and its instrument is Amulet", () => {
+    const live = pairsOf({ ...config, twins: [], wrapped: [{ address: a("c"), symbol: "CC", decimals: 10, instrument: { admin: "DSO::1220cd", id: "Amulet" } }] }, "g");
+    expect(live.map((p) => [p.ostia.symbol, p.canton.symbol, p.canton.id])).toEqual([["CC", "Canton Coin", "Amulet"]]);
+    expect(instrumentName("Amulet")).toBe("Canton Coin");
+    expect(instrumentName("TKB")).toBe("TKB");
   });
   it("show the chain's coin under its own name only when a wrapped coin is pinned", () => {
     expect(pairsOf({ ...config, wrapper: null }, "g").map((p) => p.ostia.symbol)).toEqual(["TKA", "WtROME", "wCC", "wTKB"]);

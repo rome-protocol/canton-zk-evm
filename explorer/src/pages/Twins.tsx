@@ -7,6 +7,7 @@ import { Info } from "../components/Info.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { count, exact, plural, short, units } from "../format.ts";
 import { ago } from "../block-times.ts";
+import { instrumentName } from "../bridge/tokens.ts";
 import { useNow } from "../useStatus.ts";
 import { compareCustody } from "./CantonCustody.tsx";
 import { cantonMark, Mark, Tok, useTwins } from "./TwinParts.tsx";
@@ -47,8 +48,8 @@ function Custody({ rows }: { rows: TwinCanton[] }) {
             const gap = compareCustody(c.decimals, c);
             return (
               <tr key={c.token}>
-                <td><Link to={`/token/${c.token}`}>{c.symbol ?? short(c.token, 8, 4)}</Link><span className="tag">{c.instrumentId}</span></td>
-                <td className="r"><span className="num" title={`${exact(c.custody, c.custodyDecimals)} ${c.instrumentId}`}>{units(c.custody, c.custodyDecimals)}</span> {c.instrumentId} <span className="muted small">{plural(c.holdings, "holding")}</span></td>
+                <td><Link to={`/token/${c.token}`}>{c.symbol ?? short(c.token, 8, 4)}</Link><span className="tag">{instrumentName(c.instrumentId)}</span></td>
+                <td className="r"><span className="num" title={`${exact(c.custody, c.custodyDecimals)} ${instrumentName(c.instrumentId)}`}>{units(c.custody, c.custodyDecimals)}</span> {instrumentName(c.instrumentId)} <span className="muted small">{plural(c.holdings, "holding")}</span></td>
                 <td className="r">{c.supply === null ? <span className="muted">not known</span> : <Tok raw={c.supply} decimals={c.decimals} symbol={c.symbol} />}</td>
                 <td><Mark state={cantonMark(c)} />{gap.state === "custody-higher" || gap.state === "supply-higher" ? <span className="muted small"> by <span className="num" title={exact(gap.diff, gap.scale)}>{units(gap.diff, gap.scale)}</span></span> : null}</td>
                 <td className="muted small">block {count(c.supplyBlock)} · {ago(c.readAt, now)}</td>

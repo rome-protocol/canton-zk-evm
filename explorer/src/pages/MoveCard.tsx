@@ -4,7 +4,7 @@ import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
 import { AmountError, maxText, parseAmount, showBalance } from "../bridge/amounts.ts";
 import { continueWords, entryOf, recordOf } from "../bridge/activity.ts";
-import { amountSize, buttonOf, noteOf, progressWords, WAIT_WORDS } from "../bridge/card.ts";
+import { amountSize, buttonOf, noteOf, progressWords, waitFor } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
@@ -219,7 +219,7 @@ export function MoveCard(p: MoveCardProps) {
           {extra}
           {p.faucet && bal.gas === 0n && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
           <details className="steps">
-            <summary><span>{WAIT_WORDS} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
+            <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
             <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className="muted small">{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
             <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
           </details>

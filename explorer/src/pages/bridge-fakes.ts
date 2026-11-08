@@ -83,7 +83,7 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   const canton = o.canton ?? fakeCanton();
   const store = o.store ?? memoryStore();
   const move = createMove({
-    config, evm: evm.evm, canton, registry: { lockParts: async (a) => ({ lockId: lockIdOf(a.receiver, a.ref).slice(2), vaults: [VAULT] }) }, store, locks: memoryLocks(), sleep: async () => {}, newRef: () => "ref-1", maxPolls: 5,
+    config, evm: evm.evm, canton, registry: { lockParts: async (a) => ({ lockId: lockIdOf(a.receiver, a.ref).slice(2), acceptance: "00" + "ac".repeat(33), vaults: [VAULT] }) }, store, locks: memoryLocks(), sleep: async () => {}, newRef: () => "ref-1", maxPolls: 5,
     api: { tx: async (h) => o.tx?.(h) ?? finalTx(o.legs("ref-1")) }, leg: async () => null, sentSince: async () => [],
   });
   const stop = track(move, store);

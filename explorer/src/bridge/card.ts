@@ -25,8 +25,9 @@ export interface ButtonInput {
   preparing?: boolean;
 }
 
-/** How long a move takes from Move to Final, as the card says it (live moves took 46 to 56 s). The one place for this figure. */
-export const WAIT_WORDS = "About 1 min";
+/** How long a move takes from Move to Final, as the card says it, by the MetaMask pop-ups it needs (live: moves with one pop-up took 46 to 58 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
+export const WAIT_WORDS = { short: "About 1 min", long: "About 2 min" } as const;
+export const waitFor = (popups: number): string => (popups >= 3 ? WAIT_WORDS.long : WAIT_WORDS.short);
 
 /** What a move that is running says while it waits. Null when no move is running. */
 export function progressWords(s: MoveState, symbol: string): string | null {
