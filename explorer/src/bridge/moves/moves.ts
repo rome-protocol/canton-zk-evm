@@ -5,6 +5,7 @@ import { timeoutSignal } from "../../timeout.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
 import { approveCall, claimCall, definitelyNotSent, payCall, releaseCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
+import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
   clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, sameId, saveCheckpoint, TAKE_BACK_STAGES, transition,
@@ -109,8 +110,13 @@ function makesCall(t: ApiTx, c: Checkpoint): boolean {
 
 const PARTY = /^[^:\s]+::1220[0-9a-f]{64}$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-/** A refusal that waiting does not clear: the account service answered 403 (not on its list), 404 (no such route or contract) or 422 (the ledger refused). */
-const permanent = (e: unknown): boolean => [403, 404, 422].includes((e as { status?: unknown } | null)?.status as number);
+/** A refusal that waiting does not clear: the account service answered 403 (not on its list), 404 (no such route or contract) or 422 (the ledger refused), the token registry refused (a 502 that carries its own 4xx), or the page's own check refused the prepared transaction. */
+const permanent = (e: unknown): boolean => {
+  if (e instanceof UnexpectedTransaction) return true;   // the page's own check refused what the service prepared: preparing it again gives the same
+  const { status, registryStatus } = (e ?? {}) as { status?: unknown; registryStatus?: unknown };
+  if (typeof status === "number" && [403, 404, 422].includes(status)) return true;
+  return status === 502 && typeof registryStatus === "number" && registryStatus >= 400 && registryStatus < 500;   // the token registry refused the context
+};
 /** The steps whose transaction is the move's own, and shows its leg. */
 const LAST: Step[] = ["pay", "release", "claim", "withdraw"];
 
@@ -339,12 +345,13 @@ export function createMove(d: Deps): Move {
     if (at() === "sent" && c.tx) return prove(c.tx, p);
     if (at() === "wallet") {
       // The wallet was asked at this step. The account's own transaction counts only when it makes exactly the saved call; a move with an id is also decided by the id below.
-      let h: Hex | null = c.tx ?? null;
+      let h: Hex | null = c.tx ?? null, listed = true;
       if (!h && c.call) {
         let r = await findCall(c);
         h = r.hash;
         // The explorer may not list the account's latest final sends yet: look again until its list covers every nonce from the saved one to the final count (or the call is found).
         for (let i = 0; !h && !r.complete && i < (d.maxPolls ?? 200); i++) { await d.sleep(d.pollMs ?? 3000); r = await findCall(c); h = r.hash; }
+        listed = r.complete;
       }
       if (h) {
         if (LAST.includes(c.step!)) return adopt(h, p);
@@ -352,6 +359,9 @@ export function createMove(d: Deps): Move {
       } else if (await pendingInWallet(c)) {
         // The explorer shows only final blocks, but the wallet knows its own pending sends: never send any step again over one. The record stays at this step; the transaction is matched (by its call, or by the id) once it is final.
         throw new Pause(STILL_WAITING);
+      } else if (!listed) {
+        // The explorer never listed the account's latest sends, so nothing proves the wallet did not send this: the record stays at this step and nothing is sent again (a withdrawal has no id to stop a second one).
+        throw new Waited("Ostia's explorer has not listed this account's latest sends yet, so the page cannot tell whether your wallet sent this. Continue to look again; nothing is sent.");
       }
       save(reset());
     }
@@ -490,6 +500,8 @@ export function createMove(d: Deps): Move {
       const minutes = Math.max(1, Math.ceil((deadline + TAKE_BACK_AFTER_MS - Date.now()) / 60_000));
       throw new Refused(`Your tokens are locked on Canton until this deposit's time to settle has passed. Come back in about ${minutes} minute${minutes === 1 ? "" : "s"} to take them back.`);
     }
+    // A claim still pending in the wallet would hold back the account's later transactions after the tokens are taken back (it can never be included then): cancel it first.
+    if ((c.stage === "wallet" || c.stage === "sent") && (await pendingInWallet(c))) throw new Refused("The claim for this deposit is still waiting in your wallet. Cancel it in your wallet first, then take your tokens back.");
     try { await d.canton.recoverDeposit({ label: c.ref, depositId }); } catch (e) {
       // The account service does not offer it (403, 404) or the ledger refused it (422): waiting changes nothing. Anything else may clear by itself.
       if (permanent(e)) throw new CannotTakeBack("Canton would not take the tokens back. If you give this deposit up now, the tokens stay locked on Canton.");

@@ -13,16 +13,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ed25519
 
 # What the service lets an account sign: a create of a template ("#package:Module:Entity") or an exercise of one choice ("#package:Module:Entity#Choice").
+ALLOCATION_WITHDRAW = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw"   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
+DEPOSIT_ARCHIVE = "#canton-zk-evm:Zk.Chain:DepositRequest#Archive"
 DEFAULT_ALLOW = (
     "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance",
     "#canton-zk-evm:Zk.Chain:DepositRequest",
     "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept",
-    "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw",
-    "#canton-zk-evm:Zk.Chain:DepositRequest#Archive",
+    ALLOCATION_WITHDRAW,
+    DEPOSIT_ARCHIVE,
 )
-ALLOCATION_WITHDRAW, DEPOSIT_ARCHIVE = DEFAULT_ALLOW[5:]   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
 CHAIN_CREATES = DEFAULT_ALLOW[:2]   # these creates name the chain's parties as observers: they are checked against the configured ones
 CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
 ACCEPTANCE, DEPOSIT = CHAIN_CREATES
@@ -898,7 +899,7 @@ class Accounts:
     def prepare(self, body: dict, ip: str) -> dict:
         party = self.known(body.get("party"))
         commands = self.check_commands(party, body.get("commands"))
-        self.prepared.room(pending_owner(ip), party)   # a client or an account at its cap costs the participant nothing: no read, no prepare
+        self.prepared.room(pending_owner(ip), party)   # a client or an account at its cap costs the participant no prepare (a take-back's own check reads the account's contracts first, at the account's rate)
         request = {"commandId": str(uuid.uuid4()), "userId": self.user, "actAs": [party], "synchronizerId": self.sync_id(),
                    "commands": commands, "readAs": [], "packageIdSelectionPreference": [], "prefetchContractKeys": [],
                    "verboseHashing": False, "disclosedContracts": body.get("disclosedContracts", [])}   # the JSON API wants every list, though they are optional

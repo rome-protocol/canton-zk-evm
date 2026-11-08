@@ -3,6 +3,7 @@ import type { Address, Hex } from "viem";
 import type { ApiTx, BlockLeg } from "../../api.ts";
 import { approveCall, claimCall, NotSent, payCall, releaseCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
+import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { CannotTakeBack, createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
@@ -542,6 +543,38 @@ describe("a deposit that cannot settle is taken back", () => {
     await t.move.abandon("ref-1", { leaveLocked: true });
     expect(listMoves(store)).toEqual([]);
   });
+  it("a registry refusal and the page's own refusal of the prepared transaction cannot clear either; a registry that is only down can", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    for (const refusal of [Object.assign(new Error("registry"), { status: 502, registryStatus: 404 }), new UnexpectedTransaction("it exercises Other")]) {
+      t.canton.failRecovery(refusal);
+      await expect(t.move.abandon("ref-1")).rejects.toBeInstanceOf(CannotTakeBack);
+    }
+    t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502, registryStatus: 500 }));
+    await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502 }));
+    await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    t.canton.failRecovery(new UnexpectedTransaction("it exercises Other"));
+    await t.move.abandon("ref-1", { leaveLocked: true });
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a claim still pending in the wallet is cancelled before the tokens are taken back or the deposit is given up", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "wallet", step: "claim", nonce: 7 });
+    const evm = fakeEvm();
+    evm.setWallet({ pending: 9, latest: 7 });
+    const t = setup({ store, evm });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await expect(t.move.takeBack()).rejects.toThrow("Cancel it in your wallet first");
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("Cancel it in your wallet first");
+    expect(t.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    evm.setWallet(null);
+    await t.move.takeBack();
+    expect(listMoves(store)).toEqual([]);
+  });
   it("leaving the tokens locked never skips the wait for the time to settle", async () => {
     const store = memoryStore();
     keep(store, { input, stage: "canton" });
@@ -698,6 +731,18 @@ describe("a send whose outcome the wallet does not give", () => {
     expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
     expect(await t.move.proceed()).toMatchObject({ phase: "final" });
     expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw", "withdraw"]);
+  });
+  it("never sends again when the explorer cannot say whether the lost send happened (its list fails or stays short)", async () => {
+    for (const listing of [async () => { throw new Error("the explorer is down"); }, async () => [] as Hex[]]) {
+      const evm = fakeEvm();
+      evm.loseAnswer("withdraw", timeout);
+      const t = setup({ evm, sentSince: listing, maxPolls: 3 });
+      expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+      evm.evm.nonce = async () => 8;   // a transaction of the account is final, and the explorer cannot show it
+      expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true });
+      expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw" });
+      expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    }
   });
   it("never sends over a transaction the wallet still holds pending", async () => {
     const evm = fakeEvm();
