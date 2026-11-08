@@ -105,6 +105,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
 
     const { page, scripts } = await open("/bridge");
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByText(ORIGIN, { exact: true }).waitFor();   // the site's origin, beside the sign-in
     expect(scripts.some((s) => /\/Bridge-/.test(s))).toBe(true);
     expect(scripts.some((s) => /\/account-/.test(s))).toBe(false);
@@ -136,6 +137,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     service.hide = "withdrawal";   // the withdrawal acceptance never shows in the account's list
     const { page } = await open("/bridge");
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 60_000 });
@@ -164,6 +166,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     service.prepare = "too_many_open";
     const { page } = await open("/bridge");
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 30_000 });

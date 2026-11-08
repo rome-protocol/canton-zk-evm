@@ -97,6 +97,8 @@ const LAST: Step[] = ["pay", "release", "claim", "withdraw"];
 
 export interface Move {
   readonly state: MoveState;
+  /** The ref of the move this object is running or holds paused, failed or just final (null when none): the record to look at when more than one is kept. */
+  readonly current: string | null;
   subscribe(fn: (s: MoveState) => void): () => void;
   /** Starts a move. Refused unless the last one is idle, final or failed, and while a move of this account is kept (continue it or abandon it first). */
   start(input: MoveInput): Promise<MoveState>;
@@ -408,6 +410,7 @@ export function createMove(d: Deps): Move {
 
   return {
     get state() { return state; },
+    get current() { return ck?.ref ?? null; },
     subscribe(fn) { subs.add(fn); return () => { subs.delete(fn); }; },
     start(input) {
       if (running || !["idle", "final", "failed"].includes(state.phase)) return Promise.reject(new Refused("Another move is not finished yet."));

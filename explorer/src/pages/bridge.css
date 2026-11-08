@@ -11,3 +11,81 @@
 .bridge-page .btn.ghost { background: var(--surface); color: var(--canton); border: 1px solid var(--line); box-shadow: none; font-weight: 500; }
 .bridge-page .bad { color: var(--bad); }
 .bridge-page .copy { color: var(--muted); }
+
+/* The move card: one card, the same width as the page, no sideways scroll at 360 px. */
+.bridge-page .move { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bridge-page .move p { margin: 0; overflow-wrap: anywhere; }
+.bridge-page .side { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line-2); min-width: 0; }
+.bridge-page .side-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bridge-page .lbl { font-size: 12.5px; color: var(--muted); }
+.bridge-page .wchip { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); overflow-wrap: anywhere; }
+.bridge-page .tok-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.bridge-page .tok { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; flex: 0 0 auto; max-width: 100%; }
+.bridge-page .tok[disabled] { opacity: .6; cursor: default; }
+.bridge-page .tok b { font-weight: 600; }
+.bridge-page .bal { display: flex; gap: 4px; flex-wrap: wrap; align-items: baseline; }
+.bridge-page .link-b { background: none; border: 0; padding: 0; font: inherit; color: var(--link); cursor: pointer; text-decoration: underline; }
+.bridge-page .link-b[disabled] { opacity: .55; cursor: default; }
+.bridge-page .flip { align-self: center; width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--canton); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; margin: -6px 0; }
+.bridge-page .flip[disabled] { opacity: .55; cursor: default; }
+.bridge-page .move .btn.go { width: 100%; padding: 12px 20px; overflow-wrap: anywhere; }
+.bridge-page .give-up { align-self: flex-start; }
+.bridge-page .ok { color: var(--ok); }
+/* An amount: the field grows to the height of its text (a hidden copy of the text sets it), the text wraps anywhere, and its type shrinks as it gets longer. Nothing is cut and nothing has an ellipsis. */
+.bridge-page .amt { display: grid; flex: 1 1 8ch; min-width: 0; text-align: right; }
+.bridge-page .amt::after, .bridge-page .amt textarea { grid-area: 1 / 1; font: inherit; font-size: 28px; line-height: 1.25; padding: 0; margin: 0; border: 0; background: none; color: var(--ink); text-align: right; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; min-width: 0; }
+.bridge-page .amt::after { content: attr(data-value); visibility: hidden; pointer-events: none; }
+.bridge-page .amt textarea { resize: none; overflow: hidden; outline: none; font-variant-numeric: tabular-nums; }
+.bridge-page .amt textarea:focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; border-radius: 4px; }
+.bridge-page .amt-l::after, .bridge-page .amt-l textarea { font-size: 24px; }
+.bridge-page .amt-m::after, .bridge-page .amt-m textarea { font-size: 20px; }
+.bridge-page .amt-s::after, .bridge-page .amt-s textarea { font-size: 16px; }
+@media (max-width: 480px) {
+  .bridge-page .amt { flex: 1 1 100%; order: 2; }   /* on a phone the amount has its own line, under the token */
+}
+.bridge-page .steps summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.bridge-page .steps ol { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.bridge-page .steps li { overflow-wrap: anywhere; }
+.bridge-page .steps p { margin-top: 4px; }
+
+/* The token picker. */
+.picker-back { position: fixed; inset: 0; z-index: 50; background: rgba(20, 2, 24, .45); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; overflow-y: auto; }
+.picker { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 10px; max-height: 84vh; overflow-y: auto; min-width: 0; }
+.picker h2, .picker h3 { margin: 0; }
+.picker-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.picker-h h2 { font-size: 18px; font-weight: 500; }
+.picker .icon-b { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 6px; }
+.picker-s { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+.picker-s input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; color: var(--ink); }
+.picker-g { font-size: 12.5px; font-weight: 600; color: var(--muted); text-transform: none; margin: 6px 0 2px; }
+.picker-l { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.picker-l li { display: flex; align-items: center; gap: 8px; border-radius: 12px; padding-right: 8px; }
+.picker-l li.on { background: var(--canton-tint); }
+.picker-l .pick { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 10px 12px; background: none; border: 0; color: var(--ink); font: inherit; text-align: left; cursor: pointer; border-radius: 12px; }
+.picker-l .pick:hover { background: var(--canton-tint); }
+.tok-facts { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.tok-facts div { display: flex; flex-direction: column; }
+.tok-facts dt { font-size: 11.5px; color: var(--muted); }
+.tok-facts dd { margin: 0; overflow-wrap: anywhere; word-break: break-all; }
+
+/* The Move and Activity tabs, the in-flight bar and the Activity list. */
+.bridge-page .tabs { margin: 0; }
+.bridge-page .panel { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.bridge-page .panel[hidden] { display: none; }
+.marks { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.marks li { display: inline-flex; align-items: center; gap: 6px; }
+.marks li + li::before { content: ""; width: 16px; height: 1px; background: var(--line); margin-right: 2px; }
+.marks i { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
+.marks li.on { color: var(--ok); }
+.marks li.on i { background: var(--ok); border-color: var(--ok); }
+.bridge-page .flight { display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap; padding: 10px 14px; min-width: 0; }
+.bridge-page .flight .fl-what { font-weight: 600; overflow-wrap: anywhere; }
+.bridge-page .activity { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bridge-page .activity p { margin: 0; overflow-wrap: anywhere; }
+.bridge-page .act-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.bridge-page .act-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--line-2); min-width: 0; }
+.bridge-page .act-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.bridge-page .act-top { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; }
+.bridge-page .act-top b { overflow-wrap: anywhere; }
+.bridge-page .act-links { display: flex; gap: 4px 14px; flex-wrap: wrap; }
+.bridge-page .act-row .btn { align-self: flex-start; }
