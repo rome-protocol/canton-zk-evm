@@ -61,6 +61,18 @@ export function plainWords(e: unknown): string {
   return GENERIC;
 }
 
+/** The sentence for a wallet that will not let this page sign. Codes 4100, 4900 and 4901 mean "not authorized" or "not connected": on the sign-in path the likely cause is a missing test coin or the wrong network. The test coin is named only when the wallet is not known to hold any. */
+export const walletWouldNotSign = (coin: string, chainName: string, hasCoin = false) =>
+  hasCoin
+    ? `Your wallet did not let this page sign. Make sure MetaMask is on the ${chainName} network, then sign in again.`
+    : `Your wallet did not let this page sign. Get test ${coin} first and make sure MetaMask is on the ${chainName} network, then sign in again.`;
+
+/** One error of the sign-in, in plain words: a wallet that refuses the signature gets the sentence above, any other error its usual one. `coinHeld` is what the wallet holds of the chain's coin (null while not known). */
+export function signInWords(e: unknown, coin: string, chainName: string, coinHeld: bigint | null = null): string {
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  return code === 4100 || code === 4900 || code === 4901 ? walletWouldNotSign(coin, chainName, coinHeld !== null && coinHeld > 0n) : plainWords(e);
+}
+
 /** A message a wallet or a helper wrote as text (not an error): shown only when it reads as a plain sentence, else the general one. */
 export function plainText(message: string | null | undefined): string | null {
   if (!message) return null;

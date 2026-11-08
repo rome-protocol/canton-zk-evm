@@ -107,14 +107,77 @@ describe("the button walks the steps", () => {
     await press("Max");
     expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("1.9999999999");
   });
-  it("offers the faucet inline only when the account holds nothing for fees", async () => {
-    const { props } = show({}, fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) }));
-    await userEvent.click(await screen.findByRole("button", { name: "Get 1 tROME" }));
-    expect(props.faucet!.onGet).toHaveBeenCalled();
+  it("takes the test coin first when the wallet holds none: Get test tROME comes before opening the account, and the walk goes on once it holds some", async () => {
+    const none = fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) });
+    const first = show({ session: null }, none);
+    await userEvent.click(await screen.findByRole("button", { name: "Get test tROME" }));
+    expect(first.props.faucet!.onGet).toHaveBeenCalledTimes(1);
+    expect(first.props.onOpenAccount).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Open my Canton account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Get 1 tROME" })).toBeNull();   // one faucet action, not two
     cleanup();
-    show();
-    await screen.findByText("119.99");   // tROME: what is wrapped, and the coin less a reserve for fees
-    expect(screen.queryByRole("button", { name: "Get 1 tROME" })).toBeNull();
+    show({ faucet: null, session: null }, none);   // a site with no faucet cannot send the person there
+    expect(await screen.findByRole("button", { name: "Open my Canton account" })).toBeInTheDocument();
+    cleanup();
+    const some = fakeSession({ legs: () => [] });   // the wallet holds tROME: the walk goes on as before
+    const second = show({ session: null }, some);
+    await press("Open my Canton account");
+    expect(second.props.onOpenAccount).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Get test tROME" })).toBeNull();
+    cleanup();
+    show({}, some);
+    await screen.findByText("119.99");
+    expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
+  });
+  it("reads .5 and ,5 as 0.5 and 5. as 5, shows the normalised amount when the field is left, and moves 0.5", async () => {
+    const { made } = show();
+    const field = screen.getByRole("textbox", { name: "Amount to move" });
+    await type(".5");
+    expect(await screen.findByRole("button", { name: "Move to Canton" })).toBeEnabled();   // read as 0.5 while it is typed
+    expect(field).toHaveValue(".5");
+    await userEvent.tab();
+    expect(field).toHaveValue("0.5");
+    expect(screen.getByRole("textbox", { name: "Amount you get" })).toHaveValue("0.5");
+    await userEvent.clear(field);
+    await type(",5");
+    await userEvent.tab();
+    expect(field).toHaveValue("0.5");
+    await userEvent.clear(field);
+    await type("5.");
+    expect(await screen.findByRole("button", { name: "Move to Canton" })).toBeEnabled();
+    await userEvent.tab();
+    expect(field).toHaveValue("5");
+    for (const bad of [".", "..5", "5..", ".5.", ".5,5"]) {
+      await userEvent.clear(field);
+      await type(bad);
+      await userEvent.tab();
+      expect(field).toHaveValue(bad);   // nothing else is rewritten
+      expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
+    }
+    await userEvent.clear(field);
+    await type(".5");   // the move is started with the amount as read, without leaving the field
+    await press("Move to Canton");
+    await waitFor(() => expect(made.store.map.get("bridge-move:ref-1")).toBeDefined());
+    expect(JSON.parse(made.store.map.get("bridge-move:ref-1")!).input.amount).toBe("0.5");
+  });
+  it("keeps Continue as the button for a paused move when the wallet holds no tROME, and offers the inline Get 1 tROME link, which asks the faucet", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, { input: { kind: "redeem", asset: TKA, amount: "3" }, ref: "ref-1", account: ME, party: PARTY, vault: VAULT, to: ME, stage: "evm", at: Date.now() });
+    const m = fakeSession({ store, evm: fakeEvm({ native: 0n }), legs: (ref) => [leg({ kind: "payment", legId: releaseIdOf(VAULT, ref) }, TKA)] });
+    const { props } = show({}, m);
+    expect(await screen.findByRole("button", { name: "Release on Ostia" })).toBeEnabled();   // the paused move's own button, not the faucet's
+    expect(screen.queryByRole("button", { name: "Get test tROME" })).toBeNull();
+    const link = await screen.findByRole("button", { name: "Get 1 tROME" });
+    expect(link.closest("p")).toHaveTextContent("You have none for fees.");
+    await userEvent.click(link);
+    expect(props.faucet!.onGet).toHaveBeenCalledTimes(1);
+    expect(m.evm.calls).toEqual([]);   // asking the faucet does not touch the move
+  });
+  it("says the faucet is being asked, and reports what the wallet holds of the coin", async () => {
+    const onGas = vi.fn();
+    show({ faucet: { label: "Get 1 tROME", busy: true, onGet: vi.fn() }, onGas }, fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) }));
+    expect(await screen.findByRole("button", { name: "Asking the faucet…" })).toBeDisabled();
+    await waitFor(() => expect(onGas).toHaveBeenLastCalledWith(0n));
   });
   it("puts the wallet on Ostia before a move, and does not start one when it cannot", async () => {
     const { made } = show({ ensureChain: async () => "Your wallet is not on Ostia yet." });
@@ -287,9 +350,11 @@ describe("the folded steps line", () => {
     expect(steps).not.toHaveAttribute("open");
     await userEvent.click(screen.getByText(/About 2 min/));
     expect(steps).toHaveAttribute("open");
+    expect(steps).toHaveClass("move-steps");   // not the block timeline's "steps", which draws a three-column grid with a line
+    expect(steps).not.toHaveClass("steps");
     expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");
-    expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page with your Canton account/);
+    expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page/);
     expect(steps.textContent).toMatch(/1 in MetaMask, 1 by your Canton account\./);
   });
 });
@@ -370,6 +435,9 @@ describe("the card on a phone", () => {
     expect(css).toMatch(/\.bridge-page \.amt textarea[^}]*overflow-wrap: anywhere/);
     expect(css).toMatch(/@media \(max-width: 480px\) \{[^}]*\.bridge-page \.amt \{ flex: 1 1 100%/);
     expect(css).not.toMatch(/\.amt[^{]*\{[^}]*overflow: hidden[^}]*max-height|\.amt[^{]*\{[^}]*(?<!-)height: \d/);
+    // The steps list: an amount in a step's line may break anywhere, and "MetaMask pop-up" moves whole to the next line, never split.
+    expect(css).toMatch(/\.move-steps li > span:first-child \{[^}]*overflow-wrap: anywhere/);
+    expect(css).toMatch(/\.move-steps \.by-wallet \{[^}]*white-space: nowrap/);
   });
 });
 
@@ -434,6 +502,7 @@ describe("what the card does around a move", () => {
     await tka();
     expect(await screen.findAllByText("20")).toHaveLength(2);
     await choose("From", /^tROME on Ostia$/);
-    expect(screen.queryAllByText("20")).toHaveLength(0);
+    expect(screen.queryAllByText("20")).toHaveLength(1);   // the old token's Ostia balance is gone; the Canton side shows tROME's own balance, already read with the others in one go
+    expect(document.querySelector(".side.from .bal .num")!.textContent).toBe("–");
   });
 });

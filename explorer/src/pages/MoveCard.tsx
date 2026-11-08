@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
-import { AmountError, maxText, parseAmount, showBalance } from "../bridge/amounts.ts";
+import { AmountError, maxText, normaliseAmount, parseAmount, showBalance } from "../bridge/amounts.ts";
 import { continueWords, entryOf, recordOf } from "../bridge/activity.ts";
 import { amountSize, buttonOf, noteOf, offersTakeBack, progressWords, TAKE_BACK_LABEL, waitFor } from "../bridge/card.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
@@ -35,22 +35,29 @@ export interface MoveCardProps {
   /** Puts the wallet on Ostia; says why not, in words, when it cannot. */
   ensureChain(): Promise<string | null>;
   /** The inline faucet for gas: shown when the account holds none. Null when this site has no faucet. */
-  faucet: { label: string; busy: boolean; onGet(): void } | null;
+  faucet: { label: string; busy: boolean; coming?: boolean; onGet(): void } | null;
+  /** Called with what the wallet holds of the chain's coin, each time it is read (null while not known). */
+  onGas?(gas: bigint | null): void;
+  /** Counts up when the balances should be read again (after the faucet is asked). */
+  refresh?: number;
+  /** Counts up while the page waits for the wallet's coin to land: only the wallet's balances are read again, never the Canton account's. */
+  poll?: number;
+  /** What the Canton account holds of each listed token (by the token's key; null when it could not be read), said each time it is read, so the page's other panels show it without reading it again. */
+  onCanton?(held: Record<string, bigint | null>): void;
   /** Said once a move is final. The page reads the kept moves from `session.move`. */
   onMoved?(): void;
 }
 
 /** `ostia` is what the From side can spend (for the chain's own coin, the coin and its wrapped form together); `wrapped` is only what the token itself holds, which is what a move back from Canton adds to. */
 interface Balances { ostia: bigint | null; wrapped: bigint | null; canton: bigint | null; gas: bigint | null }
-const EMPTY: Balances = { ostia: null, wrapped: null, canton: null, gas: null };
 /** What a move of the chain's own coin leaves unspent, for the fees of its steps (a hundredth of a coin). */
 const gasReserve = (decimals: number) => 10n ** BigInt(Math.max(decimals - 2, 0));
 
 /** An amount: a field that grows to hold the whole of it. The typed text is also drawn in a hidden copy that wraps, which sets the field's height, so no digit is ever cut. */
-function AmountField({ label, value, size, readOnly, onChange }: { label: string; value: string; size: string; readOnly?: boolean; onChange?: (t: string) => void }) {
+function AmountField({ label, value, size, readOnly, onChange, onBlur }: { label: string; value: string; size: string; readOnly?: boolean; onChange?: (t: string) => void; onBlur?: () => void }) {
   return (
     <div className={`amt amt-${size}`} data-value={`${value || "0"} `}>
-      <textarea rows={1} aria-label={label} inputMode="decimal" autoComplete="off" spellCheck={false} placeholder="0" readOnly={readOnly} value={value} onChange={(e) => onChange?.(e.target.value.replace(/[\s\n]/g, ""))} />
+      <textarea rows={1} aria-label={label} inputMode="decimal" autoComplete="off" spellCheck={false} placeholder="0" readOnly={readOnly} value={value} onChange={(e) => onChange?.(e.target.value.replace(/[\s\n]/g, ""))} onBlur={onBlur} />
     </div>
   );
 }
@@ -61,7 +68,9 @@ export function MoveCard(p: MoveCardProps) {
   const [sel, setSel] = useState<{ pair: string | null; from: Side }>({ pair: null, from: "ostia" });
   const [text, setText] = useState("");
   const [picker, setPicker] = useState<"from" | "to" | null>(null);
-  const [bal, setBal] = useState<Balances>(EMPTY);
+  const [wallet, setWallet] = useState<Omit<Balances, "canton">>({ ostia: null, wrapped: null, gas: null });
+  /** What the Canton account holds of every listed token, from one read of its holdings. */
+  const [held, setHeld] = useState<Record<string, bigint | null>>({});
   const [tick, setTick] = useState(0);
   const [move, setMove] = useState<MoveState>({ phase: "idle" });
   const [problem, setProblem] = useState<string | null>(null);
@@ -98,17 +107,29 @@ export function MoveCard(p: MoveCardProps) {
   const lastKey = useRef<string | undefined>(pair?.key);
   useEffect(() => {
     if (!pair) return;
-    if (lastKey.current !== pair.key) { lastKey.current = pair.key; setBal(EMPTY); }
+    if (lastKey.current !== pair.key) { lastKey.current = pair.key; setWallet({ ostia: null, wrapped: null, gas: null }); }
     let live = true;
     const hold = <T,>(f: Promise<T>) => f.then((v) => v as T | null, () => null);
     (async () => {
       const [held, gas] = evm ? await Promise.all([hold(evm.balanceOf(pair.erc20)), hold(evm.native())]) : [null, null];
       const ostia = held === null ? null : pair.native && gas !== null ? held + (gas > gasReserve(config!.chain.coin.decimals) ? gas - gasReserve(config!.chain.coin.decimals) : 0n) : held;
-      const canton = session ? await hold(session.cantonBalance({ admin: pair.canton.admin, id: pair.canton.id })) : null;
-      if (live) setBal({ ostia, wrapped: held, canton, gas });
+      if (live) setWallet({ ostia, wrapped: held, gas });
     })();
     return () => { live = false; };
-  }, [pair?.key, evm, session, tick]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pair?.key, evm, tick, p.refresh, p.poll]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // The Canton account's balances: one read of its holdings for all the listed tokens (the card's and the page's account panel's), on the card's own tick, when a move ends or a coin is asked for; not on the wallet-coin wait's quick ticks.
+  useEffect(() => {
+    if (!session || pairs.length === 0) { setHeld({}); return; }
+    let live = true;
+    session.cantonBalances(pairs.map((x) => ({ admin: x.canton.admin, id: x.canton.id }))).then(
+      (rows) => { if (live) setHeld(Object.fromEntries(pairs.map((x, i) => [x.key, rows[i] ?? null]))); },
+      () => { if (live) setHeld(Object.fromEntries(pairs.map((x) => [x.key, null]))); },
+    );
+    return () => { live = false; };
+  }, [session, pairs, tick, p.refresh]);
+  useEffect(() => { p.onCanton?.(held); }, [held]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const bal: Balances = { ...wallet, canton: pair ? held[pair.key] ?? null : null };
+  useEffect(() => { p.onGas?.(bal.gas); }, [bal.gas]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const parsed = useMemo(() => {
     if (!pair || text.trim() === "") return { state: "empty" as const, error: null, units: null };
@@ -134,7 +155,7 @@ export function MoveCard(p: MoveCardProps) {
     return () => { live = false; clearInterval(timer); };
   }, [session, keptRef, keptStage, move.phase]);
   const button = buttonOf({
-    connected: p.account !== null, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
+    connected: p.account !== null, needCoin: p.faucet && bal.gas === 0n ? config?.chain.coin.symbol : undefined, asking: p.faucet?.busy, coming: p.faucet?.coming, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
     to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
   });
   const kind = pair ? moveOf(pair, from) : null;
@@ -147,6 +168,7 @@ export function MoveCard(p: MoveCardProps) {
     if (starting) return;
     setProblem(null);
     if (button.action === "connect") return p.onConnect();
+    if (button.action === "faucet") return p.faucet?.onGet();
     if (button.action === "open") return p.onOpenAccount();
     if (!session || !pair) return;
     try {
@@ -155,7 +177,7 @@ export function MoveCard(p: MoveCardProps) {
       const why = await p.ensureChain();
       if (why) return setProblem(why);
       if (button.action === "continue") { await session.move.proceed(); return; }
-      await session.move.start(inputOf(pair, from, text.trim(), session.party));
+      await session.move.start(inputOf(pair, from, normaliseAmount(text), session.party));
     } catch (e) { setProblem(moveWords(e instanceof Error ? e.message : null)); }
     finally { setStarting(false); }
   }, [button.action, session, pair, from, text, p, starting]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -191,6 +213,8 @@ export function MoveCard(p: MoveCardProps) {
   const shown = (b: bigint | null, side: Side) => (b === null ? "–" : showBalance(b, tokenDecimals(side)));
   // A keypad set to a comma-decimal language offers only the comma: one comma and no point is read as the decimal point. Anything else (two commas, a comma and a point) is left for the amount check to refuse.
   const edit = (t: string) => { setText(/^[^.,]*,[^.,]*$/.test(t) ? t.replace(",", ".") : t); setProblem(null); };
+  // Leaving the field shows the amount as it is read: ".5" is "0.5" and "5." is "5".
+  const settle = () => setText((t) => normaliseAmount(t));
   const locked = running || move.phase === "paused" || (move.phase === "failed" && move.kept);
 
   const side = (field: "from" | "to") => {
@@ -205,7 +229,7 @@ export function MoveCard(p: MoveCardProps) {
           <button type="button" className="tok" disabled={!pair || locked} aria-label={`${field === "from" ? "From" : "To"} token ${tok} ${where}`} onClick={() => setPicker(field)}>
             <b>{tok || "–"}</b><span className="muted small">{where}</span><Icon name="down" size={12} />
           </button>
-          <AmountField label={field === "from" ? "Amount to move" : "Amount you get"} value={text} size={amountSize(text)} readOnly={field === "to" || locked} onChange={edit} />
+          <AmountField label={field === "from" ? "Amount to move" : "Amount you get"} value={text} size={amountSize(text)} readOnly={field === "to" || locked} onChange={edit} onBlur={field === "from" ? settle : undefined} />
         </div>
         <p className="bal small muted">
           Balance <span className="num">{shown(balance, s)}</span>
@@ -250,10 +274,10 @@ export function MoveCard(p: MoveCardProps) {
           {problem && <p className="small bad" role="alert">{problem}</p>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {extra}
-          {p.faucet && bal.gas === 0n && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
-          <details className="steps">
+          {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${config?.chain.coin.symbol ?? "Test coin"} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
+          <details className="move-steps">
             <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
-            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className="muted small">{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
+            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page" : "Automatic"}</span></li>)}</ol>
             <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
           </details>
         </>

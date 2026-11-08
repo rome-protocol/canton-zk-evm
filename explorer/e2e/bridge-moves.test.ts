@@ -374,6 +374,57 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.close();
   }, 180_000);
 
+  it("takes .5 as 0.5 and 5. as 5, shows the normalised amount when the field is left, and moves 0.5", async () => {
+    const page = await open("/bridge");
+    await signedIn(page);
+    const field = page.getByRole("textbox", { name: "Amount to move" });
+    await field.fill(".5");
+    await page.getByRole("button", { name: "Move to Canton" }).waitFor();   // read as 0.5 while it is typed
+    await field.blur();
+    expect(await field.inputValue()).toBe("0.5");
+    await field.fill("5.");
+    await field.blur();
+    expect(await field.inputValue()).toBe("5");
+    await field.fill(".5");
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    expect(chain.allowance).toBe(5n * 10n ** 17n);   // 0.5 of an 18-decimal token
+    expect(chain.lastLock!.receiver).toBe(party);
+    await page.close();
+  }, 120_000);
+
+  it("shows the account panel at 360 px: both addresses with their copy buttons and the Canton balances, nothing cut, no sideways scroll", async () => {
+    const page = await open("/bridge");
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
+    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    const panel = page.getByRole("region", { name: "Your addresses" });
+    await panel.waitFor();
+    expect(await panel.getByText("Your wallet on Ostia").count()).toBe(1);
+    expect(await panel.getByText("Not opened yet").count()).toBe(1);   // the short version while the account is not open
+    expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
+    expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(0);
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
+    await panel.getByText("Your account on Canton").waitFor();
+    await panel.getByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false }).waitFor();
+    expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
+    expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(1);
+    await panel.getByText("20", { exact: true }).first().waitFor();   // the account holds 20 of the token (the fake service's holdings)
+    expect(await panel.evaluate((el: HTMLElement) => /party|allocation|vault|external|holding|instrument/i.test(el.textContent ?? ""))).toBe(false);
+    // Nothing is cut: every box inside the panel sits within the page, and none has text running past its own box.
+    const fits = await panel.evaluate((el: HTMLElement) => {
+      const width = document.documentElement.clientWidth;
+      return [el, ...el.querySelectorAll<HTMLElement>("*")].every((n) => { const r = n.getBoundingClientRect(); return r.left >= -0.5 && r.right <= width + 0.5 && n.scrollWidth <= n.clientWidth + 1; });
+    });
+    expect(fits).toBe(true);
+    expect(await noSideways(page)).toBe(true);
+    // The copy buttons are in view and do not overlap the address they belong to.
+    const apart = await panel.evaluate((el: HTMLElement) => [...el.querySelectorAll(".addr")].every((a) => { const m = a.querySelector(".mono")!.getBoundingClientRect(), b = a.querySelector("button")!.getBoundingClientRect(); return b.top >= m.bottom - 1 || b.left >= m.right - 1; }));
+    expect(apart).toBe(true);
+    await page.close();
+  }, 90_000);
+
   it("keeps a long amount whole at 360 px: no sideways scroll, and the field holds every digit", async () => {
     const page = await open("/bridge");
     const field = page.getByRole("textbox", { name: "Amount to move" });
@@ -387,6 +438,53 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(box.right).toBeLessThanOrEqual(box.width);
     const top = async (name: string) => (await page.getByRole(name === "token" ? "button" : "textbox", { name: name === "token" ? /^From token/ : "Amount to move" }).boundingBox()).y;
     expect(await top("amount")).toBeGreaterThan(await top("token"));   // on a phone the amount has its own line, under the token
+    await page.close();
+  }, 60_000);
+  /** What the folded steps list looks like once it is open: for each step, the lines its label and its note take (the rows its boxes sit on; the separator dot is a box of its own, on the label's line), and where each sits. */
+  const stepsLayout = (page: any) => page.evaluate(() => {
+    const list = document.querySelector(".move-steps")!;
+    return [...list.querySelectorAll("li")].map((li) => {
+      const [label, note] = [...li.querySelectorAll(":scope > span")] as HTMLElement[];
+      const box = (e: HTMLElement) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, lines: new Set([...e.getClientRects()].map((r) => Math.round(r.top))).size, line: parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.5 }; };
+      const l = li.getBoundingClientRect();
+      return { label: label!.textContent, note: note!.textContent, labelBox: box(label!), noteBox: box(note!), li: { top: l.top, bottom: l.bottom, left: l.left, right: l.right } };
+    });
+  });
+
+  it("lays the folded steps list out one step to a line at 360 px and at 1280 px: each label and its MetaMask pop-up text on one line, nothing overlapping", async () => {
+    service.extra = { wrapper: true, wrapped: true };
+    const page = await open("/bridge");
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
+    for (const width of [360, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      // All five kinds of move, at both widths. Each label and its pop-up text stay on one line; at phone width a page-signed step (not a pop-up) may wrap, as text normally does.
+      const lists = [/^tROME on Ostia$/, /^TKA on Ostia$/, /^TKA on Canton$/, /^Canton Coin on Canton$/, /^wCC on Ostia$/];
+      for (const [from, name] of lists.map((n) => ["From", n] as const)) {
+        await pick(page, from, name);
+        const details = page.locator("details.move-steps");
+        if (!(await details.evaluate((d: HTMLDetailsElement) => d.open))) await details.locator("summary").click();
+        const steps = await stepsLayout(page);
+        expect(steps.length).toBeGreaterThanOrEqual(2);
+        let popups = 0;
+        steps.forEach((st: any, i: number) => {
+          const at = `${width}px, ${st.label}`;
+          for (const [what, b] of [["label", st.labelBox], ["note", st.noteBox]] as const) {
+            if (!/MetaMask pop-up/.test(st.note) && (what === "note" || width < 1280)) continue;   // a step that is not a pop-up: its note may wrap, and at phone width its label too
+            expect(b.lines, `${at}: ${what} is on ${b.lines} lines`).toBe(1);
+            expect(b.height, `${at}: ${what} is ${b.height} px high`).toBeLessThanOrEqual(b.line * 1.5);
+          }
+          if (/MetaMask pop-up/.test(st.note)) popups++;
+          const flows = !/MetaMask pop-up/.test(st.note) && (st.noteBox.lines > 1 || st.labelBox.lines > 1);   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
+          const sameRow = Math.min(st.labelBox.bottom, st.noteBox.bottom) - Math.max(st.labelBox.top, st.noteBox.top) > 2;
+          if (flows) { /* wraps by design */ } else if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
+          else expect(st.labelBox.bottom, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.top + 1);   // wrapped: one under the other
+          if (i > 0) expect(steps[i - 1].li.bottom, `${at}: steps overlap`).toBeLessThanOrEqual(st.li.top + 1);
+          expect(st.li.right, `${at}: the step runs off the card`).toBeLessThanOrEqual(width);
+        });
+        expect(popups).toBeGreaterThanOrEqual(/^\^(tROME|TKA) on Ostia/.test(name.source) ? 2 : 1);   // a move to Canton has two or three pop-ups; the Canton-side moves have one
+        expect(await noSideways(page)).toBe(true);
+      }
+    }
     await page.close();
   }, 60_000);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AmountError, maxText, parseAmount, showBalance, showUnits, tenDecimals } from "./amounts.ts";
+import { AmountError, maxText, normaliseAmount, parseAmount, showBalance, showUnits, tenDecimals } from "./amounts.ts";
 
 describe("tenDecimals", () => {
   it("writes a Canton amount with exactly ten decimals", () => {
@@ -7,6 +7,20 @@ describe("tenDecimals", () => {
     expect(tenDecimals(1n)).toBe("0.0000000001");
     expect(tenDecimals(2n * 10n ** 10n)).toBe("2.0000000000");
     expect(tenDecimals(parseAmount("1.5", 18).twin)).toBe("1.5000000000");
+  });
+});
+
+describe("an amount with a leading or a trailing point", () => {
+  it("reads .5 as 0.5 and 5. as 5, and leaves every other text as it is", () => {
+    expect(normaliseAmount(".5")).toBe("0.5");
+    expect(normaliseAmount("5.")).toBe("5");
+    expect(normaliseAmount(" .25 ")).toBe("0.25");
+    expect(normaliseAmount("0.")).toBe("0");
+    for (const same of ["", ".", "1.5", "12", "..5", "5..", ".5.", "1,5", ".5e3", "a."]) expect(normaliseAmount(same), same).toBe(same);
+    expect(parseAmount(".5", 18)).toEqual(parseAmount("0.5", 18));
+    expect(parseAmount("5.", 6)).toEqual(parseAmount("5", 6));
+    expect(parseAmount(".0000000001", 18).twin).toBe(1n);
+    for (const bad of [".", "..5", "5..", ".5.", "0.", ".00000000001"]) expect(() => parseAmount(bad, 18), bad).toThrow(AmountError);
   });
 });
 
@@ -26,7 +40,7 @@ describe("parseAmount", () => {
     expect(() => parseAmount("0.0000001", 6)).toThrow("at most 6 decimals");
   });
   it("refuses zero and text that is not an amount", () => {
-    for (const text of ["0", "0.0", "", "abc", "-1", "1e3", "1.", ".5"]) expect(() => parseAmount(text, 18)).toThrow(AmountError);
+    for (const text of ["0", "0.0", "", "abc", "-1", "1e3", "."]) expect(() => parseAmount(text, 18)).toThrow(AmountError);
   });
 });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AccountsError } from "./canton/accounts.ts";
 import { UnexpectedTransaction } from "./canton/sign.ts";
 import { UnexpectedOnboarding } from "./canton/topology.ts";
-import { GENERIC, PageError, moveWords, plainText, plainWords } from "./words.ts";
+import { GENERIC, PageError, moveWords, plainText, plainWords, signInWords, walletWouldNotSign } from "./words.ts";
 
 const TECHNICAL = /party|allocation|vault|contract id|choiceContext|already_accepted|too_many_open|waiting_for_signature|account_key_unknown|no_choice_context|\b[45]\d\d\b|Error:|\bat \S+:\d+|0x[0-9a-f]{4}|[{}]/i;
 const conflict = (code: string) => new AccountsError("conflict", 409, "words the service wrote", undefined, code);
@@ -39,6 +39,25 @@ describe("plain words for what the person can see", () => {
   it("says it when the person declines in the wallet, and gives one general sentence for anything else", () => {
     expect(plainWords(Object.assign(new Error("User rejected the request."), { code: 4001 }))).toBe("You declined it in your wallet.");
     for (const odd of [new Error("TypeError: x is undefined at foo.ts:12"), "text", null, undefined, 42, { message: "{\"json\":1}" }]) expect(plainWords(odd)).toBe(GENERIC);
+  });
+  it("tells the person to get test tROME first when the wallet will not let the page sign (codes 4100, 4900, 4901), on the sign-in path", () => {
+    const said = "Your wallet did not let this page sign. Get test tROME first and make sure MetaMask is on the Ostia network, then sign in again.";
+    expect(walletWouldNotSign("tROME", "Ostia")).toBe(said);
+    expect(walletWouldNotSign("tFOO", "Bar")).toBe("Your wallet did not let this page sign. Get test tFOO first and make sure MetaMask is on the Bar network, then sign in again.");
+    for (const code of [4100, 4900, 4901]) expect(signInWords(Object.assign(new Error("Unauthorized"), { code }), "tROME", "Ostia")).toBe(said);
+    expect(signInWords(Object.assign(new Error("User rejected the request."), { code: 4001 }), "tROME", "Ostia")).toBe("You declined it in your wallet.");
+    // A wallet known to hold the coin is not told to get it.
+    const held = "Your wallet did not let this page sign. Make sure MetaMask is on the Ostia network, then sign in again.";
+    expect(walletWouldNotSign("tROME", "Ostia", true)).toBe(held);
+    for (const code of [4100, 4900, 4901]) {
+      const e = Object.assign(new Error("Unauthorized"), { code });
+      expect(signInWords(e, "tROME", "Ostia", 1n)).toBe(held);
+      expect(signInWords(e, "tROME", "Ostia", 0n)).toBe(said);
+      expect(signInWords(e, "tROME", "Ostia", null)).toBe(said);
+    }
+    expect(signInWords(Object.assign(new Error("denied"), { code: 4001 }), "tROME", "Ostia", 1n)).toBe("You declined it in your wallet.");
+    expect(signInWords(new TypeError("boom"), "tROME", "Ostia")).toBe(GENERIC);
+    expect(signInWords(null, "tROME", "Ostia")).toBe(GENERIC);
   });
   it("shows a plain sentence of a helper as it is, and anything that reads as a message of code as the general one", () => {
     expect(plainText("Your wallet is not on Ostia yet.")).toBe("Your wallet is not on Ostia yet.");

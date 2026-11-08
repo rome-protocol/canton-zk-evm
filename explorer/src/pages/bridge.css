@@ -43,10 +43,14 @@
 @media (max-width: 480px) {
   .bridge-page .amt { flex: 1 1 100%; order: 2; }   /* on a phone the amount has its own line, under the token */
 }
-.bridge-page .steps summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
-.bridge-page .steps ol { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
-.bridge-page .steps li { overflow-wrap: anywhere; }
-.bridge-page .steps p { margin-top: 4px; }
+.bridge-page .move-steps summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.bridge-page .move-steps ol { margin: 8px 0 4px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.bridge-page .move-steps li { display: block; margin: 0; padding: 0; line-height: 1.4; }
+.bridge-page .move-steps li::before { content: none; }
+.bridge-page .move-steps .by-wallet { white-space: nowrap; }   /* "MetaMask pop-up" moves to the next line whole, never split */
+.bridge-page .move-steps li > span:first-child { overflow-wrap: anywhere; }   /* a long step wraps at phone width; the pop-up note stays on one line */
+.bridge-page .move-steps li > span:first-child::after { content: " ·"; }   /* the dot stays with the label, so a note that wraps starts its own line clean */
+.bridge-page .move-steps p { margin-top: 4px; }
 
 /* The token picker. */
 .picker-back { position: fixed; inset: 0; z-index: 50; background: rgba(20, 2, 24, .45); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; overflow-y: auto; }
@@ -89,3 +93,14 @@
 .bridge-page .act-top b { overflow-wrap: anywhere; }
 .bridge-page .act-links { display: flex; gap: 4px 14px; flex-wrap: wrap; }
 .bridge-page .act-row .btn { align-self: flex-start; }
+
+/* The account panel: the wallet's address on Ostia and the Canton account's, side by side while they fit, and the Canton balance of each token. */
+.bridge-page .addrs { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bridge-page .addrs p { margin: 0; overflow-wrap: anywhere; }
+.bridge-page .addr-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; min-width: 0; }
+.bridge-page .addr { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.bridge-page .addr .mono { overflow-wrap: anywhere; max-width: 100%; }
+.bridge-page .coins { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bridge-page .coins li { display: flex; justify-content: space-between; align-items: baseline; gap: 2px 12px; flex-wrap: wrap; margin: 0; padding: 0; min-width: 0; }
+.bridge-page .coins li::before { content: none; }
+.bridge-page .coins .num { margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-all; font-variant-numeric: tabular-nums; min-width: 0; }

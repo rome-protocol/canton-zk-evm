@@ -14,12 +14,20 @@ const TOO_MUCH = "The bridge moves less than 100,000,000,000,000,000 of a token 
 
 const TEXT = /^(\d{1,30})(?:\.(\d{1,30}))?$/;
 
+/** A leading or a trailing point is read as the person means it: ".5" is "0.5" and "5." is "5". Any other text is returned as it is (the amount check then takes or refuses it). */
+export function normaliseAmount(text: string): string {
+  const t = text.trim();
+  if (/^\.\d{1,30}$/.test(t)) return `0${t}`;
+  const whole = /^(\d{1,30})\.$/.exec(t);
+  return whole ? whole[1]! : t;
+}
+
 /**
  * An amount typed as a decimal ("12", "12.5") in a token of `decimals`: its base units on Ostia, and the same amount in Canton's 10 decimals.
  * Integer arithmetic only. A token with more than 10 decimals moves in steps of 10^(decimals-10) (10^8 for 18 decimals): a finer amount is refused, never rounded.
  */
 export function parseAmount(text: string, decimals: number): { base: bigint; twin: bigint } {
-  const m = TEXT.exec(text.trim());
+  const m = TEXT.exec(normaliseAmount(text));
   if (!m) throw new AmountError("Type an amount such as 12 or 12.5.");
   const fraction = (m[2] ?? "").replace(/0+$/, "");
   const finest = Math.min(decimals, CANTON_DECIMALS);

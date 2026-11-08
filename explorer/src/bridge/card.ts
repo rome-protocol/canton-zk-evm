@@ -2,7 +2,7 @@
 import { TAKE_BACK_STAGES, type MoveState } from "./moves/state.ts";
 import { moveWords } from "./words.ts";
 
-export type ButtonAction = "connect" | "open" | "move" | "continue" | "none";
+export type ButtonAction = "connect" | "faucet" | "open" | "move" | "continue" | "none";
 
 export interface ButtonInput {
   connected: boolean;
@@ -23,6 +23,12 @@ export interface ButtonInput {
   continueLabel?: string;
   /** The Canton account is open but the move's machinery is not built yet. */
   preparing?: boolean;
+  /** The chain's coin, when the wallet holds none of it and the site has a faucet: every move needs a little for fees, so the walk takes it first. */
+  needCoin?: string;
+  /** The faucet is being asked. */
+  asking?: boolean;
+  /** The faucet has queued the coin and the wallet does not show it yet: the button waits rather than asking again. */
+  coming?: boolean;
 }
 
 /** How long a move takes from Move to Final, as the card says it, by the MetaMask pop-ups it needs (live: moves with one pop-up took 46 to 58 s; the approve and pay of the tROME lock took about 1 min 40 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
@@ -57,8 +63,9 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   const running = progressWords(i.move, i.symbol);
   if (running !== null) return { label: running, action: "none", disabled: true };
   if (i.move.phase === "paused" || (i.move.phase === "failed" && i.move.kept)) return { label: i.continueLabel ?? "Continue", action: "continue", disabled: false };
-  // The wallet and the Canton account come first: they do not need the bridge's tokens.
+  // The order is the wallet, then the chain's coin for fees, then the Canton account: none of them needs the bridge's tokens.
   if (!i.connected) return { label: "Connect MetaMask", action: "connect", disabled: false };
+  if (i.needCoin) return { label: i.asking ? "Asking the faucet…" : i.coming ? `${i.needCoin} is on its way…` : `Get test ${i.needCoin}`, action: "faucet", disabled: !!(i.asking || i.coming) };
   if (!i.accountReady) return { label: "Open my Canton account", action: "open", disabled: false };
   if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };
   if (i.config === "failed") return { label: "Not available here", action: "none", disabled: true };
