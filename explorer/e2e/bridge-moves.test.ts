@@ -293,7 +293,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^tROME on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
-    expect(await page.getByText("About 1 min · 3 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 3 MetaMask pop-ups").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];
