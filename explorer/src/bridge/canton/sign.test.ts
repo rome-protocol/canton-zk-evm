@@ -3,7 +3,7 @@ import { decodePreparedTransaction, hashPreparedTransaction } from "@canton-netw
 import { PreparedTransaction, type Value } from "@canton-network/core-ledger-proto";
 import { describe, expect, it } from "vitest";
 import type { DisclosedContract, Prepared } from "./accounts.ts";
-import { allocate, chainFromEnv, depositRequest, implementationOf, redeemRequest, twinAcceptance, withdrawalAcceptance, type Chain, type Intent } from "./commands.ts";
+import { allocate, archiveDepositRequest, chainFromEnv, depositRequest, implementationOf, redeemRequest, twinAcceptance, withdrawalAcceptance, type Chain, type Intent } from "./commands.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { checkIntent, signPrepared, UnexpectedTransaction } from "./sign.ts";
 
@@ -90,6 +90,18 @@ describe("what the page signs", () => {
     await refused(sign(redeemRequest(PARTY, chain, "0x" + "AB".repeat(20), [HOLDING], "1.6", "0x" + "CD".repeat(20), "redeem-1").intent, redeemFixture), /amount/);
     await refused(sign(redeemRequest(PARTY, chain, "0x" + "AB".repeat(20), [HOLDING], "1.5", "0x" + "EE".repeat(20), "redeem-1").intent, redeemFixture), /recipient/);
     await refused(sign(twinAcceptance(PARTY, { ...chain, gateway: "evil::1220" + "00".repeat(32) }).intent, fixture("create-twin-acceptance")), /admin/);
+  });
+  it("accepts the archive of the account's own deposit request and nothing else in its place", () => {
+    // The service refuses to prepare this until the deposit's allocation is gone or past its time, so the prepared form of it is the real archive of the acceptance with the template swapped.
+    const now = preparedAt(archived);
+    const request = structuredClone(decode(archived));
+    const root = request.transaction!.nodes[0]!.versionedNode as unknown as { v1: { nodeType: { exercise: { templateId: { entityName: string } } } } };
+    root.v1.nodeType.exercise.templateId.entityName = "DepositRequest";
+    const intent = archiveDepositRequest(PARTY, archiveContract()).intent;
+    expect(() => checkIntent(request, intent, now)).not.toThrow();
+    expect(() => checkIntent(request, archive(), now)).toThrow(/exercises through/);   // not the acceptance's archive
+    expect(() => checkIntent(request, archiveDepositRequest(PARTY, "00").intent, now)).toThrow(/exercises Archive/);
+    expect(() => checkIntent(decode(archived), intent, now)).toThrow(/exercises through/);   // the acceptance's archive is not the request's
   });
   it("refuses extra root nodes and other actors", () => {
     const intent = withdrawalAcceptance(PARTY, chain).intent;

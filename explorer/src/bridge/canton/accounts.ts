@@ -33,6 +33,8 @@ export function choiceOf(c: unknown): Choice {
 }
 /** The accept-context answer is a `ChoiceContext` itself: read from its top level (and never from a nested `choiceContext`). */
 export const acceptChoice = (answer: unknown): Choice => choiceOf(answer);
+/** The withdraw-context answer is a `ChoiceContext` itself, too. */
+export const withdrawChoice = (answer: unknown): Choice => choiceOf(answer);
 /** The factory's choice context, which the token standard nests under `choiceContext`. */
 export const factoryChoice = (answer: { choiceContext?: unknown }): Choice => choiceOf(answer?.choiceContext);
 
@@ -137,6 +139,10 @@ export class AccountsClient {
   /** The context for the account to accept the transfer `instruction` (a transfer offered to it) at the registry `admin`. */
   acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {
     return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party, meta: {}, excludeDebugFields: true }, key);
+  }
+  /** The context for the account to withdraw its allocation `allocation` at the registry `admin`. */
+  allocationWithdrawContext(key: CantonKey, admin: string, allocation: string, party: string): Promise<ChoiceContext> {
+    return this.send("POST", `/accounts/v1/registry/${admin}/allocation/${allocation}/withdraw-context`, { party, meta: {}, excludeDebugFields: true }, key);
   }
   /** Test Canton Coin for the account: an offer to accept, or done. A 404 means the faucet is off here. */
   faucet(key: CantonKey, party: string): Promise<{ transferInstructionCid?: string; completed?: boolean }> {

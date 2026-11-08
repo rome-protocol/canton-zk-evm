@@ -1,14 +1,14 @@
 // The Canton side of a move, on the account service: what `createMove` asks of `CantonAdapter`, built from the account library. Every call looks at the ledger first and does
 // nothing again for a ref, a label or a deposit id that is already there: a reload may come before or after a command reached the ledger, and the move cannot tell which.
 import type { Address, Hex } from "viem";
-import { AccountsError, factoryChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
-import { allocate, depositRequest, redeemRequest, type Allocation, type Built, type Chain } from "./canton/commands.ts";
+import { AccountsError, factoryChoice, withdrawChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
+import { allocate, archiveDepositRequest, depositRequest, redeemRequest, withdrawAllocation, type Allocation, type Built, type Chain } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
-import { Refused, Waited, type CantonAdapter } from "./moves/moves.ts";
+import { permanent, Refused, Waited, type CantonAdapter } from "./moves/moves.ts";
 import { depositIdOf, sameId } from "./moves/state.ts";
 
 export interface AdapterDeps {
-  client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory">;
+  client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory" | "allocationWithdrawContext">;
   key: CantonKey;
   party: string;
   chain: Chain;
@@ -79,5 +79,33 @@ export function cantonAdapter(d: AdapterDeps): CantonAdapter {
       await d.submit(await depositRequest(d.party, d.chain, made.cid!, recipient, label));
     },
     waitDeposit: (depositId: Hex) => until(() => hasDeposit(depositId)),
+
+    async depositDeadline(label) {
+      const found = await allocationOf(label);
+      const t = Date.parse(String((found?.allocation.settlement as { settleBefore?: unknown } | undefined)?.settleBefore));
+      return Number.isNaN(t) ? null : t;
+    },
+    async recoverDeposit({ label, depositId }) {
+      // Each look is made again after the last command, so a repeat (a reload between the two) does only what is left: nothing is signed for a thing that is gone.
+      const found = await allocationOf(label);
+      let stuck: unknown = null;   // a withdraw that cannot be done (403, 404, 422): the request is still archived, so that a deposit given up holds no open-request slot, and the failure is then reported
+      if (found) {
+        try {
+          const leg = found.allocation.transferLeg.instrumentId;
+          const context = withdrawChoice(await d.client.allocationWithdrawContext(d.key, leg.admin, found.contractId, d.party));
+          await d.submit(withdrawAllocation(d.party, found.contractId, leg.id, context));
+        } catch (e) {
+          if (!permanent(e)) throw e;
+          stuck = e;
+        }
+      }
+      const request = (await open()).depositRequests.find((r) => sameId(r.arguments.depositId, depositId));
+      if (stuck === null) {
+        if (request) await d.submit(archiveDepositRequest(d.party, request.contractId));
+        return;
+      }
+      if (request) await d.submit(archiveDepositRequest(d.party, request.contractId)).catch(() => undefined);   // the service may refuse it too: the withdraw's failure is the one to report
+      throw stuck;
+    },
   };
 }

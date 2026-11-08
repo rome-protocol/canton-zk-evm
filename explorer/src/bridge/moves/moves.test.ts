@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 import type { ApiTx, BlockLeg } from "../../api.ts";
-import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
+import { approveCall, claimCall, NotSent, payCall, releaseCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
+import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused } from "../evm/registry.ts";
-import { createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { CannotTakeBack, createMove, TAKE_BACK_AFTER_MS, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -59,15 +60,19 @@ function fakeEvm(o: EvmOptions = {}) {
   const nonces = new Map<Hex, number>();
   /** What the wallet itself says of its pending sends: nothing pending unless a test says so. */
   let wallet: { pending: number; latest: number } | null | undefined = o.wallet;
+  /** A send the wallet takes (and broadcasts) but then fails to answer: the error is not a refusal, and the transaction exists. */
+  let lostAnswer: { name: string; error: unknown } | null = null;
   const send = (name: string) => async (...args: unknown[]) => {
     calls.push({ name, args });
     o.beforeSend?.(name);
     await o.holdSend;
-    if (refuse === name) throw Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" });
+    if (refuse === name) throw new NotSent(Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" }));
     if (name === "approve" && o.approveSticks !== false) allowance = args[2] as bigint;
     nonces.set(hashOf(n + 1), nonce);
     nonce++;
-    return hashOf(++n);
+    ++n;
+    if (lostAnswer?.name === name) { const e = lostAnswer.error; lostAnswer = null; throw e; }
+    return hashOf(n);
   };
   const evm: EvmAdapter = {
     account: ME,
@@ -77,7 +82,7 @@ function fakeEvm(o: EvmOptions = {}) {
     wrap: send("wrap"), approve: send("approve"), pay: send("pay"), release: send("release"), claim: send("claim"), withdraw: send("withdraw"),
     waitReceipt: async () => ({ success: o.receipt ? o.receipt(n) : true }),
   };
-  return { evm, calls, refuse: (name: string | null) => { refuse = name; }, setWallet: (w: { pending: number; latest: number } | null) => { wallet = w; } };
+  return { evm, calls, refuse: (name: string | null) => { refuse = name; }, loseAnswer: (name: string, error: unknown) => { lostAnswer = { name, error }; }, setWallet: (w: { pending: number; latest: number } | null) => { wallet = w; } };
 }
 
 interface SetupOptions {
@@ -88,8 +93,12 @@ function setup(o: SetupOptions = {}) {
   const evm = o.evm ?? fakeEvm();
   const store = o.store ?? memoryStore();
   const answers = [...(o.txs ?? [])];
-  const canton: CantonAdapter & { calls: string[]; args: unknown[] } = {
+  let deadline: number | null = Date.now() + 90 * 60_000, recovery: Error | null = null;
+  const canton: CantonAdapter & { calls: string[]; args: unknown[]; setDeadline(t: number | null): void; failRecovery(e: Error | null): void } = {
     calls: [], args: [], party: () => PARTY,
+    setDeadline: (t) => { deadline = t; }, failRecovery: (e) => { recovery = e; },
+    depositDeadline: async () => deadline,
+    recoverDeposit: async (a) => { if (recovery) throw recovery; canton.calls.push("recoverDeposit"); canton.args.push(a); },
     signRedeem: async (a) => void (canton.calls.push("signRedeem"), canton.args.push(a)), waitRedeem: async () => void canton.calls.push("waitRedeem"),
     allocateDeposit: async (a) => void (canton.calls.push("allocateDeposit"), canton.args.push(a)),
     signDeposit: async (a) => void (canton.calls.push("signDeposit"), canton.args.push(a)), waitDeposit: async () => void canton.calls.push("waitDeposit"),
@@ -105,6 +114,12 @@ function setup(o: SetupOptions = {}) {
   move.subscribe((s: MoveState) => phases.push(s.phase === "sending-evm" ? `sending-evm:${s.step}` : s.phase));
   return { move, evm, canton, store, phases, lockParts, deps };
 }
+
+describe("the take-back wait", () => {
+  it("is not below the account service's margin of 60 s past the settle-before time", () => {
+    expect(TAKE_BACK_AFTER_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});
 
 describe("the state machine", () => {
   it("refuses a transition it does not have", () => {
@@ -389,6 +404,217 @@ describe("move 3: a Canton token to Ostia", () => {
   });
 });
 
+describe("a deposit that cannot settle is taken back", () => {
+  const input = { kind: "deposit", asset: WCC, amount: "3.5" } as const;
+  const id = depositIdOf(PARTY, "ref-1");
+  const MIN = 60_000;
+
+  it("does not send the claim when the time to settle is close, and says so", async () => {
+    const t = setup();
+    t.canton.setDeadline(Date.now() + 2 * MIN);
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("almost run out") });
+    expect(t.evm.calls).toEqual([]);
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "evm" });   // kept, with its Canton steps done
+  });
+  it("sends the claim when there is time", async () => {
+    const early = setup({ txs: [final([leg({ kind: "deposit", legId: id }, WCC)])] });
+    early.canton.setDeadline(Date.now() + 90 * MIN);
+    expect(await early.move.start(input)).toMatchObject({ phase: "final" });
+    expect(early.evm.calls.map((c) => c.name)).toEqual(["claim"]);
+  });
+  it("does not send the claim when the account has no allocation to read, and the take-back then only archives the request", async () => {
+    const t = setup();
+    t.canton.setDeadline(null);
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("no longer shows") });
+    expect(t.evm.calls).toEqual([]);
+    expect(await t.move.takeBackDue()).toBe(true);
+    await t.move.takeBack();
+    expect(t.canton.calls).toContain("recoverDeposit");
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("a claim that was sent and is still not included once the time has run out pauses and says to cancel it, then the tokens can be taken back", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "sent", tx: OTHER, step: "claim", nonce: 7 });
+    const t = setup({ store, txs: [proving], maxPolls: 2 });
+    t.canton.setDeadline(Date.now() - 3 * MIN);
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("cancel the claim in your wallet") });
+    expect(await t.move.takeBackDue()).toBe(true);
+    await t.move.takeBack();
+    expect(t.canton.calls).toEqual(["recoverDeposit"]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a claim that was sent keeps waiting while there is still time, and it cannot be given up or taken back before the time has passed", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "sent", tx: OTHER, step: "claim", nonce: 7 });
+    const t = setup({ store, txs: [proving], maxPolls: 2 });
+    t.canton.setDeadline(Date.now() + 30 * MIN);
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("took too long") });
+    expect(await t.move.takeBackDue()).toBe(false);
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("locked on Canton");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+  });
+  it("past the time, continue still sends nothing, and says to take the tokens back", async () => {
+    const t = setup();
+    t.canton.setDeadline(Date.now() - 3 * MIN);
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("Take your tokens back") });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused" });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("is due only for a kept deposit that has not sent its claim, past its time, with no claim on Ostia", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(null);
+    expect(await t.move.takeBackDue()).toBe(false);                 // no allocation known, and the deposit request is not yet known to be on the ledger
+    t.canton.setDeadline(Date.now() + 90 * MIN);
+    expect(await t.move.takeBackDue()).toBe(false);                 // time left
+    t.canton.setDeadline(Date.now() - 10 * 1000);
+    expect(await t.move.takeBackDue()).toBe(false);                 // past, but inside the margin
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    expect(await t.move.takeBackDue()).toBe(true);
+    for (const stage of ["wallet", "sent"] as const) {   // a claim asked for or sent that is not final: due once the time has run out, as well
+      keep(store, { input, stage });
+      const w = setup({ store });
+      w.canton.setDeadline(Date.now() - 2 * MIN);
+      expect(await w.move.takeBackDue()).toBe(true);
+    }
+    keep(store, { input, stage: "start" });
+    const early = setup({ store });
+    early.canton.setDeadline(Date.now() - 2 * MIN);
+    expect(await early.move.takeBackDue()).toBe(false);             // nothing was done on Canton
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    claimed.canton.setDeadline(Date.now() - 2 * MIN);
+    expect(await claimed.move.takeBackDue()).toBe(false);           // claimed: nothing to take back
+    keep(store, { input: { kind: "withdraw", asset: WCC, amount: "1" }, stage: "evm" });
+    expect(await setup({ store }).move.takeBackDue()).toBe(false);
+  });
+  it("takes the tokens back once the time has passed, and removes the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await t.move.takeBack();
+    expect(t.canton.calls).toEqual(["recoverDeposit"]);
+    expect(t.canton.args).toEqual([{ label: "ref-1", depositId: id }]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("refuses to take back before the time has passed, and keeps the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "allocated" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() + 20 * MIN);
+    await expect(t.move.takeBack("ref-1")).rejects.toThrow(/locked on Canton.*about 2[01] minutes/);
+    expect(t.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual(["ref-1"]);
+  });
+  it("refuses to take back a deposit already claimed, and a move that is not a deposit before its claim", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    claimed.canton.setDeadline(Date.now() - 2 * MIN);
+    await expect(claimed.move.takeBack()).rejects.toThrow("was claimed");
+    expect(claimed.canton.calls).toEqual([]);
+    keep(store, { input, stage: "start" });
+    await expect(setup({ store }).move.takeBack()).rejects.toThrow("Only a deposit");
+    keep(store, { input: { kind: "redeem", asset: TKA, amount: "1" }, stage: "evm" });
+    await expect(setup({ store }).move.takeBack()).rejects.toThrow("Only a deposit");
+  });
+  it("keeps the record when the take-back fails, so it can be tried again", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    t.canton.failRecovery(new Error("the account service is busy"));
+    await expect(t.move.takeBack()).rejects.toThrow("busy");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    t.canton.failRecovery(null);
+    await t.move.takeBack();
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a take-back Canton will not do can still be given up after a second say, and the tokens stay locked; a failure that may clear cannot", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    for (const status of [403, 404, 422]) {
+      t.canton.failRecovery(Object.assign(new Error("not on the list"), { status }));
+      await expect(t.move.abandon("ref-1")).rejects.toBeInstanceOf(CannotTakeBack);
+      expect(listMoves(store)).toEqual(["ref-1"]);
+    }
+    t.canton.failRecovery(new Error("the account service is busy"));
+    await expect(t.move.abandon("ref-1", { leaveLocked: true })).rejects.toThrow("busy");   // may clear by itself: still refused
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    t.canton.failRecovery(Object.assign(new Error("not on the list"), { status: 403 }));
+    await t.move.abandon("ref-1", { leaveLocked: true });
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a registry refusal and the page's own refusal of the prepared transaction cannot clear either; a registry that is only down can", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    for (const refusal of [Object.assign(new Error("registry"), { status: 502, registryStatus: 404 }), new UnexpectedTransaction("it exercises Other")]) {
+      t.canton.failRecovery(refusal);
+      await expect(t.move.abandon("ref-1")).rejects.toBeInstanceOf(CannotTakeBack);
+    }
+    t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502, registryStatus: 500 }));
+    await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502 }));
+    await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    t.canton.failRecovery(new UnexpectedTransaction("it exercises Other"));
+    await t.move.abandon("ref-1", { leaveLocked: true });
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("a claim still pending in the wallet is cancelled before the tokens are taken back or the deposit is given up", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "wallet", step: "claim", nonce: 7 });
+    const evm = fakeEvm();
+    evm.setWallet({ pending: 9, latest: 7 });
+    const t = setup({ store, evm });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await expect(t.move.takeBack()).rejects.toThrow("Cancel it in your wallet first");
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("Cancel it in your wallet first");
+    expect(t.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    evm.setWallet(null);
+    await t.move.takeBack();
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("leaving the tokens locked never skips the wait for the time to settle", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() + 30 * MIN);
+    await expect(t.move.abandon("ref-1", { leaveLocked: true })).rejects.toThrow("locked on Canton");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+  });
+  it("giving up a deposit with Canton steps done takes its tokens back first; before the time it refuses", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "allocated" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() + 30 * MIN);
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("locked on Canton");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await t.move.abandon("ref-1");
+    expect(t.canton.calls).toEqual(["recoverDeposit"]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("giving up a deposit that has not started on Canton, or that was claimed, only removes the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "start" });
+    const t = setup({ store });
+    await t.move.abandon("ref-1");
+    expect(t.canton.calls).toEqual([]);
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    await claimed.move.abandon("ref-1");
+    expect(claimed.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual([]);
+  });
+});
+
 describe("move 4: a wrapped token back to Canton", () => {
   const input = { kind: "withdraw", asset: WCC, amount: "1" } as const;
   const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
@@ -416,6 +642,154 @@ describe("move 4: a wrapped token back to Canton", () => {
     expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("no leg") });
     expect(loadCheckpoint(t.store)).toMatchObject({ stage: "start" });
     expect(loadCheckpoint(t.store)!.tx).toBeUndefined();
+  });
+});
+
+describe("a lock that is sent keeps its parts at the registry", () => {
+  const lock = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY } as const;
+  const id = lockIdOf(PARTY, "ref-1");
+  const sentLock = () => { const store = memoryStore(); keep(store, { input: lock, stage: "sent", tx: OTHER, step: "pay", nonce: 7 }); return store; };
+
+  it("a resumed lock announces its parts again once, with the same receiver and ref, and still asks the wallet nothing", async () => {
+    const t = setup({ store: sentLock(), txs: [proving, final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final", tx: OTHER });
+    expect(t.lockParts).toHaveBeenCalledTimes(1);
+    expect(t.lockParts).toHaveBeenCalledWith({ receiver: PARTY, ref: "ref-1" });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("announces again before it gives up waiting, so a tab left open keeps the entry alive", async () => {
+    const t = setup({ store: sentLock(), txs: [proving], maxPolls: 2 });
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("took too long") });
+    expect(t.lockParts).toHaveBeenCalledTimes(2);   // on the way in and before the wait ends
+  });
+  it("a lock whose leg is already shown is not announced again", async () => {
+    const t = setup({ store: sentLock(), legOf: async () => ({ txHash: OTHER }), txs: [final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final" });
+    expect(t.lockParts).not.toHaveBeenCalled();
+  });
+  it("a registry that answers with another id stops the move", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => ({ lockId: "00".repeat(32) }), txs: [proving] });
+    expect(await t.move.resume()).toMatchObject({ phase: "failed", kept: true, reason: expect.stringContaining("not the one this lock makes") });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("a registry that refuses (409) pauses the move with the receiver's words and keeps the record", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => { throw new LockRefused("The receiver has not accepted twins yet.", 409); }, txs: [proving] });
+    expect(await t.move.resume()).toMatchObject({ phase: "paused", note: "The receiver has not accepted twins yet." });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "sent", tx: OTHER });
+  });
+  it("a registry that cannot be reached does not stop a move that is waiting for its block", async () => {
+    const t = setup({ store: sentLock(), lockParts: async () => { throw new LockRefused("The twin registry cannot be reached right now.", 0); }, txs: [final([leg({ kind: "payment", legId: id })])] });
+    expect(await t.move.resume()).toMatchObject({ phase: "final" });
+  });
+});
+
+describe("a registry that is down does not stop a lock that is waiting", () => {
+  const lock = { kind: "lock", asset: TKA, amount: "1", receiver: PARTY } as const;
+  it("a 502 or a 503 from the registry is left for the next look, like an unreachable one", async () => {
+    for (const status of [502, 503]) {
+      const store = memoryStore();
+      keep(store, { input: lock, stage: "sent", tx: OTHER, step: "pay", nonce: 7 });
+      const t = setup({ store, lockParts: async () => { throw new LockRefused("The twin registry is busy.", status); }, txs: [final([leg({ kind: "payment", legId: lockIdOf(PARTY, "ref-1") })])] });
+      expect(await t.move.resume()).toMatchObject({ phase: "final" });
+    }
+  });
+});
+
+describe("a send whose outcome the wallet does not give", () => {
+  const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
+  const call = withdrawCall(GATEWAY, WCC, 10n ** 10n, PARTY);
+  const timeout = Object.assign(new Error("request expired"), { code: -32603 });
+
+  it("keeps the record at the wallet step, and continue adopts the transaction the wallet did send: the withdrawal is sent once", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    const sent = made(call, [withdrawLeg()]);
+    const t = setup({ evm, txs: [sent], sentSince: async () => [hashOf(1)] });
+    const first = await t.move.start(withdraw);
+    expect(first).toMatchObject({ phase: "paused", note: expect.stringContaining("did not say whether it sent this") });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7, call });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("says what the wallet answered, so a repeated refusal has a reason", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", Object.assign(new Error("x"), { shortMessage: "insufficient funds for gas", code: -32000 }));
+    const t = setup({ evm });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused", note: expect.stringContaining("it answered: insufficient funds for gas") });
+  });
+  it("never sends over a transaction that Ostia's own pool holds, even when the wallet misses it", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    const t = setup({ evm, sentSince: async () => [] });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+    evm.evm.pendingNonce = async () => 9;   // the wallet says nothing is pending; the pool holds one above the final count (7)
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+  });
+  it("sends again on continue only once Ostia shows nothing was sent", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    // The transaction never reached the network: the explorer lists nothing from the saved nonce, and the final count is still the saved nonce.
+    const t = setup({ evm, txs: [final([withdrawLeg()])], sentSince: async () => [] });
+    evm.evm.nonce = async () => 7;
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw", "withdraw"]);
+  });
+  it("never sends again when the explorer cannot say whether the lost send happened (its list fails or stays short)", async () => {
+    for (const listing of [async () => { throw new Error("the explorer is down"); }, async () => [] as Hex[]]) {
+      const evm = fakeEvm();
+      evm.loseAnswer("withdraw", timeout);
+      const t = setup({ evm, sentSince: listing, maxPolls: 3 });
+      expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+      evm.evm.nonce = async () => 8;   // a transaction of the account is final, and the explorer cannot show it
+      expect(await t.move.proceed()).toMatchObject({ phase: "failed", kept: true });
+      expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw" });
+      expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    }
+  });
+  it("never sends over a transaction the wallet still holds pending", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    const t = setup({ evm, sentSince: async () => [] });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+    evm.setWallet({ pending: 9, latest: 7 });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw" });
+  });
+  it("a pay whose answer is lost is found by its call, and the lock pays once", async () => {
+    const evm = fakeEvm({ allowance: 10n ** 30n });
+    evm.loseAnswer("pay", timeout);
+    const id = lockIdOf(PARTY, "ref-1");
+    const c = payCall(GATEWAY, id, TKA, VAULT, 10n ** 18n);
+    const sent = made(c, [leg({ kind: "payment", legId: id })]);
+    const t = setup({ evm, txs: [sent], sentSince: async () => [hashOf(1)] });
+    expect(await t.move.start({ kind: "lock", asset: TKA, amount: "1", receiver: PARTY })).toMatchObject({ phase: "paused" });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "pay", call: c });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((x) => x.name)).toEqual(["pay"]);
+  });
+  it("saves the exact call of a release and a claim", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("claim", timeout);
+    const t = setup({ evm });
+    await t.move.start({ kind: "deposit", asset: WCC, amount: "3.5" });
+    expect(loadCheckpoint(t.store)!.call).toEqual(claimCall(GATEWAY, depositIdOf(PARTY, "ref-1"), WCC, 35n * 10n ** 9n));
+    const r = fakeEvm();
+    r.loseAnswer("release", timeout);
+    const u = setup({ evm: r });
+    await u.move.start({ kind: "redeem", asset: TKA, amount: "2" });
+    expect(loadCheckpoint(u.store)!.call).toEqual(releaseCall(VAULT, "ref-1", TKA, ME, 2n * 10n ** 18n));
+  });
+  it.each([4001, 4100, 4200])("a wallet that refuses outright (%i) sends nothing: the move goes back before the step", async (code) => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", Object.assign(new Error("no"), { code }));
+    const t = setup({ evm });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "failed", kept: false });
+    expect(listMoves(t.store)).toEqual([]);
   });
 });
 
@@ -569,7 +943,7 @@ describe("a move survives a reload, a double mount and a wallet speed-up", () =>
     const t = setup({ store, evm: fakeEvm({ nonce: 7, wallet: { pending: 8, latest: 7 } }) });
     expect(await t.move.resume()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
     expect(t.evm.calls).toEqual([]);
-    expect(t.lockParts).not.toHaveBeenCalled();
+    expect(t.lockParts).toHaveBeenCalledTimes(1);   // announcing again asks nothing of the wallet
   });
   it("M5: a resumed move at the start never prompts the wallet by itself", async () => {
     const store = memoryStore();

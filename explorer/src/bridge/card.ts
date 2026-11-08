@@ -1,5 +1,5 @@
 // What the move card says and does at each state, as plain functions: the button, the line under it, and the size of an amount's type.
-import type { MoveState } from "./moves/state.ts";
+import { TAKE_BACK_STAGES, type MoveState } from "./moves/state.ts";
 import { moveWords } from "./words.ts";
 
 export type ButtonAction = "connect" | "open" | "move" | "continue" | "none";
@@ -67,6 +67,15 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   if (i.enough === false) return { label: `Not enough ${i.symbol}`, action: "none", disabled: true };
   return { label: `Move to ${i.to}`, action: "move", disabled: false };
 }
+
+/** The words of the action that takes a deposit's tokens back on Canton. */
+export const TAKE_BACK_LABEL = "Take my tokens back on Canton";
+/**
+ * Whether the card offers to take a kept deposit's tokens back: a deposit with a Canton step begun (its claim may be asked for or sent but is not final), once the time to
+ * settle it has passed (`due`, which the move says: it also knows the gateway shows no claim for it).
+ */
+export const offersTakeBack = (record: { input: { kind: string }; stage: string } | undefined, due: boolean): boolean =>
+  due && record !== undefined && record.input.kind === "deposit" && (TAKE_BACK_STAGES as readonly string[]).includes(record.stage);
 
 /** The line under the button: what the move is doing or has done, and whether it is an error. */
 export function noteOf(s: MoveState): { text: string; bad: boolean } | null {

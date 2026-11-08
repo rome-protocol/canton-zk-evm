@@ -8,6 +8,7 @@ const CONFLICTS: Record<string, string> = {
   already_accepted: "Your account already has this set up.",
   too_many_open: "Your account already has as many of these open as it may. Wait for them to finish, then try again.",
   waiting_for_signature: "A step for your account from a moment ago is still open. Try again in 10 minutes.",
+  not_yet: "This can be taken back a little later: its time to settle has not passed yet. Try again in a minute.",
   account_key_unknown: "The bridge no longer knows this account's key. Sign in again to set it up again.",
 };
 /** The other errors the page's own code raises, by the code it gives them. */

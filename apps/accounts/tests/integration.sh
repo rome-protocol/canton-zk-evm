@@ -104,6 +104,7 @@ ALLOW=(--allow '#canton-zk-evm:Zk.Chain:WithdrawalAcceptance' --allow '#canton-z
   --allow '#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate'
   --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer'
   --allow '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept'
+  --allow '#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw' --allow '#canton-zk-evm:Zk.Chain:DepositRequest#Archive'
   --allow '#canton-zk-evm:Zk.Chain:RedeemRequest' --open-limit '#canton-zk-evm:Zk.Chain:RedeemRequest=3'
   --allow '#ostia-twin:Twin.Twin:TwinAcceptance' --open-limit '#ostia-twin:Twin.Twin:TwinAcceptance=1'
   --requests-per-minute 600 --requests-per-account-minute 600 --requests-per-network-minute 600)

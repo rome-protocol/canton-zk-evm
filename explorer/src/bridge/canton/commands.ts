@@ -104,3 +104,28 @@ export function acceptTransfer(party: string, instruction: string, registry: { c
     disclosedContracts: registry.disclosedContracts,
   };
 }
+
+const ALLOCATION = { module: "Splice.Api.Token.AllocationV1", entity: "Allocation" };
+/**
+ * The token standard's `Allocation_Withdraw`: the account takes back an allocation it sent (the tokens of a deposit that cannot settle). The standard lets only the sender do it. The context and the
+ * contracts are the registry's. The transaction may carry a ledger time bound, as the registry's context sets it. `instrumentId` names the package that implements the allocation (the instrument's).
+ */
+export function withdrawAllocation(party: string, allocation: string, instrumentId: string, registry: { context: object; disclosedContracts: DisclosedContract[] }): Built {
+  const args = { extraArgs: { context: registry.context, meta: { values: {} } } };
+  const template = { packageName: "splice-api-token-allocation-v1", ...ALLOCATION };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: allocation, choice: "Allocation_Withdraw", choiceArgument: args } },
+    intent: { party, kind: "exercise", template, interface: ALLOCATION, choice: "Allocation_Withdraw", contractId: allocation, args, ignore: ["extraArgs.context"], implementation: implementationOf(instrumentId), ledgerTimes: true },
+    disclosedContracts: registry.disclosedContracts,
+  };
+}
+
+/** The depositor archives their own deposit request (the Daml's implicit `Archive`, which the depositor, its only signatory, controls): nothing else is in the transaction. */
+export function archiveDepositRequest(party: string, request: string): Built {
+  const template = { ...CHAIN, entity: "DepositRequest" };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: request, choice: "Archive", choiceArgument: {} } },
+    intent: { party, kind: "exercise", template, choice: "Archive", contractId: request, args: {} },
+    disclosedContracts: [],
+  };
+}

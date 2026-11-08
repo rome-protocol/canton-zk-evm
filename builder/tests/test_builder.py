@@ -1,7 +1,7 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
 import base64, contextlib, stat, time, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -470,6 +470,26 @@ class Deposits(LegCase):
                 s, t = self.setup_dep()
                 s.ledger.views["alloc-d1"] = over
                 self.assert_left_out(s, t, word)
+
+    def test_a_deposit_whose_allocation_expires_within_the_settle_margin_is_left_out(self):
+        now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        for minutes, legs in ((4, 0), (5, 0), (6, 1)):
+            with self.subTest(minutes=minutes):
+                s, t = self.setup_dep()
+                s.ledger.views["alloc-d1"] = {"settleBefore": (now + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                with mock.patch.object(b, "utcnow", lambda: now):
+                    if legs:
+                        self.assertEqual(b.build_block(s.cfg)["legs"], 1)
+                    else:
+                        self.assert_left_out(s, t, "settle-before", "too near")
+
+    def test_the_settle_margin_is_an_option(self):
+        now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        s, t = self.setup_dep()
+        s.cfg.settle_margin_seconds = 60
+        s.ledger.views["alloc-d1"] = {"settleBefore": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        with mock.patch.object(b, "utcnow", lambda: now):
+            self.assertEqual(b.build_block(s.cfg)["legs"], 1)
 
     def test_an_allocation_of_another_instrument_means_the_claim_is_left_out(self):
         for instrument in ({"admin": "adm", "id": "TKX"}, {"admin": "other", "id": "TKB"}):

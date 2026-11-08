@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountSize, buttonOf, noteOf, progressWords, waitFor, waitWords, type ButtonInput } from "./card.ts";
+import { amountSize, buttonOf, noteOf, offersTakeBack, progressWords, waitFor, waitWords, type ButtonInput } from "./card.ts";
 
 const base: ButtonInput = { connected: true, accountReady: true, config: "ready", amount: "ok", enough: true, symbol: "TKA", to: "Canton", move: { phase: "idle" } };
 
@@ -55,5 +55,18 @@ describe("how long a move is said to take", () => {
   it("is about 1 min for a move with one pop-up and about 2 min for two or three (approve then pay; the tROME lock)", () => {
     expect(waitFor(1)).toBe("About 1 min");
     expect([2, 3].map(waitFor)).toEqual(["About 2 min", "About 2 min"]);
+  });
+});
+
+describe("taking a deposit back", () => {
+  const deposit = (stage: string) => ({ input: { kind: "deposit" }, stage });
+  it("is offered for a deposit with a Canton step begun, a claim asked for or sent included, once it is due", () => {
+    for (const stage of ["signing", "allocated", "canton", "evm", "wallet", "sent"]) expect(offersTakeBack(deposit(stage), true)).toBe(true);
+    expect(offersTakeBack(deposit("start"), true)).toBe(false);
+    expect(offersTakeBack(deposit("canton"), false)).toBe(false);
+  });
+  it("is never offered for another kind of move, or when there is no record", () => {
+    for (const kind of ["redeem", "lock", "withdraw"]) expect(offersTakeBack({ input: { kind }, stage: "evm" }, true)).toBe(false);
+    expect(offersTakeBack(undefined, true)).toBe(false);
   });
 });

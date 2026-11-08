@@ -13,6 +13,7 @@ import canton as demo   # the demo's helpers (CZE_CANTON=external): the test tok
 
 SERVICE, LEDGER, USER = os.environ["ACCOUNTS_URL"], os.environ["CZE_LEDGER_URL"], os.environ["ACCOUNTS_USER"]
 ACCEPTANCE = "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"
+ALLOCATION_INTERFACE = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
 DEPOSIT, REDEEM, TWIN_ACCEPTANCE = "#canton-zk-evm:Zk.Chain:DepositRequest", "#canton-zk-evm:Zk.Chain:RedeemRequest", "#ostia-twin:Twin.Twin:TwinAcceptance"
 
 
@@ -227,6 +228,16 @@ class AccountsOnCanton(unittest.TestCase):
             self.assertEqual(opened["withdrawalAcceptance"]["contractId"], acceptance["contractId"])   # the acceptances, by their contract ids
             self.assertEqual(opened["twinAcceptance"]["arguments"]["party"], party)
             self.assertEqual((opened["depositRequests"][0]["arguments"]["allocation"], opened["redeemRequests"][0]["arguments"]["ref"]), (allocation["contractId"], "redeem-1"))
+            # Taking a deposit back is for one that cannot settle: while its allocation's settle-before time is ahead (2 hours), the service refuses to prepare either command, for the real allocation
+            # and the real request, and says when it is not for a contract the account does not have. (The settled-and-gone path reads the participant's own events and needs an allocation past its time.)
+            withdraw = {"ExerciseCommand": {"templateId": ALLOCATION_INTERFACE, "contractId": allocation["contractId"], "choice": "Allocation_Withdraw",
+                                            "choiceArgument": {"extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}}}
+            take_back_request = {"ExerciseCommand": {"templateId": DEPOSIT, "contractId": opened["depositRequests"][0]["contractId"], "choice": "Archive", "choiceArgument": {}}}
+            for what, command in (("the allocation", withdraw), ("the deposit request", take_back_request)):
+                status, refused = service("/accounts/v1/prepare", {"party": party, "commands": [command]}, key)
+                self.assertEqual((status, refused.get("error")), (409, "not_yet"), (what, refused))
+            status, _ = service("/accounts/v1/prepare", {"party": party, "commands": [{"ExerciseCommand": {**take_back_request["ExerciseCommand"], "contractId": "00" * 40}}]}, key)
+            self.assertEqual(status, 404)
             print("FIXTURE " + json.dumps({"name": "answers", "party": party, "allocations": service(f"/accounts/v1/allocations/{party}", key=key)[1], "open": opened}, sort_keys=True), flush=True)
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make
 

@@ -7,6 +7,11 @@ export const tenDecimals = (twin: bigint): string => `${twin / 10n ** 10n}.${(tw
 /** An amount the bridge will not take, in words for the person. */
 export class AmountError extends Error {}
 
+/** The most the bridge moves at a time, as the builder (`twin_units`) and Daml (`Twin.Amount.fromBaseUnits`) take it: under 10^17 whole units, and under 10^36 base units for a token of more than 10 decimals. A larger amount is left out of every block, so it is refused here, before the wallet is asked. */
+export const MAX_TWIN_UNITS = 10n ** 27n;
+export const MAX_WIDE_BASE = 10n ** 36n;
+const TOO_MUCH = "The bridge moves less than 100,000,000,000,000,000 of a token at a time.";
+
 const TEXT = /^(\d{1,30})(?:\.(\d{1,30}))?$/;
 
 /**
@@ -22,6 +27,9 @@ export function parseAmount(text: string, decimals: number): { base: bigint; twi
   const base = BigInt(m[1]!) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, "0") || "0");
   if (base === 0n) throw new AmountError("The amount must be more than zero.");
   const twin = decimals >= CANTON_DECIMALS ? base / 10n ** BigInt(decimals - CANTON_DECIMALS) : base * 10n ** BigInt(CANTON_DECIMALS - decimals);
+  if (twin >= MAX_TWIN_UNITS) throw new AmountError(TOO_MUCH);
+  // A token of many decimals reaches its own bound first (10^36 base units): the words name that token's largest amount.
+  if (decimals > CANTON_DECIMALS && base >= MAX_WIDE_BASE) throw new AmountError(`The bridge moves less than ${(MAX_WIDE_BASE / 10n ** BigInt(decimals)).toString().replace(/\B(?=(\d{3})+$)/g, ",")} of this token at a time.`);
   return { base, twin };
 }
 

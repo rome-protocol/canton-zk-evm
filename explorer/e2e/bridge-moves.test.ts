@@ -126,7 +126,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       }
       if (path === `/accounts/v1/allocations/${party}`) {
         const none = !service.allocated;
-        return json(200, { allocations: none ? [] : [{ contractId: ALLOCATION, holdingCids: [CC_HOLDING], allocation: { settlement: { settlementRef: { id: service.label } }, transferLegId: "leg-" + service.label, transferLeg: { sender: party, receiver: GATEWAY_PARTY, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } } }] });
+        return json(200, { allocations: none ? [] : [{ contractId: ALLOCATION, holdingCids: [CC_HOLDING], allocation: { settlement: { settlementRef: { id: service.label }, settleBefore: new Date(Date.now() + 2 * 3600_000).toISOString() }, transferLegId: "leg-" + service.label, transferLeg: { sender: party, receiver: GATEWAY_PARTY, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } } }] });
       }
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
       let file = join(resolve(dist!), path);
@@ -157,7 +157,13 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (method === "eth_sendTransaction") return sendTransaction(chain, { ...params[0], from: wallet.address });
       return rpcResult(chain, wallet.address, method, params ?? []);
     });
-    await page.addInitScript(() => { (window as any).ethereum = { request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []), on() {}, removeListener() {} }; });
+    // A wallet that turns a request down answers with the EIP-1193 error code 4001 (exposeFunction carries only the message across): the page tells that from a send whose outcome the wallet does not give.
+    await page.addInitScript(() => {
+      (window as any).ethereum = {
+        request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []).catch((e: Error) => { throw Object.assign(new Error(e.message), /rejected/i.test(e.message) ? { code: 4001 } : {}); }),
+        on() {}, removeListener() {},
+      };
+    });
     await page.goto(ORIGIN + path, { waitUntil: "load" });
     return page;
   }

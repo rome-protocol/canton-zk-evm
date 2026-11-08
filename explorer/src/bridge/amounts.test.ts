@@ -30,6 +30,21 @@ describe("parseAmount", () => {
   });
 });
 
+describe("the most an amount can be", () => {
+  const top = "99999999999999999.9999999999";
+  it.each([6, 10, 18])("takes just under 10^17 and refuses 10^17 at %i decimals", (d) => {
+    const ok = d === 6 ? "99999999999999999.999999" : top;
+    expect(() => parseAmount(ok, d)).not.toThrow();
+    expect(() => parseAmount("100000000000000000", d)).toThrow("less than 100,000,000,000,000,000");
+    expect(() => parseAmount("100000000000000000", d)).toThrow(AmountError);
+  });
+  it("refuses 10^36 base units of a token with more than 10 decimals", () => {
+    expect(() => parseAmount("1000000000000", 24)).toThrow(AmountError);
+    expect(() => parseAmount("1000000000000", 24)).toThrow("less than 1,000,000,000,000 of this token");
+    expect(parseAmount("999999999999.9999999999", 24).base).toBe(999999999999n * 10n ** 24n + 9999999999n * 10n ** 14n);
+  });
+});
+
 describe("showing amounts", () => {
   it("shows the exact decimal, without trailing zeros", () => {
     expect(showUnits(20n * 10n ** 18n, 18)).toBe("20");

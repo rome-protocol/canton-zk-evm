@@ -7,7 +7,8 @@ import { userEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { depositIdOf, lockIdOf, releaseIdOf, saveCheckpoint } from "../bridge/moves/state.ts";
-import { config, fakeEvm, fakeSession, GATEWAY_PARTY, leg, ME, PARTY, TKA, VAULT, WCC, WTROME, memoryStore } from "./bridge-fakes.ts";
+import { TAKE_BACK_LABEL } from "../bridge/card.ts";
+import { config, fakeCanton, fakeEvm, fakeSession, GATEWAY_PARTY, leg, ME, PARTY, TKA, VAULT, WCC, WTROME, memoryStore } from "./bridge-fakes.ts";
 import { MoveCard, type MoveCardProps } from "./MoveCard.tsx";
 
 afterEach(cleanup);
@@ -232,6 +233,48 @@ describe("giving a move up", () => {
     expect(m.session.kept()).toHaveLength(1);
     await press("Give this move up");
     await press("Give it up");
+    await waitFor(() => expect(m.session.kept()).toHaveLength(0));
+  });
+});
+
+describe("taking a deposit back", () => {
+  const kept = (stage: "canton" | "sent", deadline: number | null, refuse?: number) => {
+    const store = memoryStore();
+    saveCheckpoint(store, { input: { kind: "deposit", asset: WCC, amount: "3" }, ref: "ref-1", account: ME, party: PARTY, vault: VAULT, stage, at: Date.now(), ...(stage === "sent" ? { tx: ("0x" + "09".repeat(32)) as `0x${string}` } : {}) });
+    const canton = fakeCanton();
+    canton.deadline = deadline;
+    if (refuse !== undefined) canton.recoverDeposit = async () => { throw Object.assign(new Error("not on the list"), { status: refuse }); };
+    return fakeSession({ store, canton, legs: () => [], tx: () => ({ status: "proving", legs: [] }) as never });
+  };
+  it("is offered for a kept deposit past its time to settle, and takes the tokens back and clears the move", async () => {
+    const m = kept("canton", Date.now() - 5 * 60_000);
+    show({}, m);
+    await userEvent.click(await screen.findByRole("button", { name: TAKE_BACK_LABEL }));
+    await waitFor(() => expect(m.session.kept()).toHaveLength(0));
+    expect(m.canton.calls.filter((c) => c === "recoverDeposit")).toHaveLength(1);
+  });
+  it("is not offered while the deposit can still settle", async () => {
+    const early = kept("canton", Date.now() + 60 * 60_000);
+    show({}, early);
+    await screen.findByRole("button", { name: /Continue|Claim/ });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("button", { name: TAKE_BACK_LABEL })).toBeNull();
+  });
+  it("asks a second time before giving up a deposit whose take-back Canton refuses, and then leaves the tokens locked", async () => {
+    const m = kept("canton", Date.now() - 5 * 60_000, 403);
+    show({}, m);
+    await screen.findByRole("button", { name: TAKE_BACK_LABEL });
+    await press("Give this move up");
+    await press("Give it up");
+    expect(await screen.findByText(/they stay locked on Canton/)).toBeInTheDocument();
+    expect(m.session.kept()).toHaveLength(1);
+    await press("Give it up, leave the tokens locked");
+    await waitFor(() => expect(m.session.kept()).toHaveLength(0));
+  });
+  it("is offered for a claim that was sent and is still not final once the time to settle has passed", async () => {
+    const m = kept("sent", Date.now() - 5 * 60_000);
+    show({}, m);
+    await userEvent.click(await screen.findByRole("button", { name: TAKE_BACK_LABEL }));
     await waitFor(() => expect(m.session.kept()).toHaveLength(0));
   });
 });

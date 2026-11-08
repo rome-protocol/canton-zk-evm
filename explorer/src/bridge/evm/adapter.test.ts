@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { toFunctionSelector, type Address } from "viem";
 import type { Eip1193 } from "../../wallet.ts";
-import { approveCall, explorerRead, padGas, viemAdapter, wrapCall, withdrawCall } from "./adapter.ts";
+import { approveCall, definitelyNotSent, explorerRead, NotSent, padGas, viemAdapter, wrapCall, withdrawCall } from "./adapter.ts";
 
 const ME = ("0x" + "11".repeat(20)) as Address, GATEWAY = ("0x" + "22".repeat(20)) as Address, TOKEN = ("0x" + "aa".repeat(20)) as Address;
 const chain = { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } };
@@ -28,6 +28,21 @@ function setup(estimate: () => string = () => "0x186a0") {
   };
   return { adapter: viemAdapter({ wallet, account: ME, chain, read }), sent, reads };
 }
+
+describe("a send that did not happen", () => {
+  it("a failed estimate is NotSent, and the wallet is never asked", async () => {
+    const { adapter, sent } = setup(() => { throw Object.assign(new Error("execution reverted"), { shortMessage: "execution reverted: nope" }); });
+    const e = await adapter.pay(GATEWAY, ("0x" + "01".repeat(32)) as `0x${string}`, TOKEN, ("0x" + "33".repeat(20)) as Address, 5n).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(NotSent);
+    expect(definitelyNotSent(e)).toBe(true);
+    expect(sent).toEqual([]);
+  });
+  it("definitelyNotSent is true only for a refusal; a timeout or any other failure is unknown", () => {
+    for (const code of [4001, 4100, 4200]) expect(definitelyNotSent(Object.assign(new Error("x"), { code }))).toBe(true);
+    expect(definitelyNotSent(new Error("x", { cause: { code: 4001 } }))).toBe(true);
+    for (const e of [new Error("timeout"), Object.assign(new Error("x"), { code: -32603 }), Object.assign(new Error("x"), { code: 4900 }), null, undefined, "x"]) expect(definitelyNotSent(e)).toBe(false);
+  });
+});
 
 describe("the viem adapter", () => {
   it("pads the estimate by a fifth", () => expect(padGas(100_000n)).toBe(120_000n));

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { AccountsClient, AccountsError, acceptChoice, factoryChoice, retryAfterSeconds } from "./accounts.ts";
+import { AccountsClient, AccountsError, acceptChoice, factoryChoice, retryAfterSeconds, withdrawChoice } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { partyOf } from "./topology.ts";
 
@@ -100,6 +100,16 @@ describe("the account service client", () => {
     expect(calls.map((x) => x[0])).toEqual(["/accounts/v1/registry/DSO::1220aa/allocation-factory", "/accounts/v1/registry/DSO::1220aa/transfer-instruction/00cd/accept-context", "/accounts/v1/faucet"]);
     expect(calls.map((x) => JSON.parse(x[1].body as string))).toEqual([{ choiceArguments: { expectedAdmin: "DSO::1220aa" }, excludeDebugFields: true, party: PARTY }, { party: PARTY, meta: {}, excludeDebugFields: true }, { party: PARTY }]);
     for (const [url, init] of calls) expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "POST", url, init.body as string)).toBe(true);
+  });
+  it("asks for the withdraw context of an allocation, signed, with the account in the body, and reads it from the top level", async () => {
+    const f = vi.fn(async () => answer(200, { choiceContextData: { values: { w: 1 } }, disclosedContracts: [] }));
+    const got = await client(f).allocationWithdrawContext(key, "DSO::1220aa", "00ee", PARTY);
+    const [url, init] = (f.mock.calls as unknown as [string, RequestInit][])[0]!;
+    expect(url).toBe("/accounts/v1/registry/DSO::1220aa/allocation/00ee/withdraw-context");
+    expect(JSON.parse(init.body as string)).toEqual({ party: PARTY, meta: {}, excludeDebugFields: true });
+    expect(await verifies((init.headers as Record<string, string>)["X-Account-Signature"]!, "POST", url, init.body as string)).toBe(true);
+    expect(withdrawChoice(got).context).toEqual({ values: { w: 1 } });
+    expect(() => withdrawChoice({ choiceContext: { choiceContextData: {} } })).toThrow("no choiceContextData");
   });
   it("reads the accept context from the top level of the registry's answer, as the token standard's ChoiceContext", () => {
     const disclosed = { templateId: "t", contractId: "c", createdEventBlob: "b", synchronizerId: "s" };

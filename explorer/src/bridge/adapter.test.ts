@@ -22,6 +22,7 @@ function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promi
     holdings: vi.fn(async () => ledger.holdings),
     allocations: vi.fn(async () => ledger.allocations),
     openRequests: vi.fn(async () => ({ redeemRequests: ledger.redeemRequests, depositRequests: ledger.depositRequests, twinAcceptance: null, withdrawalAcceptance: null })),
+    allocationWithdrawContext: vi.fn(async () => ({ choiceContextData: { values: { withdraw: 1 } }, disclosedContracts: [DISCLOSED] })),
     allocationFactory: vi.fn(over.allocationFactory ?? (async () => ({ factoryId: "factory-1", choiceContext: { choiceContextData: { values: { rules: 1 } }, disclosedContracts: [DISCLOSED] } }))),
   };
   const sleeps: number[] = [];
@@ -35,6 +36,10 @@ function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promi
         const a = c.CreateCommand.createArguments as Record<string, unknown>;
         if (c.CreateCommand.templateId.endsWith("RedeemRequest")) ledger.redeemRequests.push({ contractId: "r" + submitted.length, arguments: a });
         else ledger.depositRequests.push({ contractId: "d" + submitted.length, arguments: a });
+      } else if (c.ExerciseCommand.choice === "Allocation_Withdraw") {
+        ledger.allocations = ledger.allocations.filter((a) => a.contractId !== c.ExerciseCommand.contractId);
+      } else if (c.ExerciseCommand.choice === "Archive") {
+        ledger.depositRequests = ledger.depositRequests.filter((r) => r.contractId !== c.ExerciseCommand.contractId);
       } else {
         const spec = (c.ExerciseCommand.choiceArgument as { allocation: AllocationView["allocation"] }).allocation;
         ledger.allocations.push({ contractId: "alloc-" + spec.settlement.settlementRef.id, allocation: spec, holdingCids: [] });
@@ -176,6 +181,77 @@ describe("the Canton adapter", () => {
       ledger.depositRequests.push({ contractId: "d", arguments: { depositId: depositId.slice(2) } });
       await expect(adapter.waitDeposit(depositId)).resolves.toBeUndefined();
       await expect(adapter.waitDeposit(depositIdOf(PARTY, "other"))).rejects.toBeInstanceOf(Waited);
+    });
+  });
+  describe("taking a deposit back", () => {
+    const deposit = { instrument: COIN, amount: "5.0000000000", label: "label-1" };
+    const depositId = depositIdOf(PARTY, "label-1");
+    const made = async (extra: Parameters<typeof setup>[0] = []) => {
+      const t = setup(extra);
+      t.ledger.holdings.push(held("cc", "9", COIN));
+      await t.adapter.allocateDeposit(deposit);
+      await t.adapter.signDeposit({ ...deposit, depositId, recipient: TO as never });
+      return t;
+    };
+
+    it("gives the allocation's settle-before time, and null when there is no allocation", async () => {
+      const { adapter, ledger, submitted } = await made();
+      expect(await adapter.depositDeadline("label-1")).toBe(NOW + 7_200_000);
+      expect(await adapter.depositDeadline("another")).toBeNull();
+      ledger.allocations = [];
+      expect(await adapter.depositDeadline("label-1")).toBeNull();
+      expect(submitted).toHaveLength(2);
+    });
+    it("withdraws the allocation with the registry's context, then archives the request: the two commands, in that order", async () => {
+      const { adapter, client, ledger, submitted } = await made();
+      await adapter.recoverDeposit({ label: "label-1", depositId });
+      expect(submitted).toHaveLength(4);
+      const [withdraw, archive] = [submitted[2]!, submitted[3]!];
+      expect(withdraw.intent).toMatchObject({ kind: "exercise", choice: "Allocation_Withdraw", contractId: "alloc-label-1", implementation: "splice-amulet" });
+      expect(withdraw.command).toMatchObject({ ExerciseCommand: { choice: "Allocation_Withdraw", choiceArgument: { extraArgs: { context: { values: { withdraw: 1 } }, meta: { values: {} } } } } });
+      expect(withdraw.disclosedContracts).toEqual([DISCLOSED]);
+      expect(client.allocationWithdrawContext).toHaveBeenCalledWith(key, COIN.admin, "alloc-label-1", PARTY);
+      expect(archive.intent).toMatchObject({ kind: "exercise", choice: "Archive", contractId: "d2", args: {} });
+      expect(ledger.allocations).toEqual([]);
+      expect(ledger.depositRequests).toEqual([]);
+    });
+    it("is idempotent: a repeat does only what is left, and a repeat of all of it does nothing", async () => {
+      const t = await made();
+      t.ledger.allocations = [];   // the allocation was withdrawn, then the page reloaded before the request was archived
+      await t.adapter.recoverDeposit({ label: "label-1", depositId });
+      expect(t.submitted).toHaveLength(3);
+      expect(t.submitted[2]!.intent.choice).toBe("Archive");
+      await t.adapter.recoverDeposit({ label: "label-1", depositId });
+      expect(t.submitted).toHaveLength(3);
+      expect(t.client.allocationWithdrawContext).not.toHaveBeenCalled();
+    });
+    it("a deposit whose request was never made has only its allocation withdrawn", async () => {
+      const t = setup([held("cc", "9", COIN)]);
+      await t.adapter.allocateDeposit(deposit);
+      await t.adapter.recoverDeposit({ label: "label-1", depositId });
+      expect(t.submitted.map((b) => b.intent.choice)).toEqual(["AllocationFactory_Allocate", "Allocation_Withdraw"]);
+    });
+    it("when the withdraw fails for good, still archives the request and then reports the failure", async () => {
+      for (const status of [403, 404, 422]) {
+        const t = await made();
+        t.client.allocationWithdrawContext.mockRejectedValueOnce(new AccountsError("refused", status, "no"));
+        await expect(t.adapter.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status });
+        expect(t.submitted.slice(2).map((b) => b.intent.choice)).toEqual(["Archive"]);   // the two before it are the deposit's own allocation and request
+        expect(t.ledger.depositRequests).toEqual([]);
+      }
+    });
+    it("when the withdraw fails for a reason that may clear, archives nothing", async () => {
+      const t = await made();
+      t.client.allocationWithdrawContext.mockRejectedValueOnce(new AccountsError("unavailable", 503, "later"));
+      await expect(t.adapter.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status: 503 });
+      expect(t.submitted).toHaveLength(2);
+      expect(t.ledger.depositRequests).toHaveLength(1);
+    });
+    it("does not archive another deposit's request", async () => {
+      const t = await made();
+      t.ledger.depositRequests.push({ contractId: "other", arguments: { depositId: depositIdOf(PARTY, "label-2").slice(2) } });
+      await t.adapter.recoverDeposit({ label: "label-1", depositId });
+      expect(t.ledger.depositRequests.map((r) => r.contractId)).toEqual(["other"]);
     });
   });
 });

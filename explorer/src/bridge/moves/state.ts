@@ -59,6 +59,8 @@ export const idBytes = (id: unknown): string | null => {
 export const sameId = (a: unknown, b: unknown): boolean => { const x = idBytes(a); return x !== null && x === idBytes(b); };
 
 export const STAGES = ["start", "signing", "allocated", "canton", "evm", "wallet", "sent"] as const;
+/** The stages of a kept deposit whose tokens may be locked on Canton: every stage after its first Canton step began. Its claim may or may not have been sent. */
+export const TAKE_BACK_STAGES: readonly (typeof STAGES)[number][] = ["signing", "allocated", "canton", "evm", "wallet", "sent"];
 
 /**
  * Everything a reload needs to finish the move, and to refuse to finish it as someone else. One record per move, under its ref.

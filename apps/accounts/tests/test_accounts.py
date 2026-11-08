@@ -24,6 +24,7 @@ class FakeLedger:
         self.calls, self.fail, self.holdings, self.tokens, self.open, self.cost, self.prepared = [], {}, [], [], {}, 1000, 0
         self.created, self.allocations = {}, []   # created events by template (a read of open contracts); (contract id, view) of the Allocation interface
         self.rights = []   # the parties the service's user can act as
+        self.archived = set()   # contract ids the participant's own events show archived (the rest show as created)
         self.commits = None   # a template: each executeAndWait makes one open contract of it (after a pause, as a real commit takes time)
         fake = self
 
@@ -67,6 +68,8 @@ class FakeLedger:
                 time.sleep(0.05)
                 self.open[self.commits] = self.open.get(self.commits, 0) + 1
             return 200, {"updateId": "u-1", "completionOffset": 5}
+        if path.endswith("/events/events-by-contract-id"):
+            return 200, ({"archived": {"archivedEvent": {}}} if body["contractId"] in self.archived else {"created": {"createdEvent": {}}})
         if path.endswith("/active-contracts-page") and "TemplateFilter" in json.dumps(body):   # the account's own contracts of one template
             template = json.dumps(body).split('"templateId": "')[1].split('"')[0]
             if template in self.created:
@@ -295,6 +298,116 @@ class PrepareAndExecute(Case):
         _, p, _ = self.req("POST", "/accounts/v1/prepare", self.command())
         now[0] = 11
         self.assertEqual(self.req("POST", "/accounts/v1/execute", self.execute_body(p))[0], 404)
+
+
+class TakeBack(Case):
+    """An account takes back a deposit that cannot settle: it withdraws its own allocation, and archives its own open deposit request, only once the builder can no longer settle them."""
+    CID = "00" + "a1" * 40
+    REQUEST = "00" + "b2" * 40
+
+    def at(self, seconds):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+    def setUp(self):
+        super().setUp()
+        self.make_account()
+        self.NOW = int(time.time())
+        self.stranger = "other::1220" + "99" * 32
+
+    def allocate(self, settle_before, cid=CID, sender=None):
+        leg = {"transferLeg": {"sender": sender or PARTY, "receiver": CHAIN["gateway"], "amount": "5.0", "instrumentId": {"admin": "reg::1", "id": "Amulet"}}}
+        self.ledger.allocations.append((cid, {"allocation": {"settlement": {"settlementRef": {"id": "dep1"}, "settleBefore": settle_before}, **leg}, "holdingCids": []}))
+
+    def request(self, allocation=CID, depositor=None, cid=REQUEST):
+        self.ledger.created = {DEPOSIT: [{"contractId": cid, "createArgument": {"depositor": depositor or PARTY, "allocation": allocation, "label": "dep1"}}]}
+
+    def withdraw(self, cid=CID):
+        return self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {
+            "templateId": A.ALLOCATION, "contractId": cid, "choice": "Allocation_Withdraw", "choiceArgument": {"extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}}}]})
+
+    def archive(self, cid=REQUEST):
+        return self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": DEPOSIT, "contractId": cid, "choice": "Archive", "choiceArgument": {}}}]})
+
+    def test_the_margin_is_counted_from_the_settle_before_time_to_the_second(self):
+        self.service.wall = lambda: 1_800_000_000
+        late = lambda seconds: self.service.passed({"allocation": {"settlement": {"settleBefore": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1_800_000_000 - seconds))}}})
+        self.assertEqual([late(59), late(60), late(61)], [False, True, True])
+        self.assertEqual(A.TAKE_BACK_MARGIN, 60)   # Canton's default record-time tolerance
+        fraction = {"allocation": {"settlement": {"settleBefore": "2027-01-15T07:58:59.5Z"}}}   # 1_800_000_000 is 2027-01-15T08:00:00Z: 60.5 s past
+        self.assertTrue(self.service.passed(fraction))
+        self.assertFalse(self.service.passed({"allocation": {"settlement": {"settleBefore": "2027-01-15T07:59:00.5Z"}}}))
+
+    def test_both_choices_are_on_the_built_in_list_and_need_no_open_limit(self):
+        self.assertIn(A.ALLOCATION_WITHDRAW, A.DEFAULT_ALLOW)
+        self.assertIn(A.DEPOSIT_ARCHIVE, A.DEFAULT_ALLOW)
+        self.assertEqual(A.open_limits_from(A.DEFAULT_ALLOW, 3, None), {ACCEPT: 1, DEPOSIT: 3})
+
+    def test_an_allocation_is_withdrawn_once_its_settle_before_time_has_passed_by_the_margin(self):
+        self.allocate(self.at(self.NOW - 61))
+        status, out, _ = self.withdraw()
+        self.assertEqual((status, out["hashingSchemeVersion"]), (200, "HASHING_SCHEME_VERSION_V2"))
+        self.assertEqual(self.calls_to("/prepare")[0][2]["commands"][0]["ExerciseCommand"]["choice"], "Allocation_Withdraw")
+
+    def test_an_allocation_the_builder_can_still_settle_is_not_withdrawn(self):
+        for settle_before in (self.at(self.NOW + 3600), self.at(self.NOW), self.at(self.NOW - 1), self.at(self.NOW - 50), "not a time"):
+            self.ledger.allocations = []
+            self.allocate(settle_before)
+            status, out, _ = self.withdraw()
+            self.assertEqual((status, out["error"]), (409, "not_yet"), settle_before)
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_only_the_accounts_own_allocation_is_withdrawn(self):
+        self.allocate(self.at(self.NOW - 3600), cid="00" + "c3" * 40, sender=self.stranger)
+        self.assertEqual(self.withdraw("00" + "c3" * 40)[0], 404)   # another party's allocation: not among the account's own
+        self.assertEqual(self.withdraw("00" + "d4" * 40)[0], 404)   # one that is not there
+        self.assertEqual(self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": A.ALLOCATION, "choice": "Allocation_Withdraw"}}]})[0], 400)
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deposit_request_is_archived_when_its_allocation_is_past_or_gone(self):
+        self.request()
+        self.ledger.archived.add(self.CID)
+        self.assertEqual(self.archive()[0], 200)   # the allocation is archived
+        self.allocate(self.at(self.NOW - 61))
+        self.assertEqual(self.archive()[0], 200)   # the allocation is past its time and the margin
+        self.assertEqual(len(self.calls_to("/prepare")), 2)
+
+    def test_a_deposit_request_whose_allocation_is_missing_from_the_list_but_active_is_not_archived(self):
+        self.request()   # the account's list shows no allocation, but the participant's events show it created and not archived
+        status, out, _ = self.archive()
+        self.assertEqual((status, out["error"]), (409, "not_yet"))
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deposit_request_whose_allocation_the_participant_does_not_know_is_archived(self):
+        self.request()
+        self.ledger.fail["/v2/events/events-by-contract-id"] = (404, {"code": "CONTRACT_EVENTS_NOT_FOUND", "cause": "x"})
+        self.assertEqual(self.archive()[0], 200)
+
+    def test_a_deposit_request_whose_allocation_is_past_its_time_but_not_the_margin_is_not_archived(self):
+        self.allocate(self.at(self.NOW - 50))
+        self.request()
+        status, out, _ = self.archive()
+        self.assertEqual((status, out["error"]), (409, "not_yet"))
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deposit_request_whose_allocation_can_still_settle_is_not_archived(self):
+        self.allocate(self.at(self.NOW + 3600))
+        self.request()
+        status, out, _ = self.archive()
+        self.assertEqual((status, out["error"]), (409, "not_yet"))
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_only_the_accounts_own_open_deposit_request_is_archived(self):
+        self.request(depositor=self.stranger)
+        self.assertEqual(self.archive()[0], 404)
+        self.request()
+        self.assertEqual(self.archive("00" + "e5" * 40)[0], 404)
+        self.assertEqual(self.calls_to("/prepare"), [])
+
+    def test_a_deployment_that_does_not_list_them_refuses_both(self):
+        self.start(allow=A.DEFAULT_ALLOW[:5])
+        self.allocate(self.at(self.NOW - 3600))
+        self.request()
+        self.assertEqual((self.withdraw()[0], self.archive()[0]), (403, 403))
 
 
 class Hardening(Case):
@@ -1160,6 +1273,14 @@ class RegistryRelay(OutsideCase):
         status, out, _ = self.accept()
         self.assertEqual((status, out), (200, self.outside.answer))
         self.assertEqual(self.outside.calls[0][:2], (f"/scan-proxy/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/accept", {"meta": {}, "excludeDebugFields": True}))
+
+    def test_the_withdraw_context_of_an_allocation(self):
+        self.outside.answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
+        self.with_registry()
+        status, out, _ = self.req("POST", f"/accounts/v1/registry/{ADMIN}/allocation/{INSTRUCTION}/withdraw-context", {"party": PARTY, "meta": {}, "excludeDebugFields": True})
+        self.assertEqual((status, out), (200, self.outside.answer))
+        self.assertEqual(self.outside.calls[0][:2], (f"/scan-proxy/registry/allocations/v1/{INSTRUCTION}/choice-contexts/withdraw", {"meta": {}, "excludeDebugFields": True}))
+        self.assertEqual(self.req("POST", f"/accounts/v1/registry/{ADMIN}/allocation/nope/withdraw-context", {"party": PARTY})[0], 404)
 
     def test_an_unknown_admin_is_404_and_a_registry_without_a_token_gets_none(self):
         self.with_registry()

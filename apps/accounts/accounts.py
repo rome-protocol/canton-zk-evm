@@ -7,18 +7,22 @@ See README.md.
 The service holds a Ledger API token and no key of any party. An account is an external party: its key is made by its owner, and only that key can
 sign for it. The service generates the topology and the transactions to be signed, hands them out, and submits what comes back signed.
 """
-import argparse, base64, binascii, collections, contextlib, hashlib, hmac, http.client, ipaddress, json, os, re, secrets, socket, stat, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, binascii, calendar, collections, contextlib, hashlib, hmac, http.client, ipaddress, json, os, re, secrets, socket, stat, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ed25519
 
 # What the service lets an account sign: a create of a template ("#package:Module:Entity") or an exercise of one choice ("#package:Module:Entity#Choice").
+ALLOCATION_WITHDRAW = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw"   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
+DEPOSIT_ARCHIVE = "#canton-zk-evm:Zk.Chain:DepositRequest#Archive"
 DEFAULT_ALLOW = (
     "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance",
     "#canton-zk-evm:Zk.Chain:DepositRequest",
     "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept",
+    ALLOCATION_WITHDRAW,
+    DEPOSIT_ARCHIVE,
 )
 CHAIN_CREATES = DEFAULT_ALLOW[:2]   # these creates name the chain's parties as observers: they are checked against the configured ones
 CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
@@ -47,7 +51,9 @@ AUTH_WINDOW = 60         # seconds of clock difference an account signature may 
 FAILED_VERIFIES = 10     # signatures that fail to verify, per client in a minute, before the service stops verifying for that client
 HEALTH_TTL = 5           # seconds /healthz is answered from the last check
 TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
-RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context)\Z")
+RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context|allocation/(00[0-9a-f]{20,252})/withdraw-context)\Z")
+TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
+TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
 RELAY_MAX_ANSWER = 1024 * 1024   # bytes of a registry's or the wallet's answer that are read
 RELAY_MAX_BODY = 64 * 1024       # bytes of a relayed request, as JSON
@@ -712,7 +718,7 @@ class Accounts:
                     self.authenticate(party, method, path, raw, auth, ip)
                     self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
                 if relay:
-                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body)
+                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body, relay[4])
                 return route(body, ip)
         elif method == "GET":
             m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open)/([^/]+)", path)
@@ -723,9 +729,9 @@ class Accounts:
                 return getattr(self, m.group(1))(party)
         raise HttpError(404, "no such route")
 
-    def relay(self, admin: str, instruction, body: dict) -> dict:
+    def relay(self, admin: str, instruction, body: dict, allocation=None) -> dict:
         """Read-only relay to the token standard's off-chain API of the registry of `admin`: the allocation factory, or (for a transfer instruction's contract id) the choice
-        context of its acceptance. The body goes on without `party`, the answer as it is."""
+        context of its acceptance, or (for an allocation's contract id) the choice context of its withdrawal. The body goes on without `party`, the answer as it is."""
         self.known(body.get("party"))
         if admin not in self.registries:
             raise HttpError(404, "this service has no registry for that instrument admin")
@@ -733,7 +739,8 @@ class Accounts:
         if len(json.dumps(payload, separators=(",", ":"))) > RELAY_MAX_BODY:
             raise HttpError(400, f"the request is longer than {RELAY_MAX_BODY} bytes")
         url, bearer_file = self.registries[admin]
-        path = f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept" if instruction else "/registry/allocation-instruction/v1/allocation-factory"
+        path = (f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept" if instruction else f"/registry/allocations/v1/{allocation}/choice-contexts/withdraw" if allocation
+                else "/registry/allocation-instruction/v1/allocation-factory")
         return outside_post(url, path, payload, bearer_file, "the token registry")
 
     def grant(self, body: dict, ip: str) -> dict:
@@ -806,7 +813,52 @@ class Accounts:
             raise HttpError(403, f"{wanted} is not on this service's list of allowed commands (name the package, not its id)")
         if kind == "CreateCommand":
             self.check_create(party, wanted, args.get("createArguments"))
+        elif wanted in (ALLOCATION_WITHDRAW, DEPOSIT_ARCHIVE):
+            self.check_take_back(party, wanted, args.get("contractId"))
         return commands
+
+    def passed(self, allocation: dict) -> bool:
+        """Whether an allocation's settle-before time is past by the margin: from then the builder can no longer settle it (it leaves such a deposit out), so taking it back cannot make a block's advance fail."""
+        m = TIME.fullmatch(str((((allocation.get("allocation") or {}).get("settlement")) or {}).get("settleBefore")))
+        if not m:
+            return False   # a time that cannot be read is not past
+        at = calendar.timegm(time.strptime(m[1], "%Y-%m-%dT%H:%M:%S")) + float("0." + (m[2] or "0"))
+        return self.wall() >= at + TAKE_BACK_MARGIN
+
+    def check_take_back(self, party: str, wanted: str, contract) -> None:
+        """An account takes back a deposit that cannot settle. It may withdraw its own allocation once the settle-before time is past (the token standard lets only the sender withdraw it, and
+        the builder leaves it out from then). It may archive its own open DepositRequest once the allocation it names is gone or past that time. Neither can touch a deposit the builder can still settle."""
+        if not isinstance(contract, str):
+            raise HttpError(400, "an ExerciseCommand names its contract id")
+        allocations = {a["contractId"]: a for a in self.allocations(party)["allocations"]}
+        if wanted == ALLOCATION_WITHDRAW:
+            found = allocations.get(contract)
+            if found is None:
+                raise HttpError(404, "this account has no such allocation")
+            if not self.passed(found):
+                raise conflict("not_yet", "this allocation can be taken back once its settle-before time has passed")
+            return
+        request = next((r for r in self.open(party)["depositRequests"] if r["contractId"] == contract), None)
+        if request is None:
+            raise HttpError(404, "this account has no such open deposit request")
+        named_id = (request["arguments"] or {}).get("allocation")
+        named = allocations.get(named_id)
+        if named is not None and not self.passed(named):
+            raise conflict("not_yet", "this deposit request can be taken back once its allocation is gone or its settle-before time has passed")
+        if named is None and isinstance(named_id, str) and not self.archived(party, named_id):
+            # Missing from the account's list is not yet gone: the participant may not be able to compute that allocation's view while the builder can still settle it.
+            raise conflict("not_yet", "this deposit request can be taken back once its allocation is gone or its settle-before time has passed")
+
+    def archived(self, party: str, contract: str) -> bool:
+        """Whether a contract is archived or unknown to the participant, by a look at its own events (not the account's view list). Anything else, an active contract included, is false."""
+        flt = {"cumulative": [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]}
+        try:
+            found = self.ledger.call("POST", "/v2/events/events-by-contract-id", {"contractId": contract, "eventFormat": {"filtersByParty": {party: flt}, "verbose": False}})
+        except HttpError as e:
+            if e.status == 422 and "NOT_FOUND" in str(e.extra.get("code") or ""):
+                return True
+            raise
+        return bool(found.get("archived"))
 
     def check_create(self, party: str, template: str, arguments) -> None:
         """A create names other parties as observers, and they see it and are sent it: so only the chain's own parties may be named, and the account itself (for a
@@ -847,7 +899,7 @@ class Accounts:
     def prepare(self, body: dict, ip: str) -> dict:
         party = self.known(body.get("party"))
         commands = self.check_commands(party, body.get("commands"))
-        self.prepared.room(pending_owner(ip), party)   # a client or an account at its cap costs the participant nothing: no read, no prepare
+        self.prepared.room(pending_owner(ip), party)   # a client or an account at its cap costs the participant no prepare (a take-back's own check reads the account's contracts first, at the account's rate)
         request = {"commandId": str(uuid.uuid4()), "userId": self.user, "actAs": [party], "synchronizerId": self.sync_id(),
                    "commands": commands, "readAs": [], "packageIdSelectionPreference": [], "prefetchContractKeys": [],
                    "verboseHashing": False, "disclosedContracts": body.get("disclosedContracts", [])}   # the JSON API wants every list, though they are optional

@@ -68,13 +68,15 @@ export function fakeEvm(o: EvmOptions = {}) {
   return { evm, calls };
 }
 
-export function fakeCanton(): CantonAdapter & { calls: string[] } {
+export function fakeCanton(): CantonAdapter & { calls: string[]; deadline: number | null } {
   const calls: string[] = [];
-  return {
-    calls, party: () => PARTY,
+  const canton: CantonAdapter & { calls: string[]; deadline: number | null } = {
+    calls, deadline: Date.now() + 90 * 60_000, party: () => PARTY,
     signRedeem: async () => void calls.push("signRedeem"), waitRedeem: async () => void calls.push("waitRedeem"),
     allocateDeposit: async () => void calls.push("allocateDeposit"), signDeposit: async () => void calls.push("signDeposit"), waitDeposit: async () => void calls.push("waitDeposit"),
+    depositDeadline: async () => canton.deadline, recoverDeposit: async () => void calls.push("recoverDeposit"),
   };
+  return canton;
 }
 
 /** A session on the real move library: `legs` is what the explorer shows as final for the move's transaction. */
