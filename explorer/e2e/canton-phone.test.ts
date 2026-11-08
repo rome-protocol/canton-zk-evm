@@ -17,10 +17,11 @@ const CELLS: [string, string, string][] = [
   ["Blocks committed", "12,345,678", "since 2026-09-20"],
   ["Success rate", "93.7%", "12,345,678 of 13,000,000 answered attempts, from 2026-09-21"],
   ["Settlement time", "9.4 s <small>p95 &gt; 20 min 35 s</small>", "average over 12,345 blocks, since 2026-10-03 02:00 UTC"],
-  ["Retried", "12,345", "blocks committed after a retry, since 2026-09-20"],
+  ["Retried", "12,345", "blocks committed after a retry, from 2026-09-21"],
   ["Refused", "1,234,567", "commits Canton refused, from 2026-09-21"],
 ];
-const card = `<section class="card panel ext-calls"><div class="cells">${CELLS.map(([k, v, sub]) => `<div class="cell"><span class="stat-k">${k}</span><span class="stat-v"><span>${v}</span></span><span class="small muted">${sub}</span></div>`).join("")}</div></section>`;
+const head = `<div class="card-head"><div class="card-title"><h3><span id="ext-h">External calls</span></h3><span class="muted small">block commits to Canton</span><span class="info"><button type="button" class="info-b" aria-label="About External calls"><span aria-hidden="true">i</span></button></span></div><a class="csv" href="#">See every block &rarr;</a></div>`;
+const card = `<section class="card panel ext-calls" aria-labelledby="ext-h">${head}<div class="cells">${CELLS.map(([k, v, sub]) => `<div class="cell"><span class="stat-k">${k}</span><span class="stat-v"><span>${v}</span></span><span class="small muted">${sub}</span></div>`).join("")}</div></section>`;
 const html = (body = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${readFileSync(join(src, "styles.css"), "utf8")}</style><style>${readFileSync(join(src, "pages", "canton.css"), "utf8")}</style></head>
 <body><div class="page"><div class="main">
   <div class="list-h canton-tools">

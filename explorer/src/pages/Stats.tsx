@@ -60,14 +60,14 @@ function Reliability({ s }: { s: StatsSummary }) {
     </section>
   );
 }
-/** The figures of the External calls page in a card, from the same route and rollup as that page's header. The counts run from the start of the data and say so; only the settlement time is a window (24 hours), worded as that page words it. */
+/** The figures of the External calls page in a card, from the same route and rollup as that page's header. Each count says from which date it runs; only the settlement time is a window (24 hours), worded as that page words it. */
 function ExternalCalls() {
   const q = useQuery({ queryKey: ["canton", "stats", "24h"], queryFn: () => getCantonStats("24h"), refetchInterval: 30_000 });
   const s = q.data;
   const a = s?.attempts, t = s?.settlement;
   return (
     <section className="card panel ext-calls" aria-labelledby="ext-h">
-      <CardHead title={<span id="ext-h">External calls</span>} sub="block commits to Canton, counted from the start of the data" info="An external call is a Canton feature that lets a participant call out during a transaction. Ostia's confirmers use it to check each block's proof. Each block is one Canton transaction."
+      <CardHead title={<span id="ext-h">External calls</span>} sub="block commits to Canton" about="External calls" info="An external call is a Canton feature that lets a participant call out during a transaction. Ostia's confirmers use it to check each block's proof. Each block is one Canton transaction."
         action={<Link className="csv" to="/canton">See every block <Icon name="next" /></Link>} />
       {q.isError && !s ? <p className="muted small chart-msg">The figures cannot be read right now.</p>
         : !s || !a || !t ? <p className="muted small chart-msg" aria-busy="true">Reading…</p> : (
@@ -75,7 +75,7 @@ function ExternalCalls() {
             <Cell k="Blocks committed" v={count(s.blocks)} sub={s.dataSince ? `since ${utcDate(Date.parse(s.dataSince))}` : "none yet"} />
             <Cell k="Success rate" v={s.successRate === null ? DASH : pct(s.successRate)} sub={a.submitted > 0 ? `${count(a.committed)} of ${count(a.submitted - a.pending)} answered attempts${a.since ? `, from ${utcDate(Date.parse(a.since))}` : ""}` : "no commit attempt yet"} />
             <Cell k="Settlement time" v={t.averageSeconds === null ? DASH : <>{sec(t.averageSeconds)}{t.p95Seconds !== null && <> <small>p95 {t.p95Capped ? "> " : ""}{sec(t.p95Seconds)}</small></>}</>} sub={t.blocks > 0 ? `average over ${plural(t.blocks, "block")}, ${sinceWord(t.from)}` : `no timed block ${sinceWord(t.from)}`} />
-            <Cell k="Retried" v={count(s.retriedBlocks)} sub={`blocks committed after a retry${s.dataSince ? `, since ${utcDate(Date.parse(s.dataSince))}` : ""}`} />
+            <Cell k="Retried" v={count(s.retriedBlocks)} sub={`blocks committed after a retry${a.since ? `, from ${utcDate(Date.parse(a.since))}` : ""}`} />
             <Cell k="Refused" v={count(a.refused)} sub={`commits Canton refused${a.since ? `, from ${utcDate(Date.parse(a.since))}` : ""}`} />
           </div>
         )}
