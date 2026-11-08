@@ -4,17 +4,17 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { StatsMetric, StatsWindow } from "../api.ts";
 import { REST_FIELDS } from "../../server/rest/fields.ts";
-import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
+import { cantonStats, fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
 import { series, summary, wave } from "./stats-fixtures.ts";
 
-type Handlers = { summary?: (w: string) => Reply; series?: (metric: StatsMetric, window: StatsWindow, path: string) => Reply; faucetOn?: boolean; faucet?: () => Reply };
+type Handlers = { summary?: (w: string) => Reply; series?: (metric: StatsMetric, window: StatsWindow, path: string) => Reply; faucetOn?: boolean; faucet?: () => Reply; cantonStats?: (path: string) => Reply };
 const ordinary = (metric: StatsMetric, window: StatsWindow) => {
   const base = { time_to_final_p50: 8.4, time_to_final_p95: 9.5, proof_time_p50: 7.1, proof_time_p95: 7.6, tps: 0.2, busiest_minute_tps: 0.9, blocks: 5, busy_ratio: 0.012 }[metric as string] ?? 1;
   // The server draws busy_ratio in 10 minutes in the last hour (it has no minute step).
   return reply(series(metric, wave(base), { window, ...(metric === "busy_ratio" && window === "1h" ? { step: "10m" as const } : {}) }));
 };
 async function open(path = "/stats?window=7d", h: Handlers = {}) {
-  const base = route({ status: h.faucetOn ? () => reply(status({ faucet: { on: true } })) : undefined, faucet: h.faucet });
+  const base = route({ status: h.faucetOn ? () => reply(status({ faucet: { on: true } })) : undefined, faucet: h.faucet, cantonStats: h.cantonStats });
   const calls = fakeApi(Object.assign((p: string): Reply => {
     const u = new URL(p, "http://x");
     if (u.pathname === "/api/stats/summary") return h.summary ? h.summary(u.searchParams.get("window")!) : reply(summary({ window: u.searchParams.get("window") as StatsWindow }));
@@ -409,5 +409,34 @@ describe("the stats page", () => {
       expect(title.querySelector(".muted"), h.textContent ?? "").not.toBeNull();
     }
     expect(document.querySelectorAll(".panel > .list-h").length).toBe(0);
+  });
+});
+
+describe("the External calls card", () => {
+  const card = async () => (await screen.findByRole("heading", { name: "External calls" })).closest("section")!;
+
+  it("shows the figures of /api/canton/stats and links to every block", async () => {
+    const calls = await open("/stats?window=7d", { cantonStats: () => reply(cantonStats()) });
+    const c = within(await card());
+    await waitFor(() => expect(c.getByText("Blocks committed").parentElement).toHaveTextContent("120"));
+    expect(c.getByText("Success rate").parentElement).toHaveTextContent("93.7%");
+    expect(c.getByText("Success rate").parentElement).toHaveTextContent("120 of 128 answered attempts");
+    expect(c.getByText("Settlement time").parentElement).toHaveTextContent("9.4 s");
+    expect(c.getByText("Settlement time").parentElement).toHaveTextContent("p95 14");
+    expect(c.getByText("Settlement time").parentElement).toHaveTextContent("average over 40 blocks, since 2026-10-03 02:00 UTC");
+    expect(c.getByText("Success rate").parentElement).toHaveTextContent("from 2026-09-21");
+    expect(c.getByText("Blocks committed").parentElement).toHaveTextContent("since 2026-09-20");
+    expect(c.getByText("Retried").parentElement).toHaveTextContent("3");
+    expect(c.getByText("Retried").parentElement).toHaveTextContent("from 2026-09-21");
+    expect(c.getByText("Refused").parentElement).toHaveTextContent("5");
+    expect(c.getByText("Refused").parentElement).toHaveTextContent("from 2026-09-21");
+    expect(c.getByRole("link", { name: /See every block/ })).toHaveAttribute("href", "/canton");
+    expect(calls.filter((p) => p.startsWith("/api/canton/stats"))).toEqual(["/api/canton/stats?window=24h"]);
+  });
+
+  it("says so when the figures cannot be read, and leaves the rest of the page alone", async () => {
+    await open("/stats?window=7d", { cantonStats: () => reply({ error: "down" }, 500) });
+    expect(await within(await card()).findByText("The figures cannot be read right now.")).toBeInTheDocument();
+    expect(await tile("Canton commit")).toBeInTheDocument();
   });
 });

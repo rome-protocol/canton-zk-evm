@@ -67,7 +67,7 @@ export interface UpdateDetail extends UpdateRow {
 /** The legs of a block by kind; a payment here is one that is neither a lock nor a release. */
 export interface UpdateLegs { total: number; deposit: number; withdrawal: number; payment: number; lock: number; release: number }
 export type UpdateStatus = "first" | "retried";
-/** What the Linked to Canton list adds to an update. Each is null where nothing holds it: attempts and status need the producer's journal, legs wait for the block's legs to be indexed. */
+/** What the External calls list adds to an update. Each is null where nothing holds it: attempts and status need the producer's journal, legs wait for the block's legs to be indexed. */
 export interface UpdateRow extends UpdateItem {
   /** `first`: committed on the first attempt; `retried`: after more than one. */
   status: UpdateStatus | null;

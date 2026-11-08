@@ -74,8 +74,8 @@ describe("the shell", () => {
     expect(lit("/tx/0x" + "cd".repeat(32))).toEqual(["Transactions"]);
     expect(lit("/contract/" + A)).toEqual(["Contracts"]);
     expect(lit("/token/" + A)).toEqual(["Tokens"]);
-    expect(lit("/canton")).toEqual(["Linked to Canton"]);
-    expect(lit("/canton/1220ab")).toEqual(["Linked to Canton"]);
+    expect(lit("/canton")).toEqual(["External calls"]);
+    expect(lit("/canton/1220ab")).toEqual(["External calls"]);
     expect(lit("/docs/api")).toEqual(["API"]);
     expect(lit("/address/" + A)).toEqual([]);
     expect(lit("/leg/abc")).toEqual([]);

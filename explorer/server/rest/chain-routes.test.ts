@@ -64,7 +64,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   });
   afterAll(async () => { await db?.drop(); });
 
-  it("serves the Linked to Canton list with its filters, order, file and stats", async () => {
+  it("serves the External calls list with its filters, order, file and stats", async () => {
     await refreshCantonView(pool);
     const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
     const all = body(await get("/api/canton/updates"));

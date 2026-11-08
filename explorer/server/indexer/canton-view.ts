@@ -1,5 +1,5 @@
 /**
- * The Linked to Canton view: what each block's Canton update says beyond the update itself, and the rollup behind the header (migration 0049).
+ * The External calls view: what each block's Canton update says beyond the update itself, and the rollup behind the header (migration 0049).
  *
  * Three passes fill the open rows of `canton_updates`, each over rows still open (a partial index each), oldest first, a batch at a time:
  *   attempts  the commit attempts of the block's number up to the one that committed (and how many Canton refused), and the settlement time from the proof start, once the producer's journal

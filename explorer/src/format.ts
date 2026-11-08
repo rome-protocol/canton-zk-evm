@@ -95,6 +95,8 @@ export const utcMs = (iso: string) => `${new Date(Date.parse(iso)).toISOString()
 
 /** The date of a time, in UTC. */
 export const utcDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+/** Where a window that starts at a whole UTC hour begins ("since 2026-10-03 02:00 UTC"): say where it starts, not a length it does not quite have. */
+export const sinceWord = (from: string) => `since ${utcDate(Date.parse(from))} ${new Date(Date.parse(from)).toISOString().slice(11, 16)} UTC`;
 /** The date and the minute, as '2026-10-23 12:01 UTC'. */
 export const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 

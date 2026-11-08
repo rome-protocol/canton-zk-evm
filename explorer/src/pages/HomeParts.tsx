@@ -41,10 +41,10 @@ type IconName = Parameters<typeof Icon>[0]["name"];
 const Key = ({ icon, children, info, about }: { icon: IconName; children: ReactNode; info?: ReactNode; about?: string }) => <span className="stat-k"><Icon name={icon} size={14} /><span>{children}</span>{info && <Info about={about ?? ""}>{info}</Info>}</span>;
 
 /** A card: its title, its number and one short line (`foot`); what else there is to say goes behind the "i" (`info`). */
-export function Stat({ icon, label, note, children, foot, sub, tone, info, valueClass }: { icon: IconName; label: string; note?: string; children: ReactNode; foot?: ReactNode; sub?: ReactNode; tone?: "ok"; info?: ReactNode; valueClass?: string }) {
+export function Stat({ icon, label, note, children, foot, sub, tone, info, valueClass, to }: { icon: IconName; label: string; /** A page the label links to. */ to?: string; note?: string; children: ReactNode; foot?: ReactNode; sub?: ReactNode; tone?: "ok"; info?: ReactNode; valueClass?: string }) {
   return (
     <div className={`card stat${tone ? ` stat-${tone}` : ""}`}>
-      <Key icon={icon} info={info} about={label}>{label}{note && <span className="faint"> · {nb(note)}</span>}</Key>
+      <Key icon={icon} info={info} about={label}>{to ? <Link to={to}>{label}</Link> : label}{note && <span className="faint"> · {nb(note)}</span>}</Key>
       <span className={`stat-v num${valueClass ? ` ${valueClass}` : ""}`}>{children}</span>
       {sub}
       {foot ? <span className="muted small">{foot}</span> : null}
@@ -64,9 +64,9 @@ export const DASH_WHY = (read: Read) => (read === "loading" ? "Reading…" : "th
 const ago = (iso: string) => `${iso.slice(11, 16)}\u00a0UTC`;
 
 /** A time from a summary: the middle and the 95th percentile, "8.5 s p95 8.7 s", or a dash and why. */
-export function Time({ icon, label, note, s, read, foot, none, info }: { icon: IconName; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string; info?: ReactNode }) {
-  if (s === undefined) return <Stat icon={icon} label={label} note={note} info={info} foot={DASH_WHY(read)}>—</Stat>;
-  return <Stat icon={icon} label={label} note={note} info={info} foot={s ? foot : none}>{s ? <><span className="hl">{sec(s.median)}</span> <small className="hl">p95 {sec(s.p95)}</small></> : "—"}</Stat>;
+export function Time({ icon, label, note, s, read, foot, none, info, to }: { icon: IconName; to?: string; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string; info?: ReactNode }) {
+  if (s === undefined) return <Stat icon={icon} label={label} note={note} info={info} to={to} foot={DASH_WHY(read)}>—</Stat>;
+  return <Stat icon={icon} label={label} note={note} info={info} to={to} foot={s ? foot : none}>{s ? <><span className="hl">{sec(s.median)}</span> <small className="hl">p95 {sec(s.p95)}</small></> : "—"}</Stat>;
 }
 
 /**
@@ -85,7 +85,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
       <Stat icon="cube" label="Block height" info="The newest block that is final on Canton." foot={s.height === null ? "No final block yet." : s.proving !== null ? `${s.proving} being proven` : "final on Canton"}>{s.height ?? "—"}</Stat>
       <Time icon="clock" label="Time to final" note="last hour" s={hr(h?.timeToFinal)} read={hour.read} info={`From a transaction being accepted to its block being final on Canton, over ${plural(h?.timeToFinal?.samples ?? 0, "transaction")}. p95 is the time that 95 in 100 stay under.`} foot="accepted → final" none="no transaction in the last hour" />
       <Time icon="shield" label="Proof time" note="last hour" s={hr(h?.proofTime)} read={hour.read} info={`Proved with ZisK, ${plural(h?.proofTime?.samples ?? 0, "block")} in the last hour.`} foot="one proof per block" none="no block in the last hour" />
-      <Time icon="link" label="Canton commit time" note="last hour" s={hr(h?.commitTime)} read={hour.read} info="From the block being sent to Canton to Canton's record time." foot="sent → recorded" none="no block in the last hour" />
+      <Time icon="link" label="Canton commit time" to="/canton" note="last hour" s={hr(h?.commitTime)} read={hour.read} info="From the block being sent to Canton to Canton's record time." foot="sent → recorded" none="no block in the last hour" />
       {d ? (
         <Stat icon="bolt" label="Transactions per second" info={peak ? `Peak is the busiest minute in 24 h${peak.peak! < 1 ? ` (${peakCount(peak.peak!)})` : ""}, at ${ago(peak.peakAt!)}.` : undefined} foot={peak ? undefined : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now</small>{peak && <> <small className="hl stat-peak"><b>peak {rateShort(peak.peak!)}</b> ({ago(peak.peakAt!)})</small></>}</Stat>
       ) : <Stat icon="bolt" label="Transactions per second" foot={noDay}>—</Stat>}

@@ -234,10 +234,10 @@ describe("the swaps page", () => {
     expect(await screen.findByText("No swaps yet.")).toBeInTheDocument();
   });
 
-  it("is linked from the Linked to Canton page", async () => {
+  it("is linked from the External calls page", async () => {
     fakeApi(route({ status: () => reply(status()), updates: () => reply(page([])) }));
     renderApp("/canton");
-    await screen.findByRole("heading", { name: "Linked to Canton" });
+    await screen.findByRole("heading", { name: "External calls" });
     expect(screen.getAllByRole("link", { name: /^Swaps$/ }).some((a) => a.getAttribute("href") === "/swaps")).toBe(true);
   });
 });

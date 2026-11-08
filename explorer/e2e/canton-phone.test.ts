@@ -5,15 +5,24 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * The Linked to Canton tab row at the width of a phone, in a real browser: the page's own stylesheets (styles.css, canton.css) around the markup of the row (the
- * same classes as Canton.tsx and Seg.tsx). The last tab must be reachable: the tab group stays inside the row, and scrolls sideways when its tabs need more than the row has,
+ * The External calls tab row, and the External calls card of the Stats page, at the width of a phone, in a real browser: the page's own stylesheets (styles.css, canton.css)
+ * around the markup (the same classes as Canton.tsx, Seg.tsx and Stats.tsx). The last tab must be reachable: the tab group stays inside the row, and scrolls sideways when its tabs need more than the row has,
  * so that no tab is cut where it cannot be scrolled to. The page itself must not scroll sideways. Runs when PLAYWRIGHT_CORE names a playwright-core (the `bridge-page`
  * job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
  */
 const core = process.env.PLAYWRIGHT_CORE;
 const src = join(import.meta.dirname, "..", "src"), pub = join(import.meta.dirname, "..", "public");
 const TABS = ["All", "First attempt", "Retried", "Refused", "With legs"];
-const html = () => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${readFileSync(join(src, "styles.css"), "utf8")}</style><style>${readFileSync(join(src, "pages", "canton.css"), "utf8")}</style></head>
+const CELLS: [string, string, string][] = [
+  ["Blocks committed", "12,345,678", "since 2026-09-20"],
+  ["Success rate", "93.7%", "12,345,678 of 13,000,000 answered attempts, from 2026-09-21"],
+  ["Settlement time", "9.4 s <small>p95 &gt; 20 min 35 s</small>", "average over 12,345 blocks, since 2026-10-03 02:00 UTC"],
+  ["Retried", "12,345", "blocks committed after a retry, from 2026-09-21"],
+  ["Refused", "1,234,567", "commits Canton refused, from 2026-09-21"],
+];
+const head = `<div class="card-head"><div class="card-title"><h3><span id="ext-h">External calls</span></h3><span class="muted small">block commits to Canton</span><span class="info"><button type="button" class="info-b" aria-label="About External calls"><span aria-hidden="true">i</span></button></span></div><a class="csv" href="#">See every block &rarr;</a></div>`;
+const card = `<section class="card panel ext-calls" aria-labelledby="ext-h">${head}<div class="cells">${CELLS.map(([k, v, sub]) => `<div class="cell"><span class="stat-k">${k}</span><span class="stat-v"><span>${v}</span></span><span class="small muted">${sub}</span></div>`).join("")}</div></section>`;
+const html = (body = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${readFileSync(join(src, "styles.css"), "utf8")}</style><style>${readFileSync(join(src, "pages", "canton.css"), "utf8")}</style></head>
 <body><div class="page"><div class="main">
   <div class="list-h canton-tools">
     <div class="seg" role="group" aria-label="Show blocks">${TABS.map((t, i) => `<button type="button" aria-pressed="${i === 0}">${t}</button>`).join("")}</div>
@@ -21,16 +30,17 @@ const html = () => `<!doctype html><html lang="en"><head><meta charset="utf-8"><
     <div class="seg" role="group" aria-label="Order"><button type="button" aria-pressed="true">Newest</button><button type="button" aria-pressed="false">Oldest</button></div>
     <a class="small" href="#">CSV</a>
   </div>
+${body}
 </div></div></body></html>`;
 
-describe.skipIf(!core)("the Linked to Canton tab row, on a phone", () => {
+describe.skipIf(!core)("the External calls tab row, on a phone", () => {
   let browser: any, server: Server, base = "";
   beforeAll(async () => {
     server = createServer((req, res) => {
       const font = /^\/fonts\/([A-Za-z0-9-]+\.woff2)(\?.*)?$/.exec(req.url ?? "");   // a font the stylesheet names, nothing else from the disk
       if (font) {
         try { res.writeHead(200, { "content-type": "font/woff2" }).end(readFileSync(join(pub, "fonts", font[1]!))); } catch { res.writeHead(404).end(); }
-      } else res.writeHead(200, { "content-type": "text/html" }).end(html());
+      } else res.writeHead(200, { "content-type": "text/html" }).end(html(req.url?.startsWith("/card") ? card : ""));
     });
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
@@ -70,5 +80,30 @@ describe.skipIf(!core)("the Linked to Canton tab row, on a phone", () => {
     const r = await measure(1280);
     expect(r.scrollable).toBe(false);
     expect(r.pageScrolls).toBe(false);
+  });
+
+  it("keeps every figure of the Stats card inside the card at 360 px, with big numbers, and the page not scrolling sideways", async () => {
+    const page = await browser.newPage({ viewport: { width: 360, height: 800 } });
+    await page.goto(`${base}card`, { waitUntil: "load" });
+    await page.evaluate(() => document.fonts.ready);
+    const r = await page.evaluate(() => {
+      const c = document.querySelector(".ext-calls")!.getBoundingClientRect();
+      const cells = [...document.querySelectorAll(".ext-calls .cell")].map((el) => {
+        const b = el.getBoundingClientRect();
+        // every text line of the cell must sit inside the cell: nothing is cut or spills over its right edge
+        const spill = [...el.querySelectorAll("span, small")].some((t) => t.getBoundingClientRect().right > b.right + 0.5 || t.scrollWidth > t.clientWidth + 1 && getComputedStyle(t).display !== "inline");
+        return { left: b.left, right: b.right, spill };
+      });
+      return { cardLeft: c.left, cardRight: c.right, cells, pageScrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth };
+    });
+    await page.close();
+    expect(r.cells.length).toBe(CELLS.length);
+    for (const c of r.cells) {
+      expect(c.left).toBeGreaterThanOrEqual(r.cardLeft - 0.5);
+      expect(c.right).toBeLessThanOrEqual(r.cardRight + 0.5);
+      expect(c.spill).toBe(false);
+    }
+    expect(r.pageScrolls).toBe(false);
+    expect(r.scrollWidth).toBe(360);
   });
 });

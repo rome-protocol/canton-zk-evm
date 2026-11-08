@@ -6,7 +6,7 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Info } from "../components/Info.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { Seg } from "../components/Seg.tsx";
-import { count, nb, pct, plural, sec, span, utcDate, utcMs } from "../format.ts";
+import { count, nb, pct, plural, sec, sinceWord, span, utcDate, utcMs } from "../format.ts";
 import { Bad, Good } from "./BlockSides.tsx";
 import { legKindWord } from "./LegParts.tsx";
 
@@ -58,9 +58,6 @@ export function SettleCell({ u }: { u: Pick<UpdateRow, "settleSeconds" | "settle
 function Tile({ k, v, small, sub, info, wide }: { k: string; v: ReactNode; small?: ReactNode; sub: ReactNode; info?: ReactNode; wide?: boolean }) {
   return <div className={`card stat${wide ? " stat-wide" : ""}`}><span className="stat-k">{nb(k)}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v"><span className="hl">{v}</span>{small && <> <small>{small}</small></>}</span><span className="small muted">{sub}</span></div>;
 }
-
-/** The window starts at a whole UTC hour and runs to now: say where it starts, not a length it does not quite have. */
-const sinceWord = (from: string) => `since ${utcDate(Date.parse(from))} ${new Date(Date.parse(from)).toISOString().slice(11, 16)} UTC`;
 
 /** The figures over the whole view, from the hourly rollup (never a scan of the updates): how many blocks, how often a commit got through, how long it took, what was refused or retried and the legs settled. */
 export function CantonHeader() {

@@ -31,7 +31,7 @@
   .tbl.stk-settled .k-p { display: none; }
 }
 
-/* The Linked to Canton view: the header figures, the tools row, the timeline and the attempts. */
+/* The External calls view: the header figures, the tools row, the timeline and the attempts. */
 .canton-stats { margin-bottom: 14px; }
 .canton-stats .stat-wide { grid-column: span 2; }
 .legs-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
