@@ -36,6 +36,8 @@
 .canton-stats .stat-wide { grid-column: span 2; }
 .legs-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .canton-tools { gap: 10px; }
+.canton-tools .seg { min-width: 0; }   /* the same as address.css's .list-tools .seg: without these the tab row keeps its full width on a phone and cuts its last tab */
+.canton-tools .seg button { flex: none; }
 .nowrap { white-space: nowrap; }
 .tbl .info { margin-left: 4px; }
 .tl, .att, .leg-list { list-style: none; margin: 0; padding: 0; }
@@ -52,6 +54,7 @@
 .leg-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 0; border-bottom: 1px solid var(--line-2); min-width: 0; overflow-wrap: anywhere; }
 .leg-list li:last-child { border-bottom: 0; }
 @media (max-width: 720px) {
+  .canton-tools .seg { max-width: 100%; overflow-x: auto; }
   .tl-k { min-width: 0; flex: 1 1 100%; }
   .stk-linked tr { grid-template-columns: 1fr 1fr; grid-template-areas: "u u" "b n" "st s" "c c" "l l" "t t"; }
   .stk-linked .k-st { grid-area: st; }

@@ -92,7 +92,7 @@ export const REST_FIELDS = {
   trace: ["frames", "truncated"],
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "txCount", "status", "attempts", "refused", "settleSeconds", "settleFrom", "submittedTemplate", "submittedChoice", "legs"],
-  updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "txCount", "status", "attempts", "settleSeconds", "settleFrom", "submittedTemplate", "submittedChoice", "legs", "template", "contractId", "blockHash", "signatories", "producerRecord", "view"],
+  updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "txCount", "status", "attempts", "refused", "settleSeconds", "settleFrom", "submittedTemplate", "submittedChoice", "legs", "template", "contractId", "blockHash", "signatories", "producerRecord", "view"],
   updateLegs: ["total", "deposit", "withdrawal", "payment", "lock", "release"],
   updateView: ["attempts", "timeline", "proofCheck"],
   updateAttempt: ["number", "outcome", "reason", "committed", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "proofOutcome", "submittedAt", "answeredAt"],

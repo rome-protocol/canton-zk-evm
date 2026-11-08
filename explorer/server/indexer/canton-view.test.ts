@@ -112,6 +112,10 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       await refreshCantonView(pool, { now: () => now });
       const hour = await one(pool, "select attempts, attempts_refused from canton_view_hour where hour = date_trunc('hour', $1::timestamptz)", [new Date(early)]);
       expect(hour).toMatchObject({ attempts: 1, attempts_refused: 1 });
+      // the hour that holds only that attempt is not where the blocks begin
+      const stats = await createChainRest(pool, () => now).cantonStats("24h");
+      expect(stats.attempts.since).toBe(new Date(Math.floor(early / 3_600_000) * 3_600_000).toISOString());
+      expect(stats.dataSince).toBe(new Date(Math.floor(t1 / 3_600_000) * 3_600_000).toISOString());
       // it is not a try of any block of the chain: block 1 stays at one attempt, in its row and on its page
       expect(await one(pool, "select commit_attempts from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({ commit_attempts: 1 });
       const detail = await createChainRest(pool, () => now).update(chain.blocks[0]!.record.updateId);
@@ -282,6 +286,19 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
     });
   });
 
+  it("marks an update the journal never joined once the clock is well past it, though the journal has stopped being loaded", async () => {
+    await inDb(async (pool) => {
+      const { chain, now } = await setup(pool);
+      const id = chain.blocks[2]!.record.updateId, t3 = Date.parse(chain.blocks[2]!.record.recordTime);
+      const flags = () => one(pool, "select no_journal from canton_updates where update_id = $1", [id]);
+      await refreshCantonView(pool, { now: () => now });
+      expect(await flags()).toMatchObject({ no_journal: false });
+      // no new journal line, but the clock is 8 hours on: the row leaves the open index
+      await refreshCantonView(pool, { now: () => t3 + 8 * 3_600_000 });
+      expect(await flags()).toMatchObject({ no_journal: true });
+    });
+  });
+
   it("lists by filter and order, pages by key, and exports the filtered list", async () => {
     await inDb(async (pool) => {
       const { chain, now } = await setup(pool);
@@ -295,6 +312,10 @@ describe.skipIf(!TEST_URL)("the Linked to Canton view", () => {
       expect(ids(await rest.updates(null, 10, "retried"))).toEqual([id(2)]);
       expect(ids(await rest.updates(null, 10, "refused"))).toEqual([id(2)]);
       expect(ids(await rest.updates(null, 10, "legs"))).toEqual([id(2)]);
+      // a row whose legs are being counted again keeps its old counts but is not listed as one with legs
+      await pool.query("update canton_updates set legs_done = false where update_id = $1", [id(2)]);
+      expect(ids(await rest.updates(null, 10, "legs"))).toEqual([]);
+      await pool.query("update canton_updates set legs_done = true where update_id = $1", [id(2)]);
       // keys page both ways
       const page = await rest.updates(null, 1);
       expect(page).toHaveLength(2);

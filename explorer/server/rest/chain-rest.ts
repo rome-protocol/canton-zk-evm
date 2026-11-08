@@ -315,7 +315,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
     ...updateItem(r), status: r.commit_attempts === null ? null : r.commit_attempts > 1 ? "retried" : "first", attempts: r.commit_attempts, refused: r.refused_attempts, settleSeconds: r.settle_seconds,
     settleFrom: r.settle_from === "proof_start" ? "proofStart" : r.settle_from === "block_time" ? "blockTime" : null, submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, legs: legsOf(r),
   });
-  const FILTER_SQL: Record<UpdateFilter, string> = { all: "", first: "and u.commit_attempts = 1", retried: "and u.commit_attempts > 1", refused: "and u.refused_attempts > 0", legs: "and u.legs_total > 0" };
+  const FILTER_SQL: Record<UpdateFilter, string> = { all: "", first: "and u.commit_attempts = 1", retried: "and u.commit_attempts > 1", refused: "and u.refused_attempts > 0", legs: "and u.legs_done and u.legs_total > 0" };
 
   /** Canton updates, newest first (or oldest first with `asc`), after the key (record time in microseconds, update id); `filter` keeps the ones committed on the first attempt, after more, after a refused attempt, or with legs. */
   async function updates(before: (number | string)[] | null, limit: number, filter: UpdateFilter = "all", asc = false): Promise<(UpdateRow & { micros: number })[]> {
@@ -414,7 +414,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
     const t = now(), hours = STATS_WINDOWS[window], from = new Date(Math.floor(t / 3_600_000) * 3_600_000 - (hours - 1) * 3_600_000);
     const [[a], win, hist] = await Promise.all([
       query(`select coalesce(sum(blocks), 0)::bigint as blocks, coalesce(sum(retried_blocks), 0)::bigint as retried, coalesce(sum(attempts), 0)::bigint as attempts, coalesce(sum(attempts_committed), 0)::bigint as committed,
-               coalesce(sum(attempts_refused), 0)::bigint as refused, coalesce(sum(attempts_pending), 0)::bigint as pending, coalesce(sum(attempts_other), 0)::bigint as other, min(hour) as since, min(hour) filter (where attempts > 0) as attempts_since, max(updated_at) as as_of,
+               coalesce(sum(attempts_refused), 0)::bigint as refused, coalesce(sum(attempts_pending), 0)::bigint as pending, coalesce(sum(attempts_other), 0)::bigint as other, min(hour) filter (where blocks > 0) as since, min(hour) filter (where attempts > 0) as attempts_since, max(updated_at) as as_of,
                coalesce(sum(legs_deposit), 0)::bigint as dep, coalesce(sum(legs_withdrawal), 0)::bigint as wd, coalesce(sum(legs_payment), 0)::bigint as pay, coalesce(sum(legs_lock), 0)::bigint as lock, coalesce(sum(legs_release), 0)::bigint as rel
              from canton_view_hour`),
       query("select coalesce(sum(settle_n), 0)::bigint as n, coalesce(sum(settle_sum), 0)::float8 as sum from canton_view_hour where hour >= $1", [from]),

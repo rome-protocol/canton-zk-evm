@@ -96,6 +96,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect((await get("/api/canton/stats?window=1y")).status).toBe(400);
     const detail = body(await get(`/api/canton/updates/${id(2)}`));
     same(detail, F.updateDetail);
+    expect(detail).toHaveProperty("refused", null);   // the update carries the refused count as its row in the list does (null here: this chain has no journal)
+    expect(detail.refused).toEqual(all.items[1].refused);
     same(detail.view, F.updateView);
     for (const s of detail.view.timeline) same(s, F.updateStep);
     same(detail.view.proofCheck, F.updateProofCheck);

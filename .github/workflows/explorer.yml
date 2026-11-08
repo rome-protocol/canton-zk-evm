@@ -51,6 +51,7 @@ jobs:
             --network host -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_BROWSER_IMAGE" \
             sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && npm run build \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-moves.test.ts \
+              && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/canton-phone.test.ts \
               && for f in dist/assets/*.js; do echo \"\$(gzip -9c \"\$f\" | wc -c) \$f\"; done | sort -n | tail -n 12"
 
   # The verifier's sandbox, for real: a compile runs in a container of the pinned image (SOLC_SANDBOX_IMAGE, Debian slim: the official compilers need glibc's shared libraries) with no network, a read-only filesystem,

@@ -64,13 +64,13 @@ const ATTEMPTS = `
         from pick p left join tries t on t.update_id = p.update_id where c.update_id = p.update_id returning c.record_time)`;
 
 /**
- * An update after the journal's first line whose block the journal never joined (a gap, a run whose lines were lost) is marked once the journal has moved well past it, so it leaves the open
+ * An update after the journal's first line whose block the journal never joined (a gap, a run whose lines were lost) is marked once the journal, or the clock when the journal has stopped being loaded, has moved well past it, so it leaves the open
  * index and is not looked at on every pass. A journal line that arrives late for it lifts the mark (journal.ts).
  */
 const MARK_NO_JOURNAL = `
   update canton_updates u set no_journal = true
    where u.commit_attempts is null and not u.no_journal and u.record_time >= $1
-     and u.record_time < (select max(cut_at) from block_attempts) - make_interval(hours => $2)
+     and u.record_time < greatest((select max(cut_at) from block_attempts), $3::timestamptz) - make_interval(hours => $2)
      and not exists (select 1 from blocks b join block_attempts a on a.attempt_id = b.attempt_id where b.update_id = u.update_id)`;
 
 /** The settlement time from the block's timestamp, for an update that has no journal behind it. */
@@ -100,7 +100,7 @@ const THROUGH = `select least(
     case when exists (select 1 from canton_registry where kind = 'vault') and exists (select 1 from canton_twins)
          then coalesce((select value::bigint from meta where key = 'twin_totals_block'), 0) else 9223372036854775807 end) as n`;
 
-async function fillOpenRows(pool: Pool, stopped: () => boolean): Promise<Touched> {
+async function fillOpenRows(pool: Pool, stopped: () => boolean, now: Date): Promise<Touched> {
   let all = none();
   const { rows: [j] } = await pool.query("select extract(epoch from min(cut_at) - interval '1 hour')::float8 * 1000 as t from block_attempts");
   const journalFrom = j.t === null ? null : new Date(Number(j.t));
@@ -113,7 +113,7 @@ async function fillOpenRows(pool: Pool, stopped: () => boolean): Promise<Touched
     all = merge(all, here);
     if (here.rows === 0) break;
   }
-  if (journalFrom !== null && !stopped()) await pool.query(MARK_NO_JOURNAL, [journalFrom, NO_JOURNAL_GRACE_HOURS]);
+  if (journalFrom !== null && !stopped()) await pool.query(MARK_NO_JOURNAL, [journalFrom, NO_JOURNAL_GRACE_HOURS, now]);
   return all;
 }
 
@@ -209,7 +209,7 @@ export async function recomputeHours(pool: Pool, from: number, to: number, now: 
 export async function refreshCantonView(pool: Pool, o: ViewOptions = {}): Promise<ViewResult> {
   const now = new Date((o.now ?? Date.now)());
   const stopped = o.stopped ?? (() => false);
-  const t = await fillOpenRows(pool, stopped);
+  const t = await fillOpenRows(pool, stopped, now);
   // The marks are taken in a transaction that is rolled back if the hours cannot be written or a stop cut the work short, so the next pass has them again.
   const claim = await pool.connect();
   try {

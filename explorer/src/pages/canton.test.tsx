@@ -469,6 +469,9 @@ describe("the Linked to Canton view: header, rows, tabs and sort", () => {
     expect(css).not.toMatch(/\.stk-linked \.k-s[^}]*display: none/);
     const phone = css;
     expect(phone).toContain('grid-template-areas: "u u" "b n" "st s" "c c" "l l" "t t"');
+    // the tab row scrolls inside itself on a phone, as address.css does for its filter (the browser check of it is e2e/canton-phone.test.ts)
+    expect(css).toMatch(/\.canton-tools \.seg \{ min-width: 0; \}/);
+    expect(css).toMatch(/@media \(max-width: 720px\) \{\n  \.canton-tools \.seg \{ max-width: 100%; overflow-x: auto; \}/);
     expect(css).toMatch(/\.canton-stats \.stat-wide \{ grid-column: span 2; \}/);
     expect(css).toMatch(/\.legs-kinds \{ display: flex; flex-wrap: wrap;/);
     expect(css).toMatch(/\.tl li \{ display: flex; flex-wrap: wrap;/);
