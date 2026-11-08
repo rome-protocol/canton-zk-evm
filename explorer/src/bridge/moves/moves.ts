@@ -3,7 +3,7 @@ import { ApiError, bridgeReads, type ApiTx, type BlockLeg } from "../../api.ts";
 import { walletWords } from "../../wallet.ts";
 import { timeoutSignal } from "../../timeout.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
-import { approveCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
+import { approveCall, claimCall, definitelyNotSent, payCall, releaseCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
@@ -203,7 +203,12 @@ export function createMove(d: Deps): Move {
     go({ phase: "sending-evm", step: name });
     save({ stage: "wallet", step: name, call, nonce: await d.evm.nonce() });
     let tx: Hex;
-    try { tx = await send(); } catch (e) { save(reset()); throw e; }
+    try { tx = await send(); } catch (e) {
+      // Only a send that certainly did not happen (the estimate failed, or the wallet refused the request) goes back before the step. Any other failure may have come after the wallet broadcast the transaction:
+      // the record stays at "wallet" with its call and nonce, and the person's continue looks for that transaction on Ostia before anything is sent again.
+      if (definitelyNotSent(e)) { save(reset()); throw e; }
+      throw new Pause("Your wallet did not say whether it sent this. Continue to check: nothing is sent again until Ostia shows it was not sent.");
+    }
     const real = (await d.evm.sentNonce(tx).catch(() => null)) ?? (await d.api.tx(tx).catch(() => null))?.nonce ?? null;
     save({ tx, ...(real === null ? {} : { nonce: real }) });
     return tx;
@@ -276,7 +281,7 @@ export function createMove(d: Deps): Move {
     const p = plan(c), { input, ref } = c;
     if (at() === "sent" && c.tx) return prove(c.tx, p);
     if (at() === "wallet") {
-      // The wallet was asked at this step. A move with an id is decided by the id below. For a wrap, an approval or a withdrawal, the account's own transaction counts only when it makes exactly the saved call.
+      // The wallet was asked at this step. The account's own transaction counts only when it makes exactly the saved call; a move with an id is also decided by the id below.
       let h: Hex | null = c.tx ?? null;
       if (!h && c.call) {
         let r = await findCall(c);
@@ -320,7 +325,7 @@ export function createMove(d: Deps): Move {
           await prepare("approve", "The approval", () => d.evm.approve(p.asset.address, d.config.gateway, p.base), approveCall(p.asset.address, d.config.gateway, p.base));
           if ((await d.evm.allowance(p.asset.address, d.config.gateway)) < p.base) throw new Pause("The approval did not give the gateway the amount (a replaced approval, or a lower one). Check the allowance in your wallet. Continue to try again.");
         }
-        return last(p, "pay", () => d.evm.pay(d.config.gateway, p.id!, p.asset.address, c.vault, p.base));
+        return last(p, "pay", () => d.evm.pay(d.config.gateway, p.id!, p.asset.address, c.vault, p.base), payCall(d.config.gateway, p.id!, p.asset.address, c.vault, p.base));
       }
       case "redeem": {
         if (at() === "start" || at() === "signing") {
@@ -335,7 +340,7 @@ export function createMove(d: Deps): Move {
         const vault = await pickVault(p.asset, p.base, ck!.vault);
         let q = p;
         if (!same(vault, ck!.vault)) { save({ vault }); q = plan(ck!); }
-        return last(q, "release", () => d.evm.release(vault, ref, p.asset.address, c.to!, p.base));
+        return last(q, "release", () => d.evm.release(vault, ref, p.asset.address, c.to!, p.base), releaseCall(vault, ref, p.asset.address, c.to!, p.base));
       }
       case "deposit": {
         const a = { instrument: p.asset.instrument!, amount: tenDecimals(p.twin), label: ref };
@@ -352,7 +357,7 @@ export function createMove(d: Deps): Move {
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitDeposit(p.id!));
         gate("Canton has your deposit. Continue to ask your wallet for the claim.");
-        return last(p, "claim", () => d.evm.claim(d.config.gateway, p.id!, p.asset.address, p.twin));
+        return last(p, "claim", () => d.evm.claim(d.config.gateway, p.id!, p.asset.address, p.twin), claimCall(d.config.gateway, p.id!, p.asset.address, p.twin));
       }
       case "withdraw": {
         gate("Your withdrawal is saved. Continue to ask your wallet.");

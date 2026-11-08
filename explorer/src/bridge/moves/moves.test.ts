@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 import type { ApiTx, BlockLeg } from "../../api.ts";
-import { approveCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
+import { approveCall, claimCall, NotSent, payCall, releaseCall, withdrawCall, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig } from "../evm/config.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
@@ -59,15 +59,19 @@ function fakeEvm(o: EvmOptions = {}) {
   const nonces = new Map<Hex, number>();
   /** What the wallet itself says of its pending sends: nothing pending unless a test says so. */
   let wallet: { pending: number; latest: number } | null | undefined = o.wallet;
+  /** A send the wallet takes (and broadcasts) but then fails to answer: the error is not a refusal, and the transaction exists. */
+  let lostAnswer: { name: string; error: unknown } | null = null;
   const send = (name: string) => async (...args: unknown[]) => {
     calls.push({ name, args });
     o.beforeSend?.(name);
     await o.holdSend;
-    if (refuse === name) throw Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" });
+    if (refuse === name) throw new NotSent(Object.assign(new Error("x"), { shortMessage: "execution reverted: nope" }));
     if (name === "approve" && o.approveSticks !== false) allowance = args[2] as bigint;
     nonces.set(hashOf(n + 1), nonce);
     nonce++;
-    return hashOf(++n);
+    ++n;
+    if (lostAnswer?.name === name) { const e = lostAnswer.error; lostAnswer = null; throw e; }
+    return hashOf(n);
   };
   const evm: EvmAdapter = {
     account: ME,
@@ -77,7 +81,7 @@ function fakeEvm(o: EvmOptions = {}) {
     wrap: send("wrap"), approve: send("approve"), pay: send("pay"), release: send("release"), claim: send("claim"), withdraw: send("withdraw"),
     waitReceipt: async () => ({ success: o.receipt ? o.receipt(n) : true }),
   };
-  return { evm, calls, refuse: (name: string | null) => { refuse = name; }, setWallet: (w: { pending: number; latest: number } | null) => { wallet = w; } };
+  return { evm, calls, refuse: (name: string | null) => { refuse = name; }, loseAnswer: (name: string, error: unknown) => { lostAnswer = { name, error }; }, setWallet: (w: { pending: number; latest: number } | null) => { wallet = w; } };
 }
 
 interface SetupOptions {
@@ -416,6 +420,77 @@ describe("move 4: a wrapped token back to Canton", () => {
     expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("no leg") });
     expect(loadCheckpoint(t.store)).toMatchObject({ stage: "start" });
     expect(loadCheckpoint(t.store)!.tx).toBeUndefined();
+  });
+});
+
+describe("a send whose outcome the wallet does not give", () => {
+  const withdraw = { kind: "withdraw", asset: WCC, amount: "1" } as const;
+  const withdrawLeg = () => leg({ kind: "withdrawal", account: ME, amount: (10n ** 10n).toString() }, WCC);
+  const call = withdrawCall(GATEWAY, WCC, 10n ** 10n, PARTY);
+  const timeout = Object.assign(new Error("request expired"), { code: -32603 });
+
+  it("keeps the record at the wallet step, and continue adopts the transaction the wallet did send: the withdrawal is sent once", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    const sent = made(call, [withdrawLeg()]);
+    const t = setup({ evm, txs: [sent], sentSince: async () => [hashOf(1)] });
+    const first = await t.move.start(withdraw);
+    expect(first).toMatchObject({ phase: "paused", note: expect.stringContaining("did not say whether it sent this") });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw", nonce: 7, call });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("sends again on continue only once Ostia shows nothing was sent", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    // The transaction never reached the network: the explorer lists nothing from the saved nonce, and the final count is still the saved nonce.
+    const t = setup({ evm, txs: [final([withdrawLeg()])], sentSince: async () => [] });
+    evm.evm.nonce = async () => 7;
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw", "withdraw"]);
+  });
+  it("never sends over a transaction the wallet still holds pending", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", timeout);
+    const t = setup({ evm, sentSince: async () => [] });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "paused" });
+    evm.setWallet({ pending: 9, latest: 7 });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused", note: expect.stringContaining("still waiting") });
+    expect(t.evm.calls.map((c) => c.name)).toEqual(["withdraw"]);
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "withdraw" });
+  });
+  it("a pay whose answer is lost is found by its call, and the lock pays once", async () => {
+    const evm = fakeEvm({ allowance: 10n ** 30n });
+    evm.loseAnswer("pay", timeout);
+    const id = lockIdOf(PARTY, "ref-1");
+    const c = payCall(GATEWAY, id, TKA, VAULT, 10n ** 18n);
+    const sent = made(c, [leg({ kind: "payment", legId: id })]);
+    const t = setup({ evm, txs: [sent], sentSince: async () => [hashOf(1)] });
+    expect(await t.move.start({ kind: "lock", asset: TKA, amount: "1", receiver: PARTY })).toMatchObject({ phase: "paused" });
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "wallet", step: "pay", call: c });
+    expect(await t.move.proceed()).toMatchObject({ phase: "final" });
+    expect(t.evm.calls.map((x) => x.name)).toEqual(["pay"]);
+  });
+  it("saves the exact call of a release and a claim", async () => {
+    const evm = fakeEvm();
+    evm.loseAnswer("claim", timeout);
+    const t = setup({ evm });
+    await t.move.start({ kind: "deposit", asset: WCC, amount: "3.5" });
+    expect(loadCheckpoint(t.store)!.call).toEqual(claimCall(GATEWAY, depositIdOf(PARTY, "ref-1"), WCC, 35n * 10n ** 9n));
+    const r = fakeEvm();
+    r.loseAnswer("release", timeout);
+    const u = setup({ evm: r });
+    await u.move.start({ kind: "redeem", asset: TKA, amount: "2" });
+    expect(loadCheckpoint(u.store)!.call).toEqual(releaseCall(VAULT, "ref-1", TKA, ME, 2n * 10n ** 18n));
+  });
+  it.each([4001, 4100, 4200])("a wallet that refuses outright (%i) sends nothing: the move goes back before the step", async (code) => {
+    const evm = fakeEvm();
+    evm.loseAnswer("withdraw", Object.assign(new Error("no"), { code }));
+    const t = setup({ evm });
+    expect(await t.move.start(withdraw)).toMatchObject({ phase: "failed", kept: false });
+    expect(listMoves(t.store)).toEqual([]);
   });
 });
 
