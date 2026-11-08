@@ -18,8 +18,8 @@ export interface Session {
   evm: EvmAdapter;
   /** The person's Canton account. */
   party: string;
-  /** What the account holds of a Canton token (10 decimals): the total of its unlocked holdings, in Canton's smallest unit. */
-  cantonBalance(instrument: { admin: string; id: string }): Promise<bigint>;
+  /** What the account holds of each of these Canton tokens (10 decimals), in the order given: the total of its unlocked holdings, in Canton's smallest unit. One signed read of the account's holdings, whatever the number of tokens. */
+  cantonBalances(instruments: { admin: string; id: string }[]): Promise<bigint[]>;
   /** The moves kept in this browser for this account, newest first. */
   kept(): Checkpoint[];
   /** What the account service says is open for the account (GET /accounts/v1/open): its redeem and deposit requests. One signed look, so it is asked for once, not on a timer. */
@@ -73,7 +73,7 @@ export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key"
   return {
     move, evm, party: account.party, close: stop,
     open: () => account.client.openRequests(account.key, account.party),
-    cantonBalance: async (instrument) => holdingsOf(await account.client.holdings(account.key, account.party), instrument),
+    cantonBalances: async (instruments) => { const held = await account.client.holdings(account.key, account.party); return instruments.map((i) => holdingsOf(held, i)); },
     kept: () => keptMoves(store, { account: evm.account, party: account.party }),
     holdingIds: async () => new Set((await account.client.holdings(account.key, account.party)).map((h) => h.contractId)),
     removeRedeem: (ref) => removeUnlessPending(evm, () => canton.cancelRedeem(ref), () => releaseUsed(evm, config, ref)),

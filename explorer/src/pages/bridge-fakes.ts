@@ -90,7 +90,7 @@ export function fakeSession(o: { evm?: ReturnType<typeof fakeEvm>; legs: (ref: s
   });
   const stop = track(move, store);
   const session: Session = {
-    move, evm: evm.evm, party: PARTY, cantonBalance: vi.fn(async () => o.cantonBalance ?? 20n * 10n ** 10n), kept: () => move.kept(),
+    move, evm: evm.evm, party: PARTY, cantonBalances: vi.fn(async (ins: unknown[]) => ins.map(() => o.cantonBalance ?? 20n * 10n ** 10n)), kept: () => move.kept(),
     open: vi.fn(async () => o.open ?? { depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: stop,
     holdingIds: vi.fn(async () => new Set<string>(o.holdings ?? [])), removeRedeem: vi.fn(async () => {}), removeDeposit: vi.fn(async () => {}),
     adopt: vi.fn((kind, request) => adoptRecord(kind, request, { account: evm.evm.account, party: PARTY, config, store, allocations: async () => o.allocations ?? [], openRequests: () => session.open() })),

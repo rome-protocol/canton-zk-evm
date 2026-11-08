@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, renderApp, reply, route, status } from "../test-utils.tsx";
 
-const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n, hold: Promise.resolve() as Promise<unknown> }));
+const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n, reads: 0, holdings: 0, canton: 0n, hold: Promise.resolve() as Promise<unknown> }));
 const closed = vi.fn();
 const opened = () => ({ party: PARTY, close: closed });
 vi.mock("../bridge/account.ts", () => mocks);
@@ -12,12 +12,13 @@ vi.mock("../bridge/account.ts", () => mocks);
 vi.mock("../bridge/evm/config.ts", () => ({
   loadBridgeConfig: async () => ({
     chain: { chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } }, gateway: "0x" + "22".repeat(20), vault: "0x" + "33".repeat(20), vaults: ["0x" + "33".repeat(20)], registryUrl: "https://registry.example", wrapper: null,
-    twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }], wrapped: [],
+    twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }],
+    wrapped: [{ address: "0x" + "bb".repeat(20), symbol: "wCC", decimals: 10, instrument: { admin: "DSO::1220" + "cd".repeat(32), id: "Amulet" } }],
   }),
 }));
-vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => { await mocks.hold; return mocks.gas; }, balanceOf: async () => 20n * 10n ** 18n }) }));
+vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => { mocks.reads++; await mocks.hold; return mocks.gas; }, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
-  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
+  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalances: async (ins: unknown[]) => { mocks.holdings++; return ins.map(() => mocks.canton); }, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
 }));
 
 const PARTY = "bridge::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
@@ -30,7 +31,7 @@ function wallet() {
   const w = { on: vi.fn((event: string, fn: (v: unknown) => void) => { handlers[event] = fn; }), removeListener: vi.fn(), request: vi.fn(async ({ method }: { method: string }) => (method === "eth_requestAccounts" ? [ME] : method === "eth_chainId" ? "0x" + status().chainId.toString(16) : null)) };
   Object.defineProperty(window, "ethereum", { value: w, configurable: true, writable: true });
 }
-afterEach(() => { mocks.gas = 5n * 10n ** 18n; mocks.hold = Promise.resolve(); vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
+afterEach(() => { mocks.gas = 5n * 10n ** 18n; mocks.reads = 0; mocks.holdings = 0; mocks.canton = 0n; mocks.hold = Promise.resolve(); vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
 const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
 /** The faucet takes a request (the fake answers every POST to it with a place in the line) and keeps count of them. */
 const faucetAccepts = () => {
@@ -214,8 +215,9 @@ describe("the Bridge page", () => {
     expect(within(sheet).getByRole("button", { name: "Get test tROME" })).toBeEnabled();
   });
 
-  it("tells the person to get test tROME when the wallet will not let the page sign (4100, 4900, 4901), and keeps the sentence for another refusal", async () => {
+  it("tells the person to get test tROME when the wallet will not let the page sign (4100, 4900, 4901) and the balance is not known, and keeps the sentence for another refusal", async () => {
     setUp();
+    mocks.hold = new Promise<void>(() => {});   // the wallet's tROME balance is never read: it is not known to be above 0
     mocks.openAccount
       .mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { code: 4100 }))
       .mockRejectedValueOnce(Object.assign(new Error("Disconnected"), { code: 4900 }))
@@ -231,6 +233,89 @@ describe("the Bridge page", () => {
     }
     expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
   });
+
+  it("does not tell the person to get test tROME when the wallet is known to hold some: the refusal says only to check the network", async () => {
+    setUp();
+    mocks.openAccount
+      .mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { code: 4100 }))
+      .mockRejectedValueOnce(Object.assign(new Error("Disconnected"), { code: 4900 }))
+      .mockRejectedValueOnce(Object.assign(new Error("Chain disconnected"), { code: 4901 }))
+      .mockResolvedValue(opened());
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await waitFor(() => expect(mocks.reads).toBeGreaterThan(0));   // the card has read the wallet's 5 tROME
+    await act(async () => {});
+    await openSheet();
+    const said = "Your wallet did not let this page sign. Make sure MetaMask is on the Ostia network, then sign in again.";
+    for (let i = 0; i < 3; i++) {
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(said));
+      expect(screen.getByRole("alert").textContent).toBe(said);
+      expect(mocks.openAccount).toHaveBeenCalledTimes(i + 1);
+    }
+  });
+
+  it("shows the wallet's address and, once the Canton account is open, its address and balances, with copy buttons that copy the whole address", async () => {
+    setUp();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mocks.canton = 12_345_678n * 1000n;   // 1.2345678 of a 10-decimal coin, shown cut down to six decimals
+    mocks.openAccount.mockResolvedValue(opened());
+    renderApp("/bridge");
+    expect(screen.queryByRole("region", { name: "Your addresses" })).toBeNull();   // not connected: nothing to show yet
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    // Before the account is open: the short version, the wallet's address and a word for the other.
+    const panel = await screen.findByRole("region", { name: "Your addresses" });
+    expect(within(panel).getByText("Your wallet on Ostia")).toBeInTheDocument();
+    expect(within(panel).getByText(`${ME.slice(0, 6)}…${ME.slice(-4)}`)).toBeInTheDocument();
+    expect(within(panel).getByText("Your account on Canton")).toBeInTheDocument();
+    expect(within(panel).getByText("Not opened yet")).toBeInTheDocument();
+    expect(within(panel).queryByText(/Anyone on Canton/)).toBeNull();
+    expect(within(panel).queryByRole("list")).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Copy your account address on Canton" })).toBeNull();
+    await userEvent.click(within(panel).getByRole("button", { name: "Copy your wallet address on Ostia" }));
+    expect(writeText).toHaveBeenLastCalledWith(ME);
+    expect(await within(panel).findByText("Copied")).toBeInTheDocument();
+    // Once it is open: both addresses, the line, and the balance of each token this build lists.
+    await openSheet();
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await within(panel).findByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false })).toHaveTextContent("This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.");
+    expect(within(panel).getByText("bridge::1220abab…ababab")).toBeInTheDocument();
+    expect(within(panel).queryByText("Not opened yet")).toBeNull();
+    expect(within(panel).getByRole("list", { name: "On Canton" })).toBeInTheDocument();   // the rows say whose balances they are, beside the wallet's own address
+    await waitFor(() => expect(within(within(panel).getByRole("list")).getAllByRole("listitem").map((r) => r.textContent)).toEqual(["TKA1.234567", "Canton Coin1.234567"]));   // by the names people know, cut down and never up
+    await userEvent.click(within(panel).getByRole("button", { name: "Copy your account address on Canton" }));
+    expect(writeText).toHaveBeenLastCalledWith(PARTY);   // the whole address, not the short form
+    expect(panel.textContent).not.toMatch(/party|allocation|vault|external|holding|instrument/i);   // no technical names on the screen
+    // Another wallet account: the old Canton account's address and balances are gone.
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Your addresses" })).getByText("Not opened yet")).toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Your addresses" }).textContent).not.toContain("1.234567");
+  });
+
+  it("reads the Canton account's holdings once for all the tokens, and not again on the quick ticks while the wallet's coin is on its way", async () => {
+    setUp();
+    mocks.gas = 0n;
+    faucetAccepts();
+    let release = () => {};
+    mocks.hold = new Promise<void>((r) => { release = r; });   // the wallet's balance is not known yet, so the sheet offers the sign-in
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await openSheet();
+    mocks.openAccount.mockResolvedValue(opened());
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    const sheet = screen.getByRole("region", { name: "Your Canton account" });
+    await waitFor(() => expect(mocks.holdings).toBeGreaterThan(0));
+    release();   // the wallet holds none of the coin
+    await userEvent.click(await within(sheet).findByRole("button", { name: "Get 1 tROME" }));
+    expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
+    await act(() => new Promise((r) => setTimeout(r, 300)));
+    const holdings = mocks.holdings, wallet = mocks.reads;
+    await act(() => new Promise((r) => setTimeout(r, 7_000)));   // two of the three-second ticks
+    expect(mocks.reads).toBeGreaterThan(wallet);   // the wallet's coin is looked for again
+    expect(mocks.holdings).toBe(holdings);   // the Canton account's holdings are not (the service allows 30 requests a minute)
+  }, 20_000);
 
   it("shows a failure of the test coin in plain words too", async () => {
     setUp();

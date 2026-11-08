@@ -18,6 +18,7 @@ import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { moveStore } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import { pairsOf } from "../bridge/tokens.ts";
+import { AccountPanel } from "./AccountPanel.tsx";
 import { Activity } from "./Activity.tsx";
 import { MoveBar } from "./MoveBar.tsx";
 import { MoveCard } from "./MoveCard.tsx";
@@ -58,6 +59,10 @@ export function Bridge() {
   /** What the wallet holds of the chain's coin (the card reads it); null while not known. */
   const [gas, setGas] = useState<bigint | null>(null);
   const [refresh, setRefresh] = useState(0);
+  /** Counts up every few seconds while the wallet's coin is on its way: the wallet's balances are read again, the Canton account's are not. */
+  const [poll, setPoll] = useState(0);
+  /** What the Canton account holds of each listed token, as the card read it (the account panel shows it). */
+  const [held, setHeld] = useState<Record<string, bigint | null>>({});
   /** The faucet has queued the coin and the wallet does not show it yet. */
   const [coming, setComing] = useState(false);
   const [nudge, setNudge] = useState(0);
@@ -75,7 +80,7 @@ export function Bridge() {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null);
+    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null); setHeld({});
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -114,7 +119,7 @@ export function Bridge() {
   useEffect(() => { if (gas !== null && gas > 0n) setComing(false); }, [gas]);
   useEffect(() => {
     if (!coming) return;
-    const tick = setInterval(() => setRefresh((n) => n + 1), 3_000);
+    const tick = setInterval(() => setPoll((n) => n + 1), 3_000);
     const stop = setTimeout(() => setComing(false), 300_000);
     return () => { clearInterval(tick); clearTimeout(stop); };
   }, [coming]);
@@ -146,7 +151,7 @@ export function Bridge() {
       if (!same()) return account.close();
       holding.current = account;
       setPhase({ s: "ready", account });
-    } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName) }); }
+    } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName, gas) }); }
   }
   async function getCanton(account: Account) {
     const mine = epoch.current, same = () => epoch.current === mine;
@@ -154,7 +159,7 @@ export function Bridge() {
     try {
       const { getTestCoin } = await import("../bridge/account.ts");
       const done = await getTestCoin(account, await coinAdmin());
-      if (same()) setCoin(done === "off" ? { s: "off" } : { s: "done", message: "Test Canton Coin is in your account." });
+      if (same()) { setCoin(done === "off" ? { s: "off" } : { s: "done", message: "Test Canton Coin is in your account." }); setRefresh((n) => n + 1); }
     } catch (e) { if (same()) setCoin({ s: "failed", message: plainWords(e) }); }
   }
   async function getRome() {
@@ -194,7 +199,7 @@ export function Bridge() {
           <MoveCard
             config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
-            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome } : null} onGas={setGas} refresh={refresh}
+            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome } : null} onGas={setGas} refresh={refresh} poll={poll} onCanton={setHeld} onMoved={() => setRefresh((n) => n + 1)}
           />
           <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
         </div>
@@ -205,6 +210,7 @@ export function Bridge() {
         </div>
       )}
       {!ready && note(rome)}
+      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} />}
       {settings && showSheet && (
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />

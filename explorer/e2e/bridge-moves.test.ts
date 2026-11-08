@@ -374,6 +374,57 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.close();
   }, 180_000);
 
+  it("takes .5 as 0.5 and 5. as 5, shows the normalised amount when the field is left, and moves 0.5", async () => {
+    const page = await open("/bridge");
+    await signedIn(page);
+    const field = page.getByRole("textbox", { name: "Amount to move" });
+    await field.fill(".5");
+    await page.getByRole("button", { name: "Move to Canton" }).waitFor();   // read as 0.5 while it is typed
+    await field.blur();
+    expect(await field.inputValue()).toBe("0.5");
+    await field.fill("5.");
+    await field.blur();
+    expect(await field.inputValue()).toBe("5");
+    await field.fill(".5");
+    await page.getByRole("button", { name: "Move to Canton" }).click();
+    await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
+    expect(chain.allowance).toBe(5n * 10n ** 17n);   // 0.5 of an 18-decimal token
+    expect(chain.lastLock!.receiver).toBe(party);
+    await page.close();
+  }, 120_000);
+
+  it("shows the account panel at 360 px: both addresses with their copy buttons and the Canton balances, nothing cut, no sideways scroll", async () => {
+    const page = await open("/bridge");
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
+    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    const panel = page.getByRole("region", { name: "Your addresses" });
+    await panel.waitFor();
+    expect(await panel.getByText("Your wallet on Ostia").count()).toBe(1);
+    expect(await panel.getByText("Not opened yet").count()).toBe(1);   // the short version while the account is not open
+    expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
+    expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(0);
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
+    await panel.getByText("Your account on Canton").waitFor();
+    await panel.getByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false }).waitFor();
+    expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
+    expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(1);
+    await panel.getByText("20", { exact: true }).first().waitFor();   // the account holds 20 of the token (the fake service's holdings)
+    expect(await panel.evaluate((el: HTMLElement) => /party|allocation|vault|external|holding|instrument/i.test(el.textContent ?? ""))).toBe(false);
+    // Nothing is cut: every box inside the panel sits within the page, and none has text running past its own box.
+    const fits = await panel.evaluate((el: HTMLElement) => {
+      const width = document.documentElement.clientWidth;
+      return [el, ...el.querySelectorAll<HTMLElement>("*")].every((n) => { const r = n.getBoundingClientRect(); return r.left >= -0.5 && r.right <= width + 0.5 && n.scrollWidth <= n.clientWidth + 1; });
+    });
+    expect(fits).toBe(true);
+    expect(await noSideways(page)).toBe(true);
+    // The copy buttons are in view and do not overlap the address they belong to.
+    const apart = await panel.evaluate((el: HTMLElement) => [...el.querySelectorAll(".addr")].every((a) => { const m = a.querySelector(".mono")!.getBoundingClientRect(), b = a.querySelector("button")!.getBoundingClientRect(); return b.top >= m.bottom - 1 || b.left >= m.right - 1; }));
+    expect(apart).toBe(true);
+    await page.close();
+  }, 90_000);
+
   it("keeps a long amount whole at 360 px: no sideways scroll, and the field holds every digit", async () => {
     const page = await open("/bridge");
     const field = page.getByRole("textbox", { name: "Amount to move" });

@@ -46,6 +46,16 @@ describe("plain words for what the person can see", () => {
     expect(walletWouldNotSign("tFOO", "Bar")).toBe("Your wallet did not let this page sign. Get test tFOO first and make sure MetaMask is on the Bar network, then sign in again.");
     for (const code of [4100, 4900, 4901]) expect(signInWords(Object.assign(new Error("Unauthorized"), { code }), "tROME", "Ostia")).toBe(said);
     expect(signInWords(Object.assign(new Error("User rejected the request."), { code: 4001 }), "tROME", "Ostia")).toBe("You declined it in your wallet.");
+    // A wallet known to hold the coin is not told to get it.
+    const held = "Your wallet did not let this page sign. Make sure MetaMask is on the Ostia network, then sign in again.";
+    expect(walletWouldNotSign("tROME", "Ostia", true)).toBe(held);
+    for (const code of [4100, 4900, 4901]) {
+      const e = Object.assign(new Error("Unauthorized"), { code });
+      expect(signInWords(e, "tROME", "Ostia", 1n)).toBe(held);
+      expect(signInWords(e, "tROME", "Ostia", 0n)).toBe(said);
+      expect(signInWords(e, "tROME", "Ostia", null)).toBe(said);
+    }
+    expect(signInWords(Object.assign(new Error("denied"), { code: 4001 }), "tROME", "Ostia", 1n)).toBe("You declined it in your wallet.");
     expect(signInWords(new TypeError("boom"), "tROME", "Ostia")).toBe(GENERIC);
     expect(signInWords(null, "tROME", "Ostia")).toBe(GENERIC);
   });

@@ -48,6 +48,7 @@
 .bridge-page .move-steps li { display: block; margin: 0; padding: 0; line-height: 1.4; }
 .bridge-page .move-steps li::before { content: none; }
 .bridge-page .move-steps .by-wallet { white-space: nowrap; }   /* "MetaMask pop-up" moves to the next line whole, never split */
+.bridge-page .move-steps li > span:first-child { overflow-wrap: anywhere; }   /* a long step wraps at phone width; the pop-up note stays on one line */
 .bridge-page .move-steps li > span:first-child::after { content: " ·"; }   /* the dot stays with the label, so a note that wraps starts its own line clean */
 .bridge-page .move-steps p { margin-top: 4px; }
 
@@ -92,3 +93,14 @@
 .bridge-page .act-top b { overflow-wrap: anywhere; }
 .bridge-page .act-links { display: flex; gap: 4px 14px; flex-wrap: wrap; }
 .bridge-page .act-row .btn { align-self: flex-start; }
+
+/* The account panel: the wallet's address on Ostia and the Canton account's, side by side while they fit, and the Canton balance of each token. */
+.bridge-page .addrs { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bridge-page .addrs p { margin: 0; overflow-wrap: anywhere; }
+.bridge-page .addr-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; min-width: 0; }
+.bridge-page .addr { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.bridge-page .addr .mono { overflow-wrap: anywhere; max-width: 100%; }
+.bridge-page .coins { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bridge-page .coins li { display: flex; justify-content: space-between; align-items: baseline; gap: 2px 12px; flex-wrap: wrap; margin: 0; padding: 0; min-width: 0; }
+.bridge-page .coins li::before { content: none; }
+.bridge-page .coins .num { margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-all; font-variant-numeric: tabular-nums; min-width: 0; }
