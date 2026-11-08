@@ -429,7 +429,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
           if (i > 0) expect(steps[i - 1].li.bottom, `${at}: steps overlap`).toBeLessThanOrEqual(st.li.top + 1);
           expect(st.li.right, `${at}: the step runs off the card`).toBeLessThanOrEqual(width);
         });
-        expect(popups).toBeGreaterThanOrEqual(2);
+        expect(popups).toBeGreaterThanOrEqual(/^(tROME|TKA) on Ostia/.test(String(name.source.slice(1))) ? 2 : 1);   // a move to Canton has two or three pop-ups; the Canton-side moves have one
         expect(await noSideways(page)).toBe(true);
       }
     }
