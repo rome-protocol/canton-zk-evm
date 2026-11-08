@@ -1,7 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHttpServer } from "./http.ts";
 
@@ -79,6 +80,23 @@ describe("the http server", () => {
     writeFileSync(join(dir, "dist", "fonts", "OFL.txt"), "licence");
     expect((await get("/fonts/plex.woff2")).headers.get("content-type")).toBe("font/woff2");
     expect((await get("/fonts/OFL.txt")).headers.get("content-type")).toBe("text/plain; charset=utf-8");
+  });
+
+  it("serves the icons the page names, as images that a browser may keep for a day", async () => {
+    const pub = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+    const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+    for (const [name, type] of [["favicon.ico", "image/x-icon"], ["favicon-32.png", "image/png"], ["apple-touch-icon.png", "image/png"]] as const) {
+      expect(page, name).toContain(`href="/${name}"`);
+      copyFileSync(join(pub, name), join(dir, "dist", name));
+      const res = await get(`/${name}`);
+      expect(res.status, name).toBe(200);
+      expect(res.headers.get("content-type"), name).toBe(type);
+      expect(res.headers.get("cache-control"), name).toBe("public, max-age=86400");
+      expect(Buffer.from(await res.arrayBuffer()).equals(readFileSync(join(pub, name))), name).toBe(true);
+    }
+    // Missing, the icon is a plain 404, never the home page.
+    rmSync(join(dir, "dist", "favicon.ico"));
+    expect((await get("/favicon.ico")).status).toBe(404);
   });
 
   it("serves the Verify check's .wasm file, and a HEAD for it gives its size without the file", async () => {

@@ -16,6 +16,9 @@ const TYPES: Record<string, string> = {
   ".wasm": "application/wasm", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8",
 };
 
+/** The icons sit at the site's root, where browsers ask for them unprompted; one name is not versioned, so they are kept for a day. */
+const ICONS = new Set(["/favicon.ico", "/favicon-32.png", "/apple-touch-icon.png"]);
+
 /** The biggest request body the server reads. The faucet's is one address. */
 /** Room for a human check's token, which can be a few thousand characters. */
 const MAX_BODY = 8192;
@@ -205,7 +208,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
       } else {
         const found = await page(pathname);
         if (!found) return void res.writeHead(404, { "content-type": "text/plain" }).end("Not found");
-        res.writeHead(200, { "content-type": TYPES[extname(found.file)] ?? "application/octet-stream", "content-length": found.bytes.length, "x-content-type-options": "nosniff" }).end(method === "HEAD" ? undefined : found.bytes);
+        res.writeHead(200, { "content-type": TYPES[extname(found.file)] ?? "application/octet-stream", "content-length": found.bytes.length, "x-content-type-options": "nosniff", ...(ICONS.has(pathname) ? { "cache-control": "public, max-age=86400" } : {}) }).end(method === "HEAD" ? undefined : found.bytes);
       }
     } catch (e) {
       console.error(`${method} ${pathname}: ${(e as Error).message}`);
