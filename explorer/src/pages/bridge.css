@@ -107,7 +107,7 @@
 
 /* Send on Canton and Incoming, inside the account panel: plain fields and lists that wrap at 360 px. */
 .bridge-page .send, .bridge-page .incoming { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line-2); }
-.bridge-page .send h3, .bridge-page .incoming h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.bridge-page .send h3, .bridge-page .incoming h3 { margin: 0; font-size: 15px; font-weight: 500; }
 .bridge-page .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .bridge-page .field input, .bridge-page .field select { width: 100%; box-sizing: border-box; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--ink); font: inherit; }
 .bridge-page .field input:focus-visible, .bridge-page .field select:focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; }
