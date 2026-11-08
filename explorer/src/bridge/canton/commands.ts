@@ -92,6 +92,44 @@ export function allocate(party: string, c: Chain, a: Allocation, factory: { cont
   };
 }
 
+const TRANSFER_FACTORY = { module: "Splice.Api.Token.TransferInstructionV1", entity: "TransferFactory" };
+/** How the standard's times are set for a transfer the person sends: asked for a minute in the past (the registry wants a request time that has passed), good for an hour. */
+export const TRANSFER_PAST_MS = 60_000, TRANSFER_WINDOW_MS = 3_600_000;
+/** The two times of a transfer sent at `now` (ms): a minute ago, and an hour on. */
+export const transferTimes = (now: number): { requestedAt: string; executeBefore: string } => ({ requestedAt: new Date(now - TRANSFER_PAST_MS).toISOString(), executeBefore: new Date(now + TRANSFER_WINDOW_MS).toISOString() });
+export interface Transfer {
+  admin: string;            // the token's registry (the instrument admin)
+  instrumentId: string;
+  receiver: string;         // a Canton address the person typed
+  amount: string;           // Canton's 10 decimals, as the page shows it to the person
+  inputHoldings: string[];  // the account's own unlocked holdings of the instrument that cover the amount
+  requestedAt: string;      // ISO times, as the registry's choice context was asked for them (`transferTimes`)
+  executeBefore: string;
+  implementation?: string;  // the instrument's implementing package where `implementationOf` does not know it (the test token's)
+}
+/**
+ * The token standard's `TransferFactory_Transfer`: the account sends `amount` to `receiver`. The factory, the choice context and the disclosed contracts are the registry's answer (checked by the caller);
+ * the context is the registry's and the page does not pin it. Everything else is what the account signs and what its transaction is held to: the sender (the account), the receiver, the instrument,
+ * the amount, the holdings and the two times.
+ */
+export function transfer(party: string, t: Transfer, factory: { contractId: string; context: object; disclosedContracts: DisclosedContract[] }): Built {
+  const none = { values: {} };
+  const args = {
+    expectedAdmin: t.admin,
+    transfer: {
+      sender: party, receiver: t.receiver, amount: t.amount, instrumentId: { admin: t.admin, id: t.instrumentId },
+      requestedAt: t.requestedAt, executeBefore: t.executeBefore, inputHoldingCids: t.inputHoldings, meta: none,
+    },
+    extraArgs: { context: factory.context, meta: none },
+  };
+  const template = { packageName: "splice-api-token-transfer-instruction-v1", ...TRANSFER_FACTORY };
+  return {
+    command: { ExerciseCommand: { templateId: id(template), contractId: factory.contractId, choice: "TransferFactory_Transfer", choiceArgument: args } },
+    intent: { party, kind: "exercise", template, interface: TRANSFER_FACTORY, choice: "TransferFactory_Transfer", contractId: factory.contractId, args, ignore: ["extraArgs.context"], implementation: t.implementation ?? implementationOf(t.instrumentId), ledgerTimes: true },
+    disclosedContracts: factory.disclosedContracts,
+  };
+}
+
 const TRANSFER_INSTRUCTION = { module: "Splice.Api.Token.TransferInstructionV1", entity: "TransferInstruction" };
 /** The token standard's `TransferInstruction_Accept`: the account takes a transfer offered to it (test Canton Coin from the faucet). The context and the contracts are the registry's. The
  * transaction may carry the offer's deadline as a ledger time bound. `implementation` is the package of the instrument (Canton Coin's by default). */

@@ -169,6 +169,8 @@ class AccountsOnCanton(unittest.TestCase):
             accept_answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
             (answers / "allocation-factory.json").write_text(json.dumps(factory_answer))
             (answers / "accept.json").write_text(json.dumps(accept_answer))
+            transfer_answer = {**factory_answer, "transferKind": "offer"}   # the test token offers a transfer: the receiver accepts it (Canton Coin does so unless the receiver has a preapproval)
+            (answers / "transfer-factory.json").write_text(json.dumps(transfer_answer))
             self.assertEqual(service(f"/accounts/v1/registry/{registry}/allocation-factory", {"party": party})[0], 401)   # signed by no one
             self.assertEqual(service(f"/accounts/v1/registry/nobody::1220{'0' * 64}/allocation-factory", {"party": party}, key)[0], 404)   # an admin the service has no registry for
             self.assertEqual(service("/accounts/v1/faucet", {"party": party}, key)[0], 404)   # the faucet is off unless it is set
@@ -251,6 +253,58 @@ class AccountsOnCanton(unittest.TestCase):
                 self.assertEqual(status, 404, cid)
             print("FIXTURE " + json.dumps({"name": "answers", "party": party, "allocations": service(f"/accounts/v1/allocations/{party}", key=key)[1], "open": opened}, sort_keys=True), flush=True)
             self.assertEqual(service("/accounts/v1/holdings/nobody::1220" + "0" * 64)[0], 404)   # a party the service did not make
+
+            # Send on Canton: this account sends 3 of the test token to a second account (a key of its own) through the token standard's TransferFactory_Transfer, with the registry's transfer factory
+            # relayed by the service, and the second account accepts the offer. Each account reads the transfer back from `transfers`, and the holdings follow.
+            self.assertEqual(service("/accounts/v1/transfers/" + party)[0], 401)   # signed by no one
+            self.assertEqual(service(f"/accounts/v1/transfers/{party}", key=key), (200, {"party": party, "transfers": [], "more": False}))
+            with tempfile.TemporaryDirectory() as folder2:
+                key2 = Key(folder2)
+                topology2 = service("/accounts/v1/topology", {"publicKey": base64.b64encode(key2.public).decode()})[1]
+                party2 = topology2["party"]
+                self.assertEqual(service("/accounts/v1/allocate", {"blob": topology2["blob"], "signature": key2.sign(topology2["multiHash"])})[1], {"party": party2, "created": True})
+
+                def run_as(who, signer, command, disclosed=()):
+                    status, made = service("/accounts/v1/prepare", {"party": who, "commands": [command], "disclosedContracts": list(disclosed)}, signer)
+                    self.assertEqual(status, 200, made)
+                    return made, lambda: service("/accounts/v1/execute", {"preparedTransaction": made["preparedTransaction"], "partySignatures": [{"party": who, "signature": signer.sign(made["preparedTransactionHash"])}]}, signer)
+
+                unlocked = [h for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]]
+                self.assertTrue(unlocked)
+                before = sum(float(h["amount"]) for h in unlocked)
+                sent = {"sender": party, "receiver": party2, "amount": "3.0", "instrumentId": {"admin": registry, "id": demo.INSTRUMENT}, "requestedAt": demo.utc(timedelta(minutes=-1)),
+                        "executeBefore": demo.utc(timedelta(hours=1)), "inputHoldingCids": [h["contractId"] for h in unlocked], "meta": {"values": {}}}
+                transfer_arguments = {"expectedAdmin": registry, "transfer": sent}
+                self.assertEqual(service(f"/accounts/v1/registry/{registry}/transfer-factory", {"party": party, "choiceArguments": transfer_arguments})[0], 401)   # signed by no one
+                status, factory = service(f"/accounts/v1/registry/{registry}/transfer-factory", {"party": party, "choiceArguments": {**transfer_arguments, "extraArgs": demo.NO_EXTRA_ARGS}, "excludeDebugFields": True}, key)
+                self.assertEqual((status, factory), (200, transfer_answer))
+                transfer = {"ExerciseCommand": {"templateId": demo.TRANSFER_FACTORY, "contractId": factory["factoryId"], "choice": "TransferFactory_Transfer", "choiceArgument": {
+                    **transfer_arguments, "extraArgs": {"context": factory["choiceContext"]["choiceContextData"], "meta": {"values": {}}}}}}
+                made_transfer, execute_transfer = run_as(party, key, transfer, factory["choiceContext"]["disclosedContracts"])
+                fixture("exercise-transfer", transfer, made_transfer, disclosedContracts=factory["choiceContext"]["disclosedContracts"])
+                self.assertEqual(execute_transfer()[0], 200)
+
+                # The receiver sees an offer to it, the sender the same offer as its own.
+                [offered] = until("the offer for the receiver", lambda: service(f"/accounts/v1/transfers/{party2}", key=key2)[1]["transfers"])
+                self.assertEqual((offered["transfer"]["sender"], offered["transfer"]["receiver"], float(offered["transfer"]["amount"]), offered["transfer"]["instrumentId"]), (party, party2, 3.0, {"admin": registry, "id": demo.INSTRUMENT}))
+                [own] = until("the offer for the sender", lambda: service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"])
+                self.assertEqual(own["contractId"], offered["contractId"])
+                self.assertTrue(offered["packageName"] and own["packageName"] == offered["packageName"])   # the ledger names the package that implements the contract
+                self.assertEqual(service(f"/accounts/v1/holdings/{party2}", key=key2), (200, {"party": party2, "holdings": []}))   # nothing arrives before it is accepted
+
+                status, context = service(f"/accounts/v1/registry/{registry}/transfer-instruction/{offered['contractId']}/accept-context", {"party": party2, "meta": {}, "excludeDebugFields": True}, key2)
+                self.assertEqual((status, context), (200, accept_answer))
+                accept2 = {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": offered["contractId"], "choice": "TransferInstruction_Accept",
+                                               "choiceArgument": {"extraArgs": {"context": context["choiceContextData"], "meta": {"values": {}}}}}}
+                made_accept2, execute_accept2 = run_as(party2, key2, accept2, context["disclosedContracts"])
+                print("FIXTURE " + json.dumps({"name": "exercise-accept", "party": party2, "command": accept2, "preparedTransaction": made_accept2["preparedTransaction"], "preparedTransactionHash": made_accept2["preparedTransactionHash"],
+                                               "hashingSchemeVersion": made_accept2["hashingSchemeVersion"], "disclosedContracts": context["disclosedContracts"]}, sort_keys=True), flush=True)
+                self.assertEqual(execute_accept2()[0], 200)
+                [arrived] = until("the holding of the receiver", lambda: [h for h in service(f"/accounts/v1/holdings/{party2}", key=key2)[1]["holdings"] if not h["locked"]])
+                self.assertEqual((arrived["instrumentId"], float(arrived["amount"])), ({"admin": registry, "id": demo.INSTRUMENT}, 3.0))
+                until("the offer to be gone", lambda: not service(f"/accounts/v1/transfers/{party2}", key=key2)[1]["transfers"] and not service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"] or None)
+                after = sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"])
+                self.assertEqual(round(before - after, 6), 3.0)
 
 
 if __name__ == "__main__":

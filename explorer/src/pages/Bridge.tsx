@@ -16,6 +16,7 @@ import type { Account } from "../bridge/account.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
 import { moveStore } from "../bridge/moves/state.ts";
+import type { Sender } from "../bridge/send.ts";
 import type { Session } from "../bridge/session.ts";
 import { pairsOf } from "../bridge/tokens.ts";
 import { AccountPanel } from "./AccountPanel.tsx";
@@ -71,6 +72,8 @@ export function Bridge() {
   const [cfg, setCfg] = useState<Config>({ s: "loading" });
   const [evm, setEvm] = useState<EvmAdapter | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  /** What sends and accepts on Canton for the open account (the signing code, loaded once the account is open). */
+  const [sender, setSender] = useState<Sender | null>(null);
   const [tab, setTab] = useState<"move" | "activity">("move");
   // Another wallet account is another Canton account: the one that was open is let go (its key is dropped, and nothing is signed or sent for it any more), and whatever was on its way
   // for it is ignored when it ends. `epoch` counts the wallet's accounts: work that began under an earlier count is the old account's.
@@ -80,7 +83,7 @@ export function Bridge() {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null); setHeld({});
+    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({});
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -114,6 +117,13 @@ export function Bridge() {
     import("../bridge/session.ts").then((m) => { if (live) { made = m.createSession({ evm, account: opened, config }); setSession(made); } }, () => {});
     return () => { live = false; made?.close(); };
   }, [config, evm, opened]);
+
+  useEffect(() => {
+    if (!opened) { setSender(null); return; }
+    let live = true;
+    import("../bridge/send.ts").then((m) => { if (live) setSender(m.createSender(opened)); }, () => {});
+    return () => { live = false; };
+  }, [opened]);
 
   // Once the coin is queued the balance is read every few seconds, so the walk goes on as soon as it lands; the wait ends when the wallet shows it (or after five minutes).
   useEffect(() => { if (gas !== null && gas > 0n) setComing(false); }, [gas]);
@@ -210,7 +220,7 @@ export function Bridge() {
         </div>
       )}
       {!ready && note(rome)}
-      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} />}
+      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} sender={sender} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />}
       {settings && showSheet && (
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />

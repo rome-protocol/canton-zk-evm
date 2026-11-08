@@ -33,6 +33,8 @@ TWIN_ACCEPTANCE = "#ostia-twin:Twin.Twin:TwinAcceptance"   # not on the built-in
 ALLOW_ENTRY = re.compile(r"#[a-z0-9][a-z0-9-]*:[A-Za-z0-9_.]+:[A-Za-z0-9_]+(#[A-Za-z0-9_]+)?\Z")
 HOLDING = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
 ALLOCATION = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+TRANSFER_INSTRUCTION = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
+TRANSFERS_MAX = 100      # transfers `GET /accounts/v1/transfers/{party}` lists: anyone can offer an account a transfer, so the list is bounded
 REDEEM = "#canton-zk-evm:Zk.Chain:RedeemRequest"
 PARTY = re.compile(r"[A-Za-z0-9_-]{1,64}::1220[0-9a-f]{64}\Z")   # hint::fingerprint; a hash fingerprint is "1220" and 64 lowercase hex digits
 HINT = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
@@ -45,7 +47,7 @@ IN_FLIGHT_TTL = 120      # seconds an execute that got no answer counts as open 
 PENDING_PER_ACCOUNT = 5  # prepared transactions one account may have waiting for its signature
 PENDING_TTL = 600        # seconds a topology or a prepared transaction can be signed and sent back
 RECORD_MARGIN = 30       # seconds added to PENDING_TTL for the latest time the participant may record a prepared transaction (`maxRecordTime`)
-ACCOUNT_RATE = 30        # prepare, execute, holdings, allocations and open requests per account in a minute
+ACCOUNT_RATE = 30        # prepare, execute, holdings, allocations, transfers and open requests per account in a minute
 NETWORK_RATE = 300       # requests per client network (an IPv4 address, an IPv6 /48) in a minute
 HOLDINGS_PAGE, HOLDINGS_PAGES = 100, 50
 DAY = 86400
@@ -53,7 +55,7 @@ AUTH_WINDOW = 60         # seconds of clock difference an account signature may 
 FAILED_VERIFIES = 10     # signatures that fail to verify, per client in a minute, before the service stops verifying for that client
 HEALTH_TTL = 5           # seconds /healthz is answered from the last check
 TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
-RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context|allocation/(00[0-9a-f]{20,252})/withdraw-context)\Z")
+RELAY_PATH = re.compile(r"/accounts/v1/registry/([^/]+)/(allocation-factory|transfer-factory|transfer-instruction/(00[0-9a-f]{20,252})/accept-context|allocation/(00[0-9a-f]{20,252})/withdraw-context)\Z")
 TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
@@ -720,10 +722,10 @@ class Accounts:
                     self.authenticate(party, method, path, raw, auth, ip)
                     self.account_rate.hit(party)   # counted once the key has proved the account: naming a party cannot use up its rate
                 if relay:
-                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body, relay[4])
+                    return self.relay(urllib.parse.unquote(relay[1]), relay[3], body, relay[4], relay[2] == "transfer-factory")
                 return route(body, ip)
         elif method == "GET":
-            m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open)/([^/]+)", path)
+            m = re.fullmatch(r"/accounts/v1/(holdings|allocations|open|transfers)/([^/]+)", path)
             if m:
                 party = urllib.parse.unquote(m.group(2))
                 self.authenticate(party, method, path, raw, auth, ip)
@@ -731,9 +733,9 @@ class Accounts:
                 return getattr(self, m.group(1))(party)
         raise HttpError(404, "no such route")
 
-    def relay(self, admin: str, instruction, body: dict, allocation=None) -> dict:
-        """Read-only relay to the token standard's off-chain API of the registry of `admin`: the allocation factory, or (for a transfer instruction's contract id) the choice
-        context of its acceptance, or (for an allocation's contract id) the choice context of its withdrawal. The body goes on without `party`, the answer as it is."""
+    def relay(self, admin: str, instruction, body: dict, allocation=None, transfer_factory: bool = False) -> dict:
+        """Read-only relay to the token standard's off-chain API of the registry of `admin`: the allocation factory or the transfer factory, or (for a transfer instruction's contract id)
+        the choice context of its acceptance, or (for an allocation's contract id) the choice context of its withdrawal. The body goes on without `party`, the answer as it is."""
         self.known(body.get("party"))
         if admin not in self.registries:
             raise HttpError(404, "this service has no registry for that instrument admin")
@@ -742,7 +744,7 @@ class Accounts:
             raise HttpError(400, f"the request is longer than {RELAY_MAX_BODY} bytes")
         url, bearer_file = self.registries[admin]
         path = (f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept" if instruction else f"/registry/allocations/v1/{allocation}/choice-contexts/withdraw" if allocation
-                else "/registry/allocation-instruction/v1/allocation-factory")
+                else "/registry/transfer-instruction/v1/transfer-factory" if transfer_factory else "/registry/allocation-instruction/v1/allocation-factory")
         return outside_post(url, path, payload, bearer_file, "the token registry")
 
     def grant(self, body: dict, ip: str) -> dict:
@@ -985,19 +987,28 @@ class Accounts:
         raise HttpError(500, f"the account has more {what} than this service lists")
 
     def views(self, party: str, interface: str, what: str) -> list:
-        """(contract id, view) of the party's contracts of an interface."""
+        """(contract id, view, package name of the implementing template) of the party's contracts of an interface."""
         found = self.active(party, {"InterfaceFilter": {"value": {"interfaceId": interface, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}, what)
-        return [(e["contractId"], v.get("viewValue")) for e in found for v in e.get("interfaceViews") or []]
+        return [(e["contractId"], v.get("viewValue"), e.get("packageName")) for e in found for v in e.get("interfaceViews") or []]
 
     def holdings(self, party: str) -> dict:
         """The party's own CIP-0056 holdings (the Holding interface's view, owner = the party), all pages of one snapshot."""
         return {"party": party, "holdings": [{"contractId": cid, "instrumentId": v["instrumentId"], "amount": v["amount"], "locked": bool(v.get("lock"))}
-                                             for cid, v in self.views(party, HOLDING, "holdings") if isinstance(v, dict) and v.get("owner") == party]}   # a holding the party only observes is not its own
+                                             for cid, v, _ in self.views(party, HOLDING, "holdings") if isinstance(v, dict) and v.get("owner") == party]}   # a holding the party only observes is not its own
 
     def allocations(self, party: str) -> dict:
         """The party's own allocations (the Allocation interface's view, the party the sender of the leg): the contract id the participant committed, the specification and the holdings."""
-        return {"party": party, "allocations": [{"contractId": cid, "allocation": v["allocation"], "holdingCids": v.get("holdingCids", [])} for cid, v in self.views(party, ALLOCATION, "allocations")
+        return {"party": party, "allocations": [{"contractId": cid, "allocation": v["allocation"], "holdingCids": v.get("holdingCids", [])} for cid, v, _ in self.views(party, ALLOCATION, "allocations")
                                                 if isinstance(v, dict) and ((v.get("allocation") or {}).get("transferLeg") or {}).get("sender") == party]}
+
+    def transfers(self, party: str) -> dict:
+        """The transfers the party sends or is offered that are still waiting (the TransferInstruction interface's view, the party the sender or the receiver): the contract id and the transfer's
+        sender, receiver, amount, instrument and deadline, with the registry's status as it is, and the package name of the template that implements the contract (the ledger's, not the view's: the view is computed by that template's code, so
+        it cannot say what the contract is). At most `TRANSFERS_MAX`, so an account that strangers offer transfers to has a bounded list."""
+        keep = ("sender", "receiver", "amount", "instrumentId", "requestedAt", "executeBefore")
+        found = [{"contractId": cid, "transfer": {k: v["transfer"].get(k) for k in keep}, "status": v.get("status"), "packageName": package} for cid, v, package in self.views(party, TRANSFER_INSTRUCTION, "transfers")
+                 if isinstance(v, dict) and isinstance(v.get("transfer"), dict) and party in (v["transfer"].get("sender"), v["transfer"].get("receiver"))]
+        return {"party": party, "transfers": found[:TRANSFERS_MAX], "more": len(found) > TRANSFERS_MAX}
 
     def open(self, party: str) -> dict:
         """The party's open DepositRequests and RedeemRequests (those the service allows it to create), by contract id, with their arguments; and its two standing acceptances,
@@ -1087,7 +1098,7 @@ def main(argv=None):
                    "that names no other party); every allowed create needs one; repeat")
     p.add_argument("--accounts-per-day", type=int, default=3, help="accounts made per client address in 24 hours")
     p.add_argument("--requests-per-minute", type=int, default=60, help="requests per client address in a minute")
-    p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute, holdings, allocations and open requests per account in a minute")
+    p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute, holdings, allocations, transfers and open requests per account in a minute")
     p.add_argument("--requests-per-network-minute", type=int, default=NETWORK_RATE, help="requests per client network (an IPv4 address, an IPv6 /48) in a minute")
     p.add_argument("--chain-parties", help="a JSON file {\"operator\": ..., \"confirmer\": ..., \"gateway\": ..., \"builder\": ...}: the chain's parties, the only observers a create may name")
     for field in CHAIN_FIELDS:

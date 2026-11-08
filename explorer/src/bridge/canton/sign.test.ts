@@ -3,7 +3,7 @@ import { decodePreparedTransaction, hashPreparedTransaction } from "@canton-netw
 import { PreparedTransaction, type Value } from "@canton-network/core-ledger-proto";
 import { describe, expect, it } from "vitest";
 import type { DisclosedContract, Prepared } from "./accounts.ts";
-import { allocate, archiveDepositRequest, chainFromEnv, depositRequest, implementationOf, redeemRequest, twinAcceptance, withdrawalAcceptance, type Chain, type Intent } from "./commands.ts";
+import { acceptTransfer, allocate, archiveDepositRequest, chainFromEnv, depositRequest, implementationOf, redeemRequest, transfer, twinAcceptance, withdrawalAcceptance, type Chain, type Intent, type Transfer } from "./commands.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { checkIntent, signPrepared, UnexpectedTransaction } from "./sign.ts";
 
@@ -242,5 +242,99 @@ describe("the other commands", () => {
     const env = { VITE_CHAIN_OPERATOR: "o", VITE_CHAIN_CONFIRMER: "c", VITE_CHAIN_GATEWAY: "g", VITE_CHAIN_BUILDER: "b", VITE_CHAIN_ID: "770101" };
     expect(chainFromEnv(env)).toEqual({ operator: "o", confirmer: "c", gateway: "g", builder: "b", chainId: 770101 });
     expect(() => chainFromEnv({ ...env, VITE_CHAIN_GATEWAY: undefined })).toThrow("VITE_CHAIN_GATEWAY");
+  });
+});
+
+// A TransferFactory_Transfer of the test token, made by the integration test: one account sends 3 to another.
+describe("the transfer's transaction, from the real Canton", () => {
+  const fx = fixture("exercise-transfer");
+  const sender = fx.party;
+  const call = fx.command.ExerciseCommand.choiceArgument;
+  const now = preparedAt(fx);
+  const t: Transfer = {
+    admin: call.expectedAdmin, instrumentId: call.transfer.instrumentId.id, receiver: call.transfer.receiver, amount: call.transfer.amount, inputHoldings: call.transfer.inputHoldingCids,
+    requestedAt: call.transfer.requestedAt, executeBefore: call.transfer.executeBefore, implementation: "splice-test-token-v1",   // the test token's package: the one the real transaction names
+  };
+  const factory = { contractId: fx.command.ExerciseCommand.contractId, context: call.extraArgs.context, disclosedContracts: fx.disclosedContracts! };
+  const made = () => transfer(sender, t, factory);
+  /** The intent with one change made to what the person asked for. */
+  const changed = (patch: (x: Record<string, any>) => void) => { const x = structuredClone(made().intent.args) as Record<string, any>; patch(x); return { ...made().intent, args: x }; };
+
+  it("is built by the page as the real transaction was asked for, in the token standard's field order, and is signed with the page's own hash", async () => {
+    expect(made().command).toEqual(fx.command);
+    expect(made().disclosedContracts).toEqual(fx.disclosedContracts);
+    expect(Object.keys(made().intent.args)).toEqual(["expectedAdmin", "transfer", "extraArgs"]);
+    expect(Object.keys((made().intent.args.transfer as object))).toEqual(["sender", "receiver", "amount", "instrumentId", "requestedAt", "executeBefore", "inputHoldingCids", "meta"]);
+    expect(() => checkIntent(decode(fx), made().intent, now)).not.toThrow();
+    expect(await verifies(fx.preparedTransactionHash, await sign(made().intent, fx))).toBe(true);
+  });
+  it("is refused with another receiver, amount, instrument, sender, holdings, times or admin", () => {
+    const tx = decode(fx);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.receiver = "evil::1220" + "00".repeat(32); }), now)).toThrow(/receiver/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.amount = "3.1"; }), now)).toThrow(/amount/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.amount = "30"; }), now)).toThrow(/amount/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.instrumentId.id = "TKC"; }), now)).toThrow(/instrumentId/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.instrumentId.admin = "evil::1220" + "00".repeat(32); }), now)).toThrow(/instrumentId/);
+    expect(() => checkIntent(tx, changed((x) => { x.expectedAdmin = "evil::1220" + "00".repeat(32); }), now)).toThrow(/expectedAdmin/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.sender = "evil::1220" + "00".repeat(32); }), now)).toThrow(/sender/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.inputHoldingCids = ["00e1"]; }), now)).toThrow(/inputHoldingCids/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.inputHoldingCids = [...x.transfer.inputHoldingCids, "00e1"]; }), now)).toThrow(/list of 1/);   // an extra holding
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.inputHoldingCids = []; }), now)).toThrow(/list of 1/);   // a holding fewer
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.requestedAt = "2030-11-05T12:00:00Z"; }), now)).toThrow(/requestedAt/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.executeBefore = "2030-11-05T12:00:00Z"; }), now)).toThrow(/executeBefore/);
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.meta = { values: { note: "x" } }; }), now)).toThrow(/map of 0 entries/);   // a note the person did not write
+    expect(() => checkIntent(tx, changed((x) => { x.transfer.extra = "x"; }), now)).toThrow(/fields/);
+  });
+  it("is refused with another factory, choice, interface, package, actor or a template call; the registry's context is the one thing it does not pin", () => {
+    const tx = decode(fx);
+    expect(() => checkIntent(tx, { ...made().intent, contractId: "00ff" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, choice: "TransferFactory_PublicFetch" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, interface: undefined }, now)).toThrow(/through/);
+    expect(() => checkIntent(tx, { ...made().intent, implementation: "splice-amulet" }, now)).toThrow(/through/);   // another package implements the factory than the instrument's own
+    expect(() => checkIntent(tx, { ...made().intent, party: "evil::1220" + "00".repeat(32) }, now)).toThrow(/submitter/);
+    expect(() => checkIntent(tx, changed((x) => { x.extraArgs.meta = { values: { a: "b" } }; }), now)).toThrow(/map of 0 entries/);
+    expect(() => checkIntent(tx, changed((x) => { x.extraArgs.context = { values: { anything: { tag: "AV_Bool", value: true } } }; }), now)).not.toThrow();
+    expect(tx.metadata!.minLedgerEffectiveTime !== undefined || tx.metadata!.maxLedgerEffectiveTime !== undefined).toBe(true);   // the standard's deadlines are the transaction's time bounds, as for the allocation
+    expect(() => checkIntent(tx, { ...made().intent, ledgerTimes: false }, now)).toThrow(/ledger time/);
+  });
+  it("is refused with an extra node, a second root, another actor, and another time", () => {
+    const tx = decode(fx);
+    const more = structuredClone(tx);
+    more.transaction!.roots.push(more.transaction!.roots[0]!);
+    expect(() => checkIntent(more, made().intent, now)).toThrow(/2 root nodes/);
+    const stray = structuredClone(tx);
+    stray.transaction!.nodes.push({ ...structuredClone(stray.transaction!.nodes[0]!), nodeId: "stray" });
+    expect(() => checkIntent(stray, made().intent, now)).toThrow(/not under the root/);
+    const acting = structuredClone(tx);
+    acting.metadata!.submitterInfo!.actAs.push("other::1220" + "00".repeat(32));
+    expect(() => checkIntent(acting, made().intent, now)).toThrow(/submitter/);
+    expect(() => checkIntent(tx, made().intent, now + 5 * 60 * 1000 + 1)).toThrow(/five minutes/);
+  });
+  it("is refused when the service's hash is not the one the page computes, and when it is for another account", async () => {
+    const wrong = base64(Uint8Array.from(fromBase64(fx.preparedTransactionHash), (b, i) => (i === 0 ? b ^ 1 : b)));
+    await refused(sign(made().intent, { ...fx, preparedTransactionHash: wrong }), /hash is not the service's/);
+    await refused(sign(made().intent, { ...fx, party: "other::1220" + "00".repeat(32) }), /another party/);
+  });
+});
+
+// A TransferInstruction_Accept of the test token, made by the integration test: the receiver accepts the transfer above.
+describe("the accept's transaction, from the real Canton", () => {
+  const fx = fixture("exercise-accept");
+  const receiver = fx.party;
+  const now = preparedAt(fx);
+  const made = () => acceptTransfer(receiver, fx.command.ExerciseCommand.contractId, { context: fx.command.ExerciseCommand.choiceArgument.extraArgs.context, disclosedContracts: fx.disclosedContracts! }, "splice-test-token-v1");
+  it("is built by the page as the real transaction was asked for, and is signed with the page's own hash", async () => {
+    expect(made().command).toEqual(fx.command);
+    expect(() => checkIntent(decode(fx), made().intent, now)).not.toThrow();
+    expect(await verifies(fx.preparedTransactionHash, await sign(made().intent, fx))).toBe(true);
+  });
+  it("is refused for another offer, choice, package, actor or argument", () => {
+    const tx = decode(fx);
+    expect(() => checkIntent(tx, { ...made().intent, contractId: "00ff" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, choice: "TransferInstruction_Reject" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, implementation: "splice-amulet" }, now)).toThrow(/through/);
+    expect(() => checkIntent(tx, { ...made().intent, party: "evil::1220" + "00".repeat(32) }, now)).toThrow(/submitter/);
+    expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: { a: "b" } } } } }, now)).toThrow(/map of 0 entries/);
+    expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: {} } }, extra: 1 } }, now)).toThrow(/fields/);
   });
 });
