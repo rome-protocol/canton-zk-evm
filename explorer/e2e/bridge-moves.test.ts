@@ -126,7 +126,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       }
       if (path === `/accounts/v1/allocations/${party}`) {
         const none = !service.allocated;
-        return json(200, { allocations: none ? [] : [{ contractId: ALLOCATION, holdingCids: [CC_HOLDING], allocation: { settlement: { settlementRef: { id: service.label } }, transferLegId: "leg-" + service.label, transferLeg: { sender: party, receiver: GATEWAY_PARTY, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } } }] });
+        return json(200, { allocations: none ? [] : [{ contractId: ALLOCATION, holdingCids: [CC_HOLDING], allocation: { settlement: { settlementRef: { id: service.label }, settleBefore: new Date(Date.now() + 2 * 3600_000).toISOString() }, transferLegId: "leg-" + service.label, transferLeg: { sender: party, receiver: GATEWAY_PARTY, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" } } } }] });
       }
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
       let file = join(resolve(dist!), path);
