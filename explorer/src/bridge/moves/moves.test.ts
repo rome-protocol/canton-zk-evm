@@ -5,7 +5,7 @@ import { approveCall, claimCall, NotSent, payCall, releaseCall, withdrawCall, ty
 import type { BridgeConfig } from "../evm/config.ts";
 import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused } from "../evm/registry.ts";
-import { CannotTakeBack, createMove, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { CannotTakeBack, createMove, TAKE_BACK_AFTER_MS, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -114,6 +114,12 @@ function setup(o: SetupOptions = {}) {
   move.subscribe((s: MoveState) => phases.push(s.phase === "sending-evm" ? `sending-evm:${s.step}` : s.phase));
   return { move, evm, canton, store, phases, lockParts, deps };
 }
+
+describe("the take-back wait", () => {
+  it("is not below the account service's margin of 60 s past the settle-before time", () => {
+    expect(TAKE_BACK_AFTER_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});
 
 describe("the state machine", () => {
   it("refuses a transition it does not have", () => {

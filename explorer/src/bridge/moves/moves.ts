@@ -74,8 +74,8 @@ export interface Deps {
 
 /** How long before a deposit's time to settle the page still sends its claim: a claim sent closer than this may not be in a block in time, and a claim left out of every block holds up the account's later transactions. */
 export const CLAIM_MARGIN_MS = 10 * 60_000;
-/** How long after a deposit's time to settle its tokens may be taken back: the account service wants 5 seconds, and this page's clock is not the service's. */
-export const TAKE_BACK_AFTER_MS = 30_000;
+/** How long after a deposit's time to settle its tokens may be taken back: the account service wants 60 seconds (its TAKE_BACK_MARGIN, Canton's default record-time tolerance), and this page's clock is not the service's: never below it. */
+export const TAKE_BACK_AFTER_MS = 60_000;
 export { TAKE_BACK_STAGES };
 /** The stages from which a deposit's request is on the ledger and its claim is only asked of the wallet or waited for. */
 const REQUEST_ON_LEDGER: readonly Checkpoint["stage"][] = ["evm", "wallet", "sent"];
@@ -111,7 +111,7 @@ function makesCall(t: ApiTx, c: Checkpoint): boolean {
 const PARTY = /^[^:\s]+::1220[0-9a-f]{64}$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** A refusal that waiting does not clear: the account service answered 403 (not on its list), 404 (no such route or contract) or 422 (the ledger refused), the token registry refused (a 502 that carries its own 4xx), or the page's own check refused the prepared transaction. */
-const permanent = (e: unknown): boolean => {
+export const permanent = (e: unknown): boolean => {
   if (e instanceof UnexpectedTransaction) return true;   // the page's own check refused what the service prepared: preparing it again gives the same
   const { status, registryStatus } = (e ?? {}) as { status?: unknown; registryStatus?: unknown };
   if (typeof status === "number" && [403, 404, 422].includes(status)) return true;

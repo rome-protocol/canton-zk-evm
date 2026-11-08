@@ -101,6 +101,7 @@ class Config:
     venues: tuple = ()     # the venue parties whose trades may name an allocation the builder cannot see, only a disclosed one (--venue)
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
     unlabelled_deposits: bool = False   # --unlabelled-deposits: for a builder pinned to a package before 0.5.0, whose deposit requests have no label: a request whose id is not derived from its depositor and a label is then settled, not turned down
+    settle_margin_seconds: float = 300.0   # --settle-margin-seconds: a deposit whose allocation expires within this long is left out (proving and committing take time after the check)
     package_id: str = ""   # the Daml package version Advance runs under (--package-id): sent as packageIdSelectionPreference; empty: Canton picks by package name
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
@@ -1239,6 +1240,7 @@ def waiting_legs(left_out: list) -> bool:
 # While the legs are paused, or when a block's withdrawals would take an instrument over the quota, Canton refuses the Advance of a block
 # that carries a leg. The builder reads both from the chain contract it cuts the block on and leaves those legs out, so such a block is never
 # proven. A chain contract of an earlier version has none of the fields, and nothing here applies to it.
+SETTLE_MARGIN = timedelta(minutes=5)   # a deposit leg is left out unless its allocation outlives the block by this much: proving and committing take time after the check, well under this
 LEDGER_MARGIN = timedelta(seconds=5)   # the builder's clock is not Canton's: a pause is treated as in force a few seconds past its end, a tally as counted a few seconds longer
 # What the chain contract's own Daml says when it refuses a block for them (Chain.daml), in whole sentences. A text that merely contains some of these
 # words does not match. A choice that runs inside Advance and writes the same sentence cannot be told apart by its words: a refusal of the same legs
@@ -1344,9 +1346,9 @@ def quota_problem(state: tuple, name: str, amount: int) -> Said | None:
 
 
 def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str,
-                       executor_is: str = "the chain's operator") -> str | None:
+                       executor_is: str = "the chain's operator", margin: timedelta = timedelta(0)) -> str | None:
     """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock. `operator` is the executor
-    the allocation must name (for a venue's trade, the venue)."""
+    the allocation must name (for a venue's trade, the venue). With a `margin`, an allocation that expires within it of `now` is refused too."""
     if spec is None:
         return "the participant shows no view of its allocation"
     try:
@@ -1357,6 +1359,8 @@ def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: 
         return "its allocation's settle-before time cannot be read"
     if now >= settle_before:
         return f"its allocation's settle-before time ({spec['settlement']['settleBefore']}) has passed"
+    if now + margin >= settle_before:
+        return f"its allocation's settle-before time ({spec['settlement']['settleBefore']}) is less than {margin.total_seconds():g} s away, too near for the block to be proven and committed first"
     if spec["settlement"].get("executor") != operator:
         return f"its allocation's executor is not {executor_is}"
     leg = spec.get("transferLeg") or {}
@@ -1376,8 +1380,10 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None, lists: dict | None = None):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None, lists: dict | None = None,
+                 settle_margin: timedelta = SETTLE_MARGIN):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
+        self.settle_margin = settle_margin   # how long before its settle-before time a deposit's allocation is no longer used
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
         self.leg_context_bytes: dict = {}   # leg key -> the bytes of its choice context
@@ -1598,7 +1604,8 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         if r["allocation"] not in canton.allocations:
             return "its allocation is not active, or not visible to the builder"
         spec = canton.allocations[r["allocation"]]
-        found = allocation_problem(spec, chain["operator"], canton.now, r["depositor"], chain["gateway"], "the depositor", "the gateway")
+        found = allocation_problem(spec, chain["operator"], canton.now, r["depositor"], chain["gateway"], "the depositor", "the gateway",
+                                   margin=canton.settle_margin)
         if found:
             return found
         transfer = spec["transferLeg"]
@@ -2364,7 +2371,8 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts, lists=lists)
+                        lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts, lists=lists,
+                        settle_margin=timedelta(seconds=cfg.settle_margin_seconds))
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -4309,6 +4317,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--precheck-max-codes", type=int, default=pc.DEFAULT_MAX_CODES, metavar="N", help=f"--precheck: the most distinct contract codes a block may load (default {pc.DEFAULT_MAX_CODES})")
     ap.add_argument("--precheck-max-code-bytes", type=int, default=pc.DEFAULT_MAX_CODE_BYTES, metavar="BYTES", help=f"--precheck: the most bytes of contract code a block may load (default {pc.DEFAULT_MAX_CODE_BYTES})")
     ap.add_argument("--unlabelled-deposits", action="store_true", help="for a builder pinned (--package-id) to a package before 0.5.0: settle a deposit request whose id is not derived from its depositor and a label, as that package does (default: such a request is turned down, as 0.5.0 refuses it)")
+    ap.add_argument("--settle-margin-seconds", type=float, default=float(os.environ.get("CZE_SETTLE_MARGIN_SECONDS", SETTLE_MARGIN.total_seconds())), metavar="SECONDS",
+                    help=f"leave a deposit out when its allocation's settle-before time is less than this far away (default {SETTLE_MARGIN.total_seconds():g}, 5 minutes, well above the time to prove and commit a block; also CZE_SETTLE_MARGIN_SECONDS)")
     ap.add_argument("--package-id", metavar="ID", help="submit every Advance with packageIdSelectionPreference [ID], so that it runs under that Daml package version whatever else is vetted (default: Canton picks by package name)")
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
@@ -4384,6 +4394,9 @@ def main() -> int:
         if args.package_id is not None:
             cfg.package_id = check_package_id(args.package_id)
         cfg.unlabelled_deposits = args.unlabelled_deposits
+        if not 0 <= args.settle_margin_seconds < 86400:
+            raise BuilderError("--settle-margin-seconds is from 0 to less than a day")
+        cfg.settle_margin_seconds = args.settle_margin_seconds
         with work_lock(cfg.work_dir):
             if args.command == "run":
                 return produce(cfg, args)

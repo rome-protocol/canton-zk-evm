@@ -331,10 +331,11 @@ class TakeBack(Case):
     def test_the_margin_is_counted_from_the_settle_before_time_to_the_second(self):
         self.service.wall = lambda: 1_800_000_000
         late = lambda seconds: self.service.passed({"allocation": {"settlement": {"settleBefore": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1_800_000_000 - seconds))}}})
-        self.assertEqual([late(4), late(5), late(6)], [False, True, True])
-        fraction = {"allocation": {"settlement": {"settleBefore": "2027-01-15T07:59:54.5Z"}}}   # 1_800_000_000 is 2027-01-15T08:00:00Z: 5.5 s past
+        self.assertEqual([late(59), late(60), late(61)], [False, True, True])
+        self.assertEqual(A.TAKE_BACK_MARGIN, 60)   # Canton's default record-time tolerance
+        fraction = {"allocation": {"settlement": {"settleBefore": "2027-01-15T07:58:59.5Z"}}}   # 1_800_000_000 is 2027-01-15T08:00:00Z: 60.5 s past
         self.assertTrue(self.service.passed(fraction))
-        self.assertFalse(self.service.passed({"allocation": {"settlement": {"settleBefore": "2027-01-15T07:59:55.5Z"}}}))
+        self.assertFalse(self.service.passed({"allocation": {"settlement": {"settleBefore": "2027-01-15T07:59:00.5Z"}}}))
 
     def test_both_choices_are_on_the_built_in_list_and_need_no_open_limit(self):
         self.assertIn(A.ALLOCATION_WITHDRAW, A.DEFAULT_ALLOW)
@@ -342,13 +343,13 @@ class TakeBack(Case):
         self.assertEqual(A.open_limits_from(A.DEFAULT_ALLOW, 3, None), {ACCEPT: 1, DEPOSIT: 3})
 
     def test_an_allocation_is_withdrawn_once_its_settle_before_time_has_passed_by_the_margin(self):
-        self.allocate(self.at(self.NOW - 60))
+        self.allocate(self.at(self.NOW - 61))
         status, out, _ = self.withdraw()
         self.assertEqual((status, out["hashingSchemeVersion"]), (200, "HASHING_SCHEME_VERSION_V2"))
         self.assertEqual(self.calls_to("/prepare")[0][2]["commands"][0]["ExerciseCommand"]["choice"], "Allocation_Withdraw")
 
     def test_an_allocation_the_builder_can_still_settle_is_not_withdrawn(self):
-        for settle_before in (self.at(self.NOW + 3600), self.at(self.NOW), self.at(self.NOW - 1), "not a time"):
+        for settle_before in (self.at(self.NOW + 3600), self.at(self.NOW), self.at(self.NOW - 1), self.at(self.NOW - 50), "not a time"):
             self.ledger.allocations = []
             self.allocate(settle_before)
             status, out, _ = self.withdraw()
@@ -366,8 +367,8 @@ class TakeBack(Case):
         self.request()
         self.ledger.archived.add(self.CID)
         self.assertEqual(self.archive()[0], 200)   # the allocation is archived
-        self.allocate(self.at(self.NOW - 60))
-        self.assertEqual(self.archive()[0], 200)   # the allocation is past its time
+        self.allocate(self.at(self.NOW - 61))
+        self.assertEqual(self.archive()[0], 200)   # the allocation is past its time and the margin
         self.assertEqual(len(self.calls_to("/prepare")), 2)
 
     def test_a_deposit_request_whose_allocation_is_missing_from_the_list_but_active_is_not_archived(self):
@@ -380,6 +381,13 @@ class TakeBack(Case):
         self.request()
         self.ledger.fail["/v2/events/events-by-contract-id"] = (404, {"code": "CONTRACT_EVENTS_NOT_FOUND", "cause": "x"})
         self.assertEqual(self.archive()[0], 200)
+
+    def test_a_deposit_request_whose_allocation_is_past_its_time_but_not_the_margin_is_not_archived(self):
+        self.allocate(self.at(self.NOW - 50))
+        self.request()
+        status, out, _ = self.archive()
+        self.assertEqual((status, out["error"]), (409, "not_yet"))
+        self.assertEqual(self.calls_to("/prepare"), [])
 
     def test_a_deposit_request_whose_allocation_can_still_settle_is_not_archived(self):
         self.allocate(self.at(self.NOW + 3600))

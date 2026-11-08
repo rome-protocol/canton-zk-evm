@@ -231,6 +231,22 @@ describe("the Canton adapter", () => {
       await t.adapter.recoverDeposit({ label: "label-1", depositId });
       expect(t.submitted.map((b) => b.intent.choice)).toEqual(["AllocationFactory_Allocate", "Allocation_Withdraw"]);
     });
+    it("when the withdraw fails for good, still archives the request and then reports the failure", async () => {
+      for (const status of [403, 404, 422]) {
+        const t = await made();
+        t.client.allocationWithdrawContext.mockRejectedValueOnce(new AccountsError("refused", status, "no"));
+        await expect(t.adapter.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status });
+        expect(t.submitted.slice(2).map((b) => b.intent.choice)).toEqual(["Archive"]);   // the two before it are the deposit's own allocation and request
+        expect(t.ledger.depositRequests).toEqual([]);
+      }
+    });
+    it("when the withdraw fails for a reason that may clear, archives nothing", async () => {
+      const t = await made();
+      t.client.allocationWithdrawContext.mockRejectedValueOnce(new AccountsError("unavailable", 503, "later"));
+      await expect(t.adapter.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status: 503 });
+      expect(t.submitted).toHaveLength(2);
+      expect(t.ledger.depositRequests).toHaveLength(1);
+    });
     it("does not archive another deposit's request", async () => {
       const t = await made();
       t.ledger.depositRequests.push({ contractId: "other", arguments: { depositId: depositIdOf(PARTY, "label-2").slice(2) } });
