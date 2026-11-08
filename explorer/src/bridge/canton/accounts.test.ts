@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { AccountsClient, AccountsError, acceptChoice, factoryChoice, retryAfterSeconds, withdrawChoice } from "./accounts.ts";
+import { AccountsClient, AccountsError, EXECUTE_MS, Unanswered, acceptChoice, factoryChoice, retryAfterSeconds, withdrawChoice } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { partyOf } from "./topology.ts";
 
@@ -133,5 +133,52 @@ describe("the account service client", () => {
     expect(retryAfterSeconds("Wed, 21 Oct 2026 07:28:30 GMT", Date.parse("Wed, 21 Oct 2026 07:28:00 GMT"))).toBe(30);
     expect(retryAfterSeconds(null)).toBeUndefined();
     expect(retryAfterSeconds("soon")).toBeUndefined();
+  });
+
+  describe("an execute that got no definite answer", () => {
+    const BY = NOW + 630_000;
+    const prepared = { party: PARTY, preparedTransaction: "AA==", preparedTransactionHash: "AA==", hashingSchemeVersion: "V2", maxRecordTime: new Date(BY).toISOString() };
+    /** A client that has prepared a transaction and then executes it against `executeAnswer`. */
+    const executed = async (executeAnswer: () => Promise<Response>) => {
+      const f = vi.fn(async (url: string) => (url.endsWith("/prepare") ? answer(200, prepared) : executeAnswer()));
+      const c = client(f);
+      await c.prepare(key, PARTY, [{ CreateCommand: { templateId: "#p:M:E", createArguments: {} } }]);
+      return { f, run: () => c.execute(key, "AA==", PARTY, new Uint8Array(64)) };
+    };
+
+    it("waits for the service's own answer for longer than the service waits for the ledger (60 s)", async () => {
+      expect(EXECUTE_MS).toBeGreaterThan(60_000);
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      try {
+        const { run } = await executed(async () => answer(200, { updateId: "u1" }));
+        await run();
+        expect(timeout).toHaveBeenLastCalledWith(EXECUTE_MS);
+      } finally { timeout.mockRestore(); }
+    });
+    it("is Unanswered with the service's record time when the request fails, times out or the service answers 500, 502 or 503", async () => {
+      for (const make of [async () => { throw new TypeError("fetch failed"); }, async () => answer(500, {}), async () => answer(502, { error: "the ledger could not do that now" }), async () => answer(503, {})]) {
+        const { run } = await executed(make);
+        const e = await run().catch((x) => x);
+        expect(e).toBeInstanceOf(Unanswered);
+        expect(e).toBeInstanceOf(AccountsError);
+        expect(e.recordBy).toBe(BY);
+      }
+    });
+    it("is the plain error for a definite answer (400, 401, 403, 404, 409, 422, 429), which never reached the ledger", async () => {
+      for (const status of [400, 401, 403, 404, 409, 422, 429]) {
+        const { run } = await executed(async () => answer(status, { error: "no" }));
+        const e = await run().catch((x) => x);
+        expect(e).toBeInstanceOf(AccountsError);
+        expect(e).not.toBeInstanceOf(Unanswered);
+        expect(e.status).toBe(status);
+      }
+    });
+    it("falls back to a record time of eleven minutes from now when the service gave none", async () => {
+      const f = vi.fn(async (url: string) => (url.endsWith("/prepare") ? answer(200, { ...prepared, maxRecordTime: undefined }) : answer(503, {})));
+      const c = client(f);
+      await c.prepare(key, PARTY, []);
+      const e = await c.execute(key, "AA==", PARTY, new Uint8Array(64)).catch((x) => x);
+      expect(e.recordBy).toBe(NOW + 11 * 60_000);
+    });
   });
 });

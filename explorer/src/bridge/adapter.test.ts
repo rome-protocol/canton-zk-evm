@@ -15,7 +15,7 @@ const key: CantonKey = { publicKey: new Uint8Array(32) };
 const held = (contractId: string, amount: string, instrumentId = TWIN, locked = false): Holding => ({ contractId, instrumentId, amount, locked });
 
 /** A fake account service that remembers what the adapter made, and an adapter over it: each command that is submitted shows in the next read, as on the ledger. */
-function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promise<unknown> } = {}) {
+function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promise<unknown>; failSubmit?: (b: Built) => Error | undefined } = {}) {
   const ledger = { holdings, allocations: [] as AllocationView[], redeemRequests: [] as OpenRequest[], depositRequests: [] as OpenRequest[] };
   const submitted: Built[] = [];
   const client = {
@@ -31,6 +31,8 @@ function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promi
     sleep: async (ms) => { sleeps.push(ms); },
     submit: async (b) => {
       submitted.push(b);
+      const bad = over.failSubmit?.(b);
+      if (bad) throw bad;
       const c = b.command;
       if ("CreateCommand" in c) {
         const a = c.CreateCommand.createArguments as Record<string, unknown>;
@@ -40,6 +42,7 @@ function setup(holdings: Holding[] = [], over: { allocationFactory?: () => Promi
         ledger.allocations = ledger.allocations.filter((a) => a.contractId !== c.ExerciseCommand.contractId);
       } else if (c.ExerciseCommand.choice === "Archive") {
         ledger.depositRequests = ledger.depositRequests.filter((r) => r.contractId !== c.ExerciseCommand.contractId);
+        ledger.redeemRequests = ledger.redeemRequests.filter((r) => r.contractId !== c.ExerciseCommand.contractId);
       } else {
         const spec = (c.ExerciseCommand.choiceArgument as { allocation: AllocationView["allocation"] }).allocation;
         ledger.allocations.push({ contractId: "alloc-" + spec.settlement.settlementRef.id, allocation: spec, holdingCids: [] });
@@ -90,10 +93,44 @@ describe("the Canton adapter", () => {
       await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-2" });
       expect(submitted).toHaveLength(2);
     });
+    it("does not name holdings that another open redeem names, so two requests never burn the same holding", async () => {
+      const { adapter, submitted } = setup([held("big", "5"), held("two", "4")]);
+      await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
+      await adapter.signRedeem({ asset: TOKEN as never, amount: "3", recipient: TO as never, ref: "ref-2" });
+      expect(create(submitted[0]!).holdings).toEqual(["big"]);
+      expect(create(submitted[1]!).holdings).toEqual(["two"]);
+    });
+    it("refuses in words that point at Activity when only the holdings of an open redeem would cover the amount, and signs nothing", async () => {
+      const { adapter, submitted } = setup([held("big", "5")]);
+      await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
+      await expect(adapter.signRedeem({ asset: TOKEN as never, amount: "1", recipient: TO as never, ref: "ref-2" })).rejects.toThrow(/another redeem that is still open.*Activity/);
+      expect(submitted).toHaveLength(1);
+      await expect(adapter.signRedeem({ asset: TOKEN as never, amount: "50", recipient: TO as never, ref: "ref-3" })).rejects.toThrow("You do not hold enough");   // not enough at all: the plain refusal
+    });
     it("refuses, signing nothing, when the account does not hold enough", async () => {
       const { adapter, submitted } = setup([held("small", "1")]);
       await expect(adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" })).rejects.toBeInstanceOf(Refused);
       expect(submitted).toHaveLength(0);
+    });
+    it("removes its own open request by archiving it, and does nothing for a ref that is not open", async () => {
+      const { adapter, ledger, submitted } = setup([held("big", "5")]);
+      await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
+      await adapter.cancelRedeem("ref-other");
+      expect(submitted).toHaveLength(1);
+      await adapter.cancelRedeem("ref-1");
+      expect(submitted[1]!.intent).toMatchObject({ kind: "exercise", choice: "Archive", contractId: "r1", args: {}, template: { entity: "RedeemRequest" } });
+      expect(ledger.redeemRequests).toEqual([]);
+      await adapter.cancelRedeem("ref-1");
+      expect(submitted).toHaveLength(2);
+    });
+    it("only looks, and signs nothing, to say whether a step is on Canton", async () => {
+      const { adapter, submitted } = setup([held("big", "5")]);
+      expect(await adapter.appeared({ redeem: "ref-1" })).toBe(false);
+      await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
+      expect(await adapter.appeared({ redeem: "ref-1" })).toBe(true);
+      expect(await adapter.appeared({ allocation: "label-1" })).toBe(false);
+      expect(await adapter.appeared({ deposit: depositIdOf(PARTY, "label-1") })).toBe(false);
+      expect(submitted).toHaveLength(1);
     });
     it("waits for the request to be open, and gives up with Waited after its polls", async () => {
       const { adapter, ledger, sleeps } = setup();
@@ -239,6 +276,14 @@ describe("the Canton adapter", () => {
         expect(t.submitted.slice(2).map((b) => b.intent.choice)).toEqual(["Archive"]);   // the two before it are the deposit's own allocation and request
         expect(t.ledger.depositRequests).toEqual([]);
       }
+    });
+    it("when the withdraw fails for good and the archive fails too, the withdraw's failure is the one reported", async () => {
+      const t = setup([held("cc", "9", COIN)], { failSubmit: (b) => (b.intent.choice === "Archive" ? new AccountsError("forbidden", 403, "not allowed here") : undefined) });
+      await t.adapter.allocateDeposit(deposit);
+      await t.adapter.signDeposit({ ...deposit, depositId, recipient: TO as never });
+      t.client.allocationWithdrawContext.mockRejectedValueOnce(new AccountsError("refused", 422, "the ledger refused"));
+      await expect(t.adapter.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status: 422, message: "the ledger refused" });
+      expect(t.submitted.map((b) => b.intent.choice)).toEqual(["AllocationFactory_Allocate", undefined, "Archive"]);   // the archive was tried, and refused
     });
     it("when the withdraw fails for a reason that may clear, archives nothing", async () => {
       const t = await made();

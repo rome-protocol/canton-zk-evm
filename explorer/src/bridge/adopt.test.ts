@@ -37,6 +37,15 @@ describe("a move kept from what Canton lists as open", () => {
   });
   describe("adoptRecord", () => {
     const open = (...redeemRequests: ReturnType<typeof redeem>[]): OpenState => ({ depositRequests: [], redeemRequests, twinAcceptance: null, withdrawalAcceptance: null });
+    it("keeps nothing for a redeem whose holdings are not all among the account's holdings any more, and keeps one whose holdings are", async () => {
+      const store = memoryStore();
+      const request = redeem({ holdings: ["h1", "h2"] });
+      const now = open(request);
+      const withHoldings = (held: string[]) => adoptRecord("redeem", request, { ...o, store, allocations: async () => [], openRequests: async () => now, holdingIds: async () => new Set(held) });
+      expect(await withHoldings(["h1"])).toBeNull();
+      expect(keptMoves(store)).toEqual([]);
+      expect(await withHoldings(["h1", "h2", "h3"])).toBe("r-1");
+    });
     const adopt = (store: ReturnType<typeof memoryStore>, openNow: OpenState, request = redeem()) => adoptRecord("redeem", request, { ...o, store, allocations: async () => [], openRequests: async () => openNow });
     it("keeps the record of a request that is still open, and returns its ref", async () => {
       const store = memoryStore();

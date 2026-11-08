@@ -22,6 +22,9 @@ const str = (x: unknown): string | null => (typeof x === "string" && x.length > 
 /** Canton's 10-decimal amount as it is typed: "1.5000000000" is "1.5", "3.0000000000" is "3". */
 export const typedAmount = (canton: string): string => canton.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 
+/** The holdings an open redeem request names (contract ids). */
+export const holdingsOf = (r: OpenRequest): string[] => (Array.isArray(r.arguments.holdings) ? r.arguments.holdings.filter((h): h is string => typeof h === "string") : []);
+
 /** The redeem an open request stands for, when this build moves its token and the request is the account's own. */
 export function redeemRecord(r: OpenRequest, o: { account: Address; party: string; config: BridgeConfig }): Checkpoint | null {
   const a = r.arguments, ref = str(a.ref), amount = typeof a.amount === "string" ? typedAmount(a.amount) : null;
@@ -54,9 +57,12 @@ export async function depositRecord(r: OpenRequest, o: { account: Address; party
  */
 export async function adoptRecord(kind: "redeem" | "deposit", request: OpenRequest, o: {
   account: Address; party: string; config: BridgeConfig; allocations(): Promise<AllocationView[]>; openRequests(): Promise<OpenState>; store: StoreLike | null;
+  /** Every holding of the account: a redeem whose holdings are not all there can never be released, so it is not carried on. */
+  holdingIds?(): Promise<Set<string>>;
 }): Promise<string | null> {
   const record = kind === "redeem" ? redeemRecord(request, o) : await depositRecord(request, o);
   if (record === null) return null;
+  if (kind === "redeem" && o.holdingIds) { const held = await o.holdingIds(); if (!holdingsOf(request).every((h) => held.has(h))) return null; }
   if (!stillOpen(request, await o.openRequests())) throw new NoLongerOpen();
   if (!keptMoves(o.store).some((c) => c.ref === record.ref)) saveCheckpoint(o.store, record);
   return record.ref;
