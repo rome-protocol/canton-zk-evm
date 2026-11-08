@@ -5,6 +5,7 @@ import { ChainDbError, createChainDb, type ChainDb } from "../chain-db.ts";
 import { loadConfig } from "../config.ts";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/testing.ts";
+import { refreshCantonView } from "../indexer/canton-view.ts";
 import { createIndexer } from "../indexer/indexer.ts";
 import { RethTooBig, type Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
@@ -62,6 +63,43 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     await addToken(who(1), "ERC-20", "Test Token", "TT", 6, 2);
   });
   afterAll(async () => { await db?.drop(); });
+
+  it("serves the Linked to Canton list with its filters, order, file and stats", async () => {
+    await refreshCantonView(pool);
+    const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+    const all = body(await get("/api/canton/updates"));
+    same(all, F.page);
+    for (const u of all.items) { same(u, F.updateItem); if (u.legs !== null) same(u.legs, F.updateLegs); }
+    // no journal in this chain: no status or attempts, the time runs from the block's timestamp, and the legs are counted
+    expect(all.items.map((u: { status: unknown; attempts: unknown; settleFrom: unknown }) => [u.status, u.attempts, u.settleFrom])).toEqual([[null, null, "blockTime"], [null, null, "blockTime"], [null, null, "blockTime"]]);
+    expect(all.items.map((u: { legs: { total: number } }) => u.legs.total)).toEqual([0, 1, 0]);
+    expect(body(await get("/api/canton/updates?filter=legs")).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(2)]);
+    expect(body(await get("/api/canton/updates?filter=retried")).items).toEqual([]);
+    expect(body(await get("/api/canton/updates?order=asc")).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(1), id(2), id(3)]);
+    const first = body(await get("/api/canton/updates?order=asc&limit=2"));
+    expect(body(await get(`/api/canton/updates?order=asc&limit=2&after=${first.next}`)).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(3)]);
+    for (const bad of ["filter=x", "order=up", "format=xml", "order=asc&before=1:ab", "after=1:ab"]) expect((await get(`/api/canton/updates?${bad}`)).status, bad).toBe(400);
+    const csv = await get("/api/canton/updates?filter=legs&format=csv");
+    expect(csv.headers?.["content-type"]).toBe("text/csv; charset=utf-8");
+    const lines = (csv.body as string).trimEnd().split("\r\n");
+    expect(lines[0]).toBe("block,time,transactions,status,attempts,settlement_seconds,settlement_from,choice,legs,deposits,withdrawals,payments,locks,releases,canton_update_id");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]!.split(",")[0]).toBe("2");
+    expect(lines[1]!.split(",")[8]).toBe("1");
+    const stats = body(await get("/api/canton/stats"));
+    same(stats, F.cantonStats);
+    same(stats.attempts, F.cantonStatsAttempts);
+    same(stats.settlement, F.cantonStatsSettlement);
+    expect(stats.blocks).toBe(3);
+    expect(body(await get("/api/canton/stats?window=7d")).settlement.window).toBe("7d");
+    expect((await get("/api/canton/stats?window=1y")).status).toBe(400);
+    const detail = body(await get(`/api/canton/updates/${id(2)}`));
+    same(detail, F.updateDetail);
+    same(detail.view, F.updateView);
+    for (const s of detail.view.timeline) same(s, F.updateStep);
+    same(detail.view.proofCheck, F.updateProofCheck);
+    expect((await get("/api/canton/updates?limit=1")).headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+  });
 
   it("builds every answer from the allowlists", async () => {
     const list = body(await get("/api/blocks"));

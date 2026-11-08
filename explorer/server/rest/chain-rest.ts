@@ -6,6 +6,7 @@ import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.ts";
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
+import { addHists, quantile } from "../indexer/stats-hist.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 /** A Canton amount's own scale (Daml Numeric 10): the unit of a Canton token's custody, on the token page and on the twins page. */
@@ -56,11 +57,45 @@ export interface TxTrace { callCount: number; revertReason: string | null; rever
 export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null;
   /** How many EVM transactions the update settled (its block's); null for an update that carries no block. */
   txCount: number | null }
-export interface UpdateDetail extends UpdateItem {
+export interface UpdateDetail extends UpdateRow {
   template: { packageId: string; packageName: string | null; module: string; entity: string }; contractId: string | null; blockHash: string | null; signatories: { role: string; party: string }[];
   /** What the producer's journal says it submitted for the update; null for an update the journal does not hold. */
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
+  view: UpdateView;
 }
+/** The legs of a block by kind; a payment here is one that is neither a lock nor a release. */
+export interface UpdateLegs { total: number; deposit: number; withdrawal: number; payment: number; lock: number; release: number }
+export type UpdateStatus = "first" | "retried";
+/** What the Linked to Canton list adds to an update. Each is null where nothing holds it: attempts and status need the producer's journal, legs wait for the block's legs to be indexed. */
+export interface UpdateRow extends UpdateItem {
+  /** `first`: committed on the first attempt; `retried`: after more than one. */
+  status: UpdateStatus | null;
+  /** Submissions to Canton for the block up to and including the one that committed. */
+  attempts: number | null;
+  /** Seconds from `settleFrom` to Canton's record time; null when not worked out or when the two clocks disagree. */
+  settleSeconds: number | null;
+  /** `proofStart` (the proof's start in the producer's journal) or `blockTime` (the block's own timestamp, whole seconds). */
+  settleFrom: "proofStart" | "blockTime" | null;
+  submittedTemplate: string | null; submittedChoice: string | null;
+  legs: UpdateLegs | null;
+}
+export type UpdateFilter = "all" | "first" | "retried" | "legs";
+export interface AttemptItem { number: number; outcome: string; reason: string | null; committed: boolean; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; proofOutcome: string | null; submittedAt: string | null; answeredAt: string | null }
+export interface TimelineStep { step: "built" | "proofStarted" | "proofDone" | "submitted" | "committed"; at: string; source: "producer" | "block" | "canton" }
+export interface UpdateView {
+  attempts: AttemptItem[]; timeline: TimelineStep[];
+  /** The proof is checked by the confirmers when the block is committed, and the committed update is the evidence: the record exists only if they accepted it. */
+  proofCheck: { evidence: "committed update"; confirmers: number; matchesPins: boolean | null; matchesBlock: boolean | null };
+}
+export interface CantonStats {
+  asOf: string | null; dataSince: string | null;
+  blocks: number; retriedBlocks: number;
+  attempts: { submitted: number; committed: number; refused: number; other: number; since: string | null };
+  successRate: number | null;
+  settlement: { window: string; from: string; to: string; blocks: number; averageSeconds: number | null; p95Seconds: number | null; basis: "proofStart" };
+  legs: { deposit: number; withdrawal: number; payment: number; lock: number; release: number; total: number };
+}
+export const STATS_WINDOWS = { "24h": 24, "7d": 168 } as const;
 /** An update in the list around one: what the producer's log says it submitted is null for an update the log does not hold. */
 export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
@@ -106,7 +141,7 @@ export async function withTokenMoves(query: (sql: string, values?: unknown[]) =>
 
 export type ChainRest = ReturnType<typeof createChainRest>;
 
-export function createChainRest(pool: Pool) {
+export function createChainRest(pool: Pool, now: () => number = Date.now) {
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
       return (await pool.query(sql, values)).rows;
@@ -269,15 +304,25 @@ export function createChainRest(pool: Pool) {
     synchronizer: r.synchronizer_id, block: r.block === null ? null : Number(r.block), txCount: r.tx_count === null ? null : Number(r.tx_count),
   });
 
-  /** Canton updates, newest first, after the key (record time in microseconds, update id). */
-  async function updates(before: (number | string)[] | null, limit: number): Promise<(UpdateItem & { micros: number })[]> {
+  const LEGS_COLS = "u.legs_done, u.legs_total, u.legs_deposit, u.legs_withdrawal, u.legs_payment, u.legs_lock, u.legs_release";
+  const rowSelect = `${updateSelect}, u.commit_attempts, u.settle_seconds, u.settle_from, u.submitted_template, u.submitted_choice, ${LEGS_COLS}`;
+  const legsOf = (r: Row): UpdateLegs | null => (r.legs_done ? { total: r.legs_total, deposit: r.legs_deposit, withdrawal: r.legs_withdrawal, payment: r.legs_payment, lock: r.legs_lock, release: r.legs_release } : null);
+  const updateRow = (r: Row): UpdateRow => ({
+    ...updateItem(r), status: r.commit_attempts === null ? null : r.commit_attempts > 1 ? "retried" : "first", attempts: r.commit_attempts, settleSeconds: r.settle_seconds,
+    settleFrom: r.settle_from === "proof_start" ? "proofStart" : r.settle_from === "block_time" ? "blockTime" : null, submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, legs: legsOf(r),
+  });
+  const FILTER_SQL: Record<UpdateFilter, string> = { all: "", first: "and u.commit_attempts = 1", retried: "and u.commit_attempts > 1", legs: "and u.legs_total > 0" };
+
+  /** Canton updates, newest first (or oldest first with `asc`), after the key (record time in microseconds, update id); `filter` keeps the ones committed on the first attempt, after more, or with legs. */
+  async function updates(before: (number | string)[] | null, limit: number, filter: UpdateFilter = "all", asc = false): Promise<(UpdateRow & { micros: number })[]> {
     const [at, id] = before ?? [null, null];
+    const op = asc ? ">" : "<", dir = asc ? "asc" : "desc";
     const rows = await query(
-      `select ${updateSelect} from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer
-       where ($1::bigint is null or (u.record_time, u.update_id) < (${EPOCH} + $1::bigint * interval '1 microsecond', $2::text)) order by u.record_time desc, u.update_id desc limit $3`,
+      `select ${rowSelect} from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer
+       where ($1::bigint is null or (u.record_time, u.update_id) ${op} (${EPOCH} + $1::bigint * interval '1 microsecond', $2::text)) ${FILTER_SQL[filter]} order by u.record_time ${dir}, u.update_id ${dir} limit $3`,
       [at, id, limit + 1],
     );
-    return rows.map((r) => ({ ...updateItem(r), micros: Number(r.micros) }));
+    return rows.map((r) => ({ ...updateRow(r), micros: Number(r.micros) }));
   }
 
   const aroundSelect = `${updateSelect}, u.submitted_template, u.submitted_choice`;
@@ -308,9 +353,39 @@ export function createChainRest(pool: Pool) {
     return r?.number === null || r === undefined ? undefined : Number(r.number);
   }
 
+  /** The attempts that led to a block's commit, its timeline and the check of its proof. */
+  async function viewOf(updateId: string, recordTime: string, signatories: { role: string }[]): Promise<UpdateView> {
+    const [b] = await query(
+      `select b.number, ${MS("b.timestamp")} as ts, b.attempt_id, a.cut_at as cut_at_raw, ${MS("a.built_at")} as built_at, ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at,
+              ${MS("a.submitted_at")} as submitted_at, p.matches_pins, p.matches_block
+         from blocks b left join block_attempts a on a.attempt_id = b.attempt_id left join proofs p on p.number = b.number where b.update_id = $1 order by b.number limit 1`, [updateId]);
+    const proofCheck = { evidence: "committed update" as const, confirmers: signatories.filter((x) => x.role === "confirmer").length, matchesPins: b?.matches_pins ?? null, matchesBlock: b?.matches_block ?? null };
+    const timeline: TimelineStep[] = [];
+    const add = (step: TimelineStep["step"], at: string | null, source: TimelineStep["source"]) => { if (at !== null) timeline.push({ step, at: isoTime(at), source }); };
+    if (b) {
+      if (b.built_at !== null) add("built", b.built_at, "producer"); else add("built", b.ts, "block");
+      add("proofStarted", b.proof_started_at, "producer");
+      add("proofDone", b.proof_ended_at, "producer");
+      add("submitted", b.submitted_at, "producer");
+    }
+    add("committed", recordTime, "canton");
+    let attempts: AttemptItem[] = [];
+    if (b && b.attempt_id !== null) {
+      const rows = await query(
+        `select x.attempt_id, x.outcome, x.resolved_outcome, x.reason, ${MS("x.cut_at")} as cut_at, ${MS("x.built_at")} as built_at, ${MS("x.proof_started_at")} as proof_started_at, ${MS("x.proof_ended_at")} as proof_ended_at,
+                x.proof_outcome, ${MS("x.submitted_at")} as submitted_at, ${MS("x.answered_at")} as answered_at
+           from block_attempts x where x.number = $1 and (x.attempt_id = $2 or (x.submitted_at is not null and x.cut_at <= $3)) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw]);
+      attempts = rows.map((x, i) => ({
+        number: i + 1, outcome: Number(x.attempt_id) === Number(b.attempt_id) ? "committed" : x.outcome ?? (x.resolved_outcome === "committed" ? "committed" : x.resolved_outcome) ?? "unknown", reason: x.reason,
+        committed: Number(x.attempt_id) === Number(b.attempt_id), cutAt: isoTime(x.cut_at), builtAt: x.built_at, proofStartedAt: x.proof_started_at, proofEndedAt: x.proof_ended_at, proofOutcome: x.proof_outcome, submittedAt: x.submitted_at, answeredAt: x.answered_at,
+      }));
+    }
+    return { attempts, timeline, proofCheck };
+  }
+
   async function update(updateId: string): Promise<UpdateDetail | undefined> {
     const [r] = await query(
-      `select ${updateSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.submitted_template, u.submitted_choice, u.argument_bytes, u.traffic_bytes,
+      `select ${rowSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.argument_bytes, u.traffic_bytes,
          (select r.contract_id from block_records r join blocks b on b.number = r.number where b.update_id = u.update_id order by b.number limit 1) as contract_id,
          (select b.hash from blocks b where b.update_id = u.update_id order by b.number limit 1) as block_hash
        from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer join canton_templates t on t.id = u.reader_template
@@ -318,14 +393,41 @@ export function createChainRest(pool: Pool) {
       [updateId],
     );
     if (!r) return undefined;
-    const signatories = await query("select role, party from canton_parties where id = any($1::smallint[]) order by role, id", [r.signatories]);
+    const signatories = (await query("select role, party from canton_parties where id = any($1::smallint[]) order by role, id", [r.signatories])).map((s) => ({ role: s.role as string, party: s.party as string }));
     const journal = r.command_id !== null || r.submitted_template !== null;
+    const item = updateRow(r);
     return {
-      ...updateItem(r), template: { packageId: r.package_id, packageName: r.package_name, module: r.module, entity: r.entity }, contractId: r.contract_id, blockHash: hexOrNull(r.block_hash),
-      signatories: signatories.map((s) => ({ role: s.role, party: s.party })),
+      ...item, template: { packageId: r.package_id, packageName: r.package_name, module: r.module, entity: r.entity }, contractId: r.contract_id, blockHash: hexOrNull(r.block_hash),
+      signatories,
       producerRecord: journal ? { template: r.submitted_template, choice: r.submitted_choice, commandId: r.command_id, argumentBytes: r.argument_bytes, trafficBytes: r.traffic_bytes } : null,
+      view: await viewOf(updateId, item.recordTime, signatories),
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, updateBlock, around, aroundOne };
+  /** The header's figures, from the hourly rollup (`canton_view_hour`, `canton_view_hist`): the totals of every hour, and the settlement time over a window of whole hours (the open hour included). */
+  async function cantonStats(window: keyof typeof STATS_WINDOWS = "24h"): Promise<CantonStats> {
+    const t = now(), hours = STATS_WINDOWS[window], from = new Date(Math.floor(t / 3_600_000) * 3_600_000 - (hours - 1) * 3_600_000);
+    const [[a], win, hist] = await Promise.all([
+      query(`select coalesce(sum(blocks), 0)::bigint as blocks, coalesce(sum(retried_blocks), 0)::bigint as retried, coalesce(sum(attempts), 0)::bigint as attempts, coalesce(sum(attempts_committed), 0)::bigint as committed,
+               coalesce(sum(attempts_refused), 0)::bigint as refused, coalesce(sum(attempts_other), 0)::bigint as other, min(hour) as since, min(hour) filter (where attempts > 0) as attempts_since, max(updated_at) as as_of,
+               coalesce(sum(legs_deposit), 0)::bigint as dep, coalesce(sum(legs_withdrawal), 0)::bigint as wd, coalesce(sum(legs_payment), 0)::bigint as pay, coalesce(sum(legs_lock), 0)::bigint as lock, coalesce(sum(legs_release), 0)::bigint as rel
+             from canton_view_hour`),
+      query("select coalesce(sum(settle_n), 0)::bigint as n, coalesce(sum(settle_sum), 0)::float8 as sum from canton_view_hour where hour >= $1", [from]),
+      query("select settle_hist from canton_view_hist where hour >= $1", [from]),
+    ]);
+    const n = Number(win[0]!.n), h = addHists("time", hist.map((x) => x.settle_hist as number[]));
+    const q = n === 0 ? null : quantile("time", h, 0.95);
+    const iso = (d: Date | null) => (d === null ? null : d.toISOString());
+    const submitted = Number(a!.attempts), committed = Number(a!.committed);
+    const [dep, wd, pay, lock, rel] = [a!.dep, a!.wd, a!.pay, a!.lock, a!.rel].map(Number) as [number, number, number, number, number];
+    return {
+      asOf: iso(a!.as_of), dataSince: iso(a!.since), blocks: Number(a!.blocks), retriedBlocks: Number(a!.retried),
+      attempts: { submitted, committed, refused: Number(a!.refused), other: Number(a!.other), since: iso(a!.attempts_since) },
+      successRate: submitted === 0 ? null : Math.round((committed / submitted) * 10000) / 10000,
+      settlement: { window, from: from.toISOString(), to: new Date(t).toISOString(), blocks: n, averageSeconds: n === 0 ? null : Math.round((Number(win[0]!.sum) / n) * 1000) / 1000, p95Seconds: q === null ? null : Math.round(q.value * 1000) / 1000, basis: "proofStart" },
+      legs: { deposit: dep, withdrawal: wd, payment: pay, lock, release: rel, total: dep + wd + pay + lock + rel },
+    };
+  }
+
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, cantonStats, updateBlock, around, aroundOne };
 }

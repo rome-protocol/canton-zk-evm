@@ -282,6 +282,9 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         break;
     }
   }
+  // The attempts of an hour are counted again by the Linked to Canton view (server/indexer/canton-view.ts): leave the earliest time of the lines that move its counts.
+  const counted = lines.filter((l) => l.event === "submitted" || l.event === "answered" || l.event === "resolved" || l.event === "cancelled");
+  if (counted.length) await c.query("insert into canton_view_dirty (at) select min(t) from unnest($1::timestamptz[]) as x(t)", [counted.map((l) => l.time)]);
   if (pool.size) {
     await c.query(
       "insert into pool_samples (at, waiting) select * from unnest($1::timestamptz[], $2::int[]) on conflict (at) do update set waiting = excluded.waiting",

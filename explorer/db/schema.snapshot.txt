@@ -84,6 +84,7 @@ table block_attempts
   CREATE INDEX block_attempts_open_idx ON public.block_attempts USING btree (block_hash) WHERE (((outcome IS NULL) OR (outcome = 'unknown'::text)) AND (resolved_outcome IS DISTINCT FROM 'committed'::text))
   CREATE INDEX block_attempts_proof_ended_at_idx ON public.block_attempts USING btree (proof_ended_at)
   CREATE INDEX block_attempts_resolved_idx ON public.block_attempts USING btree (block_hash) WHERE ((resolved_outcome = 'committed'::text) AND (outcome IS DISTINCT FROM 'committed'::text))
+  CREATE INDEX block_attempts_submitted_at_idx ON public.block_attempts USING btree (submitted_at) WHERE (submitted_at IS NOT NULL)
   CREATE INDEX block_attempts_update_id_idx ON public.block_attempts USING btree (update_id)
   CREATE UNIQUE INDEX block_attempts_pkey ON public.block_attempts USING btree (attempt_id)
   CREATE UNIQUE INDEX block_attempts_run_id_attempt_seq_key ON public.block_attempts USING btree (run_id, attempt_seq)
@@ -244,14 +245,31 @@ table canton_updates
   column argument_bytes integer
   column traffic_bytes integer
   column completion_offset bigint
+  column commit_attempts smallint
+  column settle_seconds double precision
+  column settle_from text
+  column legs_done boolean not null default false
+  column legs_total integer not null default 0
+  column legs_deposit integer not null default 0
+  column legs_withdrawal integer not null default 0
+  column legs_payment integer not null default 0
+  column legs_lock integer not null default 0
+  column legs_release integer not null default 0
   constraint canton_updates_participant_fkey FOREIGN KEY (participant) REFERENCES canton_participants(id)
   constraint canton_updates_participant_reader_offset_key UNIQUE (participant, reader_offset)
   constraint canton_updates_pkey PRIMARY KEY (update_id)
   constraint canton_updates_reader_template_fkey FOREIGN KEY (reader_template) REFERENCES canton_templates(id)
+  constraint canton_updates_settle_from_check CHECK ((settle_from = ANY (ARRAY['proof_start'::text, 'block_time'::text])))
   constraint canton_updates_synchronizer_fkey FOREIGN KEY (synchronizer) REFERENCES canton_synchronizers(id)
+  CREATE INDEX canton_updates_attempts_open_idx ON public.canton_updates USING btree (record_time) WHERE (commit_attempts IS NULL)
+  CREATE INDEX canton_updates_first_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (commit_attempts = 1)
+  CREATE INDEX canton_updates_legs_open_idx ON public.canton_updates USING btree (record_time) WHERE (NOT legs_done)
   CREATE INDEX canton_updates_record_time_id_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC)
   CREATE INDEX canton_updates_record_time_idx ON public.canton_updates USING btree (record_time)
+  CREATE INDEX canton_updates_retried_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (commit_attempts > 1)
+  CREATE INDEX canton_updates_settle_open_idx ON public.canton_updates USING btree (record_time) WHERE (settle_from IS NULL)
   CREATE INDEX canton_updates_unjoined_idx ON public.canton_updates USING btree (record_time) WHERE (command_id IS NULL)
+  CREATE INDEX canton_updates_with_legs_idx ON public.canton_updates USING btree (record_time DESC, update_id DESC) WHERE (legs_total > 0)
   CREATE UNIQUE INDEX canton_updates_participant_reader_offset_key ON public.canton_updates USING btree (participant, reader_offset)
   CREATE UNIQUE INDEX canton_updates_pkey ON public.canton_updates USING btree (update_id)
 
@@ -289,6 +307,38 @@ table canton_venue_trades
   CREATE INDEX canton_venue_trades_claim_id_idx ON public.canton_venue_trades USING btree (claim_id)
   CREATE INDEX canton_venue_trades_payment_block_payment_leg_index_idx ON public.canton_venue_trades USING btree (payment_block DESC, payment_leg_index DESC) WHERE (payment_block IS NOT NULL)
   CREATE UNIQUE INDEX canton_venue_trades_pkey ON public.canton_venue_trades USING btree (pay_id)
+
+table canton_view_dirty
+  column id bigint not null identity always
+  column at timestamp with time zone not null
+  constraint canton_view_dirty_pkey PRIMARY KEY (id)
+  CREATE UNIQUE INDEX canton_view_dirty_pkey ON public.canton_view_dirty USING btree (id)
+
+table canton_view_hist
+  column hour timestamp with time zone not null
+  column settle_hist integer[] not null
+  constraint canton_view_hist_hour_fkey FOREIGN KEY (hour) REFERENCES canton_view_hour(hour) ON DELETE CASCADE
+  constraint canton_view_hist_pkey PRIMARY KEY (hour)
+  CREATE UNIQUE INDEX canton_view_hist_pkey ON public.canton_view_hist USING btree (hour)
+
+table canton_view_hour
+  column hour timestamp with time zone not null
+  column blocks integer not null default 0
+  column retried_blocks integer not null default 0
+  column attempts integer not null default 0
+  column attempts_committed integer not null default 0
+  column attempts_refused integer not null default 0
+  column attempts_other integer not null default 0
+  column settle_n integer not null default 0
+  column settle_sum double precision not null default 0
+  column legs_deposit integer not null default 0
+  column legs_withdrawal integer not null default 0
+  column legs_payment integer not null default 0
+  column legs_lock integer not null default 0
+  column legs_release integer not null default 0
+  column updated_at timestamp with time zone not null default now()
+  constraint canton_view_hour_pkey PRIMARY KEY (hour)
+  CREATE UNIQUE INDEX canton_view_hour_pkey ON public.canton_view_hour USING btree (hour)
 
 table coin_balance_history
   column address bytea not null
