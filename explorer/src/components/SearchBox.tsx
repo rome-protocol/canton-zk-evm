@@ -53,12 +53,14 @@ export function SearchBox({ hero = false }: { hero?: boolean }) {
     const q = text.trim();
     if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
   }
-  return (
+  const form = (
     <form className={`search${hero ? " hero-search" : ""}`} role="search" aria-label="Search" onSubmit={submit}>
       <Icon name="search" />
-      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : phone ? HEADER_SHORT_HINT : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} autoComplete="off" />
+      <input ref={input} type="search" aria-label="Search" placeholder={hero ? (phone ? SHORT_HINT : HINT) : phone ? HEADER_SHORT_HINT : HEADER_HINT} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }} spellCheck={false} autoComplete="off" />
       {hero ? <button type="submit" className="btn">Search</button> : <kbd className="kbd" aria-hidden="true">/</kbd>}
     </form>
   );
+  // The header's box sits in a slot of its own width: it opens wider on focus over the slot's side, so the links never move.
+  return hero ? form : <div className="search-slot">{form}</div>;
 }
 

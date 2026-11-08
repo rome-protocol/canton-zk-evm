@@ -67,24 +67,41 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
 .search input::placeholder { color: var(--faint); }
 .search:focus-within { border-color: var(--glow); box-shadow: 0 0 0 3px rgba(214,158,214,.4), 0 8px 24px rgba(94,10,96,.08); }
 .kbd { flex: none; font: inherit; font-size: 11.5px; line-height: 1; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; background: var(--surface); }
-.search:focus-within .kbd { display: none; }
+.search:focus-within .kbd { visibility: hidden; } /* hidden, not removed: the box keeps its height, so the header does not move when it is focused */
 .menu { display: none; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--ink); cursor: pointer; padding: 0; }
 .navlink { font-weight: 500; color: var(--link); flex: none; }
-.nav { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
+.nav { display: flex; flex-wrap: nowrap; gap: 4px; flex: 1; min-width: 0; }
 .nav .navlink { padding: 6px 14px; border-radius: 999px; color: var(--ink); background: var(--nav-bg); }
 .nav .navlink:hover { text-decoration: none; background: var(--pill); }
 .nav .navlink.active { background: var(--pill); color: var(--canton); box-shadow: inset 0 0 10px rgba(214,158,214,.6); }
-.top .search { flex: 0 1 380px; }
-/* Above a phone the nine links and the search share one row (the page is 1280 px wide at most, so a wide screen needs the same room): the links sit a little closer, and below 1366 px the box is narrower, as it was before the restyle, so that the header wraps no more than it did, and is no taller; its sides are a little closer so it still shows the whole hint. */
+/* The header's search box sits in a slot of a fixed width (a compact field) and opens to its full width on focus over the slot's left side, so that the links never move; Escape or leaving the field closes it. */
+.top .search-slot { flex: none; width: 210px; display: flex; justify-content: flex-end; margin-left: auto; position: relative; z-index: 2; }
+.top .search-slot .search { flex: none; width: 210px; max-width: none; margin-left: 0; }
+.top .search-slot .search:focus-within { width: 380px; margin-left: -170px; }
+.top .search input::placeholder { text-overflow: ellipsis; }
+@media (prefers-reduced-motion: no-preference) { .top .search-slot .search { transition: width .15s ease, margin-left .15s ease; } }
+/* Above a phone the name, the links and the search box share one row (the page is 1280 px wide at most, so a wide screen needs the same room): the links sit a little closer. When they do not all fit
+   (Shell.tsx measures that and sets .folded on the header, so a link added later folds in at the right width) they fold into the menu button, which sits after the search box; the links are measured
+   there too, so they stay laid out (at no size) and the same width when the menu is closed, and in a column of the same padding when it is open. */
 @media (min-width: 721px) {
   .top { gap: 16px; }
-  .top .search { flex-basis: 380px; padding: 8px 16px; }
+  .top .search { padding: 8px 16px; }
   .nav { gap: 2px; }
   .nav .navlink { padding: 6px 9px; font-size: 14px; line-height: 1.45; }
+  .top.folded { flex-wrap: wrap; }
+  .top.home .search-slot { margin-left: 0; }
+  .top.folded .brand { order: 1; }
+  .top.folded .search-slot { order: 2; }
+  .top.folded .menu { display: inline-flex; order: 3; }
+  .top.home.folded .menu { margin-left: auto; }
+  .top.folded .nav { order: 4; position: absolute; flex: none; width: 0; height: 0; overflow: hidden; visibility: hidden; }
+  .top.folded .nav.open { position: static; flex: 1 1 100%; width: auto; height: auto; overflow: visible; visibility: visible; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .top.folded .nav .navlink { padding-block: 6px; }
+  .top.folded .nav.open .navlink { padding-block: 9px; }
 }
 @media (min-width: 721px) and (max-width: 1365px) {
   .top { gap: 10px; }
-  .top .search { flex-basis: 366px; padding: 8px 9px; }
+  .top .search { padding: 8px 9px; }
   .nav .navlink { padding: 6px 6px; }
 }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
@@ -435,7 +452,9 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
   .top .nav.open { display: flex; }
   .top .nav .navlink { padding: 10px 12px; }
   .kbd { display: none; }
-  .top .search { order: 3; flex: 1 1 100%; max-width: none; margin-left: 0; }
+  .top .search-slot { order: 3; flex: 1 1 100%; width: auto; margin-left: 0; }
+  .top .search-slot .search { width: 100%; }
+  .top .search-slot .search:focus-within { width: 100%; margin-left: 0; }
   .topbar { flex-wrap: nowrap; gap: 0 14px; overflow: hidden; white-space: nowrap; }
   .tb-wide { display: none; }
   .foot { flex-direction: column; }

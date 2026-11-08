@@ -181,17 +181,19 @@ describe("phone width", () => {
 
   // The rules above only read the text. These decide which rule the browser uses, as the first version of this header was broken by a base rule that came later in the file.
   const all = rulesOf(css);
-  const NAV = [".nav", ".top .nav"], NAV_OPEN = [...NAV, ".nav.open", ".top .nav.open"], SEARCH = [".search", ".top .search"];
+  const NAV = [".nav", ".top .nav"], NAV_OPEN = [...NAV, ".nav.open", ".top .nav.open"], SEARCH = [".search", ".top .search"], SLOT = [".top .search-slot"], BOX = [".top .search-slot .search", ".top .search-slot .search:focus-within"];
 
   it("keeps the phone rules in force: the pages are folded away, and the search box takes the whole row, whichever rule comes later in the file", () => {
     expect(winner(all, NAV, "display", false)).toBe("flex");
     expect(winner(all, NAV, "display", true)).toBe("none");
     expect(winner(all, NAV_OPEN, "display", true)).toBe("flex");
     expect(winner(all, NAV, "flex", true)).toBe("1 1 100%");
-    expect(winner(all, SEARCH, "flex", true)).toBe("1 1 100%");
-    expect(winner(all, SEARCH, "max-width", true)).toBe("none");
-    expect(winner(all, SEARCH, "margin-left", true)).toBe("0");
-    expect(winner(all, SEARCH, "flex", false)).toBe("0 1 380px");
+    expect(winner(all, SLOT, "flex", true)).toBe("1 1 100%");
+    expect(winner(all, SLOT, "margin-left", true)).toBe("0");
+    expect(winner(all, BOX, "width", true)).toBe("100%");   // focused or not: on a phone the box is the whole row already
+    expect(winner(all, BOX, "margin-left", true)).toBe("0");
+    expect(winner(all, [...SEARCH, ...BOX], "max-width", true)).toBe("none");
+    expect(winner(all, SLOT, "flex", false)).toBe("none");
   });
 
   it("holds the top bar to one line: the checks and the final block, with the rest left for wide screens", () => {
@@ -305,9 +307,12 @@ describe("the finish of small controls and notes", () => {
     expect(Math.max(min, Math.min(max, (vw / 100) * 768))).toBeLessThan(29);
     expect(css).toMatch(/\n\.cell \.stat-v \{[^}]*clamp\(/);
   });
-  it("keeps the header no wider than before the restyle: the search box takes 380 px (366 px below 1366 px) at most, and the links are 14 px with a 20.3 px line", () => {
-    expect(/\n@media \(min-width: 721px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("380");
-    expect(/max-width: 1365px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("366");
+  it("keeps the header on one row: the links never wrap, the search box is a compact field that opens on focus over its own slot, and the links fold into the menu button when the row cannot hold them", () => {
+    expect(/\n\.nav \{([^}]*)\}/.exec(css)?.[1]).toMatch(/flex-wrap:\s*nowrap/);
+    expect(/\n\.top \.search-slot \{([^}]*)\}/.exec(css)?.[1]).toMatch(/width:\s*210px/);
+    expect(/\n\.top \.search-slot \.search:focus-within \{([^}]*)\}/.exec(css)?.[1]).toMatch(/width:\s*380px[^}]*margin-left:\s*-170px/);   // 380 - 170 = the slot's 210: the row does not change
+    expect(css).toMatch(/\.top\.folded \.menu \{[^}]*display:\s*inline-flex/);
+    expect(css).toMatch(/\.top\.folded \.nav \{[^}]*visibility:\s*hidden/);
     expect(/\n\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css) || /min-width: 721px\) \{[^@]*?\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css)).toBe(true);
   });
   it("puts the peak on a line of its own", () => {
