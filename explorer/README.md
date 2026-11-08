@@ -649,6 +649,13 @@ It also says whether the faucet is on. With no key it shows that the faucet is o
 
 The Faucet route renders it with the coin from `/api/status`. The page is a component, rendered inside the explorer's router and shell: it draws no header or footer. Its styles are in `src/faucet/faucet.css`, all under `.faucet-page`. Its colours are the explorer's own names and values, set at the lowest weight, so the shell's set wins where it has one.
 
+## What the Bridge page does when a step is unsure
+
+- **A send the wallet does not answer.** The page keeps the move at that step, with the exact call and the nonce it saved. It sends again only after Ostia shows that no transaction of the account made that call. Only a failed estimate, or a wallet that turns the request down (EIP-1193 codes 4001, 4100, 4200), counts as not sent.
+- **A lock that waits.** The twin registry keeps a lock's parts for two days. The page announces them again whenever it picks up or waits on a lock that is not settled, so a long pause does not lose them.
+- **A deposit that cannot settle.** The page does not send a claim within ten minutes of the allocation's settle-before time. Once that time has passed, the card offers "Take my tokens back on Canton": it withdraws the allocation and archives the deposit request, each as one command signed by the account (both are on the account service's built-in list). Giving a deposit up does the same first.
+- **The most the bridge moves at once.** Under 10^17 whole units of a token (and under 10^36 base units for a token with more than 10 decimals): the builder and the Daml leave a larger amount out of every block, so the card refuses it before the wallet is asked.
+
 ## The Bridge page's settings
 
 The Bridge page reads these when it is built (Vite's `VITE_*`, and `BRIDGE_WTROME_ADDRESS`, which `explorer/bridge-pins.ts` reads). `run.sh` and the Dockerfile pass them to the build when they are set. Without the `VITE_*` settings below, the page says the bridge is not set up on this site. They are never read at run time, and none is a secret.
@@ -662,7 +669,7 @@ The Bridge page reads these when it is built (Vite's `VITE_*`, and `BRIDGE_WTROM
 | `VITE_SITE_ORIGIN` | The site's origin as `location.origin` says it (the scheme and the host, no path). The sign-in shows the page's own `location.origin` beside the button (outside the signed text), and refuses to sign when it differs from this setting |
 | `BRIDGE_WTROME_ADDRESS` | The wrapped coin (WtROME) of this deployment. Without it the page does not wrap |
 
-Sign-in reaches Ready only when the account service allows the twin acceptance, which is not on its built-in list: run it with `--allow` listing its default entries plus `#ostia-twin:Twin.Twin:TwinAcceptance`, and with `--open-limit '#ostia-twin:Twin.Twin:TwinAcceptance=1'` (see the [account service](../apps/accounts/README.md)). Without them the account cannot be set up: the twin acceptance is refused and the page says the bridge does not allow this here on every sign-in.
+Sign-in reaches Ready only when the account service allows the twin acceptance, which is not on its built-in list: run it with `--allow` listing its default entries (including `Allocation_Withdraw` and the `DepositRequest`'s `Archive`, which the page's "Take back" uses) plus `#ostia-twin:Twin.Twin:TwinAcceptance`, and with `--open-limit '#ostia-twin:Twin.Twin:TwinAcceptance=1'` (see the [account service](../apps/accounts/README.md)). Without them the account cannot be set up: the twin acceptance is refused and the page says the bridge does not allow this here on every sign-in.
 
 The wallet signs one typed message (no gas). The Canton key is made from that signature and kept in the page's memory only; nothing is stored. The sign-in sheet opens the account (a second signature the first time an account is made), then reads the account's open acceptances and makes only a missing one (the service names a repeat `already_accepted`). The account shows Ready only after a second read shows both. One command of an account is on its way at a time, and when the wallet's account changes the old account is let go. Its two test-coin buttons ask the account service's faucet (Canton Coin, hidden when the service answers 404) and this explorer's faucet.
 

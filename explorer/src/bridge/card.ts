@@ -68,6 +68,15 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   return { label: `Move to ${i.to}`, action: "move", disabled: false };
 }
 
+/** The words of the action that takes a deposit's tokens back on Canton. */
+export const TAKE_BACK_LABEL = "Take my tokens back on Canton";
+/**
+ * Whether the card offers to take a kept deposit's tokens back: only a deposit that stopped before its claim was sent (its Canton steps may be done, nothing is claimed), once the time to
+ * settle it has passed (`due`, which the move says: it also knows the gateway shows no claim for it).
+ */
+export const offersTakeBack = (record: { input: { kind: string }; stage: string } | undefined, due: boolean): boolean =>
+  due && record !== undefined && record.input.kind === "deposit" && ["signing", "allocated", "canton", "evm"].includes(record.stage);
+
 /** The line under the button: what the move is doing or has done, and whether it is an error. */
 export function noteOf(s: MoveState): { text: string; bad: boolean } | null {
   if (s.phase === "paused") return { text: moveWords(s.note), bad: false };

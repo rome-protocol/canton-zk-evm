@@ -157,7 +157,13 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (method === "eth_sendTransaction") return sendTransaction(chain, { ...params[0], from: wallet.address });
       return rpcResult(chain, wallet.address, method, params ?? []);
     });
-    await page.addInitScript(() => { (window as any).ethereum = { request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []), on() {}, removeListener() {} }; });
+    // A wallet that turns a request down answers with the EIP-1193 error code 4001 (exposeFunction carries only the message across): the page tells that from a send whose outcome the wallet does not give.
+    await page.addInitScript(() => {
+      (window as any).ethereum = {
+        request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []).catch((e: Error) => { throw Object.assign(new Error(e.message), /rejected/i.test(e.message) ? { code: 4001 } : {}); }),
+        on() {}, removeListener() {},
+      };
+    });
     await page.goto(ORIGIN + path, { waitUntil: "load" });
     return page;
   }

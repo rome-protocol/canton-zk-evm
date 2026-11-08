@@ -92,8 +92,12 @@ function setup(o: SetupOptions = {}) {
   const evm = o.evm ?? fakeEvm();
   const store = o.store ?? memoryStore();
   const answers = [...(o.txs ?? [])];
-  const canton: CantonAdapter & { calls: string[]; args: unknown[] } = {
+  let deadline: number | null = null, recovery: Error | null = null;
+  const canton: CantonAdapter & { calls: string[]; args: unknown[]; setDeadline(t: number | null): void; failRecovery(e: Error | null): void } = {
     calls: [], args: [], party: () => PARTY,
+    setDeadline: (t) => { deadline = t; }, failRecovery: (e) => { recovery = e; },
+    depositDeadline: async () => deadline,
+    recoverDeposit: async (a) => { if (recovery) throw recovery; canton.calls.push("recoverDeposit"); canton.args.push(a); },
     signRedeem: async (a) => void (canton.calls.push("signRedeem"), canton.args.push(a)), waitRedeem: async () => void canton.calls.push("waitRedeem"),
     allocateDeposit: async (a) => void (canton.calls.push("allocateDeposit"), canton.args.push(a)),
     signDeposit: async (a) => void (canton.calls.push("signDeposit"), canton.args.push(a)), waitDeposit: async () => void canton.calls.push("waitDeposit"),
@@ -390,6 +394,119 @@ describe("move 3: a Canton token to Ostia", () => {
     expect(await createMove(party.deps).resume("ref-1")).toMatchObject({ phase: "failed", reason: expect.stringContaining("another wallet account") });
     expect(party.canton.calls).toEqual([]);
     expect(loadCheckpoint(store)).toMatchObject({ stage: "evm" });
+  });
+});
+
+describe("a deposit that cannot settle is taken back", () => {
+  const input = { kind: "deposit", asset: WCC, amount: "3.5" } as const;
+  const id = depositIdOf(PARTY, "ref-1");
+  const MIN = 60_000;
+
+  it("does not send the claim when the time to settle is close, and says so", async () => {
+    const t = setup();
+    t.canton.setDeadline(Date.now() + 2 * MIN);
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("almost run out") });
+    expect(t.evm.calls).toEqual([]);
+    expect(loadCheckpoint(t.store)).toMatchObject({ stage: "evm" });   // kept, with its Canton steps done
+  });
+  it("sends the claim when there is time, and when the account has no allocation to read", async () => {
+    const early = setup({ txs: [final([leg({ kind: "deposit", legId: id }, WCC)])] });
+    early.canton.setDeadline(Date.now() + 90 * MIN);
+    expect(await early.move.start(input)).toMatchObject({ phase: "final" });
+    expect(early.evm.calls.map((c) => c.name)).toEqual(["claim"]);
+  });
+  it("past the time, continue still sends nothing, and says to take the tokens back", async () => {
+    const t = setup();
+    t.canton.setDeadline(Date.now() - 3 * MIN);
+    expect(await t.move.start(input)).toMatchObject({ phase: "paused", note: expect.stringContaining("Take your tokens back") });
+    expect(await t.move.proceed()).toMatchObject({ phase: "paused" });
+    expect(t.evm.calls).toEqual([]);
+  });
+  it("is due only for a kept deposit that has not sent its claim, past its time, with no claim on Ostia", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    expect(await t.move.takeBackDue()).toBe(false);                 // no allocation known
+    t.canton.setDeadline(Date.now() + 90 * MIN);
+    expect(await t.move.takeBackDue()).toBe(false);                 // time left
+    t.canton.setDeadline(Date.now() - 10 * 1000);
+    expect(await t.move.takeBackDue()).toBe(false);                 // past, but inside the margin
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    expect(await t.move.takeBackDue()).toBe(true);
+    for (const stage of ["wallet", "sent"] as const) { keep(store, { input, stage }); expect(await setup({ store }).move.takeBackDue()).toBe(false); }
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    claimed.canton.setDeadline(Date.now() - 2 * MIN);
+    expect(await claimed.move.takeBackDue()).toBe(false);           // claimed: nothing to take back
+    keep(store, { input: { kind: "withdraw", asset: WCC, amount: "1" }, stage: "evm" });
+    expect(await setup({ store }).move.takeBackDue()).toBe(false);
+  });
+  it("takes the tokens back once the time has passed, and removes the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await t.move.takeBack();
+    expect(t.canton.calls).toEqual(["recoverDeposit"]);
+    expect(t.canton.args).toEqual([{ label: "ref-1", depositId: id }]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("refuses to take back before the time has passed, and keeps the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "allocated" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() + 20 * MIN);
+    await expect(t.move.takeBack("ref-1")).rejects.toThrow(/locked on Canton.*about 2[01] minutes/);
+    expect(t.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual(["ref-1"]);
+  });
+  it("refuses to take back a deposit already claimed, and a move that is not a deposit before its claim", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    claimed.canton.setDeadline(Date.now() - 2 * MIN);
+    await expect(claimed.move.takeBack()).rejects.toThrow("was claimed");
+    expect(claimed.canton.calls).toEqual([]);
+    keep(store, { input, stage: "sent", tx: OTHER });
+    await expect(setup({ store }).move.takeBack()).rejects.toThrow("Only a deposit");
+    keep(store, { input: { kind: "redeem", asset: TKA, amount: "1" }, stage: "evm" });
+    await expect(setup({ store }).move.takeBack()).rejects.toThrow("Only a deposit");
+  });
+  it("keeps the record when the take-back fails, so it can be tried again", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "canton" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    t.canton.failRecovery(new Error("the account service is busy"));
+    await expect(t.move.takeBack()).rejects.toThrow("busy");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    t.canton.failRecovery(null);
+    await t.move.takeBack();
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("giving up a deposit with Canton steps done takes its tokens back first; before the time it refuses", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "allocated" });
+    const t = setup({ store });
+    t.canton.setDeadline(Date.now() + 30 * MIN);
+    await expect(t.move.abandon("ref-1")).rejects.toThrow("locked on Canton");
+    expect(listMoves(store)).toEqual(["ref-1"]);
+    t.canton.setDeadline(Date.now() - 2 * MIN);
+    await t.move.abandon("ref-1");
+    expect(t.canton.calls).toEqual(["recoverDeposit"]);
+    expect(listMoves(store)).toEqual([]);
+  });
+  it("giving up a deposit that has not started on Canton, or that was claimed, only removes the record", async () => {
+    const store = memoryStore();
+    keep(store, { input, stage: "start" });
+    const t = setup({ store });
+    await t.move.abandon("ref-1");
+    expect(t.canton.calls).toEqual([]);
+    keep(store, { input, stage: "evm" });
+    const claimed = setup({ store, evm: fakeEvm({ used: (i) => i === id }) });
+    await claimed.move.abandon("ref-1");
+    expect(claimed.canton.calls).toEqual([]);
+    expect(listMoves(store)).toEqual([]);
   });
 });
 

@@ -31,6 +31,13 @@ export interface CantonAdapter {
   signDeposit(a: { instrument: { admin: string; id: string }; amount: string; label: string; depositId: Hex; recipient: Address }): Promise<void>;
   /** Ends when the deposit is on the ledger. After a reload it reads GET /accounts/v1/open/{party} and GET /accounts/v1/allocations/{party}. It must give up after a time and throw `Waited`, as `waitRedeem` does. */
   waitDeposit(depositId: Hex): Promise<void>;
+  /** The time (ms since 1970) the allocation made under `label` can no longer be settled (its settle-before time); null when the account has no such allocation. */
+  depositDeadline(label: string): Promise<number | null>;
+  /**
+   * Takes back a deposit that cannot settle: withdraws the allocation made under `label` if it is still there, then archives the open deposit request with `depositId`. Each part is skipped when
+   * it is already done, so a repeat after a reload finishes what is left. Only possible once the settle-before time has passed (the account service refuses before).
+   */
+  recoverDeposit(a: { label: string; depositId: Hex }): Promise<void>;
 }
 
 /** The part of the browser's Web Locks that a move uses: a lock per move, held while it runs, never waited for. */
@@ -63,6 +70,13 @@ export interface Deps {
   pollMs?: number;
   maxPolls?: number;
 }
+
+/** How long before a deposit's time to settle the page still sends its claim: a claim sent closer than this may not be in a block in time, and a claim left out of every block holds up the account's later transactions. */
+export const CLAIM_MARGIN_MS = 10 * 60_000;
+/** How long after a deposit's time to settle its tokens may be taken back: the account service wants 5 seconds, and this page's clock is not the service's. */
+export const TAKE_BACK_AFTER_MS = 30_000;
+/** The stages of a deposit that stopped before its claim was asked of the wallet: Canton steps may be done, and the claim is not sent. */
+export const TAKE_BACK_STAGES: readonly Checkpoint["stage"][] = ["signing", "allocated", "canton", "evm"];
 
 /** The explorer's own answer for a transaction; a 404 is a transaction it has not seen yet. */
 export const explorerTx = async (hash: Hex): Promise<ApiTx | null> => {
@@ -111,8 +125,15 @@ export interface Move {
   kept(): Checkpoint[];
   /** Carries on a paused move, or retries a failed one that is kept: this is the person's go for the next send. */
   proceed(): Promise<MoveState>;
-  /** The person gives the move up: its record is removed. Rejects while a move is running here or in another tab, and when no move is named. */
+  /**
+   * The person gives the move up: its record is removed. Rejects while a move is running here or in another tab, and when no move is named. A deposit whose Canton steps may be done is given up
+   * only by taking its tokens back first (`takeBack`), so nothing stays locked on Canton with no record of it: before the time to settle has passed it is refused, with the time to come back at.
+   */
   abandon(ref?: string): Promise<void>;
+  /** Whether the deposit kept under `ref` (or the current move) can be taken back now: it stopped before its claim was sent, its time to settle has passed, and Ostia shows no claim for it. */
+  takeBackDue(ref?: string): Promise<boolean>;
+  /** Takes the tokens of a kept deposit back on Canton (withdraws its allocation, archives its request) and removes its record. Refused while the claim could still settle, and for a deposit already claimed. */
+  takeBack(ref?: string): Promise<void>;
 }
 
 export function createMove(d: Deps): Move {
@@ -376,6 +397,13 @@ export function createMove(d: Deps): Move {
         }
         if (at() === "canton") await waitCanton(() => d.canton.waitDeposit(p.id!));
         gate("Canton has your deposit. Continue to ask your wallet for the claim.");
+        // A claim sent when the deposit's time to settle is close, or past, is left out of every block (the builder refuses a deposit past it), and it holds the account's later transactions behind it.
+        const deadline = await d.canton.depositDeadline(ref);
+        if (deadline !== null && deadline - Date.now() < CLAIM_MARGIN_MS) {
+          throw new Pause(Date.now() >= deadline + TAKE_BACK_AFTER_MS
+            ? "The time to settle this deposit has run out, so the claim would never be included. Take your tokens back on Canton, then start the deposit again."
+            : "The time to settle this deposit has almost run out, so the claim is not sent. Take your tokens back on Canton when the time is up, then start the deposit again.");
+        }
         return last(p, "claim", () => d.evm.claim(d.config.gateway, p.id!, p.asset.address, p.twin), claimCall(d.config.gateway, p.id!, p.asset.address, p.twin));
       }
       case "withdraw": {
@@ -432,6 +460,32 @@ export function createMove(d: Deps): Move {
     return job;
   }
 
+  /** The deposit's Canton side, taken back. `strict` (the person asked for it) refuses a deposit that was claimed; giving a deposit up lets a claimed one go (nothing is locked for it). */
+  async function takeBackCanton(c: Checkpoint, strict: boolean): Promise<void> {
+    const depositId = depositIdOf(c.party, c.ref);
+    if (await d.evm.used(d.config.gateway, depositId)) {
+      if (strict) throw new Refused("This deposit was claimed on Ostia, so there is nothing to take back. Continue it to see it final.");
+      return;
+    }
+    const deadline = await d.canton.depositDeadline(c.ref);
+    if (deadline !== null && Date.now() < deadline + TAKE_BACK_AFTER_MS) {
+      const minutes = Math.max(1, Math.ceil((deadline + TAKE_BACK_AFTER_MS - Date.now()) / 60_000));
+      throw new Refused(`Your tokens are locked on Canton until this deposit's time to settle has passed. Come back in about ${minutes} minute${minutes === 1 ? "" : "s"} to take them back.`);
+    }
+    await d.canton.recoverDeposit({ label: c.ref, depositId });
+  }
+  /** A kept move of this account and party that no other tab is working on, under its lock. */
+  async function withRecord<T>(id: string, f: (c: Checkpoint | null) => Promise<T>): Promise<T> {
+    if (running) throw new Refused("A move is running; wait until it stops before giving it up.");
+    if (d.locks === null) throw new Refused(NO_LOCKS);
+    const record = loadCheckpoint(d.store, id);
+    if (record !== null && !keptMoves(d.store, owner()).some((c) => c.ref === id)) throw new Refused("That move belongs to another account or Canton party.");
+    const done = await d.locks.request("bridge-move:" + id, { ifAvailable: true }, async (lock) => (lock === null ? ({ busy: true } as const) : { busy: false as const, value: await f(loadCheckpoint(d.store, id)) }));
+    if (done.busy) throw new Refused("That move is being worked on in another tab or window. Wait until it stops there.");
+    return done.value;
+  }
+  const finish = (id: string) => { clearCheckpoint(d.store, id); if (id === ck?.ref) { ck = null; if (state.phase !== "idle") go({ phase: "idle" }); } };
+
   return {
     get state() { return state; },
     get current() { return ck?.ref ?? null; },
@@ -468,17 +522,32 @@ export function createMove(d: Deps): Move {
       if (running) throw new Refused("A move is running; wait until it stops before giving it up.");
       const id = ref ?? ck?.ref;
       if (id === undefined) throw new Refused("Say which move to give up.");
-      if (d.locks === null) throw new Refused(NO_LOCKS);
-      // Read the record again, and only give up a move of this account and party, one that no other tab is working on.
-      const record = loadCheckpoint(d.store, id);
-      if (record !== null && !keptMoves(d.store, owner()).some((c) => c.ref === id)) throw new Refused("That move belongs to another account or Canton party.");
-      const done = await d.locks.request("bridge-move:" + id, { ifAvailable: true }, async (lock) => {
-        if (lock === null) return false;
+      await withRecord(id, async (c) => {
+        // A deposit with a Canton step done has tokens locked on Canton: they are taken back before the record goes.
+        if (c !== null && c.input.kind === "deposit" && TAKE_BACK_STAGES.includes(c.stage)) await takeBackCanton(c, false);
         clearCheckpoint(d.store, id);
-        return true;
       });
-      if (!done) throw new Refused("That move is being worked on in another tab or window. Wait until it stops there.");
-      if (id === ck?.ref) { ck = null; if (state.phase !== "idle") go({ phase: "idle" }); }
+      finish(id);
+    },
+    async takeBackDue(ref) {
+      const c = loadCheckpoint(d.store, ref ?? ck?.ref, owner());
+      if (c === null || c.input.kind !== "deposit" || !TAKE_BACK_STAGES.includes(c.stage)) return false;
+      try {
+        if (await d.evm.used(d.config.gateway, depositIdOf(c.party, c.ref))) return false;
+        const deadline = await d.canton.depositDeadline(c.ref);
+        return deadline !== null && Date.now() >= deadline + TAKE_BACK_AFTER_MS;
+      } catch { return false; }
+    },
+    async takeBack(ref) {
+      if (running) throw new Refused("A move is running; wait until it stops before taking it back.");
+      const id = ref ?? ck?.ref ?? loadCheckpoint(d.store, undefined, owner())?.ref;
+      if (id === undefined) throw new Refused("Say which move to take back.");
+      await withRecord(id, async (c) => {
+        if (c === null || c.input.kind !== "deposit" || !TAKE_BACK_STAGES.includes(c.stage)) throw new Refused("Only a deposit that has not sent its claim can be taken back.");
+        await takeBackCanton(c, true);
+        clearCheckpoint(d.store, id);
+      });
+      finish(id);
     },
   };
 }
