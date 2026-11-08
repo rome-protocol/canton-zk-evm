@@ -27,8 +27,9 @@ describe.skipIf(!core)("the Linked to Canton tab row, on a phone", () => {
   let browser: any, server: Server, base = "";
   beforeAll(async () => {
     server = createServer((req, res) => {
-      if (req.url?.startsWith("/fonts/")) {
-        try { res.writeHead(200, { "content-type": "font/woff2" }).end(readFileSync(join(pub, req.url.split("?")[0]!))); } catch { res.writeHead(404).end(); }
+      const font = /^\/fonts\/([A-Za-z0-9-]+\.woff2)(\?.*)?$/.exec(req.url ?? "");   // a font the stylesheet names, nothing else from the disk
+      if (font) {
+        try { res.writeHead(200, { "content-type": "font/woff2" }).end(readFileSync(join(pub, "fonts", font[1]!))); } catch { res.writeHead(404).end(); }
       } else res.writeHead(200, { "content-type": "text/html" }).end(html());
     });
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
