@@ -43,10 +43,13 @@
 @media (max-width: 480px) {
   .bridge-page .amt { flex: 1 1 100%; order: 2; }   /* on a phone the amount has its own line, under the token */
 }
-.bridge-page .steps summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
-.bridge-page .steps ol { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
-.bridge-page .steps li { overflow-wrap: anywhere; }
-.bridge-page .steps p { margin-top: 4px; }
+.bridge-page .move-steps summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.bridge-page .move-steps ol { margin: 8px 0 4px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.bridge-page .move-steps li { display: block; margin: 0; padding: 0; line-height: 1.4; }
+.bridge-page .move-steps li::before { content: none; }
+.bridge-page .move-steps .by-wallet { white-space: nowrap; }   /* "MetaMask pop-up" moves to the next line whole, never split */
+.bridge-page .move-steps li > span:first-child::after { content: " ·"; }   /* the dot stays with the label, so a note that wraps starts its own line clean */
+.bridge-page .move-steps p { margin-top: 4px; }
 
 /* The token picker. */
 .picker-back { position: fixed; inset: 0; z-index: 50; background: rgba(20, 2, 24, .45); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; overflow-y: auto; }

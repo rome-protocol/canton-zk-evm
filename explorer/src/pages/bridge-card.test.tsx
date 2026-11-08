@@ -107,14 +107,33 @@ describe("the button walks the steps", () => {
     await press("Max");
     expect(screen.getByRole("textbox", { name: "Amount to move" })).toHaveValue("1.9999999999");
   });
-  it("offers the faucet inline only when the account holds nothing for fees", async () => {
-    const { props } = show({}, fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) }));
-    await userEvent.click(await screen.findByRole("button", { name: "Get 1 tROME" }));
-    expect(props.faucet!.onGet).toHaveBeenCalled();
+  it("takes the test coin first when the wallet holds none: Get test tROME comes before opening the account, and the walk goes on once it holds some", async () => {
+    const none = fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) });
+    const first = show({ session: null }, none);
+    await userEvent.click(await screen.findByRole("button", { name: "Get test tROME" }));
+    expect(first.props.faucet!.onGet).toHaveBeenCalledTimes(1);
+    expect(first.props.onOpenAccount).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Open my Canton account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Get 1 tROME" })).toBeNull();   // one faucet action, not two
     cleanup();
-    show();
-    await screen.findByText("119.99");   // tROME: what is wrapped, and the coin less a reserve for fees
-    expect(screen.queryByRole("button", { name: "Get 1 tROME" })).toBeNull();
+    show({ faucet: null, session: null }, none);   // a site with no faucet cannot send the person there
+    expect(await screen.findByRole("button", { name: "Open my Canton account" })).toBeInTheDocument();
+    cleanup();
+    const some = fakeSession({ legs: () => [] });   // the wallet holds tROME: the walk goes on as before
+    const second = show({ session: null }, some);
+    await press("Open my Canton account");
+    expect(second.props.onOpenAccount).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Get test tROME" })).toBeNull();
+    cleanup();
+    show({}, some);
+    await screen.findByText("119.99");
+    expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
+  });
+  it("says the faucet is being asked, and reports what the wallet holds of the coin", async () => {
+    const onGas = vi.fn();
+    show({ faucet: { label: "Get 1 tROME", busy: true, onGet: vi.fn() }, onGas }, fakeSession({ legs: () => [], evm: fakeEvm({ native: 0n }) }));
+    expect(await screen.findByRole("button", { name: "Asking the faucet…" })).toBeDisabled();
+    await waitFor(() => expect(onGas).toHaveBeenLastCalledWith(0n));
   });
   it("puts the wallet on Ostia before a move, and does not start one when it cannot", async () => {
     const { made } = show({ ensureChain: async () => "Your wallet is not on Ostia yet." });
@@ -287,6 +306,8 @@ describe("the folded steps line", () => {
     expect(steps).not.toHaveAttribute("open");
     await userEvent.click(screen.getByText(/About 2 min/));
     expect(steps).toHaveAttribute("open");
+    expect(steps).toHaveClass("move-steps");   // not the block timeline's "steps", which draws a three-column grid with a line
+    expect(steps).not.toHaveClass("steps");
     expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");
     expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page with your Canton account/);

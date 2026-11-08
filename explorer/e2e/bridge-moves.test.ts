@@ -389,4 +389,48 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await top("amount")).toBeGreaterThan(await top("token"));   // on a phone the amount has its own line, under the token
     await page.close();
   }, 60_000);
+  /** What the folded steps list looks like once it is open: for each step, the lines its label and its note take (the rows its boxes sit on; the separator dot is a box of its own, on the label's line), and where each sits. */
+  const stepsLayout = (page: any) => page.evaluate(() => {
+    const list = document.querySelector(".move-steps")!;
+    return [...list.querySelectorAll("li")].map((li) => {
+      const [label, note] = [...li.querySelectorAll(":scope > span")] as HTMLElement[];
+      const box = (e: HTMLElement) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, lines: new Set([...e.getClientRects()].map((r) => Math.round(r.top))).size, line: parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.5 }; };
+      const l = li.getBoundingClientRect();
+      return { label: label!.textContent, note: note!.textContent, labelBox: box(label!), noteBox: box(note!), li: { top: l.top, bottom: l.bottom, left: l.left, right: l.right } };
+    });
+  });
+
+  it("lays the folded steps list out one step to a line at 360 px and at 1280 px: each label and its MetaMask pop-up text on one line, nothing overlapping", async () => {
+    service.extra = { wrapper: true };
+    const page = await open("/bridge");
+    await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
+    for (const width of [360, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const [from, name] of [["From", /^tROME on Ostia$/], ["From", /^TKA on Ostia$/]] as const) {
+        await pick(page, from, name);
+        const details = page.locator("details.move-steps");
+        if (!(await details.evaluate((d: HTMLDetailsElement) => d.open))) await details.locator("summary").click();
+        const steps = await stepsLayout(page);
+        expect(steps.length).toBeGreaterThanOrEqual(2);
+        let popups = 0;
+        steps.forEach((st: any, i: number) => {
+          const at = `${width}px, ${st.label}`;
+          for (const [what, b] of [["label", st.labelBox], ["note", st.noteBox]] as const) {
+            if (what === "note" && !/MetaMask pop-up/.test(st.note)) continue;   // the long words of a step that is not a pop-up may wrap
+            expect(b.lines, `${at}: ${what} is on ${b.lines} lines`).toBe(1);
+            expect(b.height, `${at}: ${what} is ${b.height} px high`).toBeLessThanOrEqual(b.line * 1.5);
+          }
+          if (/MetaMask pop-up/.test(st.note)) popups++;
+          const sameRow = Math.min(st.labelBox.bottom, st.noteBox.bottom) - Math.max(st.labelBox.top, st.noteBox.top) > 2;
+          if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
+          else expect(st.labelBox.bottom, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.top + 1);   // wrapped: one under the other
+          if (i > 0) expect(steps[i - 1].li.bottom, `${at}: steps overlap`).toBeLessThanOrEqual(st.li.top + 1);
+          expect(st.li.right, `${at}: the step runs off the card`).toBeLessThanOrEqual(width);
+        });
+        expect(popups).toBeGreaterThanOrEqual(2);
+        expect(await noSideways(page)).toBe(true);
+      }
+    }
+    await page.close();
+  }, 60_000);
 });

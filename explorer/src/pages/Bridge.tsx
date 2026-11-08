@@ -11,7 +11,7 @@ import { useStatus } from "../useStatus.ts";
 import { injected, useWallet } from "../wallet.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
-import { GENERIC, PageError, plainText, plainWords } from "../bridge/words.ts";
+import { GENERIC, PageError, plainText, plainWords, signInWords } from "../bridge/words.ts";
 import type { Account } from "../bridge/account.ts";
 import type { EvmAdapter } from "../bridge/evm/adapter.ts";
 import type { BridgeConfig } from "../bridge/evm/config.ts";
@@ -55,6 +55,9 @@ export function Bridge() {
   const [info, setInfo] = useState<FaucetInfo | null>(null);
   const [copied, setCopied] = useState(false);
   const [sheet, setSheet] = useState(false);
+  /** What the wallet holds of the chain's coin (the card reads it); null while not known. */
+  const [gas, setGas] = useState<bigint | null>(null);
+  const [refresh, setRefresh] = useState(0);
   const [nudge, setNudge] = useState(0);
   const sheetRef = useRef<HTMLElement>(null);
   const [noWallet, setNoWallet] = useState(false);
@@ -70,7 +73,7 @@ export function Bridge() {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setCopied(false); setSheet(false); setEvm(null); setSession(null);
+    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setCopied(false); setSheet(false); setEvm(null); setSession(null); setGas(null);
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -132,7 +135,7 @@ export function Bridge() {
       if (!same()) return account.close();
       holding.current = account;
       setPhase({ s: "ready", account });
-    } catch (e) { if (same()) setPhase({ s: "failed", message: plainWords(e) }); }
+    } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e) }); }
   }
   async function getCanton(account: Account) {
     const mine = epoch.current, same = () => epoch.current === mine;
@@ -147,7 +150,7 @@ export function Bridge() {
     const mine = epoch.current;
     setRome({ s: "working" });
     const r = await faucet.request(wallet.account!);
-    if (epoch.current === mine) setRome({ s: r.kind === "queued" ? "done" : "failed", message: coinWords(r, amount) });
+    if (epoch.current === mine) { setRome({ s: r.kind === "queued" ? "done" : "failed", message: coinWords(r, amount) }); setRefresh((n) => n + 1); }
   }
 
   /** Puts the wallet on Ostia before a move; says why not, in words. */
@@ -161,6 +164,9 @@ export function Bridge() {
   const openSheet = () => { setSheet(true); setNudge((n) => n + 1); };
   const showSheet = sheet || phase.s !== "idle" || (wrongSite && connected);
   const note = (c: Coin) => c.s === "done" || c.s === "failed" ? <p className={`small ${c.s === "failed" ? "bad" : "muted"}`} role="status">{c.message}</p> : null;
+  const faucetOn = info === null || info.on;
+  /** The wallet holds none of the chain's coin and the site has a faucet: the coin comes before the sign-in. */
+  const needCoin = connected && gas === 0n && faucetOn;
   const walletNote = noWallet ? NO_WALLET : wallet.error ? plainText(wallet.error) : null;
   return (
     <div className="bridge-page">
@@ -177,7 +183,7 @@ export function Bridge() {
           <MoveCard
             config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
-            faucet={info === null || info.on ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null}
+            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", onGet: getRome } : null} onGas={setGas} refresh={refresh}
           />
           <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
         </div>
@@ -205,7 +211,14 @@ export function Bridge() {
           ) : (
             <>
               <p className="lead">Sign one message in your wallet. It opens your Canton account. No gas and no new wallet. The same wallet opens the same account on any device.</p>
-              <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>
+              {needCoin && phase.s !== "working" ? (
+                <>
+                  <p className="small" role="status">Get test {sym} first. Every move on {chain.chainName} needs a little for fees.</p>
+                  <button type="button" className="btn" disabled={rome.s === "working"} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : `Get test ${sym}`}</button>
+                </>
+              ) : (
+                <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>
+              )}
               <p className="small muted">You are on <b className="mono">{here}</b>. Sign in only if that is the address you meant to open.</p>
               {wrongSite && <p className="small bad" role="alert">This page is open at {here}, but this bridge is set up for {settings.origin}. Signing is turned off here. Open the bridge from its own address.</p>}
               {phase.s === "failed" && <p className="small bad" role="alert">{phase.message}</p>}

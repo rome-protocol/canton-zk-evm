@@ -36,6 +36,10 @@ export interface MoveCardProps {
   ensureChain(): Promise<string | null>;
   /** The inline faucet for gas: shown when the account holds none. Null when this site has no faucet. */
   faucet: { label: string; busy: boolean; onGet(): void } | null;
+  /** Called with what the wallet holds of the chain's coin, each time it is read (null while not known). */
+  onGas?(gas: bigint | null): void;
+  /** Counts up when the balances should be read again (after the faucet is asked). */
+  refresh?: number;
   /** Said once a move is final. The page reads the kept moves from `session.move`. */
   onMoved?(): void;
 }
@@ -108,7 +112,8 @@ export function MoveCard(p: MoveCardProps) {
       if (live) setBal({ ostia, wrapped: held, canton, gas });
     })();
     return () => { live = false; };
-  }, [pair?.key, evm, session, tick]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pair?.key, evm, session, tick, p.refresh]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { p.onGas?.(bal.gas); }, [bal.gas]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const parsed = useMemo(() => {
     if (!pair || text.trim() === "") return { state: "empty" as const, error: null, units: null };
@@ -134,7 +139,7 @@ export function MoveCard(p: MoveCardProps) {
     return () => { live = false; clearInterval(timer); };
   }, [session, keptRef, keptStage, move.phase]);
   const button = buttonOf({
-    connected: p.account !== null, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
+    connected: p.account !== null, needCoin: p.faucet && bal.gas === 0n ? config?.chain.coin.symbol : undefined, asking: p.faucet?.busy, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
     to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
   });
   const kind = pair ? moveOf(pair, from) : null;
@@ -147,6 +152,7 @@ export function MoveCard(p: MoveCardProps) {
     if (starting) return;
     setProblem(null);
     if (button.action === "connect") return p.onConnect();
+    if (button.action === "faucet") return p.faucet?.onGet();
     if (button.action === "open") return p.onOpenAccount();
     if (!session || !pair) return;
     try {
@@ -250,10 +256,10 @@ export function MoveCard(p: MoveCardProps) {
           {problem && <p className="small bad" role="alert">{problem}</p>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {extra}
-          {p.faucet && bal.gas === 0n && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
-          <details className="steps">
+          {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
+          <details className="move-steps">
             <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
-            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className="muted small">{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
+            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page with your Canton account" : "Automatic"}</span></li>)}</ol>
             <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
           </details>
         </>

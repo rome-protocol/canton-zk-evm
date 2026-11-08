@@ -12,6 +12,15 @@ describe("the move button", () => {
     expect(buttonOf(base)).toEqual({ label: "Move to Canton", action: "move", disabled: false });
     expect(buttonOf({ ...base, to: "Ostia" }).label).toBe("Move to Ostia");
   });
+  it("takes the test coin first when the wallet holds none: connect, get the coin, open the account, enter an amount, move", () => {
+    const none = { ...base, accountReady: false, needCoin: "tROME" };
+    expect(buttonOf({ ...none, connected: false })).toEqual({ label: "Connect MetaMask", action: "connect", disabled: false });
+    expect(buttonOf(none)).toEqual({ label: "Get test tROME", action: "faucet", disabled: false });
+    expect(buttonOf({ ...none, asking: true })).toEqual({ label: "Asking the faucet…", action: "faucet", disabled: true });
+    expect(buttonOf({ ...base, needCoin: "tROME" }).action).toBe("faucet");   // the account is open, the coin still comes first
+    expect(buttonOf({ ...none, needCoin: undefined })).toEqual({ label: "Open my Canton account", action: "open", disabled: false });   // once the wallet holds some
+    expect(buttonOf({ ...base, needCoin: "tROME", move: { phase: "paused", note: "x" } }).action).toBe("continue");   // a kept move is not held back
+  });
   it("waits, in words, while the machinery of an opened account is built; and says the bridge is not available when its setup failed", () => {
     expect(buttonOf({ ...base, preparing: true })).toEqual({ label: "Getting ready…", action: "none", disabled: true });
     expect(buttonOf({ ...base, preparing: true, config: "failed" }).label).toBe("Not available here");

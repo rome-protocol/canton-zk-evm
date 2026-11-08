@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, renderApp, reply, route, status } from "../test-utils.tsx";
 
-const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn() }));
+const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n }));
 const closed = vi.fn();
 const opened = () => ({ party: PARTY, close: closed });
 vi.mock("../bridge/account.ts", () => mocks);
@@ -15,7 +15,7 @@ vi.mock("../bridge/evm/config.ts", () => ({
     twins: [{ address: "0x" + "aa".repeat(20), symbol: "TKA", decimals: 18 }], wrapped: [],
   }),
 }));
-vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => 5n * 10n ** 18n, balanceOf: async () => 20n * 10n ** 18n }) }));
+vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => mocks.gas, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
   createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalance: async () => 0n, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
 }));
@@ -30,8 +30,18 @@ function wallet() {
   const w = { on: vi.fn((event: string, fn: (v: unknown) => void) => { handlers[event] = fn; }), removeListener: vi.fn(), request: vi.fn(async ({ method }: { method: string }) => (method === "eth_requestAccounts" ? [ME] : method === "eth_chainId" ? "0x" + status().chainId.toString(16) : null)) };
   Object.defineProperty(window, "ethereum", { value: w, configurable: true, writable: true });
 }
-afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
+afterEach(() => { mocks.gas = 5n * 10n ** 18n; vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
 const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
+/** The faucet takes a request (the fake answers every POST to it with a place in the line) and keeps count of them. */
+const faucetAccepts = () => {
+  const base = globalThis.fetch;
+  const asked = { n: 0 };
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    if (input === "/api/faucet" && init?.method === "POST") { asked.n++; return new Response(JSON.stringify({ ticket: "t1", position: 1, to: ME, amount: faucet.amount }), { status: 202, headers: { "content-type": "application/json" } }); }
+    return base(input as never);
+  }));
+  return asked;
+};
 const openSheet = async () => userEvent.click(await screen.findByRole("button", { name: "Open my Canton account" }));
 const signIn = async () => {
   renderApp("/bridge");
@@ -138,6 +148,54 @@ describe("the Bridge page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Nothing was lost. Try again in a moment."));
     expect(screen.getByRole("alert").textContent).not.toMatch(/TypeError|Cannot read|accounts\.ts|waiting_for_signature/);
+  });
+
+  it("takes test tROME first when the wallet holds none: the card offers the faucet before the account, and the walk goes on once the wallet holds some", async () => {
+    setUp();
+    mocks.gas = 0n;
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    expect(await screen.findByRole("button", { name: "Get test tROME" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open my Canton account" })).toBeNull();
+    mocks.gas = 3n * 10n ** 18n;
+    await userEvent.click(screen.getByRole("button", { name: "Get test tROME" }));   // the faucet asks again for the balance
+    await openSheet();
+    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(screen.queryByText(/Get test tROME first/)).toBeNull();
+  });
+
+  it("with no tROME the account sheet says to get it first, and asks the faucet in place of the sign-in", async () => {
+    setUp();
+    vi.stubEnv("VITE_SITE_ORIGIN", "https://ostia.example");   // a page at another address shows the sheet at once, with no press on the card
+    mocks.gas = 0n;
+    const asked = faucetAccepts();
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    const sheet = await screen.findByRole("region", { name: "Your Canton account" });
+    expect(await within(sheet).findByText("Get test tROME first. Every move on Ostia needs a little for fees.")).toBeInTheDocument();
+    expect(within(sheet).queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+    await userEvent.click(within(sheet).getByRole("button", { name: "Get test tROME" }));
+    expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
+    expect(asked.n).toBe(1);
+    expect(mocks.openAccount).not.toHaveBeenCalled();
+  });
+
+  it("tells the person to get test tROME when the wallet will not let the page sign (4100, 4900, 4901), and keeps the sentence for another refusal", async () => {
+    setUp();
+    mocks.openAccount
+      .mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { code: 4100 }))
+      .mockRejectedValueOnce(Object.assign(new Error("Disconnected"), { code: 4900 }))
+      .mockRejectedValueOnce(Object.assign(new Error("Chain disconnected"), { code: 4901 }))
+      .mockRejectedValueOnce(Object.assign(new Error("User rejected the request."), { code: 4001 }))
+      .mockResolvedValue(opened());
+    await signIn();
+    const said = "Your wallet did not let this page sign. Get test tROME first and make sure MetaMask is on the Ostia network, then sign in again.";
+    for (let i = 0; i < 3; i++) {
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(said));
+      expect(mocks.openAccount).toHaveBeenCalledTimes(i + 1);
+      await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
   });
 
   it("shows a failure of the test coin in plain words too", async () => {
