@@ -169,6 +169,8 @@ class AccountsOnCanton(unittest.TestCase):
             accept_answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
             (answers / "allocation-factory.json").write_text(json.dumps(factory_answer))
             (answers / "accept.json").write_text(json.dumps(accept_answer))
+            withdraw_answer = {"choiceContextData": {"values": {}}, "disclosedContracts": []}
+            (answers / "withdraw.json").write_text(json.dumps(withdraw_answer))
             transfer_answer = {**factory_answer, "transferKind": "offer"}   # the test token offers a transfer: the receiver accepts it (Canton Coin does so unless the receiver has a preapproval)
             (answers / "transfer-factory.json").write_text(json.dumps(transfer_answer))
             self.assertEqual(service(f"/accounts/v1/registry/{registry}/allocation-factory", {"party": party})[0], 401)   # signed by no one
@@ -305,6 +307,37 @@ class AccountsOnCanton(unittest.TestCase):
                 until("the offer to be gone", lambda: not service(f"/accounts/v1/transfers/{party2}", key=key2)[1]["transfers"] and not service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"] or None)
                 after = sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"])
                 self.assertEqual(round(before - after, 6), 3.0)
+
+                # Take back: the sender offers 2 more to the second account, who does not accept. The service lets only the sender withdraw it: the receiver's prepare of the same withdraw is a 404 (the
+                # offer is not one it sent). The sender gets the registry's withdraw context through the service, withdraws, and its tokens are back: the offer is gone for both, nothing reached the receiver.
+                unlocked = [h for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]]
+                held_before = round(sum(float(h["amount"]) for h in unlocked), 6)
+                free = lambda: round(sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]), 6)
+                second = {**sent, "amount": "2.0", "executeBefore": demo.utc(timedelta(seconds=40)), "inputHoldingCids": [h["contractId"] for h in unlocked]}
+                status, factory = service(f"/accounts/v1/registry/{registry}/transfer-factory", {"party": party, "choiceArguments": {"expectedAdmin": registry, "transfer": second, "extraArgs": demo.NO_EXTRA_ARGS}, "excludeDebugFields": True}, key)
+                self.assertEqual((status, factory), (200, transfer_answer))
+                second_transfer = {"ExerciseCommand": {"templateId": demo.TRANSFER_FACTORY, "contractId": factory["factoryId"], "choice": "TransferFactory_Transfer", "choiceArgument": {
+                    "expectedAdmin": registry, "transfer": second, "extraArgs": {"context": factory["choiceContext"]["choiceContextData"], "meta": {"values": {}}}}}}
+                sent_at = time.time()
+                _, execute_second = run_as(party, key, second_transfer, factory["choiceContext"]["disclosedContracts"])
+                self.assertEqual(execute_second()[0], 200)
+                [unaccepted] = until("the second offer", lambda: service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"])
+                until("the tokens to be in the offer", lambda: free() != held_before or None)   # what the account holds free is less by the 2 that the offer holds
+                time.sleep(max(0, 45 - (time.time() - sent_at)))   # the offer is now past its time ("not accepted in time") and still holds what the sender sent, which is the case the sender has to take back
+                withdraw_command = lambda who: {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": unaccepted["contractId"], "choice": "TransferInstruction_Withdraw",
+                                                                    "choiceArgument": {"extraArgs": {"context": withdraw_answer["choiceContextData"], "meta": {"values": {}}}}}}
+                self.assertEqual(service("/accounts/v1/prepare", {"party": party2, "commands": [withdraw_command(party2)]}, key2)[0], 404)   # the receiver did not send it
+                self.assertEqual(service(f"/accounts/v1/registry/{registry}/transfer-instruction/{unaccepted['contractId']}/withdraw-context", {"party": party}, None)[0], 401)   # signed by no one
+                status, withdraw_context = service(f"/accounts/v1/registry/{registry}/transfer-instruction/{unaccepted['contractId']}/withdraw-context", {"party": party, "meta": {}, "excludeDebugFields": True}, key)
+                self.assertEqual((status, withdraw_context), (200, withdraw_answer))
+                made_withdraw, execute_withdraw = run_as(party, key, withdraw_command(party), withdraw_context["disclosedContracts"])
+                print("FIXTURE " + json.dumps({"name": "exercise-withdraw", "party": party, "command": withdraw_command(party), "preparedTransaction": made_withdraw["preparedTransaction"], "preparedTransactionHash": made_withdraw["preparedTransactionHash"],
+                                               "hashingSchemeVersion": made_withdraw["hashingSchemeVersion"], "disclosedContracts": withdraw_context["disclosedContracts"]}, sort_keys=True), flush=True)
+                self.assertEqual(execute_withdraw()[0], 200)
+                until("the offer to be taken back", lambda: not service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"] and not service(f"/accounts/v1/transfers/{party2}", key=key2)[1]["transfers"] or None)
+                until("the tokens to be back", lambda: free() == held_before or None)
+                self.assertEqual(round(sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party2}", key=key2)[1]["holdings"]), 6), 3.0)   # the receiver has only the 3 it accepted
+                self.assertEqual(service("/accounts/v1/prepare", {"party": party, "commands": [withdraw_command(party)]}, key)[0], 404)   # and the service no longer finds the offer
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import { decodePreparedTransaction, hashPreparedTransaction } from "@canton-netw
 import { PreparedTransaction, type Value } from "@canton-network/core-ledger-proto";
 import { describe, expect, it } from "vitest";
 import type { DisclosedContract, Prepared } from "./accounts.ts";
-import { acceptTransfer, allocate, archiveDepositRequest, chainFromEnv, depositRequest, implementationOf, redeemRequest, transfer, twinAcceptance, withdrawalAcceptance, type Chain, type Intent, type Transfer } from "./commands.ts";
+import { acceptTransfer, allocate, archiveDepositRequest, chainFromEnv, depositRequest, implementationOf, redeemRequest, transfer, twinAcceptance, withdrawTransfer, withdrawalAcceptance, type Chain, type Intent, type Transfer } from "./commands.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
 import { checkIntent, signPrepared, UnexpectedTransaction } from "./sign.ts";
 
@@ -336,5 +336,38 @@ describe("the accept's transaction, from the real Canton", () => {
     expect(() => checkIntent(tx, { ...made().intent, party: "evil::1220" + "00".repeat(32) }, now)).toThrow(/submitter/);
     expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: { a: "b" } } } } }, now)).toThrow(/map of 0 entries/);
     expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: {} } }, extra: 1 } }, now)).toThrow(/fields/);
+  });
+});
+
+// A TransferInstruction_Withdraw of the sender, as the page signs it to take back an unaccepted send: the transaction Canton prepared for it in the integration test (`exercise-withdraw`, printed in CI),
+// with the accept's (`exercise-accept`) as the one a withdraw intent must refuse.
+describe("the withdraw's transaction", () => {
+  const withdrawn = fixture("exercise-withdraw");
+  const real = fixture("exercise-accept");
+  const sender = withdrawn.party;
+  const prepared = async (): Promise<Prepared> => withdrawn;
+  const now = preparedAt(withdrawn);
+  const made = () => withdrawTransfer(sender, withdrawn.command.ExerciseCommand.contractId, { context: withdrawn.command.ExerciseCommand.choiceArgument.extraArgs.context, disclosedContracts: withdrawn.disclosedContracts! }, "splice-test-token-v1");
+  it("is built with the same shape as the accept, and signed with the page's own hash", async () => {
+    const fx = await prepared();
+    expect(made().command).toEqual(withdrawn.command);
+    expect(() => checkIntent(decode(fx), made().intent, now)).not.toThrow();
+    expect(await verifies(fx.preparedTransactionHash, await sign(made().intent, fx))).toBe(true);
+  });
+  it("is refused for another offer, choice, package, actor or argument, and is not an accept", async () => {
+    const tx = decode(await prepared());
+    expect(() => checkIntent(tx, { ...made().intent, contractId: "00ff" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, choice: "TransferInstruction_Accept" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, choice: "TransferInstruction_Reject" }, now)).toThrow(/exercises/);
+    expect(() => checkIntent(tx, { ...made().intent, implementation: "splice-amulet" }, now)).toThrow(/through/);
+    expect(() => checkIntent(tx, { ...made().intent, interface: { module: "Splice.Api.Token.AllocationV1", entity: "Allocation" } }, now)).toThrow(/through/);
+    expect(() => checkIntent(tx, { ...made().intent, party: "evil::1220" + "00".repeat(32) }, now)).toThrow(/submitter/);
+    expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: { a: "b" } } } } }, now)).toThrow(/map of 0 entries/);
+    expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: {} } }, extra: 1 } }, now)).toThrow(/fields/);
+  });
+  it("is not what an accept's transaction is held to: a withdraw intent refuses the accept, and an accept intent refuses the withdraw", async () => {
+    const accept = acceptTransfer(sender, withdrawn.command.ExerciseCommand.contractId, { context: {}, disclosedContracts: [] }, "splice-test-token-v1");
+    expect(() => checkIntent(decode(real), { ...made().intent, party: real.party }, preparedAt(real))).toThrow(/exercises/);
+    expect(() => checkIntent(decode(withdrawn), accept.intent, now)).toThrow(/exercises/);
   });
 });

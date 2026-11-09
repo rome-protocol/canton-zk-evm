@@ -193,6 +193,10 @@ export class AccountsClient {
   acceptContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {
     return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/accept-context`, { party, meta: {}, excludeDebugFields: true }, key);
   }
+  /** The context for the account to withdraw (take back) the transfer `instruction` that it sent, at the registry `admin`. */
+  transferWithdrawContext(key: CantonKey, admin: string, instruction: string, party: string): Promise<ChoiceContext> {
+    return this.send("POST", `/accounts/v1/registry/${admin}/transfer-instruction/${instruction}/withdraw-context`, { party, meta: {}, excludeDebugFields: true }, key);
+  }
   /** The context for the account to withdraw its allocation `allocation` at the registry `admin`. */
   allocationWithdrawContext(key: CantonKey, admin: string, allocation: string, party: string): Promise<ChoiceContext> {
     return this.send("POST", `/accounts/v1/registry/${admin}/allocation/${allocation}/withdraw-context`, { party, meta: {}, excludeDebugFields: true }, key);
