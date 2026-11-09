@@ -157,7 +157,7 @@ describe("the Content-Security-Policy", () => {
 
   it("holds the built page's shape: its only script is a file of this site, with no inline script and no handler in its markup", () => {
     const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
-    const scripts = [...page.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+    const scripts = [...page.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[^>]*>/gi)];
     expect(scripts.length).toBeGreaterThan(0);
     for (const [, attrs, inline] of scripts) {
       expect(attrs).toMatch(/\bsrc="\//);
