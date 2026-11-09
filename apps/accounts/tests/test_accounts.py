@@ -1660,7 +1660,8 @@ class PublicRegistryRelay(OutsideCase):
         self.assertEqual(self.service.replays.seen, {})   # nothing is remembered: there is no signature
 
     def test_an_unknown_admin_or_path_is_404_and_asks_nobody(self):
-        self.assertEqual(self.public("allocation-factory", admin="DSO::1220" + "ee" * 32)[0], 404)
+        status, out, _ = self.public("allocation-factory", admin="DSO::1220" + "ee" * 32)
+        self.assertEqual((status, out), (404, {"error": "this service has no registry for that instrument admin"}))   # the route's own answer, not a missing route's
         for suffix in ("reject-context", f"transfer-instruction/{INSTRUCTION}/reject-context", "transfer-instruction/nope/accept-context", f"allocation/{INSTRUCTION}/accept-context", "allocation-factory/more"):
             with self.subTest(suffix):
                 self.assertEqual(self.public(suffix)[0], 404)
@@ -1682,6 +1683,33 @@ class PublicRegistryRelay(OutsideCase):
         # another client is not held back by it
         self.service.handle("POST", f"/accounts/v1/public-registry/{ADMIN}/allocation-factory", {}, "203.0.113.9")
         self.assertEqual(len(self.outside.calls), 3)
+
+    def test_a_ceiling_over_all_clients_is_429_with_retry_after(self):
+        self.assertEqual(A.PUBLIC_RELAY_TOTAL, 600)
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, public_relay_total=A.Limiter(2, 60))
+        path = f"/accounts/v1/public-registry/{ADMIN}/allocation-factory"
+        for ip in ("203.0.113.1", "203.0.113.2"):   # two different clients use the ceiling up
+            self.service.handle("POST", path, {}, ip)
+        self.assertEqual(len(self.outside.calls), 2)
+        status, out, headers = self.public("allocation-factory")   # a third client, well inside its own rate
+        self.assertEqual(status, 429)
+        self.assertIn("Retry-After", headers)
+        self.assertEqual(len(self.outside.calls), 2)
+        self.service.sweep()   # swept like the others: nothing has expired yet, so the ceiling stays
+        self.assertEqual(self.public("allocation-factory")[0], 429)
+
+    def test_a_refused_request_does_not_use_the_ceiling(self):
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, public_relay_rate=A.Limiter(1, 60), public_relay_total=A.Limiter(2, 60))
+        self.assertEqual([self.public("allocation-factory")[0] for _ in range(3)], [200, 429, 429])   # the client's own refusals are not counted overall
+        self.service.handle("POST", f"/accounts/v1/public-registry/{ADMIN}/allocation-factory", {}, "203.0.113.9")
+        self.assertEqual(len(self.outside.calls), 2)
+
+    def test_a_body_that_is_json_but_not_an_object_is_400(self):
+        for raw in (b"[1, 2]", b"7", b'"text"', b"null", b"true"):
+            with self.subTest(raw):
+                status, out, _ = self.public("allocation-factory", raw=raw)
+                self.assertEqual((status, out), (400, {"error": "the body must be a JSON object"}))
+        self.assertEqual(self.outside.calls, [])
 
     def test_the_signed_relay_still_demands_a_signature(self):
         self.assertEqual(self.make_account()[0], 200)
