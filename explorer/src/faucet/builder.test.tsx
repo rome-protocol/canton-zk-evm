@@ -105,6 +105,7 @@ describe("the page after GitHub sends the person back", () => {
     ["busy&wait=5", "Many people are signing in at this moment. Try again in 5 s."],
     ["bad", "That is not an address. An address is 0x and 40 hex digits."],
     ["off", "The builder grant is off on this explorer."],
+    ["origin", "That sign-in was started from another site, so nothing was sent. To get a builder grant, start it from this page."],
     ["problem", "The sign-in did not finish, and nothing was taken from you. Try again in a moment."],
   ])("says %s in plain words", async (query, words) => {
     open(client(), `/faucet?builder=${query}`);

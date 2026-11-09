@@ -65,7 +65,7 @@ export interface BuilderInfo {
 /** The places the sign-in sends a person back to the Faucet page, and what each one means. */
 export type BuilderOutcome =
   | "queued" | "young" | "account" | "address" | "day" | "ip" | "hour" | "queue" | "empty"
-  | "state" | "denied" | "github" | "busy" | "bad" | "off" | "problem";
+  | "state" | "denied" | "github" | "busy" | "bad" | "off" | "origin" | "problem";
 
 /** What the faucet answers the sign-in with after it has looked at its limits. */
 export interface GrantAnswer { status: number; body: unknown; headers?: Record<string, string> }
@@ -233,8 +233,8 @@ export function createSignIn(o: BuilderOptions, d: SignInDeps): SignIn {
       const s = readState(state);
       // The state must come back in the browser that started it: otherwise anyone could hand another person a link made for their own address (RFC 6749 10.12).
       if (!s || !bound(cookie, s.nonce)) return back("state");
-      // A refusal for being busy does not use the state up.
-      if (busy >= BUSY_MAX) return back("busy", { wait: 5 });
+      // A refusal for being busy does not use the state up: it leaves the cookie too, so the browser can try again with the same sign-in.
+      if (busy >= BUSY_MAX) return { location: backTo("busy", { wait: 5 }) };
       if (!take(s.nonce, s.expires)) return back("state");
       busy++;
       let who: { id: number; createdAt: number };

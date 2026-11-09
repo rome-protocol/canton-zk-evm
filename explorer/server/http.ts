@@ -194,7 +194,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req, pathname === "/api/verify" ? VERIFY_BODY_MAX : MAX_BODY) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
-        const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader), req.headers.cookie);
+        const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader), req.headers.cookie, req.headers["sec-fetch-site"]);
         const text = textOf(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
         // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.

@@ -36,8 +36,8 @@ export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null 
 }
 
 export type BuilderCode =
-  | "queued" | "young" | "account" | "address" | "day" | "ip" | "hour" | "queue" | "empty" | "state" | "denied" | "github" | "busy" | "bad" | "off" | "problem";
-const CODES: readonly string[] = ["queued", "young", "account", "address", "day", "ip", "hour", "queue", "empty", "state", "denied", "github", "busy", "bad", "off", "problem"];
+  | "queued" | "young" | "account" | "address" | "day" | "ip" | "hour" | "queue" | "empty" | "state" | "denied" | "github" | "busy" | "bad" | "off" | "origin" | "problem";
+const CODES: readonly string[] = ["queued", "young", "account", "address", "day", "ip", "hour", "queue", "empty", "state", "denied", "github", "busy", "bad", "off", "origin", "problem"];
 
 /** What the Faucet page was sent back with: `?builder=<code>` and, with it, a ticket, a wait in seconds or a number of days. Anything else is not a result. */
 export interface BuilderResult { code: BuilderCode; ticket: string | null; wait: number | null; days: number | null }
@@ -78,6 +78,7 @@ export function builderWords(r: BuilderResult, info: FaucetInfo | null, coin: { 
     case "busy": return { tone: "wait", text: `Many people are signing in at this moment.${again}` };
     case "bad": return { tone: "bad", text: "That is not an address. An address is 0x and 40 hex digits." };
     case "off": return { tone: "bad", text: "The builder grant is off on this explorer." };
+    case "origin": return { tone: "bad", text: "That sign-in was started from another site, so nothing was sent. To get a builder grant, start it from this page." };
     case "problem": return { tone: "bad", text: "The sign-in did not finish, and nothing was taken from you. Try again in a moment." };
   }
 }

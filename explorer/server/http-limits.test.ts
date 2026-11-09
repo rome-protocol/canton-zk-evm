@@ -10,6 +10,7 @@ import { MAX_VERIFY_BODY, createLimits } from "./limits.ts";
 let dir: string, server: ReturnType<typeof createHttpServer>, calls: { method: string; target: string; body?: string }[];
 let time = 1_000_000;
 let cookieSeen: string | undefined;
+let siteSeen: string | undefined;
 const clock = { now: () => time, advance: (ms: number) => void (time += ms) };
 
 async function start(ipHeader: string | null = null) {
@@ -18,7 +19,8 @@ async function start(ipHeader: string | null = null) {
   writeFileSync(join(dir, "dist", "index.html"), "<html>home</html>");
   calls = [];
   cookieSeen = undefined;
-  const api = async (method: string, target: string, body?: string, _ip?: string, cookie?: string) => { calls.push({ method, target, body }); cookieSeen = cookie; return { status: 200, body: { ok: true } }; };
+  siteSeen = undefined;
+  const api = async (method: string, target: string, body?: string, _ip?: string, cookie?: string, site?: string) => { calls.push({ method, target, body }); cookieSeen = cookie; siteSeen = site; return { status: 200, body: { ok: true } }; };
   server = createHttpServer(api, join(dir, "dist"), undefined, ipHeader, undefined, createLimits(clock.now));
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
 }
@@ -38,6 +40,14 @@ describe("the builder grant's routes: 10 a minute for each client", () => {
     expect((await at("/api/status")).status).toBe(200); // the rest of the API is not in this rate
     clock.advance(6000);
     expect((await at("/api/faucet/github/start?address=0x1", { redirect: "manual" })).status).toBe(200);
+  });
+
+  it("hands the request's Sec-Fetch-Site header to the API", async () => {
+    await start();
+    await at("/api/faucet/github/start?address=0x1", { headers: { "sec-fetch-site": "cross-site" } });
+    expect(siteSeen).toBe("cross-site");
+    await at("/api/faucet/github/start?address=0x1");
+    expect(siteSeen).toBeUndefined();
   });
 
   it("hands the request's Cookie header to the API", async () => {

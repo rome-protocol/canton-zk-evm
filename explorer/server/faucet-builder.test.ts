@@ -242,10 +242,30 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       const pending = Array.from({ length: 20 }, (_, i) => cb(r.f, "c" + i, begin(r.f, addr(i + 1)), `10.0.0.${i}`));
       await vi.waitFor(() => expect(gate.length).toBe(20));
       const state = begin(r.f, addr(99), "10.0.0.99");
-      expect(query(await cb(r.f, "x", state, "10.0.0.99"))).toMatchObject({ builder: "busy" });
+      // A browser drops a cookie the answer clears, and keeps one it does not: the busy answer must not clear it.
+      const refused = await cb(r.f, "x", state, "10.0.0.99");
+      expect(query(refused)).toMatchObject({ builder: "busy" });
+      expect(refused!.setCookie).toBeUndefined();
+      if (refused!.setCookie?.includes("Max-Age=0")) cookies.delete(state);
+      expect(cookies.get(state)).toBeDefined();
       for (const go of gate) go();
       await Promise.all(pending);
-      expect(query(await cb(r.f, "x", state, "10.0.0.99"))).toMatchObject({ builder: "queued" });
+      const retry = await cb(r.f, "x", state, "10.0.0.99");
+      expect(query(retry)).toMatchObject({ builder: "queued" });
+      expect(retry!.setCookie).toMatch(/Max-Age=0/); // the finished sign-in does clear it
+    });
+
+    it("turns the callback away when the plain faucet was used from the same client between the start and the return, and queues nothing for the builder grant", async () => {
+      const r = await make();
+      r.gh.signIn("c", 1, 90);
+      // The start finds the client free, so the person goes to GitHub.
+      const state = begin(r.f, addr(1), "6.6.6.6");
+      // While they are there, the same client asks the plain faucet.
+      expect((await r.f.request(addr(2), { ip: "6.6.6.6" })).status).toBe(202);
+      expect(r.f.queued()).toBe(1);
+      // The return is held to the per-client check inside the grant's own submit.
+      expect(query(await cb(r.f, "c", state, "6.6.6.6"))).toMatchObject({ builder: "ip" });
+      expect(r.f.queued()).toBe(1);
     });
 
     it("says at once, without GitHub, that this connection asked for coins a moment ago", async () => {

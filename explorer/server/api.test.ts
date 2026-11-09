@@ -618,6 +618,24 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
       expect(info.builder).toEqual({ on: true, amount: (100n * 10n ** 18n).toString(), perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 });
     });
 
+    it("starts only from this site's own page: Sec-Fetch-Site must be same-origin or none, or absent, and any other value goes back to the page with a code", async () => {
+      const { api } = await boot(chain(), { faucet: true, builder, githubFetch: github });
+      const start = (site?: string) => api("GET", `/api/faucet/github/start?address=${BOB}`, undefined, "5.5.5.5", undefined, site);
+      for (const site of [undefined, "same-origin", "none"]) {
+        const ok = await start(site);
+        expect(new URL(ok.headers!.location!).origin, String(site)).toBe("https://github.com");
+        expect(ok.headers!["set-cookie"], String(site)).toMatch(/^faucet_github=/);
+      }
+      for (const site of ["cross-site", "same-site", "", "Cross-Site", "same-origin, cross-site", "other"]) {
+        const refused = await start(site);
+        expect(refused.status, site).toBe(302);
+        expect(refused.headers!.location, site).toBe("/faucet?builder=origin");
+        expect(refused.headers!["set-cookie"], site).toBeUndefined();
+      }
+      // The return comes from GitHub, so it is cross-site by nature and is not held to this rule.
+      expect((await api("GET", "/api/faucet/github/callback?code=a&state=nope", undefined, "5.5.5.5", undefined, "cross-site")).headers!.location).toBe("/faucet?builder=state");
+    });
+
     it("sends a state that is no good back to the page, and takes only GET", async () => {
       const { api } = await boot(chain(), { faucet: true, builder, githubFetch: github });
       expect((await api("GET", "/api/faucet/github/callback?code=abc&state=nope")).headers!.location).toBe("/faucet?builder=state");
