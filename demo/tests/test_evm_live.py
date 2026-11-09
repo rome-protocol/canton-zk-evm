@@ -177,10 +177,15 @@ class LiveEvmTests(unittest.TestCase):
             self.tx_to(GATEWAY, "claim(bytes32,address,uint256)"), self.tx_to(GATEWAY.upper().replace("0X", "0x"), "pay(bytes32,address,address,uint256)", 1),
             self.tx_to(GATEWAY, "withdraw(address,uint256,string)", 2), self.tx_to(GATEWAY, "register(string,string)", 3),     # not a leg
             self.tx_to(WTROME, "withdraw(address,uint256,string)", 4), {"hash": "0x" + "0" * 64, "to": None, "input": "0x6080"}])}      # not the gateway; a creation
-        self.assertEqual(evm.main(["legs", "9"]), {"block": 9, "legs": 3, "kinds": ["claim", "pay", "withdraw"]})
-        self.assertEqual(evm.main(["legs", "9"])["legs"], 3)
+        legs = evm.main(["legs", "9"])
+        self.assertEqual({k: legs[k] for k in ("block", "legs", "kinds")}, {"block": 9, "legs": 3, "kinds": ["claim", "pay", "withdraw"]})
+        # Each leg by its transaction and its id (the first word of a claim or a pay; a withdraw has none), so a caller can find its own among anyone's.
+        self.assertEqual(legs["calls"], [{"tx": f"0x{0:064x}", "kind": "claim", "id": "00" * 32}, {"tx": f"0x{1:064x}", "kind": "pay", "id": "00" * 32},
+                                         {"tx": f"0x{2:064x}", "kind": "withdraw", "id": None}])
+        FakeChain.blocks = {9: block(9, transactions=[{**self.tx_to(GATEWAY, "claim(bytes32,address,uint256)", 0xAB), "input": "0x" + selector("claim(bytes32,address,uint256)") + "Ab" * 32 + "00" * 64}])}
+        self.assertEqual(evm.main(["legs", "9"])["calls"], [{"tx": f"0x{0xab:064x}", "kind": "claim", "id": "ab" * 32}])
         FakeChain.blocks = {9: block(9)}
-        self.assertEqual(evm.main(["legs", "9"]), {"block": 9, "legs": 0, "kinds": []})
+        self.assertEqual(evm.main(["legs", "9"]), {"block": 9, "legs": 0, "kinds": [], "calls": []})
         with self.assertRaises(SystemExit):
             evm.main(["legs", "10"])
 

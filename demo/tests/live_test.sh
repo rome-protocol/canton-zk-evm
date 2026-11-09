@@ -180,7 +180,7 @@ legs_run() {   # <the stand-in's balances file>
 }
 legs_run "$WORK/balances.json" || fail "legs failed against the stand-in: $(tail -5 "$WORK/out")"
 results=$(ls "$WORK"/results/live-*.txt)
-for line in format=2 deposit_block=11 payment_block=14 withdrawal_block=15 one_leg_per_block=yes custody_equals_supply=yes tkb_u_before=100 tkb_u_after=84 \
+for line in format=2 deposit_block=11 payment_block=14 withdrawal_block=15 own_leg_once_per_block=yes custody_equals_supply=yes tkb_u_before=100 tkb_u_after=84 \
             custody_after=6 wtkb_supply_after=6.0 wtkb_u_after=6.0 payment_amount_wtrome=1; do
   grep -qx "$line" "$results" || fail "$results has no line $line"
 done
@@ -263,7 +263,21 @@ tail -1 "$out" | grep -q "^cycle=2 .*result=fail reason=\"the update that made" 
 fresh "$WORK/c2d.json"
 cycle_run "$WORK/c2d.json" FAKE_KIND_FROM=11 && fail "the lane went on although a block's leg was of another kind"
 out=$(lines)
-tail -1 "$out" | grep -q "^cycle=1 .*result=fail reason=\"the kind of block 11's leg: got \['wrong'\], expected \['claim'\]\"$" || fail "the reason line is not one quoted value: $(tail -1 "$out")"
+tail -1 "$out" | grep -q "^cycle=1 .*result=fail reason=\"the kind of 0x0*1's leg in block 11: got \['wrong'\], expected \['claim'\]\"$" || fail "the reason line is not one quoted value: $(tail -1 "$out")"
+
+# Someone else's leg in the same block as each of the lane's (a Bridge user's, of the same kind): the lane checks its own legs, so three cycles pass.
+fresh "$WORK/c2e.json"
+cycle_run "$WORK/c2e.json" FAKE_LEGS=outside || fail "the lane stopped on another party's leg in its blocks: $(tail -2 "$(lines)")"
+[ "$(grep -c '^cycle=.* result=pass ' "$(lines)")" = 3 ] || fail "three cycles with outside legs did not make three passing lines: $(cat "$(lines)")"
+# The lane's own leg missing from its block (only someone else's is there), there twice, or its id carried by another leg: the cycle fails, named.
+for case in "missing 14 the legs of 0x0*4 in block 14: got 0, expected 1" "double 11 the legs of 0x0*1 in block 11: got 2, expected 1" \
+            "same-id 11 the legs with the id d* in block 11: got 2, expected 1"; do
+  read -r what from reason <<<"$case"
+  fresh "$WORK/c2f.json"
+  cycle_run "$WORK/c2f.json" FAKE_LEGS="$what" FAKE_LEGS_FROM="$from" && fail "the lane went on although its own leg was $what in block $from"
+  tail -1 "$(lines)" | grep -q "^cycle=1 .*result=fail reason=\"$reason\"$" || fail "the $what leg is not the reason: $(tail -1 "$(lines)")"
+  ! grep -q '^cycle=2 ' "$(lines)" || fail "a second cycle started after the $what leg"
+done
 
 # A command that fails (the return of TKB) stops it too, with a failed line.
 fresh "$WORK/c3.json"

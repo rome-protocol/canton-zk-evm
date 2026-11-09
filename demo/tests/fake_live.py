@@ -9,9 +9,10 @@ who = os.environ["FAKE_ROLE"]; a = sys.argv[1:]
 if a and a[0] == os.environ.get("FAKE_FAIL"): sys.exit("fake %s: %s failed" % (who, a[0]))   # a command that fails, named by FAKE_FAIL
 if a and a[0] == os.environ.get("FAKE_SLOW"): import time; time.sleep(3)   # a command that takes a while, named by FAKE_SLOW
 def out(o): json.dump(st, open(S,"w")); print(json.dumps(o)); sys.exit(0)
-def newtx(kind, **kw):
+def newtx(kind, leg_id=None, **kw):
     st["n"]+=1; tx="0x%064x"%st["n"]; st["block"]+=1
     st["tx"][tx]={"block":st["block"],"kind":kind,**kw}; st["blocks"][str(st["block"])]=kind
+    st.setdefault("legs",{})[str(st["block"])]={"tx":tx,"kind":kind,"id":leg_id}
     return tx
 if who=="evm":
     c=a[0]
@@ -22,8 +23,8 @@ if who=="evm":
     if c=="block": out({"number":st["block"],"hash":"0xff","gasUsed":1})
     if c=="wrap": st["rome_v"]+=int(a[3]); out({"tx":newtx("wrap")})
     if c=="approve": out({"tx":newtx("approve")})
-    if c=="claim": tx=newtx("claim"); st["wu"]+=10; st["sup"]+=10; st["cust"]+=10; st["u"]-=10; out({"tx":tx})
-    if c=="pay": tx=newtx("pay"); st["rome_v"]-=int(a[5]); st["rome_u"]+=int(a[5]); st["u"]-=10; st["v"]+=10; out({"tx":tx})
+    if c=="claim": tx=newtx("claim", a[2]); st["wu"]+=10; st["sup"]+=10; st["cust"]+=10; st["u"]-=10; out({"tx":tx})
+    if c=="pay": tx=newtx("pay", a[2]); st["rome_v"]-=int(a[5]); st["rome_u"]+=int(a[5]); st["u"]-=10; st["v"]+=10; out({"tx":tx})
     if c=="withdraw": tx=newtx("withdraw"); k=int(float(a[3])); st["wu"]-=k; st["sup"]-=k; st["cust"]-=k; st["u"]+=k; out({"tx":tx})
     if c=="give":   # U sends V WtROME; FAKE_DRIFT=give makes it send one less than asked, so that a balance does not come back
         k=int(a[4])-(1 if os.environ.get("FAKE_DRIFT")=="give" else 0); tx=newtx("give"); st["rome_u"]-=k; st["rome_v"]+=k; out({"tx":tx})
@@ -31,8 +32,15 @@ if who=="evm":
         t=st["tx"][a[1]]; out({"block":t["block"],"blockHash":"0xb%d"%t["block"],"gasUsed":1,"status":1,"contract":None,"finalized":True})
     if c=="legs":
         k=st["blocks"][a[1]]; ok=k in("claim","pay","withdraw")
-        if os.environ.get("FAKE_KIND_FROM") and int(a[1]) >= int(os.environ["FAKE_KIND_FROM"]): k="wrong"   # FAKE_KIND_FROM=<block>: from there on the block's leg is of another kind
-        out({"block":int(a[1]),"legs":1 if ok else 0,"kinds":[k] if ok else []})
+        own=dict(st["legs"][a[1]]) if ok else None
+        if own and os.environ.get("FAKE_KIND_FROM") and int(a[1]) >= int(os.environ["FAKE_KIND_FROM"]): own["kind"]="wrong"   # FAKE_KIND_FROM=<block>: from there on the block's leg is of another kind
+        calls=[own] if own else []
+        # FAKE_LEGS=<what> from block FAKE_LEGS_FROM on, in each block with a leg of the lane's: outside (someone else's leg of the same kind is in the block too),
+        # missing (only someone else's leg is), double (the lane's leg is there twice), same-id (someone else's leg carries the lane's leg id)
+        what=os.environ.get("FAKE_LEGS"); outside={"tx":"0x"+"9"*64,"kind":own and own["kind"],"id":"9"*64 if own and own["id"] else None}
+        if own and what and int(a[1]) >= int(os.environ.get("FAKE_LEGS_FROM") or 0):
+            calls={"outside":[outside, own], "missing":[outside], "double":[own, own], "same-id":[own, {**outside, "id":own["id"]}]}[what]
+        out({"block":int(a[1]),"legs":len(calls),"kinds":[x["kind"] for x in calls],"calls":calls})
     if c=="wrapped": out({"balance":"%d.0"%st["wu"],"supply":"%d.0"%st["sup"]})
     if c=="balance": out({"tka": st["rome_u"] if a[2]==("0x"+"2"*40) else st["rome_v"]})
 else:

@@ -268,14 +268,16 @@ def wait_finalized(tx: str, seconds: int) -> dict:
 
 
 def legs_in(number: int) -> dict:
-    """The transactions of a block that call the gateway's claim, pay or withdraw: each can make a leg. Their number is what the leg count of the block is."""
+    """The transactions of a block that call the gateway's claim, pay or withdraw: each can make a leg. Anyone may make legs, so a caller looks for its
+    own by transaction hash (`calls`), and by the leg's id (the first word of a claim or a pay; none for a withdraw), never by their number."""
     block = rpc("eth_getBlockByNumber", [hex(number), True])
     if block is None:
         raise SystemExit(f"no block {number}")
     gateway = gateway_address().lower()
     selectors = {keccak(text=signature)[:4].hex(): name for signature, name in LEG_CALLS.items()}
-    kinds = [selectors[t["input"][2:10]] for t in block["transactions"] if (t.get("to") or "").lower() == gateway and t["input"][2:10] in selectors]
-    return {"block": number, "legs": len(kinds), "kinds": kinds}
+    calls = [{"tx": t["hash"].lower(), "kind": selectors[t["input"][2:10]], "id": t["input"][10:74].lower() if selectors[t["input"][2:10]] != "withdraw" else None}
+             for t in block["transactions"] if (t.get("to") or "").lower() == gateway and t["input"][2:10] in selectors]
+    return {"block": number, "legs": len(calls), "kinds": [c["kind"] for c in calls], "calls": calls}
 
 
 def read_text(token: str, signature: str, tag: str) -> str | None:
