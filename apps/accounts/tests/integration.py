@@ -311,7 +311,8 @@ class AccountsOnCanton(unittest.TestCase):
                 # Take back: the sender offers 2 more to the second account, who does not accept. The service lets only the sender withdraw it: the receiver's prepare of the same withdraw is a 404 (the
                 # offer is not one it sent). The sender gets the registry's withdraw context through the service, withdraws, and its tokens are back: the offer is gone for both, nothing reached the receiver.
                 unlocked = [h for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]]
-                held_before = sum(float(h["amount"]) for h in unlocked)
+                held_before = round(sum(float(h["amount"]) for h in unlocked), 6)
+                free = lambda: round(sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]), 6)
                 second = {**sent, "amount": "2.0", "inputHoldingCids": [h["contractId"] for h in unlocked]}
                 status, factory = service(f"/accounts/v1/registry/{registry}/transfer-factory", {"party": party, "choiceArguments": {"expectedAdmin": registry, "transfer": second, "extraArgs": demo.NO_EXTRA_ARGS}, "excludeDebugFields": True}, key)
                 self.assertEqual((status, factory), (200, transfer_answer))
@@ -320,7 +321,7 @@ class AccountsOnCanton(unittest.TestCase):
                 _, execute_second = run_as(party, key, second_transfer, factory["choiceContext"]["disclosedContracts"])
                 self.assertEqual(execute_second()[0], 200)
                 [unaccepted] = until("the second offer", lambda: service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"])
-                until("the holdings to be locked in the offer", lambda: not [h for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]] or None)
+                until("the tokens to be in the offer", lambda: free() != held_before or None)   # what the account holds free is less by the 2 that the offer holds
                 withdraw_command = lambda who: {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": unaccepted["contractId"], "choice": "TransferInstruction_Withdraw",
                                                                     "choiceArgument": {"extraArgs": {"context": withdraw_answer["choiceContextData"], "meta": {"values": {}}}}}}
                 self.assertEqual(service("/accounts/v1/prepare", {"party": party2, "commands": [withdraw_command(party2)]}, key2)[0], 404)   # the receiver did not send it
@@ -332,8 +333,7 @@ class AccountsOnCanton(unittest.TestCase):
                                                "hashingSchemeVersion": made_withdraw["hashingSchemeVersion"], "disclosedContracts": withdraw_context["disclosedContracts"]}, sort_keys=True), flush=True)
                 self.assertEqual(execute_withdraw()[0], 200)
                 until("the offer to be taken back", lambda: not service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"] and not service(f"/accounts/v1/transfers/{party2}", key=key2)[1]["transfers"] or None)
-                back = until("the tokens to be back", lambda: sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]) or None)
-                self.assertEqual(round(back - held_before, 6), 0.0)
+                until("the tokens to be back", lambda: free() == held_before or None)
                 self.assertEqual(round(sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party2}", key=key2)[1]["holdings"]), 6), 3.0)   # the receiver has only the 3 it accepted
                 self.assertEqual(service("/accounts/v1/prepare", {"party": party, "commands": [withdraw_command(party)]}, key)[0], 404)   # and the service no longer finds the offer
 
