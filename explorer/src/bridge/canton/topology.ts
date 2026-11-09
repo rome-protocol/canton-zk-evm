@@ -25,8 +25,8 @@ const refuse = (why: string): never => { throw new UnexpectedOnboarding(why); };
 export async function fingerprintOf(publicKey: Uint8Array): Promise<string> {
   return hex(await computeSha256CantonHash(PURPOSE.publicKeyFingerprint, publicKey));
 }
-/** The account's party id: the service's hint (`bridge`), then the key's fingerprint, which is the party's namespace. */
-export const partyOf = async (publicKey: Uint8Array): Promise<string> => `bridge::${await fingerprintOf(publicKey)}`;
+/** The account's party id: the hint the page is built with (`VITE_PARTY_HINT`, `rome` by default; it must be the hint the service runs with), then the key's fingerprint, which is the party's namespace. */
+export const partyOf = async (publicKey: Uint8Array, hint: string): Promise<string> => `${hint}::${await fingerprintOf(publicKey)}`;
 
 /** The multi-hash (34 bytes) of base64 topology transactions: each hashed (purpose 11), the hashes sorted and joined, that hashed (purpose 55). Pinned by real vectors in fixtures.json. */
 export async function topologyMultiHash(transactions: string[]): Promise<Uint8Array> {
@@ -74,8 +74,8 @@ const uid = (s: string) => s.replace(/^PAR::/, "");   // a participant's id as t
 
 /** Gives the multi-hash (34 bytes) of the onboarding of `publicKey` on `participant`, after checking that the service's topology is exactly that: one transaction, the party of this key
  * (its namespace is the key's fingerprint), this key its only signing key with threshold 1, and the configured participant its only host, with the permission to confirm, hosting it. */
-export async function verifyOnboarding(answer: TopologyAnswer, publicKey: Uint8Array, participant: string): Promise<Uint8Array> {
-  const party = await partyOf(publicKey);
+export async function verifyOnboarding(answer: TopologyAnswer, publicKey: Uint8Array, participant: string, hint: string): Promise<Uint8Array> {
+  const party = await partyOf(publicKey, hint);
   if (answer.party !== party) refuse(`the party is ${answer.party}, not ${party}`);
   const txs = answer.topologyTransactions;
   if (!Array.isArray(txs) || txs.length !== 1 || typeof txs[0] !== "string") return refuse("it is not one transaction");

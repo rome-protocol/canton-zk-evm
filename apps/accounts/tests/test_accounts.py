@@ -11,7 +11,7 @@ KEY, OTHER_KEY = (base64.b64encode(public_key(seed)).decode() for seed in (SEED,
 SIG = base64.b64encode(bytes(64)).decode()
 DAY = 86400
 FINGERPRINT = "1220" + "ab" * 32
-PARTY = "bridge::" + FINGERPRINT
+PARTY = "rome::" + FINGERPRINT
 SYNC = "da::1220" + "cd" * 32
 ACCEPT, DEPOSIT = A.ACCEPTANCE, A.DEPOSIT
 CHAIN = {f: f + "::1220" + "0%d" % i * 32 for i, f in enumerate(A.CHAIN_FIELDS, 1)}
@@ -170,7 +170,7 @@ class TopologyAndAllocate(Case):
         self.assertEqual(self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})[1]["topologyTransactions"], ["t1", "t2"])   # asked again: the same blob, with its transactions
         sent = self.calls_to("/generate-topology")[0][2]
         self.assertEqual(sent["synchronizer"], SYNC)
-        self.assertEqual(sent["partyHint"], "bridge")
+        self.assertEqual(sent["partyHint"], "rome")
         self.assertEqual(base64.b64decode(sent["publicKey"]["keyData"]), A.SPKI_ED25519 + public_key(SEED))
         self.assertEqual(sent["publicKey"]["keySpec"], "SIGNING_KEY_SPEC_EC_CURVE25519")
         self.assertNotIn("protocolVersion", sent)
@@ -233,7 +233,7 @@ class TopologyAndAllocate(Case):
     def test_accounts_per_day_are_limited_per_client(self):
         self.start(creates=A.Limiter(1, 86400))
         _, t1, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": KEY})
-        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "bridge::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "rome::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
                                                                            "topologyTransactions": ["t"], "multiHash": "bQ=="})
         _, t2, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})
         self.assertEqual(self.req("POST", "/accounts/v1/allocate", {"blob": t1["blob"], "signature": self.sig(t1["multiHash"])})[0], 200)
@@ -848,7 +848,7 @@ class Hardening(Case):
     def test_failed_verifies_count_per_client_and_junk_for_a_party_does_not_lock_its_owner(self):
         self.start(failures=A.Limiter(1, 60))
         self.make_account()
-        other = "bridge::1220" + "ee" * 32
+        other = "rome::1220" + "ee" * 32
         self.service.parties.parties[other] = public_key(OTHER_SEED)
         path = "/accounts/v1/holdings/x"
 
@@ -986,7 +986,7 @@ class AllocationsAndOpen(Case):
         out = self.req("GET", f"/accounts/v1/transfers/{PARTY}")[1]
         self.assertEqual((len(out["transfers"]), out["more"]), (A.TRANSFERS_MAX, True))
         self.assertEqual(self.req("GET", f"/accounts/v1/transfers/{PARTY}", signed=False)[0], 401)
-        self.assertEqual(self.req("GET", f"/accounts/v1/transfers/{'bridge::1220' + 'ff' * 32}")[0], 404)   # an account the service did not make
+        self.assertEqual(self.req("GET", f"/accounts/v1/transfers/{'rome::1220' + 'ff' * 32}")[0], 404)   # an account the service did not make
 
     def test_the_open_requests_the_party_made(self):
         self.start(allow=(*A.DEFAULT_ALLOW, A.REDEEM), open_limits={ACCEPT: 1, DEPOSIT: 3, A.REDEEM: 3})
@@ -1164,7 +1164,7 @@ class Quota(Case):
         self.assertEqual(A.Accounts(None, "svc", None, []).new_total.count, 200)
         self.start(new_total=A.Limiter(1, DAY), creates=A.Limiter(5, DAY))
         self.assertEqual(self.make_account()[0], 200)
-        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "bridge::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "rome::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
                                                                            "topologyTransactions": ["t"], "multiHash": "bQ=="})
         _, t2, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})
         status, _, headers = self.req("POST", "/accounts/v1/allocate", {"blob": t2["blob"], "signature": self.sig(t2["multiHash"], OTHER_SEED)})
@@ -1186,7 +1186,7 @@ class StateAndRights(Case):
         parties = A.Parties(self.state)
         self.assertEqual(list(parties.parties), [PARTY])
         self.assertTrue(parties.torn)
-        other = "bridge::1220" + "ef" * 32
+        other = "rome::1220" + "ef" * 32
         parties.add(other, public_key(OTHER_SEED))
         self.assertEqual(set(A.Parties(self.state).parties), {PARTY, other})
 
@@ -1203,7 +1203,7 @@ class StateAndRights(Case):
         self.assertEqual(self.req("GET", "/accounts/v1/holdings/stranger::1220" + "99" * 32)[0], 404)
 
     def test_the_rights_are_not_read_for_an_id_that_cannot_be_a_party(self):
-        for junk in ("x", "bridge::1220" + "AB" * 32, "bridge::" + "ab" * 32, "a" * 5000):
+        for junk in ("x", "rome::1220" + "AB" * 32, "rome::" + "ab" * 32, "a" * 5000):
             self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{junk}")[0], 404, junk)
         self.assertEqual(self.calls_to("/rights"), [])
         self.assertEqual(self.req("GET", f"/accounts/v1/holdings/{PARTY}")[0], 404)
@@ -1461,7 +1461,7 @@ class RegistryRelay(OutsideCase):
         self.with_registry()
         self.assertEqual(self.transfer_factory(signed=False)[0], 401)
         self.assertEqual(self.transfer_factory(seed=OTHER_SEED)[0], 401)
-        self.assertEqual(self.transfer_factory({"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.transfer_factory({"party": "rome::1220" + "ff" * 32})[0], 404)
         self.assertEqual(self.transfer_factory({"party": PARTY, "pad": "x" * A.RELAY_MAX_BODY})[0], 400)
         self.assertEqual(self.outside.calls, [])
         self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER + 10)}
@@ -1522,7 +1522,7 @@ class RegistryRelay(OutsideCase):
         self.with_registry()
         self.assertEqual(self.factory(signed=False)[0], 401)
         self.assertEqual(self.factory(seed=OTHER_SEED)[0], 401)   # another key's signature
-        self.assertEqual(self.factory({"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.factory({"party": "rome::1220" + "ff" * 32})[0], 404)
         self.assertEqual(self.factory({})[0], 404)
         self.assertEqual(self.accept(cid="nope")[0], 404)
         self.assertEqual(self.accept(cid="00" + "AB" * 40)[0], 404)
@@ -1672,7 +1672,7 @@ class Faucets(OutsideCase):
         self.with_faucet()
         self.assertEqual(self.ask(signed=False)[0], 401)
         self.assertEqual(self.ask(seed=OTHER_SEED)[0], 401)
-        self.assertEqual(self.req("POST", "/accounts/v1/faucet", {"party": "bridge::1220" + "ff" * 32})[0], 404)
+        self.assertEqual(self.req("POST", "/accounts/v1/faucet", {"party": "rome::1220" + "ff" * 32})[0], 404)
         self.assertEqual(self.outside.calls, [])
 
     def test_once_a_day_for_an_account_with_retry_after(self):

@@ -7,7 +7,7 @@ import { Refused, Waited } from "./moves/moves.ts";
 import { depositIdOf } from "./moves/state.ts";
 
 const id = (tag: string, n: number) => `${tag}::1220${n.toString(16).padStart(2, "0").repeat(32)}`;
-const PARTY = id("bridge", 0xab), chain = { operator: id("operator", 1), confirmer: id("confirmer", 2), gateway: id("gateway", 3), builder: id("builder", 4), chainId: 770101 };
+const PARTY = id("rome", 0xab), chain = { operator: id("operator", 1), confirmer: id("confirmer", 2), gateway: id("gateway", 3), builder: id("builder", 4), chainId: 770101 };
 const TOKEN = "0x" + "aa".repeat(20), TO = "0x" + "bb".repeat(20), NOW = Date.parse("2026-11-05T12:00:00Z");
 const TWIN = { admin: chain.gateway, id: "erc20:" + "aa".repeat(20) }, COIN = { admin: id("dso", 5), id: "Amulet" };
 const DISCLOSED = { templateId: "t", contractId: "d1", createdEventBlob: "blob", synchronizerId: "sync" };

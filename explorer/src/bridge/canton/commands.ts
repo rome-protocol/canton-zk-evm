@@ -18,7 +18,7 @@ export interface Intent {
 }
 export interface Built { command: Command; intent: Intent; disclosedContracts: DisclosedContract[] }
 
-export { chainFromEnv, participantFromEnv, type Chain } from "./env.ts";
+export { chainFromEnv, participantFromEnv, partyHintFromEnv, type Chain } from "./env.ts";
 
 const CHAIN = { packageName: "canton-zk-evm", module: "Zk.Chain" };
 const TWIN = { packageName: "ostia-twin", module: "Twin.Twin" };

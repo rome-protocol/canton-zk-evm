@@ -33,6 +33,7 @@ ARG VITE_CHAIN_GATEWAY=
 ARG VITE_CHAIN_BUILDER=
 ARG VITE_CHAIN_ID=
 ARG VITE_CANTON_PARTICIPANT=
+ARG VITE_PARTY_HINT=
 ARG VITE_ACCOUNTS_URL=
 ARG VITE_SITE_ORIGIN=
 COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts ./

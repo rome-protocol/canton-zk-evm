@@ -7,6 +7,13 @@ export function participantFromEnv(env: Record<string, string | undefined>): str
   return participant;
 }
 
+/** The name every account is given before its key's fingerprint (`VITE_PARTY_HINT`, `rome` by default). It must be the hint the account service runs with (`--party-hint`): the page refuses an account named otherwise. */
+export function partyHintFromEnv(env: Record<string, string | undefined>): string {
+  const hint = env.VITE_PARTY_HINT || "rome";
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(hint)) throw new Error("VITE_PARTY_HINT is not a name of letters, digits, - and _ (32 at most)");
+  return hint;
+}
+
 /** The chain's parties and id, from the page's configuration (`VITE_CHAIN_*`): never written into the code. */
 export interface Chain { operator: string; confirmer: string; gateway: string; builder: string; chainId: number }
 export function chainFromEnv(env: Record<string, string | undefined>): Chain {

@@ -73,10 +73,10 @@ class AccountsOnCanton(unittest.TestCase):
             status, topology = service("/accounts/v1/topology", {"publicKey": public})
             self.assertEqual(status, 200, topology)
             party = topology["party"]
-            self.assertTrue(party.startswith("bridge::1220"), party)
+            self.assertTrue(party.startswith("rome::1220"), party)
             # Canton's fingerprint of the key: the hash (purpose 12, hash prefix 1220) of the key's 32 raw bytes; the party is the hint and the fingerprint.
             raw = key.public[-32:]
-            self.assertEqual(party, "bridge::1220" + hashlib.sha256(struct.pack(">i", 12) + raw).hexdigest())
+            self.assertEqual(party, "rome::1220" + hashlib.sha256(struct.pack(">i", 12) + raw).hexdigest())
             self.assertTrue(topology["topologyTransactions"] and topology["multiHash"])
             participant = call("GET", f"{LEDGER}/v2/parties/participant-id", bearer=propose.role_token("admin"))[1]["participantId"]
             print("FIXTURE " + json.dumps({"name": "topology", "party": party, "publicKey": base64.b64encode(raw).decode(), "participant": participant, "protocolVersion": int(os.environ["CANTON_PROTOCOL_VERSION"]),

@@ -224,18 +224,18 @@ export class AccountsClient {
   }
 
   /** The account of this key. The party is the page's own (the key's fingerprint), never the service's word. A found account is returned. A new account is made only from a topology that is
-   * this key's onboarding on `participant` and nothing else (topology.ts): the page decodes it, computes the multi-hash itself, and signs its own multi-hash if the service's is the same.
+   * this key's onboarding on `participant`, named `hint::fingerprint`, and nothing else (topology.ts): the page decodes it, computes the multi-hash itself, and signs its own multi-hash if the service's is the same.
    * `confirm` runs after that check and before anything is signed (the wallet is asked again, and refused if it signs another way: `confirmKey`). */
-  async open(key: CantonKey, participant: string, confirm?: () => Promise<void>): Promise<string> {
-    const party = await partyOf(key.publicKey);
+  async open(key: CantonKey, participant: string, hint: string, confirm?: () => Promise<void>): Promise<string> {
+    const party = await partyOf(key.publicKey, hint);
     const found = await this.topology(key.publicKey);
     if (found.party !== party) throw new AccountsError("server", 200, `the account service names ${found.party}, not this key's account ${party}`);
     if (found.exists) return party;
     if (!found.multiHash || !found.blob || !Array.isArray(found.topologyTransactions)) throw new AccountsError("server", 200, "the topology has no multi-hash, blob or transactions");
     const answer = { party: found.party, multiHash: found.multiHash, topologyTransactions: found.topologyTransactions };
-    await verifyOnboarding(answer, key.publicKey, participant);   // the check comes before the wallet is asked again; signOnboarding runs it again, so nothing is signed without it
+    await verifyOnboarding(answer, key.publicKey, participant, hint);   // the check comes before the wallet is asked again; signOnboarding runs it again, so nothing is signed without it
     await confirm?.();
-    const made = await this.allocate(found.blob, await signOnboarding(key, answer, participant));
+    const made = await this.allocate(found.blob, await signOnboarding(key, answer, participant, hint));
     if (made.party !== party) throw new AccountsError("server", 200, `the account service made ${made.party}, not this key's account ${party}`);
     return party;
   }
