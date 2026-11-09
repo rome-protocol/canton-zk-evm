@@ -223,6 +223,14 @@ export class AccountsClient {
     return this.send("POST", "/accounts/v1/faucet", { party }, key);
   }
 
+  /** Whether the service knows this key's account (it is there already). It never makes one and signs nothing: the party is the page's own (its hint and the key's fingerprint), never the service's word. */
+  async find(publicKey: Uint8Array, hint: string): Promise<string | null> {
+    const party = await partyOf(publicKey, hint);
+    const found = await this.topology(publicKey);
+    if (found.party !== party) throw new AccountsError("server", 200, `the account service names ${found.party}, not this key's account ${party}`);
+    return found.exists ? party : null;
+  }
+
   /** The account of this key. The party is the page's own (the key's fingerprint), never the service's word. A found account is returned. A new account is made only from a topology that is
    * this key's onboarding on `participant`, named `hint::fingerprint`, and nothing else (topology.ts): the page decodes it, computes the multi-hash itself, and signs its own multi-hash if the service's is the same.
    * `confirm` runs after that check and before anything is signed (the wallet is asked again, and refused if it signs another way: `confirmKey`). */

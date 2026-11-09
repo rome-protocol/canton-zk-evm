@@ -10,6 +10,7 @@ import { short } from "../format.ts";
 import { timeoutSignal } from "../timeout.ts";
 import { useStatus } from "../useStatus.ts";
 import { injected, useWallet } from "../wallet.ts";
+import { browserKeyStore } from "../bridge/canton/keystore.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
 import { GENERIC, PageError, plainText, plainWords, signInWords } from "../bridge/words.ts";
@@ -80,11 +81,35 @@ export function Bridge() {
   // for it is ignored when it ends. `epoch` counts the wallet's accounts: work that began under an earlier count is the old account's.
   const epoch = useRef(0);
   const holding = useRef<Account | null>(null);
+  /** True while a kept account is being looked for and reopened: a sign-in started now would ask the wallet for a signature the reopen does not need. */
+  const reopening = useRef(false);
+  const [closeNote, setCloseNote] = useState<string | null>(null);
+  const clear = () => { setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({}); setCloseNote(null); };
   useEffect(() => {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({});
+    reopening.current = false;
+    clear();
+    // An account this browser kept for this wallet address opens again without a signature (a reload, or the wallet coming back to an address it opened before). Nothing kept, or any
+    // failure, leaves the sign-in as it was.
+    const address = wallet.account;
+    if (!address || !settings || location.origin !== settings.origin) return;
+    const mine = epoch.current, same = () => epoch.current === mine;
+    reopening.current = true;
+    (async () => {
+      // The signing code is fetched only when this browser keeps a key for this address; otherwise it is fetched when the person signs in.
+      const store = browserKeyStore();
+      if (!(await store.load(address))) return;
+      // From here the page is busy with the reopen: the sign-in button is off and a sign-in started by other means returns at once.
+      if (same()) setPhase({ s: "working", note: "Opening your account." });
+      const { reopenAccount } = await import("../bridge/account.ts");
+      const account = await reopenAccount(address, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same, store);
+      if (!same()) return account?.close();
+      if (!account) return setPhase({ s: "idle" });
+      holding.current = account;
+      setPhase({ s: "ready", account });
+    })().catch(() => { if (same()) setPhase({ s: "idle" }); }).finally(() => { if (same()) reopening.current = false; });
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -148,7 +173,7 @@ export function Bridge() {
 
   async function signIn() {
     const w = injected();
-    if (!w || !wallet.account || !settings || phase.s === "working") return;
+    if (!w || !wallet.account || !settings || phase.s === "working" || reopening.current) return;
     const mine = epoch.current, same = () => epoch.current === mine;
     // The page signs only on the address it was set up for: a copy of it on another address is refused.
     if (wrongSite) return setPhase({ s: "failed", message: plainWords(new PageError("origin_mismatch", "origin")) });
@@ -163,6 +188,17 @@ export function Bridge() {
       holding.current = account;
       setPhase({ s: "ready", account });
     } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName, gas) }); }
+  }
+  /** "Close my Canton account on this browser": the kept key is removed, and the open account is let go. The next sign-in asks the wallet again. */
+  async function closeHere(account: Account) {
+    if (!wallet.account) return;
+    try {
+      const { closeAccount } = await import("../bridge/account.ts");
+      await closeAccount(account, wallet.account);
+      epoch.current++;
+      holding.current = null;
+      clear();
+    } catch { setCloseNote("This browser could not remove it. Your account is still open."); }
   }
   async function getCanton(account: Account) {
     const mine = epoch.current, same = () => epoch.current === mine;
@@ -221,7 +257,7 @@ export function Bridge() {
         </div>
       )}
       {!ready && note(rome)}
-      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} sender={sender} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />}
+      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} sender={sender} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} kept={opened?.kept ? { onClose: () => closeHere(opened), note: closeNote } : null} />}
       {settings && showSheet && (
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />

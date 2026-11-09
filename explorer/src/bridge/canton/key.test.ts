@@ -114,10 +114,11 @@ describe("the Canton key from a wallet signature", () => {
     await expect(confirmKey({ request: asked(walletSignature) }, account.address, other)).rejects.toMatchObject({ code: "wallet_not_deterministic", message: DIFFERENT_SIGNATURES });
     expect(DIFFERENT_SIGNATURES).toContain("does not sign the same way twice");
   });
-  it("has no use of browser storage anywhere in the library, and each signing function has one caller", () => {
+  it("has no use of browser storage in the library but the key store's IndexedDB (never localStorage), and each signing function has one caller", () => {
     const dir = new URL(".", import.meta.url);
     const sources = readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
-    for (const file of sources) expect(readFileSync(new URL(file, dir), "utf8"), file).not.toMatch(/localStorage|sessionStorage|indexedDB/);
+    for (const file of sources) expect(readFileSync(new URL(file, dir), "utf8"), file).not.toMatch(/localStorage|sessionStorage/);
+    expect(sources.filter((f) => /indexedDB/.test(readFileSync(new URL(f, dir), "utf8")))).toEqual(["keystore.ts"]);   // the one place, which is handed a non-extractable CryptoKey and never bytes
     const users = (name: string) => sources.filter((f) => f !== "key.ts" && readFileSync(new URL(f, dir), "utf8").includes(name));
     expect(users("signVerifiedTransaction")).toEqual(["sign.ts"]);
     expect(users("signOnboarding")).toEqual(["accounts.ts"]);   // it checks the topology itself (topology.ts)

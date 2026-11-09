@@ -3,9 +3,10 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { extname, join, resolve } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { fromBase64 } from "../src/bridge/canton/key.ts";
+import { contentSecurityPolicy } from "../server/csp.ts";
 import { partyOf } from "../src/bridge/canton/topology.ts";
 import { lockIdOf } from "../src/bridge/moves/state.ts";
 import { allocationFactory, CC_ADMIN, CC_HOLDING, freshChain, GATEWAY, preparedAllocation, preparedDeposit, preparedRedeem, rpcResult, sendTransaction, TKA, twinsOverview, txAnswer, UPDATE_ID, VAULT, WCC, WTROME, type Extra } from "./bridge-fakes.ts";
@@ -46,6 +47,11 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     Object.assign(seen, { redeemRef: "", depositId: "", executed: 0, verified: 0, signedOk: false, signRequests: 0, rejectSends: 0, factoryAsked: 0 });
     Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {}, prepared: null, label: "", allocated: false, depositOpen: false });
   });
+
+  /** What the browser refused under the Content-Security-Policy: no test may have any. */
+  const refused: string[] = [];
+  beforeEach(() => { refused.length = 0; });
+  afterEach(() => { expect(refused).toEqual([]); });
 
   beforeAll(async () => {
     server = createServer(async (req, res) => {
@@ -131,7 +137,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
       let file = join(resolve(dist!), path);
       if (!existsSync(file) || !statSync(file).isFile()) file = join(resolve(dist!), "index.html");
-      res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" });
+      res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream", ...(extname(file) === ".html" ? { "content-security-policy": contentSecurityPolicy() } : {}) });   // the pages run under the policy the explorer's server sends
       createReadStream(file).pipe(res);
     });
     await new Promise<void>((done) => server.listen(PORT, "127.0.0.1", done));
@@ -161,6 +167,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       return rpcResult(chain, wallet.address, method, params ?? []);
     });
     // A wallet that turns a request down answers with the EIP-1193 error code 4001 (exposeFunction carries only the message across): the page tells that from a send whose outcome the wallet does not give.
+    page.on("console", (m: any) => { if (/content security policy/i.test(m.text())) refused.push(m.text()); });
     await page.addInitScript(() => {
       (window as any).ethereum = {
         request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []).catch((e: Error) => { throw Object.assign(new Error(e.message), /rejected/i.test(e.message) ? { code: 4001 } : {}); }),
@@ -345,7 +352,8 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await page.close();
   }, 150_000);
 
-  it("keeps a move that stopped, lists it in Activity after a reload, and continues it from its row", async () => {
+  // Twice: in a browser that keeps the account's key it reopens by itself; in one that keeps nothing (the kept key is cleared before the reload: a private window, cleared site data) the row asks to open the account, and the person signs in again.
+  for (const forget of [false, true]) it(`keeps a move that stopped, lists it in Activity after a reload, and continues it from its row${forget ? ", in a browser that keeps no key" : ""}`, async () => {
     const page = await open("/bridge");
     await signedIn(page);
     await page.getByRole("button", { name: "Swap direction" }).click();
@@ -356,6 +364,13 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(chain.sent.size).toBe(0);
     expect(seen.executed).toBe(1);
 
+    if (forget) {
+      await page.evaluate(async () => {
+        const db: IDBDatabase = await new Promise((done, fail) => { const r = indexedDB.open("ostia-bridge-canton", 1); r.onsuccess = () => done(r.result); r.onerror = () => fail(r.error); });
+        await new Promise<void>((done, fail) => { const t = db.transaction("accounts", "readwrite"); t.objectStore("accounts").clear(); t.oncomplete = () => done(); t.onerror = () => fail(t.error); });
+        db.close();
+      });
+    }
     await page.reload({ waitUntil: "load" });
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
     await page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });   // the wallet stays connected across the reload
@@ -365,8 +380,10 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await row.waitFor();
     expect(await row.getByRole("listitem", { name: "Sent: waiting" }).count()).toBe(1);
     expect(await noSideways(page)).toBe(true);
-    await row.getByRole("button", { name: "Open my Canton account to continue" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    if (forget) {
+      await row.getByRole("button", { name: "Open my Canton account to continue" }).click();
+      await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    }   // else the browser kept the account's key: the account opens again by itself when the page loads, with no second signature, and the row carries on.
     await row.getByRole("button", { name: "Release on Ostia" }).click();
     await row.getByRole("link", { name: "Ostia block 36512" }).waitFor({ timeout: 90_000 });
     expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);
@@ -374,6 +391,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(sent).toHaveLength(1);   // the release was sent once, after the person continued
     expect(sent[0]!.to.toLowerCase()).toBe(VAULT);
     expect(seen.executed).toBe(1);   // the redeem was not signed again
+    expect(seen.signRequests).toBe(forget ? 2 : 1);   // the wallet signs again only where the browser kept nothing
     await page.close();
   }, 180_000);
 
