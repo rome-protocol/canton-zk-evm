@@ -24,7 +24,9 @@
   "dependencies": {
     "@canton-network/core-ledger-proto": "1.14.0",
     "@canton-network/core-tx-visualizer": "1.14.0",
+    "@canton-network/dapp-sdk": "1.9.0",
     "@ethereum-sourcify/lib-sourcify": "3.7.4",
+    "@fivenorth/loop-sdk": "0.16.0",
     "@noble/ed25519": "3.2.0",
     "@protobuf-ts/runtime": "2.11.1",
     "@tanstack/react-query": "5.104.1",
@@ -35,8 +37,6 @@
     "viem": "2.57.2"
   },
   "devDependencies": {
-    "@canton-network/dapp-sdk": "1.9.0",
-    "@fivenorth/loop-sdk": "0.16.0",
     "@protobuf-ts/plugin": "2.11.1",
     "@protobuf-ts/protoc": "2.11.1",
     "@testing-library/jest-dom": "7.0.1",
