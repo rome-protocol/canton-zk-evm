@@ -31,7 +31,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
 
-  # The Bridge page in a real browser (explorer/e2e/bridge-account.test.ts, then bridge-moves.test.ts, which move a token each way through the card): the pages are built with the bridge's settings, and a wallet that signs with a fixed key opens an account on a fake
+  # The Bridge page in a real browser (explorer/e2e/bridge-account.test.ts, then bridge-moves.test.ts, which move a token each way through the card, and bridge-wallet.test.ts, which moves Canton Coin with a connected Canton wallet from a build with the wallets switched on): the pages are built with the bridge's settings, and a wallet that signs with a fixed key opens an account on a fake
   # account service, at the width of a phone. It runs in the pinned browser image, with the playwright-core of explorer/test/l4 (the same exact version the image's browsers belong to).
   # The last step lists the size of each script, gzipped: the Bridge's own and the signing code's are separate from the first page's.
   bridge-page:
@@ -52,6 +52,7 @@ jobs:
             sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && npm run build \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-moves.test.ts \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-send.test.ts \
+              && VITE_CANTON_WALLETS=extension npm run build -- --outDir dist-wallet && BRIDGE_E2E_DIST=dist-wallet PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-wallet.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/canton-phone.test.ts \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/header-row.test.ts \
               && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/faucet-builder.test.ts \
