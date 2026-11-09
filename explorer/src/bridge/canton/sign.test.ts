@@ -339,23 +339,18 @@ describe("the accept's transaction, from the real Canton", () => {
   });
 });
 
-// A TransferInstruction_Withdraw of the sender, as the page signs it to take back an unaccepted send. The choice takes the same argument as the accept (the registry's context and a meta), so the
-// transaction here is the real accept's with only its choice named Withdraw and its hash computed again; the integration test prints a Canton-prepared one (`exercise-withdraw`) in CI.
+// A TransferInstruction_Withdraw of the sender, as the page signs it to take back an unaccepted send: the transaction Canton prepared for it in the integration test (`exercise-withdraw`, printed in CI),
+// with the accept's (`exercise-accept`) as the one a withdraw intent must refuse.
 describe("the withdraw's transaction", () => {
+  const withdrawn = fixture("exercise-withdraw");
   const real = fixture("exercise-accept");
-  const sender = real.party;
-  const prepared = async (): Promise<Prepared> => {
-    const tx = decode(real);
-    const node = tx.transaction!.nodes.find((n) => n.nodeId === tx.transaction!.roots[0])!.versionedNode;
-    if (node.oneofKind !== "v1" || node.v1.nodeType.oneofKind !== "exercise") throw new Error("the fixture is not an exercise");
-    node.v1.nodeType.exercise.choiceId = "TransferInstruction_Withdraw";
-    return { ...real, preparedTransaction: base64(PreparedTransaction.toBinary(tx)), preparedTransactionHash: await hashPreparedTransaction(tx, "base64") };
-  };
-  const now = preparedAt(real);
-  const made = () => withdrawTransfer(sender, real.command.ExerciseCommand.contractId, { context: real.command.ExerciseCommand.choiceArgument.extraArgs.context, disclosedContracts: real.disclosedContracts! }, "splice-test-token-v1");
+  const sender = withdrawn.party;
+  const prepared = async (): Promise<Prepared> => withdrawn;
+  const now = preparedAt(withdrawn);
+  const made = () => withdrawTransfer(sender, withdrawn.command.ExerciseCommand.contractId, { context: withdrawn.command.ExerciseCommand.choiceArgument.extraArgs.context, disclosedContracts: withdrawn.disclosedContracts! }, "splice-test-token-v1");
   it("is built with the same shape as the accept, and signed with the page's own hash", async () => {
     const fx = await prepared();
-    expect(made().command).toEqual({ ExerciseCommand: { ...real.command.ExerciseCommand, choice: "TransferInstruction_Withdraw" } });
+    expect(made().command).toEqual(withdrawn.command);
     expect(() => checkIntent(decode(fx), made().intent, now)).not.toThrow();
     expect(await verifies(fx.preparedTransactionHash, await sign(made().intent, fx))).toBe(true);
   });
@@ -371,9 +366,8 @@ describe("the withdraw's transaction", () => {
     expect(() => checkIntent(tx, { ...made().intent, args: { extraArgs: { context: {}, meta: { values: {} } }, extra: 1 } }, now)).toThrow(/fields/);
   });
   it("is not what an accept's transaction is held to: a withdraw intent refuses the accept, and an accept intent refuses the withdraw", async () => {
-    const accept = acceptTransfer(sender, real.command.ExerciseCommand.contractId, { context: {}, disclosedContracts: [] }, "splice-test-token-v1");
-    expect(() => checkIntent(decode(real), made().intent, now)).toThrow(/exercises/);
-    const withdrawn = decode(await prepared());
-    expect(() => checkIntent(withdrawn, accept.intent, now)).toThrow(/exercises/);
+    const accept = acceptTransfer(sender, withdrawn.command.ExerciseCommand.contractId, { context: {}, disclosedContracts: [] }, "splice-test-token-v1");
+    expect(() => checkIntent(decode(real), { ...made().intent, party: real.party }, preparedAt(real))).toThrow(/exercises/);
+    expect(() => checkIntent(decode(withdrawn), accept.intent, now)).toThrow(/exercises/);
   });
 });
