@@ -41,7 +41,8 @@
   canton.py balances                   status without the chain head and the block records: the TKB holdings, the custody, the allocations,
                                        terms, deposit requests and acceptances (a chain with many blocks has many records)
   canton.py status                     print what is on Canton now: the chain head, the block records, the TKB holdings of U and V and
-                                       of the gateway (its custody), the active allocations, terms, deposit requests and acceptances
+                                       of the gateway (its custody), U's active allocations, and the number of U's and V's terms, deposit
+                                       requests and acceptances (not other parties' on the same chain)
 
 TKB is the Canton-side test token (the Splice reference token); TKA is the EVM-side one. The local network runs without Ledger
 API authentication (network/README.md), so one Ledger API user, `demo`, acts for U, V and the registry together here; `resubmit` acts as
@@ -779,13 +780,17 @@ def status(net: Network) -> dict:
 
 
 def balances(net: Network) -> dict:
+    """The terms, deposit requests and acceptances are U's and V's only: anyone with a Canton account may make their own on the same chain, and the
+    operator sees them all, so a count of every one would change with what other parties do."""
+    own = {net.party("u"), net.party("v")}
+    mine = lambda template, *fields: [e for e in net.template("operator", "operator", template) if any(e["createArgument"][f] in own for f in fields)]
     return {
         "tkb": {"u": holdings(net, "u"), "v": holdings(net, "v")},
         "custody": holdings(net, "gateway", "operator"),   # the gateway party is hosted on the operator's participant
         "allocations": sorted(e["createArgument"]["allocation"]["settlement"]["settlementRef"]["id"] for e in net.template("users", "u", ALLOCATION_OF_TOKEN)),
-        "terms": len(net.template("operator", "operator", DVP_TERMS)),
-        "deposits": len(net.template("operator", "operator", DEPOSIT_REQUEST)),
-        "acceptances": len(net.template("operator", "operator", ACCEPTANCE)),
+        "terms": len(mine(DVP_TERMS, "u", "v")),
+        "deposits": len(mine(DEPOSIT_REQUEST, "depositor")),
+        "acceptances": len(mine(ACCEPTANCE, "party")),
     }
 
 
