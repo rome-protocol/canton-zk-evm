@@ -336,6 +336,16 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .hero h1 { font-size: 44px; letter-spacing: -0.02em; }
 .hero-search { background: var(--surface); padding: 8px 8px 8px 14px; }
 .btn { border: 0; border-radius: 999px; padding: 9px 20px; background: var(--btn); color: var(--btn-ink); font: inherit; font-weight: 600; cursor: pointer; box-shadow: var(--btn-shadow); }
+/* The builder grant's "Sign in with GitHub" button: GitHub's usual dark button with its mark; on a dark page it turns light so it keeps its contrast. */
+.builder-grant { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 0; }
+.builder-grant p { margin: 0; }
+/* Written as ".builder-grant .gh-btn": the Faucet page's own link rules (".faucet-page a") are more specific than a bare class, and must not recolour the button. */
+.builder-grant .gh-btn { --gh-bg: #24292f; --gh-ink: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 10px; box-sizing: border-box; min-height: 44px; padding: 0 18px; border: 1px solid var(--gh-bg); border-radius: 999px; background: var(--gh-bg); color: var(--gh-ink); font: inherit; font-weight: 600; line-height: 1.2; text-decoration: none; cursor: pointer; }
+.builder-grant a.gh-btn:hover { filter: brightness(1.25); text-decoration: none; }
+.builder-grant .gh-btn:focus-visible { outline: 2px solid var(--canton); outline-offset: 2px; border-radius: 999px; }
+.builder-grant .gh-btn:disabled { opacity: .55; cursor: not-allowed; }
+.gh-mark { flex: none; display: block; }
+@media (prefers-color-scheme: dark) { .builder-grant .gh-btn { --gh-bg: var(--ink); --gh-ink: var(--bg); } .builder-grant a.gh-btn:hover { filter: brightness(.92); } }
 .try { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
 .try a { border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; background: var(--surface); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
@@ -509,3 +519,4 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
 @media (max-width: 720px) { .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; } }
 @media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } } /* a row of tabs scrolls inside itself on a phone */
+@media (max-width: 720px) { .builder-grant .gh-btn { width: 100%; } .faucet-page .builder-grant .gh-btn, .bridge-page .account .builder-grant .gh-btn { width: auto; } } /* full width only beside the move card's full-width button; on the Faucet page and in the account sheet the main button keeps its own width, so the offer never outweighs it */

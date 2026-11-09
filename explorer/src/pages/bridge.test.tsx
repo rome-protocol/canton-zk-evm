@@ -499,7 +499,8 @@ describe("the builder grant on the Bridge page", () => {
     await screen.findByRole("button", { name: "Get test tROME" });
     const link = await screen.findByRole("link", { name: "Sign in with GitHub" });
     expect(link).toHaveAttribute("href", `/api/faucet/github/start?address=${ME}`);
-    expect(link.closest("p")).toHaveTextContent("Building on Ostia? Sign in with GitHub for 100 tROME.");
+    expect(link.querySelector("svg.gh-mark")).not.toBeNull();
+    expect(link.closest(".builder-grant")).toHaveTextContent("Building on Ostia? Get 100 tROME.");
   });
 
   it("offers nothing when the builder grant is off, or when the wallet already holds tROME", async () => {

@@ -31,10 +31,19 @@ function open(c: FaucetClient, at = "/faucet") {
 }
 
 describe("the offer", () => {
-  it("is 'Building on Ostia? Sign in with GitHub for 100 tROME.' when the builder grant is on, with a link for the address", () => {
+  it("is 'Building on Ostia? Get 100 tROME.' and a Sign in with GitHub button with GitHub's mark, linking to the start path for the address", () => {
     render(<BuilderGrant info={info()} address={ADDRESS} coin={coin} />);
-    expect(document.querySelector(".builder-grant")).toHaveTextContent("Building on Ostia? Sign in with GitHub for 100 tROME.");
-    expect(screen.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", `/api/faucet/github/start?address=${ADDRESS.toLowerCase()}`);
+    expect(document.querySelector(".builder-grant")).toHaveTextContent("Building on Ostia? Get 100 tROME.");
+    const link = screen.getByRole("link", { name: "Sign in with GitHub" });
+    expect(link).toHaveAttribute("href", `/api/faucet/github/start?address=${ADDRESS.toLowerCase()}`);
+    expect(link).toHaveClass("gh-btn");
+    const mark = link.querySelector("svg.gh-mark");
+    expect(mark).not.toBeNull();
+    expect(mark).toHaveAttribute("aria-hidden", "true");
+    expect(mark!.querySelector("path")!.getAttribute("d")).toMatch(/^M8 0c4\.42 0 8 3\.58 8 8/);
+    expect(link.querySelector("img")).toBeNull();
+    expect(link).not.toHaveAttribute("target");
+    expect(screen.queryByText("Enter your address first.")).toBeNull();
   });
 
   it("is nothing when it is off, absent, or the info is not read yet", () => {
@@ -44,10 +53,14 @@ describe("the offer", () => {
     }
   });
 
-  it("waits for an address: no link until it is a whole address, and it says so", () => {
+  it("waits for an address: the button is off until it is a whole address, and it says so", () => {
     for (const a of [null, "", "0x12", "hello"]) {
       const { unmount } = render(<BuilderGrant info={info()} address={a} coin={coin} />);
       expect(screen.queryByRole("link")).toBeNull();
+      const off = screen.getByRole("button", { name: "Sign in with GitHub" });
+      expect(off).toBeDisabled();
+      expect(off.querySelector("svg.gh-mark")).not.toBeNull();
+      expect(off).toHaveAccessibleDescription("Enter your address first.");
       expect(document.querySelector(".builder-grant")).toHaveTextContent("Enter your address first.");
       unmount();
     }
@@ -58,6 +71,7 @@ describe("the offer", () => {
     open(client());
     expect(await screen.findByText(/Building on Ostia\?/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Sign in with GitHub" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
     await user.type(screen.getByLabelText("Your address"), ADDRESS);
     expect(screen.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", builderStartPath(ADDRESS));
     cleanup();
