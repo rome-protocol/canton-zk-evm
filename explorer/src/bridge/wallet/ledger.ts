@@ -136,13 +136,13 @@ export class PublicRegistry {
     return `/accounts/v1/public-registry/${admin}/${what.replace("<cid>", contract ?? "")}`;
   }
 
-  allocationFactory(admin: string, choiceArguments: object): Promise<FactoryAnswer> {
+  async allocationFactory(admin: string, choiceArguments: object): Promise<FactoryAnswer> {
     return this.post(this.path(admin, "allocation-factory"), { choiceArguments, excludeDebugFields: true });
   }
-  transferFactory(admin: string, choiceArguments: object): Promise<TransferFactoryAnswer> {
+  async transferFactory(admin: string, choiceArguments: object): Promise<TransferFactoryAnswer> {
     return this.post(this.path(admin, "transfer-factory"), { choiceArguments, excludeDebugFields: true });
   }
-  allocationWithdrawContext(admin: string, allocation: string): Promise<ChoiceContext> {
+  async allocationWithdrawContext(admin: string, allocation: string): Promise<ChoiceContext> {
     return this.post(this.path(admin, "allocation/<cid>/withdraw-context", allocation), { meta: {}, excludeDebugFields: true });
   }
 }
