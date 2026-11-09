@@ -110,6 +110,15 @@ has "$queue" "-e CAPTCHA_VERIFY_URL=https://check.example/verify" "the human che
 has "$queue" "-e CAPTCHA_SECRET" "the human check's secret is named"
 lacks "$queue" "$sec" "the secret's value is never on the command"
 
+# The builder grant: its settings are passed on, and its client secret is a file, mounted read-only, never a value on the command.
+printf 'x\n' > "$WORK/gh.key"
+gh=$(FAUCET_GITHUB_CLIENT_ID=Iv1.example FAUCET_GITHUB_CLIENT_SECRET_FILE="$WORK/gh.key" FAUCET_GITHUB_REDIRECT_URL=https://explorer.example.org/api/faucet/github/callback FAUCET_BUILDER_AMOUNT=50 dry start)
+has "$gh" "-v $WORK/gh.key:/run/explorer/gh.key:ro" "the builder grant's secret file is mounted read-only"
+has "$gh" "-e FAUCET_GITHUB_CLIENT_SECRET_FILE=/run/explorer/gh.key" "the container reads the secret from the mount"
+has "$gh" "-e FAUCET_GITHUB_CLIENT_ID=Iv1.example" "the client id is passed on"
+has "$gh" "-e FAUCET_GITHUB_REDIRECT_URL=https://explorer.example.org/api/faucet/github/callback" "the callback address is passed on"
+has "$gh" "-e FAUCET_BUILDER_AMOUNT=50" "the builder amount is passed on"
+
 # The database: its password file and the faucet's hash key are mounted read-only, the parts are passed on, and a URL (it may hold the password) is named without its value.
 printf 'POSTGRES_PASSWORD=x\n' > "$WORK/db.env"; printf 'k\n' > "$WORK/client.key"
 dbsec=$(openssl rand -hex 8)

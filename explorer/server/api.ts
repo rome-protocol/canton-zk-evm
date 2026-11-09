@@ -70,7 +70,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, rpc, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, rpc, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, builder: null, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -349,6 +349,13 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
       if (root !== "api") return fail(404, "No such route.");
       const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
+      // The builder grant's two browser routes: GitHub's sign-in starts at one and returns to the other, and each answers with a redirect. They are not described in
+      // the API's own description, as they are for a browser and not for a program. The return's address holds a one-time code, so it is never sent on as a referrer.
+      if (name === "faucet" && parts[2] === "github" && parts.length === 4 && (parts[3] === "start" || parts[3] === "callback")) {
+        if (method !== "GET") return fail(405, "Use GET.");
+        const to = parts[3] === "start" ? faucet.builderStart(url.searchParams.get("address")) : await faucet.builderCallback(url.searchParams, ip);
+        return { status: 302, body: {}, headers: { location: to ?? "/faucet?builder=off", "referrer-policy": "no-referrer" } };
+      }
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);
         if (method !== "GET") return fail(405, "Use GET or POST.");

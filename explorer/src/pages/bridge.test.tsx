@@ -366,3 +366,36 @@ describe("the Bridge page", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the builder grant on the Bridge page", () => {
+  const builder = { on: true, amount: (100n * 10n ** 18n).toString(), perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 };
+  const withBuilder = (b: unknown) => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply({ ...faucet, builder: b }), twins: () => reply(twins) })); };
+
+  it("offers GitHub sign-in for 100 tROME under 'Get test tROME', for the connected wallet's address", async () => {
+    withBuilder(builder);
+    mocks.gas = 0n;
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await screen.findByRole("button", { name: "Get test tROME" });
+    const link = await screen.findByRole("link", { name: "Sign in with GitHub" });
+    expect(link).toHaveAttribute("href", `/api/faucet/github/start?address=${ME}`);
+    expect(link.closest("p")).toHaveTextContent("Building on Ostia? Sign in with GitHub for 100 tROME.");
+  });
+
+  it("offers nothing when the builder grant is off, or when the wallet already holds tROME", async () => {
+    withBuilder({ ...builder, on: false });
+    mocks.gas = 0n;
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await screen.findByRole("button", { name: "Get test tROME" });
+    expect(screen.queryByText(/Sign in with GitHub/)).toBeNull();
+  });
+
+  it("does not offer it when the wallet holds tROME already", async () => {
+    withBuilder(builder);
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await screen.findByRole("button", { name: "Open my Canton account" });
+    expect(screen.queryByText(/Sign in with GitHub/)).toBeNull();
+  });
+});

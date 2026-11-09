@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ago, at as instant, clock, secs } from "../block-times.ts";
+import { BuilderGrant, builderOf, builderWords, formatDays, readBuilderResult, type BuilderResult } from "./builder.tsx";
 import { createFaucetClient, type CoinResult, type FaucetClient, type FaucetInfo, type RecentSend, type Ticket, type TxTimes } from "./faucet-client.ts";
 import { formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 import "./faucet.css";
@@ -92,6 +93,19 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
   const [second, setSecond] = useState(() => Date.now());
   const alive = useRef(true);
   const field = useId(), notice = useId();
+  /** What the sign-in with GitHub sent the page back with, shown once: the address is cleaned of it, so a reload shows nothing. */
+  const [builderResult, setBuilderResult] = useState<BuilderResult | null>(null);
+  const location = useLocation();
+  useEffect(() => {
+    const r = readBuilderResult(location.search);
+    if (!r) return;
+    setBuilderResult(r);
+    // The browser's address is cleaned without going through the router: a router navigation remounts the page (the shell keys it by location) and the result would be lost.
+    window.history.replaceState(window.history.state, "", location.pathname);
+    // A grant that was queued is followed like any request: the ticket says where it is, and who it is for.
+    if (r.code === "queued" && r.ticket) setWatch({ id: r.ticket, ticket: null, asked: { position: 1, amount: "" }, reachable: true, gone: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -211,7 +225,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
             <header className="chead"><h2>Get test {coin.symbol}</h2><span className="muted small">{coin.symbol} is this chain's test coin. It has no value.</span></header>
             <div className="cbody">{body()}</div>
           </section>
-          {watch && info && request(info, amount)}
+          {watch && info && request(info)}
         </div>
         {info && (
           <div className="fcol">
@@ -257,6 +271,8 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
         ) : (
           <Alert tone="muted" icon="note" role="status"><b>The faucet is off.</b> It runs only when the explorer is given the faucet's key.</Alert>
         )}
+        {info.on && <BuilderGrant info={info} address={address} coin={coin} />}
+        {builderResult && (() => { const w = builderWords(builderResult, info, coin); return <Alert tone={w.tone} icon={w.tone === "ok" ? "ok" : w.tone === "wait" ? "note" : "bad"} role={w.tone === "ok" ? "status" : "alert"}>{w.text}</Alert>; })()}
         {result && result.kind !== "queued" && outcome(result, notice)}
         <p className="small muted fnote">Blocks are made only while the chain's builder runs.</p>
       </>
@@ -274,6 +290,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
           {info.perIpSeconds ? <li><Icon name="globe" /><span>One request per <b>network address</b> every {formatPeriod(info.perIpSeconds)}.</span></li> : null}
           {info.maxPerHour ? <li><Icon name="people" /><span>At most <b>{formatCount(info.maxPerHour)} requests an hour</b> for everyone together. When that is reached, the page says when to try again.</span></li> : null}
           <li><Icon name="cube" /><span>Requests are sent in order{info.batch ? <>, up to {formatCount(info.batch)} in one block</> : ""}. A burst waits for the blocks after. The coins count only when the block holding them is final on Canton, and this page says when.</span></li>
+          {(() => { const b = builderOf(info); return b ? <li><Icon name="people" /><span>With a GitHub sign-in, an account at least <b>{b.minAccountAgeDays ?? 0} days old</b> gets <b>{formatCoin(b.amount, coin.decimals)} {coin.symbol}</b> once every {formatDays(b.perAccountSeconds ?? 0)}, for each account and for each address{b.maxPerDay ? <>, and at most {formatCount(b.maxPerDay)} a day for everyone together</> : null}. Only the account's age is checked, and the account is kept as a hash, never by name.</span></li> : null; })()}
           {info.captcha && <li><Icon name="shield" /><span>The human check keeps scripts from emptying the faucet. It is the only thing the faucet asks of you.</span></li>}
         </ul>
       </section>
@@ -373,9 +390,11 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
   }
 
   /** The four steps of a request. "Final on Canton" is the only word of success, and a step is done only when the explorer says it is. */
-  function request(info: FaucetInfo, amount: string) {
+  function request(info: FaucetInfo) {
     if (!watch) return null;
     const t = ticket, status = t?.status ?? "queued";
+    // A builder grant has its own amount, which the ticket says; until it is read, the amount the request was asked with.
+    const amount = `${formatCoin(t?.amount ?? (watch.asked.amount || info.builder?.amount || info.amount), coin.decimals)} ${coin.symbol}`;
     const proving = status === "sent" && t?.state === "proving";
     const dropped = status === "sent" && t?.state === "dropped";
     const sent = status === "sent" || status === "final";
@@ -425,7 +444,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       <section className="card request" aria-label="Your request">
         <header className="chead rq">
           <Icon name="drop" size={16} />
-          <div><h2>Your request</h2><span className="muted small">ticket <span className="mono">{watch.id.slice(0, 24)}</span> · {amount} to <span className="mono" title={watch.ticket?.to ?? sentTo ?? ""}>{shortHash(t?.to ?? sentTo ?? "")}</span></span></div>
+          <div><h2>Your request</h2><span className="muted small">ticket <span className="mono">{watch.id.slice(0, 24)}</span> · {amount}{(t?.to ?? sentTo) && <> to <span className="mono" title={t?.to ?? sentTo ?? ""}>{shortHash(t?.to ?? sentTo ?? "")}</span></>}</span></div>
           {chip(t)}
         </header>
         <ol className="steps" role="status">

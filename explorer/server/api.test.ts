@@ -8,6 +8,7 @@ import { loadConfig } from "./config.ts";
 import { createLedger } from "./ledger.ts";
 import { createFaucet } from "./faucet.ts";
 import type { FaucetStore } from "./faucet-store.ts";
+import type { BuilderOptions } from "./faucet-builder.ts";
 import { createTracker } from "./tracker.ts";
 import type { Tracked } from "./tracker.ts";
 import { ALLOWED_METHODS, createReth, RethError } from "./reth.ts";
@@ -57,7 +58,7 @@ function handlers(chain: FakeChain, finalized: () => number) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { pinsText?: string; tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable"; missFirstBlockRead?: boolean; checksWritten?: boolean }
+interface Options { pinsText?: string; tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable"; missFirstBlockRead?: boolean; checksWritten?: boolean; builder?: BuilderOptions; githubFetch?: typeof fetch }
 
 /**
  * `indexed` is the newest block the database holds, for an indexer that is behind Canton; `empty` is a database the indexer has not written to at all.
@@ -69,7 +70,7 @@ const writeFreshChecks = (pool: import("pg").Pool, age = "0 seconds") =>
   pool.query(`insert into health_checks (check_id, status, changed_at, checked_at) select c, 'ok', now() - interval '${age}', now() - interval '${age}' from unnest($1::text[]) as c
     on conflict (check_id) do update set status = 'ok', checked_at = excluded.checked_at, changed_at = excluded.changed_at`, [REFRESHED]);
 
-async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized, missFirstBlockRead = false, checksWritten = true, pinsText = settings }: Options = {}) {
+async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized, missFirstBlockRead = false, checksWritten = true, pinsText = settings, builder, githubFetch }: Options = {}) {
   let finalizedAt = 0;
   const base = handlers(chain, () => finalizedAt);
   reth = await startFakeReth(finalized === "unreadable" ? { ...base, eth_getBlockByNumber: (p: unknown[]) => { if (p[0] === "finalized") throw new Error("finalized is not served"); return base.eth_getBlockByNumber(p); } } : base);
@@ -97,7 +98,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
   const chainDb: ChainDb = { ...chainDb0, block: async (k) => { if (!missed) { missed = true; return undefined; } return chainDb0.block(k); } };
   const key = faucet ? FAUCET_KEY : null;
   const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number, _via?: string) => {}, state: (_hash: string): Tracked | undefined => undefined };
-  const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, ...(store ? { store } : {}), tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
+  const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, ...(builder ? { builder, fetch: githubFetch } : {}), ...(store ? { store } : {}), tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
   const api = createApi({ config, reth: r, ledger: l, chain: chainDb, tracker, faucet: faucetOf });
   return { api, pool: db.pool, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
 }
@@ -584,6 +585,48 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
     expect((await api("POST", "/api/faucet")).body).toEqual({ error: "The faucet is off." });
   });
 
+  describe("the builder grant's browser routes", () => {
+    const builder: BuilderOptions = { clientId: "Iv1.apitest", clientSecret: "api-test-" + Math.random().toString(36).slice(2), redirectUrl: "https://explorer.example.org/api/faucet/github/callback", key: Buffer.alloc(32, 3), amountWei: 100n * 10n ** 18n, perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 };
+    const github: typeof fetch = (async (url: unknown) => String(url).endsWith("/access_token")
+      ? Response.json({ ["access_" + "token"]: "tok" })
+      : Response.json({ id: 99, created_at: "2020-01-01T00:00:00Z" })) as typeof fetch;
+
+    it("redirects the start to GitHub, and the return to the Faucet page with the ticket, and never sends the one-time return on as a referrer", async () => {
+      const { api, get } = await boot(chain(), { faucet: true, builder, githubFetch: github });
+      const start = await api("GET", `/api/faucet/github/start?address=${BOB}`);
+      expect(start.status).toBe(302);
+      expect(start.headers).toMatchObject({ "referrer-policy": "no-referrer" });
+      const to = new URL(start.headers!.location!);
+      expect(`${to.origin}${to.pathname}`).toBe("https://github.com/login/oauth/authorize");
+      expect(to.searchParams.get("client_id")).toBe("Iv1.apitest");
+      const back = await api("GET", `/api/faucet/github/callback?code=abc&state=${encodeURIComponent(to.searchParams.get("state")!)}`, undefined, "7.7.7.7");
+      expect(back.status).toBe(302);
+      const place = new URL(back.headers!.location!, "https://x");
+      expect(place.pathname).toBe("/faucet");
+      expect(place.searchParams.get("builder")).toBe("queued");
+      const ticket = (await get(`/api/faucet/ticket/${place.searchParams.get("ticket")}`)).body as Obj;
+      expect(ticket).toMatchObject({ status: "queued", to: BOB, amount: (100n * 10n ** 18n).toString() });
+      expect(JSON.stringify([start, back, ticket])).not.toContain(builder.clientSecret);
+      const info = (await get("/api/faucet")).body as Obj;
+      expect(info.builder).toEqual({ on: true, amount: (100n * 10n ** 18n).toString(), perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 });
+    });
+
+    it("sends a state that is no good back to the page, and takes only GET", async () => {
+      const { api } = await boot(chain(), { faucet: true, builder, githubFetch: github });
+      expect((await api("GET", "/api/faucet/github/callback?code=abc&state=nope")).headers!.location).toBe("/faucet?builder=state");
+      expect((await api("GET", "/api/faucet/github/start?address=zzz")).headers!.location).toBe("/faucet?builder=bad");
+      expect((await api("POST", "/api/faucet/github/start", "{}")).status).toBe(405);
+      expect((await api("GET", "/api/faucet/github/other")).status).toBe(404);
+    });
+
+    it("says the grant is off, on the page, when no GitHub app is set", async () => {
+      const { api, get } = await boot(chain(), { faucet: true });
+      expect((await api("GET", `/api/faucet/github/start?address=${BOB}`)).headers!.location).toBe("/faucet?builder=off");
+      expect((await api("GET", "/api/faucet/github/callback?code=a&state=b")).headers!.location).toBe("/faucet?builder=off");
+      expect(((await get("/api/faucet")).body as Obj).builder).toMatchObject({ on: false });
+    });
+  });
+
   it("shows, on GET, whether it is on, its address and balance, and what it gives, with exactly its fields", async () => {
     const c = chain();
     expect(c.blocks.length - 1).toBeGreaterThan(2); // the newest block is not the final one below
@@ -591,10 +634,10 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
     expect(on.status).toBe(200);
     same(on.body, FIELDS.faucetInfo);
     // The balance is named by the block it was read at: the final head (reth's finalized block, 2 here), not the newest block. With no database store (the file's way) no count of today's payouts is possible: null, not 0.
-    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
+    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null } });
     await reth?.close(); await ledger?.close();
     const off = await (await boot(chain())).get("/api/faucet");
-    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
+    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null } });
   });
 
   it("says no block, and the newest block's balance, when reth cannot name the final block", async () => {
