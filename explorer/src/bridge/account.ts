@@ -3,7 +3,9 @@
 import type { Eip1193 } from "../wallet.ts";
 import { AccountsClient, AccountsError, acceptChoice } from "./canton/accounts.ts";
 import { acceptTransfer, twinAcceptance, withdrawalAcceptance, type Built, type Chain } from "./canton/commands.ts";
-import { confirmKey, openKey, type CantonKey } from "./canton/key.ts";
+import { confirmKey, keyFromStored, openKey, storableKey, type CantonKey } from "./canton/key.ts";
+import { browserKeyStore, type KeyStore } from "./canton/keystore.ts";
+import { partyOf } from "./canton/topology.ts";
 import { submit } from "./canton/sign.ts";
 import type { Settings } from "./settings.ts";
 import { PageError } from "./words.ts";
@@ -17,6 +19,8 @@ export interface Account {
   submit(built: Built): Promise<string>;
   /** A faucet offer that was made and not yet accepted: an accept that failed is tried again with it, without asking the faucet again. */
   offer?: string;
+  /** True when this browser keeps the account's key (a non-extractable WebCrypto key in IndexedDB), so a reload opens the account without a signature. */
+  kept?: boolean;
   /** Set when the wallet's account changed: this account then does nothing more. */
   closed?: boolean;
   /** Lets this account go (the wallet's account changed): nothing more is signed or sent for it. */
@@ -58,16 +62,8 @@ export async function optIn(a: Pick<Account, "key" | "party" | "chain" | "client
   throw new PageError("acceptances_missing", "The account's two acceptances are not both there.");
 }
 
-/** One wallet signature makes the key; the account is opened (made, on the first visit, after a second signature that proves the wallet signs the same way twice) and opted in. It is Ready only
- * when both acceptances are read back. `current` says whether the wallet's account is still the one being opened: when it is not, nothing more is asked or signed. */
-export async function openAccount(wallet: Eip1193, address: string, s: Settings, progress: (note: string) => void = () => {}, client = new AccountsClient(s.accountsBase), current: () => boolean = () => true): Promise<Account> {
-  const still = () => { if (!current()) throw closedError(); };
-  progress("Sign the message in your wallet.");
-  const key = await openKey(wallet, address);
-  still();
-  progress("Opening your account.");
-  const party = await client.open(key, s.participant, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
-  still();
+/** The account of a key that is open and checked: the page's signing and one-at-a-time rules around it. */
+function makeAccount(key: CantonKey, party: string, client: AccountsClient, s: Settings, current: () => boolean): Account {
   // The check is made when a command starts, not when it is handed in: a command that waited its turn is not signed after the account was let go.
   const send = oneAtATime((built) => (account.closed || !current() ? Promise.reject(closedError()) : submit(client, key, party, built)));
   const account: Account = {
@@ -75,10 +71,64 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
     submit: async (built) => { if (account.closed || !current()) throw closedError(); return send(built); },
     close: () => { account.closed = true; },
   };
+  return account;
+}
+
+/** Keeps the key in this browser, when it can (the key is a non-extractable WebCrypto key and the browser has IndexedDB). Never throws: the account works for this visit either way. */
+async function keep(account: Account, wallet: string, store: KeyStore): Promise<void> {
+  const privateKey = storableKey(account.key);
+  if (!privateKey) return;
+  account.kept = await store.save({ wallet: wallet.toLowerCase(), party: account.party, publicKey: account.key.publicKey, privateKey });
+}
+
+/** One wallet signature makes the key; the account is opened (made, on the first visit, after a second signature that proves the wallet signs the same way twice) and opted in. It is Ready only
+ * when both acceptances are read back. `current` says whether the wallet's account is still the one being opened: when it is not, nothing more is asked or signed. Once Ready, the key is kept in
+ * this browser (keystore.ts) where the browser can, so that a reload opens the account again without a signature (`reopenAccount`). */
+export async function openAccount(wallet: Eip1193, address: string, s: Settings, progress: (note: string) => void = () => {}, client = new AccountsClient(s.accountsBase), current: () => boolean = () => true, store: KeyStore = browserKeyStore()): Promise<Account> {
+  const still = () => { if (!current()) throw closedError(); };
+  progress("Sign the message in your wallet.");
+  const key = await openKey(wallet, address);
+  still();
+  progress("Opening your account.");
+  const party = await client.open(key, s.participant, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
+  still();
+  const account = makeAccount(key, party, client, s, current);
   progress("Setting up your account.");
   await optIn(account, sleepFor, 8, () => !account.closed && current());
   still();
+  await keep(account, address, store);
   return account;
+}
+
+/**
+ * Opens the account again from the key this browser kept for this wallet address, with no signature of the wallet. It is null (and the person signs in as before) when nothing is kept for this
+ * address, the kept key is not an Ed25519 private key that is not extractable and the pair of its public half, the account address is not the fingerprint of that public half, or the service does
+ * not know the account. A kept key that is not the account's is removed. The store is asked for exactly this wallet address, so another address's key is never looked at. Then the same
+ * checks as a sign-in: both acceptances are read back before the account is Ready.
+ */
+export async function reopenAccount(address: string, s: Settings, progress: (note: string) => void = () => {}, client = new AccountsClient(s.accountsBase), current: () => boolean = () => true, store: KeyStore = browserKeyStore()): Promise<Account | null> {
+  const still = () => { if (!current()) throw closedError(); };
+  const record = await store.load(address);
+  still();
+  if (!record || record.wallet !== address.toLowerCase()) return null;
+  const key = await keyFromStored(record.privateKey, record.publicKey);
+  if (!key || (await partyOf(key.publicKey)) !== record.party) { await store.remove(address).catch(() => {}); return null; }
+  progress("Opening your account.");
+  const party = await client.find(key.publicKey);
+  still();
+  if (party !== record.party) return null;
+  const account = makeAccount(key, party, client, s, current);
+  progress("Setting up your account.");
+  await optIn(account, sleepFor, 8, () => !account.closed && current());
+  still();
+  account.kept = true;
+  return account;
+}
+
+/** "Close my Canton account on this browser": removes what this browser keeps for the wallet address, and lets the open account go. Rejects, leaving the account open, if the browser cannot remove it. */
+export async function closeAccount(account: Pick<Account, "close">, address: string, store: KeyStore = browserKeyStore()): Promise<void> {
+  await store.remove(address);
+  account.close();
 }
 
 /** Test Canton Coin from the service's faucet: accepts the offer it makes. "off" when this deployment has no faucet. `admin` is Canton Coin's registry. An offer whose accept failed is kept (on

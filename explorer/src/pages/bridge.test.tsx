@@ -4,10 +4,12 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, renderApp, reply, route, status } from "../test-utils.tsx";
 
-const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), getTestCoin: vi.fn(), gas: 5n * 10n ** 18n, reads: 0, holdings: 0, canton: 0n, hold: Promise.resolve() as Promise<unknown> }));
+const mocks = vi.hoisted(() => ({ openAccount: vi.fn(), reopenAccount: vi.fn(), closeAccount: vi.fn(), kept: null as unknown, getTestCoin: vi.fn(), gas: 5n * 10n ** 18n, reads: 0, holdings: 0, canton: 0n, hold: Promise.resolve() as Promise<unknown> }));
 const closed = vi.fn();
-const opened = () => ({ party: PARTY, close: closed });
+const opened = (kept = false) => ({ party: PARTY, close: closed, kept });
 vi.mock("../bridge/account.ts", () => mocks);
+// What this browser keeps of an account (the store itself is the key store's own tests): here it holds a record or nothing.
+vi.mock("../bridge/canton/keystore.ts", () => ({ browserKeyStore: () => ({ load: async () => mocks.kept, save: async () => true, remove: async () => {} }) }));
 // The chain's tokens and the move's machinery are the card's own tests (bridge-card.test.tsx): here they are fixed answers.
 vi.mock("../bridge/evm/config.ts", () => ({
   loadBridgeConfig: async () => ({
@@ -31,7 +33,7 @@ function wallet() {
   const w = { on: vi.fn((event: string, fn: (v: unknown) => void) => { handlers[event] = fn; }), removeListener: vi.fn(), request: vi.fn(async ({ method }: { method: string }) => (method === "eth_requestAccounts" ? [ME] : method === "eth_chainId" ? "0x" + status().chainId.toString(16) : null)) };
   Object.defineProperty(window, "ethereum", { value: w, configurable: true, writable: true });
 }
-afterEach(() => { mocks.gas = 5n * 10n ** 18n; mocks.reads = 0; mocks.holdings = 0; mocks.canton = 0n; mocks.hold = Promise.resolve(); vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
+afterEach(() => { mocks.kept = null; mocks.gas = 5n * 10n ** 18n; mocks.reads = 0; mocks.holdings = 0; mocks.canton = 0n; mocks.hold = Promise.resolve(); vi.unstubAllEnvs(); vi.clearAllMocks(); Reflect.deleteProperty(window, "ethereum"); });
 const setUp = () => { for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v); wallet(); fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) })); };
 /** The faucet takes a request (the fake answers every POST to it with a place in the line) and keeps count of them. */
 const faucetAccepts = () => {
@@ -336,6 +338,106 @@ describe("the Bridge page", () => {
     expect(closed).toHaveBeenCalledTimes(1);   // its key is dropped and nothing more is done for it
     await openSheet();   // another wallet account is another Canton account: its sheet starts closed
     expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+  });
+
+  it("opens an account this browser kept for the wallet's address as soon as the wallet is connected, with no sign-in and no signature", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    mocks.reopenAccount.mockResolvedValue(opened(true));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(mocks.reopenAccount).toHaveBeenCalledWith(ME, expect.objectContaining({ origin: ORIGIN }), expect.any(Function), undefined, expect.any(Function), expect.anything());
+    expect(mocks.openAccount).not.toHaveBeenCalled();
+    expect((window as unknown as { ethereum: { request: { mock: { calls: [{ method: string }][] } } } }).ethereum.request.mock.calls.some(([a]) => a.method === "eth_signTypedData_v4")).toBe(false);
+    expect(screen.getByRole("button", { name: "Close my Canton account on this browser" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+  });
+
+  it("keeps the sign-in as it was when nothing is kept, or the kept key does not reopen the account", async () => {
+    setUp();
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await openSheet();
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(mocks.reopenAccount).not.toHaveBeenCalled();   // nothing kept: the signing code is not even fetched
+    vi.clearAllMocks();
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    mocks.kept = { wallet: addr(0xe4) };
+    mocks.reopenAccount.mockResolvedValueOnce(null);   // the kept key failed a check
+    act(() => handlers.accountsChanged!([ME]));
+    await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(1));
+    await openSheet();
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.queryByText("Ready")).toBeNull();
+    mocks.reopenAccount.mockRejectedValueOnce(new Error("the service is down"));
+    act(() => handlers.accountsChanged!([addr(0xe5)]));
+    act(() => handlers.accountsChanged!([ME]));
+    await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(2));
+    await openSheet();
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+  });
+
+  it("closes a reopened account when the wallet switches to another address", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    mocks.reopenAccount.mockResolvedValue(opened(true));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    mocks.kept = null;
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(mocks.reopenAccount).toHaveBeenCalledTimes(1);   // the other address had no key kept: nothing opened for it
+  });
+
+  it("ignores an account that finishes reopening after the wallet has switched to another", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    let finish!: (a: unknown) => void;
+    mocks.reopenAccount.mockReturnValue(new Promise((done) => { finish = done; }));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(1));
+    mocks.kept = null;
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    await act(async () => { finish(opened(true)); });
+    expect(screen.queryByText("Ready")).toBeNull();
+    expect(closed).toHaveBeenCalled();   // the late account is let go
+  });
+
+  it("closes the account on this browser with the button: the kept key goes, the account is let go, and the next sign-in asks the wallet again", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    mocks.reopenAccount.mockResolvedValue(opened(true));
+    mocks.closeAccount.mockResolvedValue(undefined);
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close my Canton account on this browser" }));
+    expect(mocks.closeAccount).toHaveBeenCalledWith(expect.objectContaining({ party: PARTY }), ME);
+    await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
+    await openSheet();
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+  });
+
+  it("says so, and keeps the account open, when the browser cannot remove the kept key; and shows no Close where nothing is kept", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    mocks.reopenAccount.mockResolvedValue(opened(true));
+    mocks.closeAccount.mockRejectedValue(new Error("blocked"));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close my Canton account on this browser" }));
+    expect(await screen.findByText("This browser could not remove it. Your account is still open.")).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    mocks.kept = null;
+    act(() => handlers.accountsChanged!([addr(0xe4)]));
+    mocks.openAccount.mockResolvedValue(opened(false));   // a browser that cannot keep the key
+    await openSheet();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close my Canton account on this browser" })).toBeNull();
   });
 
   it("does not show Copied for another account after the wallet switches", async () => {

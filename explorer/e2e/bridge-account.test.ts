@@ -26,7 +26,8 @@ const STATUS = {
 const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = ""; req.on("data", (c) => (t += c)); req.on("end", () => done(t)); });
 
 describe.skipIf(!dist)("the Bridge page, in a browser", () => {
-  const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`);
+  const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`), other = privateKeyToAccount(`0x${"22".repeat(32)}`);
+  let active = wallet;   // the wallet's connected account: the page asks for it on each load, so a test can change it between loads
   const seen = { topologies: [] as Uint8Array[], prepares: [] as { path: string; body: string; header: string }[], signRequests: 0, opens: 0 };
   // What the fake service does: `has` is what the account holds (a prepare of an acceptance marks it as held), and `prepare` is how it answers a prepare.
   const service = { has: { twin: false, withdrawal: false }, prepare: "accepted" as "accepted" | "too_many_open", hide: null as null | "withdrawal" };
@@ -34,6 +35,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
   beforeEach(() => {
     Object.assign(seen, { topologies: [], prepares: [], signRequests: 0, opens: 0 });
     Object.assign(service, { has: { twin: false, withdrawal: false }, prepare: "accepted", hide: null });
+    active = wallet;
   });
 
   beforeAll(async () => {
@@ -81,14 +83,14 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     const scripts: string[] = [];
     page.on("response", (r: any) => { if (r.request().resourceType() === "script") scripts.push(new URL(r.url()).pathname); });
     await page.exposeFunction("__wallet", async (method: string, params: any[]) => {
-      if (method === "eth_requestAccounts" || method === "eth_accounts") return [wallet.address];
+      if (method === "eth_requestAccounts" || method === "eth_accounts") return [active.address];
       if (method === "eth_chainId") return "0x" + (770101).toString(16);
       if (method === "wallet_switchEthereumChain") return null;
       if (method === "eth_signTypedData_v4") {
         seen.signRequests++;
         const { domain, types, primaryType, message } = JSON.parse(params[1]);
         delete types.EIP712Domain;
-        return wallet.signTypedData({ domain, types, primaryType, message });
+        return active.signTypedData({ domain, types, primaryType, message });
       }
       throw new Error(`the wallet was asked ${method}`);
     });
@@ -132,6 +134,79 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       expect(JSON.parse(p.body).party).toBe(party);
     }
   }, 90_000);
+
+  /** What this browser keeps for the account, read straight from IndexedDB: the page's own code is not asked, and the key's bytes are tried to be read out. */
+  const kept = (page: any) => page.evaluate(async () => {
+    const db: IDBDatabase = await new Promise((done, fail) => { const r = indexedDB.open("ostia-bridge-canton", 1); r.onsuccess = () => done(r.result); r.onerror = () => fail(r.error); });
+    const rows: any[] = await new Promise((done, fail) => { const r = db.transaction("accounts").objectStore("accounts").getAll(); r.onsuccess = () => done(r.result); r.onerror = () => fail(r.error); });
+    db.close();
+    return Promise.all(rows.map(async (row) => {
+      const exported = await Promise.all(["pkcs8", "jwk", "raw"].map((f) => crypto.subtle.exportKey(f as "raw", row.privateKey).then(() => true, () => false)));
+      return {
+        fields: Object.keys(row).sort(), wallet: row.wallet, party: row.party, publicBytes: row.publicKey instanceof Uint8Array ? row.publicKey.length : -1,
+        isCryptoKey: row.privateKey instanceof CryptoKey, extractable: row.privateKey.extractable, type: row.privateKey.type, algorithm: row.privateKey.algorithm.name, exportable: exported.some(Boolean),
+      };
+    }));
+  });
+  const connect = async (page: any) => { await page.getByRole("heading", { name: "Bridge" }).waitFor(); await page.waitForLoadState("networkidle"); const b = page.getByRole("button", { name: "Connect MetaMask" }); if (await b.count()) await b.first().click(); };
+
+  it("stays open after a reload: Ready again with no second signature, from a key that cannot be read out; Close removes it", async () => {
+    const { page } = await open("/bridge");
+    expect(await page.evaluate(() => crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign"]).then(() => true, () => false))).toBe(true);   // this browser has Ed25519; a browser without it signs again (unit tests)
+    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
+    expect(seen.signRequests).toBe(1);
+
+    // What the browser holds: a CryptoKey that is not extractable (and which refuses every export), the public half, and the addresses. No bytes of the private key.
+    const rows = await kept(page);
+    expect(rows).toEqual([{ fields: ["party", "privateKey", "publicKey", "wallet"], wallet: wallet.address.toLowerCase(), party, publicBytes: 32, isCryptoKey: true, extractable: false, type: "private", algorithm: "Ed25519", exportable: false }]);
+    expect(await page.getByRole("button", { name: "Close my Canton account on this browser" }).count()).toBe(1);
+
+    await page.reload({ waitUntil: "load" });
+    await connect(page);   // a page that restores the wallet's connection on its own has no button to press
+    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
+    expect(seen.signRequests).toBe(1);   // the wallet was not asked to sign again
+    expect(seen.topologies).toHaveLength(2);
+    expect(Buffer.from(seen.topologies[1]!).equals(Buffer.from(seen.topologies[0]!))).toBe(true);   // the same key
+    expect(seen.prepares).toHaveLength(2);   // both acceptances were there: nothing was made again
+    expect(await page.getByTitle(party).count()).toBe(1);
+    expect(await kept(page)).toHaveLength(1);
+
+    await page.getByRole("button", { name: "Close my Canton account on this browser" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).waitFor();
+    expect(await page.getByText("Ready", { exact: true }).count()).toBe(0);
+    expect(await kept(page)).toEqual([]);
+    await page.reload({ waitUntil: "load" });
+    await connect(page);
+    await page.getByRole("button", { name: "Open my Canton account" }).waitFor();   // nothing kept: the sign-in is back
+    expect(await page.getByText("Ready", { exact: true }).count()).toBe(0);
+    expect(seen.signRequests).toBe(1);
+    await page.close();
+  }, 120_000);
+
+  it("never opens another wallet address's account from the key it kept", async () => {
+    const { page } = await open("/bridge");
+    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Open my Canton account" }).click();
+    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
+    active = other;   // the wallet is on another account when the page loads again
+    await page.reload({ waitUntil: "load" });
+    await connect(page);
+    await page.getByRole("button", { name: "Open my Canton account" }).waitFor();
+    expect(await page.getByText("Ready", { exact: true }).count()).toBe(0);
+    expect(seen.topologies).toHaveLength(1);   // the first account's key was not used for the other address
+    expect(seen.signRequests).toBe(1);
+    expect((await kept(page)).map((r: any) => r.wallet)).toEqual([wallet.address.toLowerCase()]);   // and it is still kept for its own
+    active = wallet;   // back on the first address, it opens again with no signature
+    await page.reload({ waitUntil: "load" });
+    await connect(page);
+    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
+    expect(seen.signRequests).toBe(1);
+    await page.close();
+  }, 120_000);
 
   it("is not Ready until the account's list shows both acceptances, and says so in plain words when one never shows", async () => {
     service.hide = "withdrawal";   // the withdrawal acceptance never shows in the account's list

@@ -9,6 +9,7 @@ import { short } from "../format.ts";
 import { timeoutSignal } from "../timeout.ts";
 import { useStatus } from "../useStatus.ts";
 import { injected, useWallet } from "../wallet.ts";
+import { browserKeyStore } from "../bridge/canton/keystore.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
 import { GENERIC, PageError, plainText, plainWords, signInWords } from "../bridge/words.ts";
@@ -79,11 +80,29 @@ export function Bridge() {
   // for it is ignored when it ends. `epoch` counts the wallet's accounts: work that began under an earlier count is the old account's.
   const epoch = useRef(0);
   const holding = useRef<Account | null>(null);
+  const [closeNote, setCloseNote] = useState<string | null>(null);
+  const clear = () => { setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({}); setCloseNote(null); };
   useEffect(() => {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
-    setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({});
+    clear();
+    // An account this browser kept for this wallet address opens again without a signature (a reload, or the wallet coming back to an address it opened before). Nothing kept, or any
+    // failure, leaves the sign-in as it was.
+    const address = wallet.account;
+    if (!address || !settings || location.origin !== settings.origin) return;
+    const mine = epoch.current, same = () => epoch.current === mine;
+    (async () => {
+      // The signing code is fetched only when this browser keeps a key for this address; otherwise it is fetched when the person signs in.
+      const store = browserKeyStore();
+      if (!(await store.load(address))) return;
+      const { reopenAccount } = await import("../bridge/account.ts");
+      const account = await reopenAccount(address, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same, store);
+      if (!same()) return account?.close();
+      if (!account) return setPhase({ s: "idle" });
+      holding.current = account;
+      setPhase({ s: "ready", account });
+    })().catch(() => { if (same()) setPhase({ s: "idle" }); });
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -163,6 +182,17 @@ export function Bridge() {
       setPhase({ s: "ready", account });
     } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName, gas) }); }
   }
+  /** "Close my Canton account on this browser": the kept key is removed, and the open account is let go. The next sign-in asks the wallet again. */
+  async function closeHere(account: Account) {
+    if (!wallet.account) return;
+    try {
+      const { closeAccount } = await import("../bridge/account.ts");
+      await closeAccount(account, wallet.account);
+      epoch.current++;
+      holding.current = null;
+      clear();
+    } catch { setCloseNote("This browser could not remove it. Your account is still open."); }
+  }
   async function getCanton(account: Account) {
     const mine = epoch.current, same = () => epoch.current === mine;
     setCoin({ s: "working" });
@@ -234,6 +264,13 @@ export function Bridge() {
               </div>
               {note(coin)}
               {note(rome)}
+              {phase.account.kept && (
+                <>
+                  <p className="small muted">This browser keeps your account open: a reload does not ask your wallet again. The key is stored here and cannot be read out.</p>
+                  <button type="button" className="btn ghost" onClick={() => closeHere(phase.account)}>Close my Canton account on this browser</button>
+                  {closeNote && <p className="small bad" role="alert">{closeNote}</p>}
+                </>
+              )}
             </>
           ) : (
             <>

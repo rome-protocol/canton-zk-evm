@@ -362,8 +362,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await row.waitFor();
     expect(await row.getByRole("listitem", { name: "Sent: waiting" }).count()).toBe(1);
     expect(await noSideways(page)).toBe(true);
-    await row.getByRole("button", { name: "Open my Canton account to continue" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    // The browser kept the account's key: the account opens again by itself after the connect, with no second signature, and the row carries on.
     await row.getByRole("button", { name: "Release on Ostia" }).click();
     await row.getByRole("link", { name: "Ostia block 36512" }).waitFor({ timeout: 90_000 });
     expect(await row.getByRole("listitem", { name: "Final: done" }).count()).toBe(1);

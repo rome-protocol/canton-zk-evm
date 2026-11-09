@@ -1,4 +1,5 @@
-// The Canton account's key, derived from one wallet signature. The same wallet makes the same key on any device, and the key is held in memory only.
+// The Canton account's key, derived from one wallet signature. The same wallet makes the same key on any device. The page holds it in memory, and where the browser has WebCrypto's Ed25519 it may
+// also keep the key's non-extractable CryptoKey in IndexedDB (keystore.ts), so a reload does not ask the wallet again. The key's raw bytes are never stored.
 // The key signs through one function for each purpose (the account's onboarding, a transaction the page checked, a request to the account service) and has no
 // general signing method: the raw signer is private to this module.
 import { recoverTypedDataAddress } from "viem";
@@ -34,6 +35,7 @@ export interface CantonKey {
   readonly publicKey: Uint8Array;   // 32 raw bytes
 }
 const signers = new WeakMap<CantonKey, (message: Uint8Array) => Promise<Uint8Array>>();
+const privateKeys = new WeakMap<CantonKey, CryptoKey>();   // the keys that WebCrypto holds (not extractable): only these can be kept by the browser
 const sign = (key: CantonKey, message: Uint8Array): Promise<Uint8Array> => {
   const signer = signers.get(key);
   if (!signer) throw new Error("not a key made by this library");
@@ -85,6 +87,30 @@ async function webKey(seed: Uint8Array, publicKey: Uint8Array): Promise<CantonKe
     const key = await crypto.subtle.importKey("pkcs8", new Uint8Array([...PKCS8_ED25519, ...seed]) as BufferSource, { name: "Ed25519" }, false, ["sign"]);
     const made: CantonKey = { publicKey };
     signers.set(made, async (m) => new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, m as BufferSource)));
+    privateKeys.set(made, key);
+    return made;
+  } catch { return null; }
+}
+
+/** The key's non-extractable WebCrypto private half, for the browser's store (keystore.ts), or null when the key is not held by WebCrypto (a browser without Ed25519): it is then not kept. Never bytes. */
+export function storableKey(key: CantonKey): CryptoKey | null {
+  return privateKeys.get(key) ?? null;
+}
+
+const CHECK_MESSAGE = new TextEncoder().encode("ostia-bridge canton-key check");
+
+/** The key that the browser's store gave back, or null when it is not exactly what `storableKey` made: an Ed25519 private key that is not extractable, can sign, and is the pair of `publicKey`
+ * (a signature it makes is checked against it). Anything else is refused, so a wrong or damaged record is never used. */
+export async function keyFromStored(privateKey: unknown, publicKey: unknown): Promise<CantonKey | null> {
+  try {
+    if (!(privateKey instanceof CryptoKey) || !(publicKey instanceof Uint8Array) || publicKey.length !== 32) return null;
+    if (privateKey.type !== "private" || privateKey.extractable || privateKey.algorithm.name !== "Ed25519" || !privateKey.usages.includes("sign")) return null;
+    const signature = await crypto.subtle.sign({ name: "Ed25519" }, privateKey, CHECK_MESSAGE as BufferSource);
+    const pub = await crypto.subtle.importKey("raw", publicKey as BufferSource, { name: "Ed25519" }, false, ["verify"]);
+    if (!(await crypto.subtle.verify({ name: "Ed25519" }, pub, signature, CHECK_MESSAGE as BufferSource))) return null;
+    const made: CantonKey = { publicKey: new Uint8Array(publicKey) };
+    signers.set(made, async (m) => new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, m as BufferSource)));
+    privateKeys.set(made, privateKey);
     return made;
   } catch { return null; }
 }
