@@ -98,6 +98,11 @@ def record(number, offset, cid):
     return {"contractId": cid, "offset": offset, "createArgument": {"number": str(number)}}
 
 
+def mine(event, **fields):
+    """The event with these parties in its createArgument (depositor, party, u, v)."""
+    return {**event, "createArgument": {**event["createArgument"], **fields}}
+
+
 def holding(owner, amount, cid):
     return {"contractId": cid, "offset": 1, "createArgument": {"holding": {"owner": owner, "instrumentId": {"admin": "rg::1", "id": "TKB"}, "amount": amount}}}
 
@@ -576,9 +581,20 @@ class StatusTests(LedgerTestCase):
         self.assertIn(("operator", "gw::1", canton.TOKEN), FakeLedger.asked)   # the gateway is hosted on the operator's participant
 
     def test_status_counts_deposit_requests_and_acceptances(self):
-        FakeLedger.contracts.update({("op::1", canton.CHAIN + "DepositRequest"): [record(0, 1, "d1")], ("op::1", canton.CHAIN + "WithdrawalAcceptance"): [record(0, 1, "a1"), record(0, 2, "a2")]})
+        FakeLedger.contracts.update({("op::1", canton.CHAIN + "DepositRequest"): [mine(record(0, 1, "d1"), depositor="u::1")],
+                                     ("op::1", canton.CHAIN + "WithdrawalAcceptance"): [mine(record(0, 1, "a1"), party="u::1"), mine(record(0, 2, "a2"), party="v::1")]})
         got = canton.main(["status"])
         self.assertEqual((got["deposits"], got["acceptances"]), (1, 2))
+
+    def test_other_parties_terms_deposits_and_acceptances_are_not_counted(self):
+        # Anyone may open an account on the chain and make their own: the operator sees theirs too, and they must not change U's and V's counts.
+        FakeLedger.contracts.update({
+            ("op::1", canton.CHAIN + "DvpTerms"): [mine(record(0, 1, "t1"), u="u::1", v="v::1"), mine(record(0, 2, "t2"), u="x::1", v="y::1")],
+            ("op::1", canton.CHAIN + "DepositRequest"): [mine(record(0, 3, "d1"), depositor="u::1"), mine(record(0, 4, "d2"), depositor="x::1")],
+            ("op::1", canton.CHAIN + "WithdrawalAcceptance"): [mine(record(0, 5, "a1"), party="u::1"), mine(record(0, 6, "a2"), party="v::1"),
+                                                               mine(record(0, 7, "a3"), party="x::1")]})
+        got = canton.main(["balances"])
+        self.assertEqual((got["terms"], got["deposits"], got["acceptances"]), (1, 1, 2))
 
 
 class ResubmitTests(LedgerTestCase):
