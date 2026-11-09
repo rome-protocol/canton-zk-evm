@@ -61,6 +61,7 @@ RELAY_SUFFIX = r"([^/]+)/(allocation-factory|transfer-factory|transfer-instructi
 RELAY_PATH = re.compile(r"/accounts/v1/registry/" + RELAY_SUFFIX)
 PUBLIC_RELAY_PATH = re.compile(r"/accounts/v1/public-registry/" + RELAY_SUFFIX)   # the same registry calls, for wallets this service did not make: no account signature
 PUBLIC_RELAY_RATE = 30   # public registry relay requests per client in a minute
+PUBLIC_RELAY_TOTAL = 600   # and in a minute from all clients together
 TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
@@ -545,12 +546,13 @@ class Accounts:
                  creates: Limiter = None, rate: Limiter = None, topologies: Pending = None, prepared: Pending = None, chain: dict = None,
                  open_limits: dict = None, per_account: Limiter = None, per_client: Limiter = None, overall: Limiter = None, traffic: Limiter = None,
                  max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0, failures: Limiter = None, account_rate: Limiter = None,
-                 network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None, public_relay_rate: Limiter = None):
+                 network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None, public_relay_rate: Limiter = None, public_relay_total: Limiter = None):
         self.ledger, self.user, self.parties, self.allow, self.hint = ledger, user, parties, set(allow), hint
         self.synchronizer, self.topology_version = synchronizer, topology_version
         self.creates, self.rate = creates or Limiter(3, DAY), rate or Limiter(60, 60)
         self.account_rate, self.network_rate = account_rate or Limiter(ACCOUNT_RATE, 60), network_rate or Limiter(NETWORK_RATE, 60)
         self.public_relay_rate = public_relay_rate or Limiter(PUBLIC_RELAY_RATE, 60)
+        self.public_relay_total = public_relay_total or Limiter(PUBLIC_RELAY_TOTAL, 60)   # one key, "all": a ceiling over every client
         self.topologies, self.prepared = topologies or Pending(limit=2000), prepared or Pending(per_group=PENDING_PER_ACCOUNT)   # the caps of the two are apart
         self.chain = chain or {}   # the chain's parties by field name: what a create's observers must be
         self.open_limits = {ACCEPTANCE: 1, DEPOSIT: 3} if open_limits is None else open_limits   # most open contracts of a template an account may have
@@ -689,7 +691,7 @@ class Accounts:
 
     def sweep(self) -> None:
         """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
-        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.account_rate, self.network_rate, self.public_relay_rate, self.in_flight, self.topologies, self.prepared, self.replays,
+        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.account_rate, self.network_rate, self.public_relay_rate, self.public_relay_total, self.in_flight, self.topologies, self.prepared, self.replays,
                      *(self.faucet.limiters() if self.faucet else ())):
             part.prune()
 
@@ -715,8 +717,15 @@ class Accounts:
         self.network_rate.hit(pending_owner(ip))   # a /48 holds many /64s, each with a rate of its own
         if method == "POST" and (public := PUBLIC_RELAY_PATH.fullmatch(path)):
             # Read-only and public: no account, no signature (so no replay memory and no account rate); the client's own rate is the limit.
+            if body is None and not raw.strip():
+                body = {}   # no body at all is an empty request
+            if not isinstance(body, dict):
+                raise HttpError(400, "the body must be a JSON object")
+            self.public_relay_rate.check(ip)
+            self.public_relay_total.check("all")
             self.public_relay_rate.hit(ip)
-            return self.relay_public(urllib.parse.unquote(public[1]), public[3], body if isinstance(body, dict) else {}, public[5], public[2] == "transfer-factory", public[4])
+            self.public_relay_total.hit("all")
+            return self.relay_public(urllib.parse.unquote(public[1]), public[3], body, public[5], public[2] == "transfer-factory", public[4])
         if method == "POST":
             routes = {"/accounts/v1/topology": self.topology, "/accounts/v1/allocate": self.allocate, "/accounts/v1/prepare": self.prepare,
                       "/accounts/v1/execute": self.execute, **({"/accounts/v1/faucet": self.grant} if self.faucet else {})}
@@ -1127,6 +1136,7 @@ def main(argv=None):
     p.add_argument("--requests-per-minute", type=int, default=60, help="requests per client address in a minute")
     p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute, holdings, allocations, transfers and open requests per account in a minute")
     p.add_argument("--public-registry-requests-per-minute", type=int, default=PUBLIC_RELAY_RATE, help="public registry relay requests (for wallets this service did not make) per client in a minute")
+    p.add_argument("--public-registry-requests-per-minute-total", type=int, default=PUBLIC_RELAY_TOTAL, help="public registry relay requests from all clients together in a minute")
     p.add_argument("--requests-per-network-minute", type=int, default=NETWORK_RATE, help="requests per client network (an IPv4 address, an IPv6 /48) in a minute")
     p.add_argument("--chain-parties", help="a JSON file {\"operator\": ..., \"confirmer\": ..., \"gateway\": ..., \"builder\": ...}: the chain's parties, the only observers a create may name")
     for field in CHAIN_FIELDS:
@@ -1182,7 +1192,7 @@ def main(argv=None):
                        Pending(limit=a.max_pending_prepared, per_owner=a.max_pending_per_client, per_group=a.max_pending_per_account), chain, open_limits,
                        Limiter(a.executes_per_account_day, DAY), Limiter(a.executes_per_client_day, DAY), Limiter(a.executes_per_day, DAY),
                        Limiter(a.traffic_per_day, DAY), a.max_transaction_traffic, Limiter(a.accounts_per_day_total, DAY),
-                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), public_relay_rate=Limiter(a.public_registry_requests_per_minute, 60), registries=registries, faucet=faucet)
+                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), public_relay_rate=Limiter(a.public_registry_requests_per_minute, 60), public_relay_total=Limiter(a.public_registry_requests_per_minute_total, 60), registries=registries, faucet=faucet)
     try:
         service.load_rights(force=True)
     except HttpError as e:
