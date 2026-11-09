@@ -110,8 +110,12 @@ describe("the Bridge page with Canton wallets in the build", () => {
     expect(mocks.createSession.mock.calls[0]![0].account).toMatchObject({ party: WALLET_PARTY, chain: expect.objectContaining({ gateway: CHAIN.gateway }) });
     expect(screen.queryByRole("button", { name: "Opt in" })).toBeNull();
     // The moves' steps say where each is approved.
-    await userEvent.click(screen.getByText(/MetaMask pop-up/, { selector: "summary span" }));
-    expect(screen.getAllByText("Approve in Loop").length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("button", { name: "Swap direction" }));   // Canton back to Ostia: one step is approved on Canton
+    const steps = screen.getByRole("region", { name: "Move tokens" });
+    expect(steps).toHaveTextContent("Approve the move back on Canton");
+    expect(steps).toHaveTextContent("Approve in Loop");
+    expect(steps).toHaveTextContent("1 in MetaMask, 1 in Loop.");
+    expect(steps).not.toHaveTextContent("Signed by this page");
   });
 
   it("says that sending and accepting are done in the wallet, that the page's faucet is for Bridge accounts, and shows no send form", async () => {
