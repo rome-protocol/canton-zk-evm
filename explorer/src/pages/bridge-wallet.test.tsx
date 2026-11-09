@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHAIN, fakeWallet, WALLET_PARTY } from "../bridge/wallet/fake-wallet.ts";
@@ -173,7 +173,7 @@ describe("the Bridge page with Canton wallets in the build", () => {
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Connected")).toBeNull();
     expect(sheet()).toHaveTextContent("rome::1220ababab…ababab");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(sheet()).queryByRole("alert")).toBeNull();
     expect(wasConnected()).toBe(false);
     expect(wallet.requests.some((r) => r.method === "disconnect")).toBe(true);
   });

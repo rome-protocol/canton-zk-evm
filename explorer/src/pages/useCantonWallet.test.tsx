@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Unanswered } from "../bridge/canton/accounts.ts";
@@ -17,7 +17,7 @@ vi.mock("../bridge/wallet/connect.ts", () => ({ choices: mocks.choices, connectW
 const LOOP = { wallets: ["loop" as const], gatewayUrl: null };
 const disconnects = (w: ReturnType<typeof fakeWallet>) => w.requests.filter((r) => r.method === "disconnect").length;
 const deferred = <T,>() => { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
-afterEach(() => { vi.clearAllMocks(); localStorage.clear(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
 
 describe("a connection that ends late", () => {
   it("does not end a newer connection: the late approval of an earlier try only lets go of its own listeners", async () => {
@@ -27,10 +27,11 @@ describe("a connection that ends late", () => {
     mocks.connectWallet.mockReturnValueOnce(late.promise);
     mocks.connectWallet.mockImplementationOnce(async () => linkWallet(newer.provider, { name: "Loop" }));
     const { result } = renderHook(() => useCantonWallet(LOOP, CHAIN, "DevNet"));
-    await act(async () => { await result.current.connect(); });            // the first try waits for the person's approval
+    act(() => { void result.current.connect(); });                            // the first try waits for the person's approval
+    await waitFor(() => expect(mocks.connectWallet).toHaveBeenCalledTimes(1));
     expect(result.current.state.s).toBe("working");
     act(() => result.current.reset());                                        // the person turns to another way, then connects again
-    await act(async () => { await result.current.connect(); });
+    act(() => { void result.current.connect(); });
     await waitFor(() => expect(result.current.state.s).toBe("ready"));
     const link = result.current.link;
     await act(async () => { late.resolve(await linkWallet(older.provider, { name: "Loop" })); await new Promise((r) => setTimeout(r, 20)); });   // the earlier approval comes late

@@ -120,14 +120,13 @@ describe("a link made late does not end a newer connection", () => {
   it("leaves the SDK's session alone when it is no longer this link's own, and ends it when it still is", async () => {
     const m = await load();
     const older = await m.connectWallet(OPTIONS, "browser:ext:fake");
-    const newer = await m.connectWallet(OPTIONS, "browser:ext:fake");
+    const newer = await m.connectWallet(OPTIONS, "browser:ext:fake");   // the SDK's session is now the newer link's: an extension's provider is made for each connection
     const asked = () => wallet.requests.filter((r) => r.method === "disconnect").length;
-    await older.disconnect();   // a late approval of the older try is let go
-    const afterOlder = asked();
+    await older.disconnect();   // the late end of the older one
+    expect(asked()).toBe(0);
     expect(newer.closed).toBe(false);
-    expect(await newer.ledgerApi({ requestMethod: "get", resource: "/v2/version" }).then(() => true, () => true)).toBe(true);
-    await newer.disconnect();
-    expect(asked()).toBeGreaterThan(afterOlder - 1);   // the newer one's own disconnect still reaches the wallet
+    await newer.disconnect();   // the newer one's own end reaches the wallet
+    expect(asked()).toBe(1);
     const later = await load();
     expect(await later.restoreWallet(OPTIONS)).toBeNull();
   });
