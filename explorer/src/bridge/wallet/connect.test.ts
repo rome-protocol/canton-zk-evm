@@ -28,7 +28,8 @@ function installExtension() {
   wallet.provider.on("txChanged", notify);
   stop = () => { window.removeEventListener("message", onMessage); window.removeEventListener("canton:requestProvider", onRequest); };
 }
-const load = async () => { vi.resetModules(); return import("./connect.ts"); };
+// The SDK registers its web components when it is imported, which it may do once: a reload is the module forgetting its client.
+const load = async () => { const m = await import("./connect.ts"); m.startOver(); return m; };
 const OPTIONS = { wallets: ["extension" as const], gatewayUrl: null, networkName: "DevNet" };
 
 beforeEach(() => { localStorage.clear(); installExtension(); });

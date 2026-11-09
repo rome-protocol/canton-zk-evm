@@ -98,6 +98,9 @@ let discovery: Promise<Discovery> | null = null;
 /** The SDK's discovery client with this build's adapters, made once (it restores a session the browser kept). */
 const client = (o: ConnectOptions): Promise<Discovery> => (discovery ??= adaptersOf(o).then((adapters) => Client.create({ adapters })).catch((e) => { discovery = null; throw e; }));
 
+/** Forgets the discovery client, so the next call makes one again, as a reload does (the tests use this; the SDK keeps the session in the browser). */
+export function startOver(): void { discovery = null; }
+
 /** The wallet's name as the screen shows it. */
 export function nameOf(adapter: Pick<WalletAdapter, "providerId" | "name">): string {
   return /loop/i.test(adapter.providerId) ? "Loop" : adapter.name || "Canton wallet";
