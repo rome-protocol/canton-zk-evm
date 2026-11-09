@@ -109,10 +109,15 @@ describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
     const page = await newPage("old");
     await page.goto(base + "/faucet", { waitUntil: "load" });
     await page.waitForSelector(".builder-grant");
-    expect(await page.textContent(".builder-grant")).toContain("Building on Ostia? Sign in with GitHub for 100 tROME.");
+    expect(await page.textContent(".builder-grant")).toContain("Building on Ostia? Get 100 tROME.");
     expect(await page.locator(".builder-grant a").count()).toBe(0);
+    expect(await page.locator(".builder-grant button.gh-btn").isDisabled()).toBe(true);
+    expect(await page.locator(".builder-grant .gh-btn").evaluate((e: any) => e.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
     await page.fill("input[name=address]", ADDRESS);
     expect(await page.getAttribute(".builder-grant a", "href")).toBe(`/api/faucet/github/start?address=${ADDRESS}`);
+    expect(await page.locator(".builder-grant a svg.gh-mark").count()).toBe(1);
+    // GitHub's look survives the page's own link rules: white on #24292f in a light page.
+    expect(await page.locator(".builder-grant a").evaluate((e: any) => { const c = getComputedStyle(e); return [c.color, c.backgroundColor]; })).toEqual(["rgb(255, 255, 255)", "rgb(36, 41, 47)"]);
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 60_000);
