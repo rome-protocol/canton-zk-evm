@@ -275,7 +275,7 @@ export function Bridge() {
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
           {walletSheet ? (
-            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => void canton.disconnect()} onBridgeAccount={() => setBridgeAccount(true)} />
+            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => { setSheet(true); void canton.disconnect(); }} onBridgeAccount={() => setBridgeAccount(true)} />
           ) : phase.s === "ready" ? (
             <>
               <p className="ready"><span className="sd ok"><i /><b>Ready</b></span> <span className="mono" title={phase.account.party}>{short(phase.account.party, 16, 6)}</span>
