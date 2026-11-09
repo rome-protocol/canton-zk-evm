@@ -50,6 +50,19 @@ export function useWallet(chain: Chain | undefined) {
       setError(null);
     } catch (e) { setError(walletWords(e)); }
   }, [chain, read]);
+  // A reload keeps the connection: the wallet is asked, without a pop-up, which account this site may already see.
+  useEffect(() => {
+    const w = injected();
+    if (!w) return;
+    let live = true;
+    w.request({ method: "eth_accounts" }).then((a) => {
+      const first = Array.isArray(a) && typeof a[0] === "string" ? a[0].toLowerCase() : null;
+      if (!live || !first) return;
+      setAccount((cur) => cur ?? first);
+      read(w).catch(() => {});
+    }, () => {});
+    return () => { live = false; };
+  }, [read]);
   useEffect(() => {
     const w = injected();
     if (!w?.on) return;
