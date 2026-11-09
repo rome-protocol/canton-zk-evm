@@ -4,6 +4,7 @@ import { short } from "../format.ts";
 import { showBalance } from "../bridge/amounts.ts";
 import type { Sender } from "../bridge/send.ts";
 import type { Pair } from "../bridge/tokens.ts";
+import { inWallet } from "../bridge/wallet/wallets.ts";
 import { IncomingTransfers, SendOnCanton } from "./CantonSend.tsx";
 
 /** One address with its Copy button: the short form on the screen, the whole address on copy. */
@@ -24,8 +25,10 @@ function Address({ label, value, copyLabel, lead, tail }: { label: string; value
  * Before the Canton account is open it is the short version: the wallet's address, and a word that the account is not open yet.
  * It reads nothing itself: the balances are the move card's read of the account's holdings (`held`, by token key), so a page with the panel asks the account service for no more than before.
  */
-export function AccountPanel({ wallet, party, pairs, held, chainName, sender = null, refresh = 0, onChanged = () => {}, kept = null }: {
-  wallet: string; party: string | null; pairs: Pair[]; held: Record<string, bigint | null>; chainName: string;
+export function AccountPanel({ wallet, party, pairs, held, chainName, sender = null, refresh = 0, onChanged = () => {}, kept = null, cantonWallet = null }: {
+  wallet: string; party: string | null;
+  /** The name of the connected Canton wallet, when the Canton account is a wallet's: it signs and sends in the wallet itself. */
+  cantonWallet?: string | null; pairs: Pair[]; held: Record<string, bigint | null>; chainName: string;
   /** What signs a send and an accept for the open account (null until it is ready); `onChanged` is said after one, so the balances are read again, and `refresh` counts up when they were. */
   sender?: Sender | null; refresh?: number; onChanged?: () => void;
   /** Set when this browser keeps the open account's key: the button that removes it, and what to say when the browser could not. */
@@ -43,7 +46,11 @@ export function AccountPanel({ wallet, party, pairs, held, chainName, sender = n
       </div>
       {party && (
         <>
-          <p className="small muted">This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.</p>
+          {cantonWallet ? (
+            <p className="small muted">This is your address on Canton. Sending and accepting are done in {inWallet(cantonWallet)} itself.</p>
+          ) : (
+            <p className="small muted">This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.</p>
+          )}
           {kept && (
             <>
               <p className="small muted">This browser keeps your account open: a reload does not ask your wallet again. The key is stored here and cannot be read out.</p>

@@ -24,7 +24,9 @@
   "dependencies": {
     "@canton-network/core-ledger-proto": "1.14.0",
     "@canton-network/core-tx-visualizer": "1.14.0",
+    "@canton-network/dapp-sdk": "1.9.0",
     "@ethereum-sourcify/lib-sourcify": "3.7.4",
+    "@fivenorth/loop-sdk": "0.16.0",
     "@noble/ed25519": "3.2.0",
     "@protobuf-ts/runtime": "2.11.1",
     "@tanstack/react-query": "5.104.1",
@@ -51,5 +53,10 @@
     "typescript": "7.0.2",
     "vite": "8.3.2",
     "vitest": "5.0.3"
+  },
+  "overrides": {
+    "@fivenorth/loop-sdk": {
+      "typescript": "$typescript"
+    }
   }
 }
