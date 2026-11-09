@@ -8,6 +8,8 @@ export interface ButtonInput {
   connected: boolean;
   /** The Canton account is open. */
   accountReady: boolean;
+  /** What the button says while it is not (a Canton wallet that has not opted in): "Open my Canton account" when not given. */
+  openLabel?: string;
   config: "loading" | "ready" | "failed";
   /** "empty": nothing typed; "bad": text the bridge will not take; "ok". */
   amount: "empty" | "bad" | "ok";
@@ -66,7 +68,7 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   // The order is the wallet, then the chain's coin for fees, then the Canton account: none of them needs the bridge's tokens.
   if (!i.connected) return { label: "Connect MetaMask", action: "connect", disabled: false };
   if (i.needCoin) return { label: i.asking ? "Asking the faucet…" : i.coming ? `${i.needCoin} is on its way…` : `Get test ${i.needCoin}`, action: "faucet", disabled: !!(i.asking || i.coming) };
-  if (!i.accountReady) return { label: "Open my Canton account", action: "open", disabled: false };
+  if (!i.accountReady) return { label: i.openLabel ?? "Open my Canton account", action: "open", disabled: false };
   if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };
   if (i.config === "failed") return { label: "Not available here", action: "none", disabled: true };
   if (i.preparing) return { label: "Getting ready…", action: "none", disabled: true };

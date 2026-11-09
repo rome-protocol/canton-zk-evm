@@ -11,6 +11,7 @@ import { CannotTakeBack } from "../bridge/moves/moves.ts";
 import type { MoveState } from "../bridge/moves/state.ts";
 import { popups, stepsOf, cantonSignatures } from "../bridge/moves/steps.ts";
 import type { Session } from "../bridge/session.ts";
+import { inWallet } from "../bridge/wallet/wallets.ts";
 import { arrivesAs, inputOf, moveOf, pairsOf, type Pair, type Side, type Token } from "../bridge/tokens.ts";
 import { moveWords } from "../bridge/words.ts";
 import { TokenPicker } from "./TokenPicker.tsx";
@@ -27,6 +28,10 @@ export interface MoveCardProps {
   session: Session | null;
   /** The Canton account is open (the machinery may still be getting built). */
   accountOpen: boolean;
+  /** What the button says while the Canton account is not open, when it is not "Open my Canton account" (a connected wallet that has not opted in). */
+  openLabel?: string;
+  /** The name of the connected Canton wallet when the Canton steps are approved in it, else null (this page signs them with the Bridge account). */
+  cantonWallet?: string | null;
   chainName: string;
   onConnect(): void;
   /** What the wallet or the page says of connecting, in plain words. */
@@ -155,11 +160,11 @@ export function MoveCard(p: MoveCardProps) {
     return () => { live = false; clearInterval(timer); };
   }, [session, keptRef, keptStage, move.phase]);
   const button = buttonOf({
-    connected: p.account !== null, needCoin: p.faucet && bal.gas === 0n ? config?.chain.coin.symbol : undefined, asking: p.faucet?.busy, coming: p.faucet?.coming, accountReady: p.accountOpen, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
+    connected: p.account !== null, needCoin: p.faucet && bal.gas === 0n ? config?.chain.coin.symbol : undefined, asking: p.faucet?.busy, coming: p.faucet?.coming, accountReady: p.accountOpen, openLabel: p.openLabel, preparing: session === null, config: p.configState, amount: parsed.state, enough, symbol: symbols?.from ?? "",
     to, move, kept: move.phase === "failed" && move.kept, continueLabel: keptNow ? continueWords(entryOf(keptNow), p.chainName) : undefined,
   });
   const kind = pair ? moveOf(pair, from) : null;
-  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native, p.chainName, pair.wrapped) : [];
+  const steps = pair && kind ? stepsOf(kind, symbols!.from, pair.native, p.chainName, pair.wrapped, p.cantonWallet ?? undefined) : [];
   const pops = popups(steps), signs = kind ? cantonSignatures(kind) : 0;
   const note = noteOf(move);
   const running = progressWords(move, symbols?.from ?? "") !== null || starting;
@@ -278,8 +283,8 @@ export function MoveCard(p: MoveCardProps) {
           {p.faucet && bal.gas === 0n && p.faucet.extra}
           <details className="move-steps">
             <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
-            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page" : "Automatic"}</span></li>)}</ol>
-            <p className="small muted">{pops} in MetaMask{signs > 0 ? `, ${signs} by your Canton account` : ""}.</p>
+            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? (p.cantonWallet ? `Approve in ${inWallet(p.cantonWallet)}` : "Signed by this page") : "Automatic"}</span></li>)}</ol>
+            <p className="small muted">{pops} in MetaMask{signs > 0 ? (p.cantonWallet ? `, ${signs} in ${inWallet(p.cantonWallet)}` : `, ${signs} by your Canton account`) : ""}.</p>
           </details>
         </>
       )}

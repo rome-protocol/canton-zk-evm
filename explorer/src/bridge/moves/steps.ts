@@ -5,14 +5,14 @@ import type { MoveKind } from "./state.ts";
 export interface StepLine { text: string; by: "wallet" | "page" | "auto" }
 
 /** `arrives` is what a redeem of the chain's own coin puts on the chain (its wrapped form); nothing else needs it. */
-export function stepsOf(kind: MoveKind, symbol: string, native: boolean, chainName: string, arrives?: string | null): StepLine[] {
+export function stepsOf(kind: MoveKind, symbol: string, native: boolean, chainName: string, arrives?: string | null, cantonWallet?: string): StepLine[] {
   switch (kind) {
     case "lock": return [
       ...(native ? [{ text: `Wrap ${symbol}`, by: "wallet" as const }] : []),
       { text: `Approve ${symbol}`, by: "wallet" }, { text: `Pay ${symbol} in`, by: "wallet" }, { text: "Canton shows it in your account", by: "auto" },
     ];
-    case "redeem": return [{ text: `Sign the move back on Canton`, by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Release ${native ? arrives ?? `wrapped ${symbol}` : symbol} on ${chainName}`, by: "wallet" }];
-    case "deposit": return [{ text: "Sign the deposit on Canton (two signatures)", by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Claim ${symbol} on ${chainName}`, by: "wallet" }];
+    case "redeem": return [{ text: cantonWallet ? "Approve the move back on Canton" : `Sign the move back on Canton`, by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Release ${native ? arrives ?? `wrapped ${symbol}` : symbol} on ${chainName}`, by: "wallet" }];
+    case "deposit": return [{ text: cantonWallet ? "Approve the deposit on Canton (two approvals)" : "Sign the deposit on Canton (two signatures)", by: "page" }, { text: "Canton shows it", by: "auto" }, { text: `Claim ${symbol} on ${chainName}`, by: "wallet" }];
     case "withdraw": return [{ text: `Withdraw ${symbol} to Canton`, by: "wallet" }, { text: "Canton shows it in your account", by: "auto" }];
   }
 }

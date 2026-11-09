@@ -3,6 +3,7 @@
 import { cantonAdapter } from "./adapter.ts";
 import { adoptRecord } from "./adopt.ts";
 import { track } from "./activity.ts";
+import type { AccountsClient } from "./canton/accounts.ts";
 import type { Account } from "./account.ts";
 import { holdingsOf } from "./balances.ts";
 import type { OpenRequest, OpenState } from "./canton/accounts.ts";
@@ -59,9 +60,12 @@ export async function releaseUsed(evm: Pick<EvmAdapter, "used">, config: Pick<Br
   return false;
 }
 
+/** What a move needs of the Canton account: the derived Bridge account, or a connected wallet's (wallet/adapter.ts). The reads take the key first, which a wallet's account does not use. */
+export type SessionAccount = Pick<Account, "key" | "party" | "chain" | "submit"> & { client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory" | "allocationWithdrawContext"> };
+
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-export function createSession(o: { evm: EvmAdapter; account: Pick<Account, "key" | "party" | "client" | "chain" | "submit">; config: BridgeConfig }): Session {
+export function createSession(o: { evm: EvmAdapter; account: SessionAccount; config: BridgeConfig }): Session {
   const { evm, account, config } = o;
   const canton = cantonAdapter({ client: account.client, key: account.key, party: account.party, chain: account.chain, submit: account.submit, sleep });
   const store = moveStore();

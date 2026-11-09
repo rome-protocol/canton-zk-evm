@@ -36,6 +36,7 @@ ARG VITE_CANTON_PARTICIPANT=
 ARG VITE_PARTY_HINT=
 ARG VITE_ACCOUNTS_URL=
 ARG VITE_SITE_ORIGIN=
+ARG VITE_CANTON_WALLETS=
 COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts ./
 COPY explorer/src ./src
 COPY explorer/canton-proto ./canton-proto
