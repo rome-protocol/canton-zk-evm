@@ -122,7 +122,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Connect your Canton wallet" }).click();
-    await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 }).catch(async (e: Error) => { console.log("PAGE TEXT:", (await page.locator(".account").innerText()).slice(0, 600), "\nLOG:", logs.join("\n").slice(0, 2000)); throw e; });
+    await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 }).catch(async (e: Error) => { throw new Error(`${e.message}\nThe sheet says: ${(await page.locator(".account").innerText()).slice(0, 400)}\nThe page logged: ${logs.slice(0, 8).join(" | ")}`); });
   }
 
   it("connects the wallet, opts in with two approvals in it, and moves Canton Coin to Ostia: the wallet approves the allocation and the deposit request, one claim in MetaMask, then final", async () => {
