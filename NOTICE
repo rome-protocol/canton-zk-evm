@@ -51,7 +51,7 @@ verifier/src/vk.rs
 
 explorer/
     Rome Protocol's own code, under LICENSE, except for the third-party parts listed here. The
-    explorer uses three groups of them: npm packages, Rust crates compiled into WebAssembly, and fonts.
+    explorer uses four groups of them: npm packages, Rust crates compiled into WebAssembly, fonts, and one icon.
 
     npm packages, pinned exactly in explorer/package-lock.json and not copied into this repository.
     The pages are built from react, react-dom, scheduler, react-router, react-router-dom, cookie,
@@ -100,6 +100,13 @@ explorer/
     licensed under the SIL Open Font License 1.1. The licence texts are in OFL-Literata.txt, OFL-DM-Sans.txt and
     OFL-IBM-Plex-Mono.txt, next to the font files, and the explorer serves them with the fonts. The explorer
     serves the fonts itself and loads no font from another host.
+
+    The GitHub mark, in explorer/src/faucet/builder.tsx (the MARK path, drawn inline in the "Sign in with
+    GitHub" button): the "mark-github" 16 px icon of Octicons (https://github.com/primer/octicons), as in
+    release v19.15.0. Copyright (c) 2025 GitHub Inc. Licensed under the MIT licence; the licence text is in
+    explorer/src/faucet/LICENSE-Octicons.txt, next to the code. GitHub and the GitHub mark are trademarks of
+    GitHub, Inc.; the mark is used only to name the "Sign in with GitHub" action as GitHub's logo guidelines
+    allow, and no permission to use it comes with this repository.
 
 Other Rust crates are pinned in the Cargo.lock files in this repository (prover/make-input starts from
 zisk-eth-client's own lockfile; see prover/make-input/Cargo.toml), and keep their own licences.

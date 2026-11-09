@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { formatCoin, formatPeriod, formatWait } from "./format.ts";
 import type { FaucetInfo } from "./faucet-client.ts";
 
@@ -36,6 +37,7 @@ function GitHubMark() {
  * there but off, with "Enter your address first."; with one it is an ordinary link, so the browser makes a top-level navigation from our page to the start path.
  */
 export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null | undefined; address: string | null; coin: { symbol: string; decimals: number } }) {
+  const hintId = useId();
   const b = builderOf(info);
   if (!b) return null;
   const amount = `${formatCoin(b.amount, coin.decimals)} ${coin.symbol}`;
@@ -50,11 +52,11 @@ export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null 
         </a>
       ) : (
         <>
-          <button type="button" className="gh-btn" disabled aria-describedby="builder-hint">
+          <button type="button" className="gh-btn" disabled aria-describedby={hintId}>
             <GitHubMark />
             <span>Sign in with GitHub</span>
           </button>
-          <p className="small muted builder-hint" id="builder-hint">Enter your address first.</p>
+          <p className="small muted builder-hint" id={hintId}>Enter your address first.</p>
         </>
       )}
     </div>

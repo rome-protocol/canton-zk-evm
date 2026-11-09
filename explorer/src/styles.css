@@ -345,7 +345,7 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .builder-grant .gh-btn:focus-visible { outline: 2px solid var(--canton); outline-offset: 2px; border-radius: 999px; }
 .builder-grant .gh-btn:disabled { opacity: .55; cursor: not-allowed; }
 .gh-mark { flex: none; display: block; }
-@media (prefers-color-scheme: dark) { .builder-grant .gh-btn { --gh-bg: #F2ECF4; --gh-ink: #24292f; } .builder-grant a.gh-btn:hover { filter: brightness(.92); } }
+@media (prefers-color-scheme: dark) { .builder-grant .gh-btn { --gh-bg: var(--ink); --gh-ink: var(--bg); } .builder-grant a.gh-btn:hover { filter: brightness(.92); } }
 .try { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
 .try a { border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; background: var(--surface); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
@@ -519,4 +519,4 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
 @media (max-width: 720px) { .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; } }
 @media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } } /* a row of tabs scrolls inside itself on a phone */
-@media (max-width: 720px) { .builder-grant .gh-btn { width: 100%; } }
+@media (max-width: 720px) { .builder-grant .gh-btn { width: 100%; } .faucet-page .builder-grant .gh-btn { width: auto; } } /* full width beside the Bridge's full-width button; on the Faucet page the main button keeps its own width */
