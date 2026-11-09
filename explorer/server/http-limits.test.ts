@@ -82,9 +82,14 @@ describe("the builder grant's routes: 10 a minute for each client", () => {
 
   it("hands the request's Sec-Fetch-Mode header to the API", async () => {
     await start();
-    await at("/api/faucet/github/start?address=0x1", { headers: { "sec-fetch-mode": "no-cors" } });
+    // fetch() sets this header itself, so a plain request is made.
+    const get = (headers: Record<string, string>) => new Promise<void>((ok, fail) => {
+      const r = request({ host: "127.0.0.1", port: (server.address() as AddressInfo).port, path: "/api/faucet/github/start?address=0x1", headers }, (res) => { res.resume(); res.on("end", ok); });
+      r.on("error", fail).end();
+    });
+    await get({ "sec-fetch-mode": "no-cors" });
     expect(modeSeen).toBe("no-cors");
-    await at("/api/faucet/github/start?address=0x1");
+    await get({});
     expect(modeSeen).toBeUndefined();
   });
 
