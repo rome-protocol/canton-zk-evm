@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { CopyButton } from "../components/HashLink.tsx";
+import { shortUpdate } from "../format.ts";
 import { AmountError, normaliseAmount } from "../bridge/amounts.ts";
 import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } from "../bridge/sendwords.ts";
 import type { Incoming, SendResult, Sender, Sent } from "../bridge/send.ts";
@@ -95,12 +96,19 @@ export function SendOnCanton({ sender, pairs, held, party, onChanged }: { sender
   );
 }
 
+/** The Canton update of a send, an accept or a take-back: short on the screen, whole when copied. It has no link: the explorer holds only the Canton updates that carry an Ostia block. */
+function UpdateId({ id }: { id: string }) {
+  return (
+    <span className="upd muted">Done on Canton. Update <span className="mono" title={id}>{shortUpdate(id)}</span> <CopyButton value={id} label="Copy update id" /></span>
+  );
+}
+
 function Done({ done }: { done: { result: SendResult } }) {
   const { result } = done;
   return (
     <p className="small" role="status">
       {result.waiting ? "Sent; waiting for the receiver to accept." : "Sent. It is in their account."}{" "}
-      <Link to={`/canton/${result.updateId}`}>Canton update</Link>
+      <UpdateId id={result.updateId} />
     </p>
   );
 }
@@ -113,7 +121,7 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
   const [again, setAgain] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [accepted, setAccepted] = useState<string | null>(null);
+  const [accepted, setAccepted] = useState<{ text: string; updateId?: string } | null>(null);
   useEffect(() => {
     if (pairs.length === 0) { setLooked({ s: "ready", offers: [], sent: [], more: false }); return; }
     let live = true;
@@ -125,8 +133,8 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
     if (busy) return;
     setBusy(o.id); setProblem(null); setAccepted(null);
     try {
-      await sender.accept(o);
-      setAccepted(`${o.amount} ${o.pair.canton.symbol} is in your account.`);
+      const done = await sender.accept(o);
+      setAccepted({ text: `${o.amount} ${o.pair.canton.symbol} is in your account.`, updateId: done?.updateId });
       setLooked((l) => (l.s === "ready" ? { ...l, offers: l.offers.filter((x) => x.id !== o.id) } : l));
       onChanged();
     } catch (e) { setProblem(problemWords(e, "accept")); }
@@ -136,8 +144,8 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
     if (busy) return;
     setBusy(o.id); setProblem(null); setAccepted(null);
     try {
-      await sender.takeBack(o);
-      setAccepted(`${o.amount} ${o.pair.canton.symbol} is back in your account.`);
+      const done = await sender.takeBack(o);
+      setAccepted({ text: `${o.amount} ${o.pair.canton.symbol} is back in your account.`, updateId: done?.updateId });
       setLooked((l) => (l.s === "ready" ? { ...l, sent: l.sent.filter((x) => x.id !== o.id) } : l));
       onChanged();
     } catch (e) {
@@ -179,7 +187,7 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
         </>
       )}
       {looked.s === "ready" && looked.more && <p className="small muted">More transfers are waiting than shown here.</p>}
-      {accepted && <p className="small" role="status">{accepted}</p>}
+      {accepted && <p className="small" role="status">{accepted.text}{accepted.updateId && <>{" "}<UpdateId id={accepted.updateId} /></>}</p>}
       {problem && <p className="small bad" role="alert">{problem}</p>}
     </div>
   );

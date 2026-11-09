@@ -13,6 +13,7 @@ const id = (tag: string, n: number) => `${tag}::1220${n.toString(16).padStart(2,
 const PARTY = id("bridge", 0xab), OTHER = id("bridge", 0xcd), DSO = id("DSO", 5);
 const COIN: Pair = { key: "wrapped:cc", kind: "wrapped", native: false, wrapped: null, erc20: ("0x" + "c1".repeat(20)) as `0x${string}`, ostia: { symbol: "wCC", decimals: 10 }, canton: { symbol: "Canton Coin", admin: DSO, id: "Amulet", decimals: 10 } };
 const TKA: Pair = { key: "twin:a", kind: "twin", native: false, wrapped: null, erc20: ("0x" + "aa".repeat(20)) as `0x${string}`, ostia: { symbol: "TKA", decimals: 6 }, canton: { symbol: "TKA", admin: id("gateway", 3), id: "erc20:" + "aa".repeat(20), decimals: 10 } };
+const UPDATE = "1220" + "ee".repeat(32);
 const held = { [COIN.key]: 20n * 10n ** 10n, [TKA.key]: 0n };
 
 afterEach(cleanup);
@@ -23,8 +24,8 @@ function fake(over: Partial<Sender> = {}) {
   const sender: Sender = {
     send: vi.fn(async () => ({ updateId: "1220" + "ee".repeat(32), waiting: true })),
     waiting: vi.fn(async () => ({ offers: [] as Incoming[], sent: [] as Sent[], more: false })),
-    accept: vi.fn(async () => {}),
-    takeBack: vi.fn(async () => {}),
+    accept: vi.fn(async () => ({ updateId: UPDATE })),
+    takeBack: vi.fn(async () => ({ updateId: UPDATE })),
     can: () => true,
     ...over,
   };
@@ -79,6 +80,7 @@ describe("Send on Canton", () => {
 
   it("shows the line to confirm, sends only after Send, and says it is waiting for the receiver to accept, with the Canton update", async () => {
     const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     const sender = fake();
     const changed = vi.fn();
     show(sender, { onChanged: changed });
@@ -94,7 +96,12 @@ describe("Send on Canton", () => {
     await waitFor(() => expect(send().getByText("Sent; waiting for the receiver to accept.")).toBeInTheDocument());
     expect(sender.send).toHaveBeenCalledOnce();
     expect(sender.send).toHaveBeenCalledWith(COIN, "0.50", OTHER);
-    expect(send().getByRole("link", { name: "Canton update" })).toHaveAttribute("href", `/canton/${"1220" + "ee".repeat(32)}`);
+    // The explorer holds only the Canton updates that carry an Ostia block, so a person's own send has no page there: no link, the id to copy.
+    expect(send().queryByRole("link")).toBeNull();
+    expect(send().getByText(/Done on Canton/)).toBeInTheDocument();
+    expect(send().getByText("1220eeee…eeee")).toBeInTheDocument();   // the short form on the screen
+    await user.click(send().getByRole("button", { name: "Copy update id" }));
+    expect(writeText).toHaveBeenCalledWith(UPDATE);   // the whole id is copied
     expect(changed).toHaveBeenCalled();
     expect(send().getByRole("textbox", { name: "Amount" })).toHaveValue("");   // the form is clear for the next one
   });
@@ -145,6 +152,9 @@ describe("Incoming", () => {
     await user.click(first!);
     await waitFor(() => expect(incoming().getByText("5 Canton Coin is in your account.")).toBeInTheDocument());
     expect(sender.accept).toHaveBeenCalledOnce();
+    expect(incoming().queryByRole("link")).toBeNull();   // no page of the explorer holds this update: its id is shown to copy
+    expect(incoming().getByText(/Done on Canton/)).toBeInTheDocument();
+    expect(incoming().getByRole("button", { name: "Copy update id" })).toBeInTheDocument();
     expect(sender.accept).toHaveBeenCalledWith(expect.objectContaining({ id: "offer1" }));
     expect(changed).toHaveBeenCalledOnce();
     expect(incoming().getAllByRole("listitem")).toHaveLength(1);
@@ -175,6 +185,9 @@ describe("Incoming", () => {
     await user.click(first!);
     await waitFor(() => expect(incoming().getByText("2.5 Canton Coin is back in your account.")).toBeInTheDocument());
     expect(sender.takeBack).toHaveBeenCalledOnce();
+    expect(incoming().queryByRole("link")).toBeNull();
+    expect(incoming().getByText(/Done on Canton/)).toBeInTheDocument();
+    expect(incoming().getByText("1220eeee…eeee")).toBeInTheDocument();
     expect(sender.takeBack).toHaveBeenCalledWith(expect.objectContaining({ id: "sent1" }));
     expect(changed).toHaveBeenCalledOnce();
     expect(incoming().getAllByRole("listitem")).toHaveLength(1);

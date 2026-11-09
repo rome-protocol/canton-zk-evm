@@ -16,7 +16,7 @@ export function canSend(pair: Pair): boolean {
 }
 
 export interface SendResult {
-  /** The Canton update that holds the transfer, for the explorer's link. */
+  /** The Canton update that holds the transfer. The explorer holds only the updates that carry an Ostia block, so a person's own send has no page there: the page shows the id to copy. */
   updateId: string;
   /** The receiver has to accept it first (an offer, or the registry did not say it was done); it is in their account only when the registry says `direct`. */
   waiting: boolean;
@@ -52,9 +52,9 @@ export interface Sender {
   /** The transfers waiting for this account to accept, and the ones it sent that are not accepted yet, for the tokens of `pairs` (one read). */
   waiting(pairs: Pair[]): Promise<{ offers: Incoming[]; sent: Sent[]; more: boolean }>;
   /** Accepts one. Signs one Canton command. */
-  accept(offer: Incoming): Promise<void>;
+  accept(offer: Incoming): Promise<{ updateId: string }>;
   /** Takes back a transfer the account sent that nobody accepted (the standard's withdraw): the tokens return to the account. Signs one Canton command. */
-  takeBack(sent: Sent): Promise<void>;
+  takeBack(sent: Sent): Promise<{ updateId: string }>;
   /** Whether this page can send the token (and accept it): the package that implements it is known. */
   can(pair: Pair): boolean;
 }
@@ -137,13 +137,13 @@ export function createSender(a: Pick<Account, "key" | "party" | "client" | "subm
       open();
       const registry = acceptChoice(await a.client.acceptContext(a.key, offer.pair.canton.admin, offer.id, a.party));
       open();
-      await a.submit(acceptTransfer(a.party, offer.id, registry, implementationOf(offer.pair.canton.id)));
+      return { updateId: await a.submit(acceptTransfer(a.party, offer.id, registry, implementationOf(offer.pair.canton.id))) };
     },
     async takeBack(sent) {
       open();
       const registry = withdrawChoice(await a.client.transferWithdrawContext(a.key, sent.pair.canton.admin, sent.id, a.party));
       open();
-      await a.submit(withdrawTransfer(a.party, sent.id, registry, implementationOf(sent.pair.canton.id)));
+      return { updateId: await a.submit(withdrawTransfer(a.party, sent.id, registry, implementationOf(sent.pair.canton.id))) };
     },
   };
 }

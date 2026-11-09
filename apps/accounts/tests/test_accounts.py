@@ -1086,11 +1086,36 @@ class Authentication(Case):
         self.assertEqual(self.holdings(at=now + 120)[0], 401)
         self.assertEqual(self.holdings(at=now - 50)[0], 200)
 
-    def test_a_replayed_signature_is_401(self):
+    def test_two_identical_signed_reads_in_the_same_second_both_answer(self):
         self.make_account()
-        header = {"X-Account-Signature": self.account_signature("GET", f"/accounts/v1/holdings/{PARTY}", b"")}
+        at = int(time.time())
+        header = {"X-Account-Signature": self.account_signature("GET", f"/accounts/v1/holdings/{PARTY}", b"", at=at)}
         self.assertEqual(self.holdings(headers=header)[0], 200)
-        self.assertEqual(self.holdings(headers=header)[0], 401)
+        self.assertEqual(self.holdings(headers=header)[0], 200)   # the very same signature: a read changes nothing
+        for route in ("open", "transfers", "allocations"):
+            path = f"/accounts/v1/{route}/{PARTY}"
+            h = {"X-Account-Signature": self.account_signature("GET", path, b"", at=at)}
+            self.assertEqual(self.req("GET", path, headers=h)[0], 200, route)
+            self.assertEqual(self.req("GET", path, headers=h)[0], 200, route)
+
+    def test_a_replayed_signature_of_a_request_that_changes_something_is_401(self):
+        self.make_account()
+        path, body = "/accounts/v1/prepare", {"party": PARTY, "commands": []}
+        header = {"X-Account-Signature": self.account_signature("POST", path, json.dumps(body).encode())}
+        self.assertNotEqual(self.req("POST", path, body, headers=header)[0], 401)
+        self.assertEqual(self.req("POST", path, body, headers=header)[0], 401)
+        # and the memory of a POST does not make a GET refused, nor the other way round
+        self.assertEqual(self.holdings()[0], 200)
+
+    def test_a_read_outside_the_time_window_is_still_401_and_still_counts_against_the_account_rate(self):
+        self.start(account_rate=A.Limiter(2, 60))
+        self.make_account()
+        now = int(time.time())
+        self.assertEqual(self.holdings(at=now - 120)[0], 401)
+        header = {"X-Account-Signature": self.account_signature("GET", f"/accounts/v1/holdings/{PARTY}", b"", at=now)}
+        self.assertEqual(self.holdings(headers=header)[0], 200)
+        self.assertEqual(self.holdings(headers=header)[0], 200)
+        self.assertEqual(self.holdings(headers=header)[0], 429)   # repeats are not free: the per-account rate still applies
 
     def test_the_replay_memory_is_dropped_when_the_window_is_over(self):
         now = [1000.0]

@@ -48,6 +48,38 @@ describe("the account service client", () => {
     const b = await c.accountSignature(key, "GET", "/x", "");
     expect([a.split(".")[0], b.split(".")[0]]).toEqual([`${NOW / 1000}`, `${NOW / 1000 - 1}`]);
   });
+  it("shares a signed read that is already on its way: one request, one answer, and asks again once it is answered", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const f = vi.fn(async () => { await gate; return answer(200, { party: PARTY, holdings: [] }); });
+    const c = client(f);
+    const [a, b] = [c.holdings(key, PARTY), c.holdings(key, PARTY)];
+    const other = c.open(key, PARTICIPANT).catch(() => null);   // another path is its own request
+    await new Promise((r) => setTimeout(r, 0));
+    expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(1);
+    release();
+    expect(await a).toEqual(await b);
+    await other;
+    await c.holdings(key, PARTY);   // after the answer, a new read is a new request
+    expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(2);
+  });
+  it("shares a failing read too, and a failure does not stick: the next read asks again", async () => {
+    const f = vi.fn(async () => answer(502, { error: "down" }));
+    const c = client(f);
+    const [a, b] = await Promise.all([c.holdings(key, PARTY).catch((e) => e), c.holdings(key, PARTY).catch((e) => e)]);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(a).toBeInstanceOf(AccountsError);
+    expect(b).toBe(a);
+    await c.holdings(key, PARTY).catch(() => {});
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+  it("never shares a POST: each one is sent", async () => {
+    const f = vi.fn(async () => answer(200, { party: PARTY, preparedTransaction: "AA==", preparedTransactionHash: "AA==", hashingSchemeVersion: "V2" }));
+    const c = client(f);
+    const command = { CreateCommand: { templateId: "#p:M:E", createArguments: { a: 1 } } };
+    await Promise.all([c.prepare(key, PARTY, [command]), c.prepare(key, PARTY, [command])]);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
   it("takes the party from the key, never from the service", async () => {
     const mine = await partyOf(key.publicKey);
     const other = "bridge::1220" + "ee".repeat(32);
