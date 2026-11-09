@@ -140,7 +140,11 @@ export function IncomingTransfers({ sender, pairs, refresh, onChanged }: { sende
       setAccepted(`${o.amount} ${o.pair.canton.symbol} is back in your account.`);
       setLooked((l) => (l.s === "ready" ? { ...l, sent: l.sent.filter((x) => x.id !== o.id) } : l));
       onChanged();
-    } catch (e) { setProblem(problemWords(e, "takeback")); }
+    } catch (e) {
+      const gone = (e as { name?: unknown; kind?: unknown } | null)?.name === "AccountsError" && (e as { kind?: unknown }).kind === "not-found";   // the receiver accepted it between the list and the click
+      setProblem(gone ? "This transfer is no longer waiting. The receiver may have accepted it." : problemWords(e, "takeback"));
+      if (gone) setAgain((n) => n + 1);   // read the list again, so the row goes
+    }
     finally { setBusy(null); }
   };
   const offers = looked.s === "ready" ? looked.offers : [];

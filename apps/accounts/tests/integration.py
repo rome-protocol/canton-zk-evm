@@ -313,15 +313,17 @@ class AccountsOnCanton(unittest.TestCase):
                 unlocked = [h for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]]
                 held_before = round(sum(float(h["amount"]) for h in unlocked), 6)
                 free = lambda: round(sum(float(h["amount"]) for h in service(f"/accounts/v1/holdings/{party}", key=key)[1]["holdings"] if not h["locked"]), 6)
-                second = {**sent, "amount": "2.0", "inputHoldingCids": [h["contractId"] for h in unlocked]}
+                second = {**sent, "amount": "2.0", "executeBefore": demo.utc(timedelta(seconds=40)), "inputHoldingCids": [h["contractId"] for h in unlocked]}
                 status, factory = service(f"/accounts/v1/registry/{registry}/transfer-factory", {"party": party, "choiceArguments": {"expectedAdmin": registry, "transfer": second, "extraArgs": demo.NO_EXTRA_ARGS}, "excludeDebugFields": True}, key)
                 self.assertEqual((status, factory), (200, transfer_answer))
                 second_transfer = {"ExerciseCommand": {"templateId": demo.TRANSFER_FACTORY, "contractId": factory["factoryId"], "choice": "TransferFactory_Transfer", "choiceArgument": {
                     "expectedAdmin": registry, "transfer": second, "extraArgs": {"context": factory["choiceContext"]["choiceContextData"], "meta": {"values": {}}}}}}
+                sent_at = time.time()
                 _, execute_second = run_as(party, key, second_transfer, factory["choiceContext"]["disclosedContracts"])
                 self.assertEqual(execute_second()[0], 200)
                 [unaccepted] = until("the second offer", lambda: service(f"/accounts/v1/transfers/{party}", key=key)[1]["transfers"])
                 until("the tokens to be in the offer", lambda: free() != held_before or None)   # what the account holds free is less by the 2 that the offer holds
+                time.sleep(max(0, 45 - (time.time() - sent_at)))   # the offer is now past its time ("not accepted in time") and still holds what the sender sent, which is the case the sender has to take back
                 withdraw_command = lambda who: {"ExerciseCommand": {"templateId": demo.TRANSFER_INSTRUCTION, "contractId": unaccepted["contractId"], "choice": "TransferInstruction_Withdraw",
                                                                     "choiceArgument": {"extraArgs": {"context": withdraw_answer["choiceContextData"], "meta": {"values": {}}}}}}
                 self.assertEqual(service("/accounts/v1/prepare", {"party": party2, "commands": [withdraw_command(party2)]}, key2)[0], 404)   # the receiver did not send it

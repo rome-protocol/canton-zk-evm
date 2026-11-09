@@ -459,6 +459,7 @@ class TakeBack(Case):
         self.assertEqual([c[2]["commands"][0]["ExerciseCommand"]["choice"] for c in self.calls_to("/prepare")], ["TransferInstruction_Withdraw"] * 2)
 
     def test_an_account_does_not_take_back_a_transfer_it_did_not_send(self):
+        self.transfer_offer(cid="00" + "af" * 40)   # a send of the account's own, so that the refusals below are about the named contract
         self.transfer_offer(sender=self.stranger, receiver=PARTY)   # offered to the account: the account is the receiver
         self.transfer_offer(sender=self.stranger, receiver="third::1220" + "88" * 32, cid="00" + "ad" * 40)
         self.assertEqual(self.withdraw_transfer()[0], 404)

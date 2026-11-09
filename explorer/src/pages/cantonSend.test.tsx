@@ -200,6 +200,17 @@ describe("Incoming", () => {
     expect(incoming().getByRole("button", { name: "Take back" })).toBeEnabled();
   });
 
+  it("says the transfer is no longer waiting when the receiver accepted it before the click, and reads the list again so the row goes", async () => {
+    const user = userEvent.setup();
+    const gone = vi.fn(async () => { throw new AccountsError("not-found", 404, "no such transfer"); });
+    const waiting = vi.fn().mockResolvedValueOnce({ offers: [], sent: [mine(1)], more: false }).mockResolvedValue({ offers: [], sent: [], more: false });
+    show(fake({ waiting, takeBack: gone }));
+    await user.click(await incoming().findByRole("button", { name: "Take back" }));
+    expect(await incoming().findByRole("alert")).toHaveTextContent("This transfer is no longer waiting. The receiver may have accepted it.");
+    await waitFor(() => expect(incoming().queryByRole("button", { name: "Take back" })).toBeNull());
+    expect(waiting).toHaveBeenCalledTimes(2);
+  });
+
   it("says when the read has more transfers than it returned, and not otherwise", async () => {
     show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1)], sent: [], more: true })) }));
     expect(await incoming().findByText("More transfers are waiting than shown here.")).toBeInTheDocument();
