@@ -102,6 +102,21 @@ export interface Config {
     queueMax: number;
     /** Where the limits and the waiting requests are kept across restarts. Null keeps them in memory only. */
     stateFile: string | null;
+    /** The builder grant (sign in with GitHub, get a larger amount). Null when FAUCET_GITHUB_CLIENT_ID is not set. */
+    github: {
+      clientId: string;
+      /** A file only its owner can read, holding the GitHub App's client secret. */
+      clientSecretFile: string;
+      /** The explorer's own /api/faucet/github/callback, as registered with the GitHub App. */
+      redirectUrl: string;
+      amountWei: bigint;
+      /** One grant per GitHub account, and per address, in this many seconds. */
+      perAccountSeconds: number;
+      /** A GitHub account younger than this many days is turned away. */
+      minAccountAgeDays: number;
+      /** The most grants in a day, all accounts together. */
+      maxPerDay: number;
+    } | null;
   };
   /** The optional human check. Null when CAPTCHA_SECRET is not set. */
   captcha: {
@@ -238,6 +253,37 @@ function databaseSettings(env: Env, readFile: ReadFile): PoolConfig | null {
   }
 }
 
+/** The builder grant's settings. Off when there is no client id; with one, the rest it needs must be there, or the server does not start. */
+function githubSettings(env: Env): Config["faucet"]["github"] {
+  const clientId = env.FAUCET_GITHUB_CLIENT_ID?.trim();
+  if (!clientId) return null;
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new ConfigError("FAUCET_GITHUB_CLIENT_ID must be the GitHub App's client id (letters, digits, . _ -)");
+  if (!env.FAUCET_GITHUB_CLIENT_SECRET_FILE) throw new ConfigError("FAUCET_GITHUB_CLIENT_SECRET_FILE must be set with FAUCET_GITHUB_CLIENT_ID: a file only its owner can read, holding the GitHub App's client secret");
+  if (!env.FAUCET_CLIENT_KEY_FILE) throw new ConfigError("FAUCET_CLIENT_KEY_FILE must be set with FAUCET_GITHUB_CLIENT_ID: a GitHub account is kept only as a hash made with that key");
+  let redirectUrl: string;
+  try {
+    const u = new URL(env.FAUCET_GITHUB_REDIRECT_URL ?? "");
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if (!(u.protocol === "https:" || (u.protocol === "http:" && local)) || u.pathname !== "/api/faucet/github/callback" || u.search || u.hash) throw new Error();
+    redirectUrl = u.toString();
+  } catch {
+    throw new ConfigError("FAUCET_GITHUB_REDIRECT_URL must be the explorer's https address of /api/faucet/github/callback, the callback registered with the GitHub App");
+  }
+  let amountWei: bigint;
+  try {
+    amountWei = parseEther(env.FAUCET_BUILDER_AMOUNT || "100");
+    if (amountWei <= 0n) throw new Error();
+  } catch {
+    throw new ConfigError(`FAUCET_BUILDER_AMOUNT must be a number of coins above zero such as 100, not "${env.FAUCET_BUILDER_AMOUNT}"`);
+  }
+  return {
+    clientId, clientSecretFile: env.FAUCET_GITHUB_CLIENT_SECRET_FILE, redirectUrl, amountWei,
+    perAccountSeconds: whole(env, "FAUCET_BUILDER_PER_ACCOUNT_SECONDS", 604800, 1),
+    minAccountAgeDays: whole(env, "FAUCET_BUILDER_MIN_ACCOUNT_AGE_DAYS", 30, 0),
+    maxPerDay: whole(env, "FAUCET_BUILDER_MAX_PER_DAY", 200, 1),
+  };
+}
+
 export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => readFileSync(p, "utf8")): Config {
   const pinsPath = env.PINS_FILE || DEFAULT_PINS_FILE;
   let pinsText: string;
@@ -252,6 +298,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
   } catch {
     throw new ConfigError(`FAUCET_AMOUNT must be a number of coins such as 1 or 0.5, not "${env.FAUCET_AMOUNT}"`);
   }
+  const github = githubSettings(env);
   const heavyConcurrency = whole(env, "RPC_HEAVY_CONCURRENCY", 8, 1), heavyQueue = whole(env, "RPC_HEAVY_QUEUE", 16, 0);
   if (heavyConcurrency + heavyQueue > MAX_HEAVY_PLACES) {
     throw new ConfigError(`RPC_HEAVY_CONCURRENCY + RPC_HEAVY_QUEUE must be at most ${MAX_HEAVY_PLACES} (they are ${heavyConcurrency + heavyQueue}): heavy calls would take the places that light calls need`);
@@ -297,6 +344,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       batch: whole(env, "FAUCET_BATCH", 100, 1),
       queueMax: whole(env, "FAUCET_QUEUE_MAX", 5000, 1),
       stateFile: env.FAUCET_STATE_FILE || null,
+      github,
     },
     captcha: captcha(env),
   };

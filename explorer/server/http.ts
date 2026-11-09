@@ -9,6 +9,7 @@ import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
 import { lastIdOf, topicsOf, type StreamHub } from "./rest/stream.ts";
+import { backTo } from "./faucet-builder.ts";
 import { ETHERSCAN_REFUSED, MAX_PROXY_BODY, MAX_VERIFY_BODY, REST_REFUSED, createLimits, isProxy, isVerification, proxyTooBig, retryAfter, verificationRefused, verificationTooBig, type Limits } from "./limits.ts";
 
 const TYPES: Record<string, string> = {
@@ -180,6 +181,11 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const { status, body, headers } = await api(method, target, sent, ip);
         return await send(status, body, { ...headers });
       }
+      // The builder grant's two browser routes have a small rate of their own, on top of the REST rate: each return makes a call to GitHub with the app's secret. A browser is sent back to the page, not shown JSON.
+      if (pathname === "/api/faucet/github/start" || pathname === "/api/faucet/github/callback") {
+        const wait = limits.builder.take(clientIp(req, ipHeader));
+        if (wait !== null) return void res.writeHead(302, { location: backTo("busy", { wait }), "cache-control": "no-store", "referrer-policy": "no-referrer" }).end();
+      }
       // The pages' REST routes share one rate per client, and `/healthz` is in it: it answers the same as `/api/status` (reth and Canton on every call), so it must not be a way round the limit. The rate is far above any proxy's probe. A faucet request (`POST /api/faucet`) has the faucet's own limits, and the live stream its own count; `GET /api/faucet` and the ticket route read from reth, so they take a token like the rest.
       if ((pathname.startsWith("/api/") && !(method === "POST" && pathname === "/api/faucet")) || pathname === "/healthz") {
         const wait = limits.rest.take(clientIp(req, ipHeader));
@@ -188,7 +194,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req, pathname === "/api/verify" ? VERIFY_BODY_MAX : MAX_BODY) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
-        const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
+        const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader), req.headers.cookie, req.headers["sec-fetch-site"], req.headers["sec-fetch-mode"]);
         const text = textOf(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
         // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.

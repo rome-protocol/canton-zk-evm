@@ -17,8 +17,9 @@ export interface FaucetState {
 
 /** How much of the past the faucet needs in memory: the windows of its limits. */
 export interface LoadWindow { now: number; addressMs: number; ipMs: number; max: number }
-export interface ClaimRules { addressMs: number; ipMs: number; maxPerHour: number }
-export type ClaimRefusal = "address" | "ip" | "hour";
+/** `builder` is present for a builder grant: the ticket's `account` is then limited once per `accountMs` (so is its address, among builder grants), and `maxPerDay` grants are given in a day. */
+export interface ClaimRules { addressMs: number; ipMs: number; maxPerHour: number; builder?: { accountMs: number; maxPerDay: number } }
+export type ClaimRefusal = "address" | "ip" | "hour" | "account" | "builder-address" | "day";
 /** Why a request was turned away and counted: a limit, or a human check that failed. */
 export type Refused = ClaimRefusal | "captcha";
 
@@ -135,11 +136,14 @@ const hexOf = (b: Buffer | null, prefix: boolean): string | null => (b === null 
 interface Row {
   ticket: string; address: Buffer; client_key: Buffer; state: string; reason: string | null; batch_id: string | null; nonce: string | null; tx_hash: Buffer | null;
   signed_raw: Buffer | null; requested_at: Date; final_block: string | null; tries: number; sent_nonce: string | null; watching: boolean; updated_at: Date;
+  amount: string; builder_account: Buffer | null;
 }
-const COLUMNS = "ticket, address, client_key, state, reason, batch_id, nonce, tx_hash, signed_raw, requested_at, final_block, tries, sent_nonce, watching, updated_at";
+const COLUMNS = "ticket, address, client_key, state, reason, batch_id, nonce, tx_hash, signed_raw, requested_at, final_block, tries, sent_nonce, watching, updated_at, amount, builder_account";
 
+/** A builder grant carries its account hash and its amount; a plain request carries neither, and has the faucet's amount. */
 function ticketOf(r: Row): Ticket {
   return {
+    ...(r.builder_account ? { account: r.builder_account.toString("hex"), amount: r.amount } : {}),
     id: idOf(r.ticket), to: "0x" + r.address.toString("hex"), ip: r.client_key.length ? r.client_key.toString("hex") : null, at: r.requested_at.getTime(),
     status: r.state as TicketStatus, hash: hexOf(r.tx_hash, true), block: r.final_block === null ? null : Number(r.final_block), reason: r.reason, tries: r.tries,
     // The column keeps the payout's nonce for good; the ticket carries it only while the batch is signed and not yet sent.
@@ -152,8 +156,8 @@ function ticketOf(r: Row): Ticket {
 const signature = (t: Ticket): string => JSON.stringify([t.status, t.hash ?? null, t.block ?? null, t.reason ?? null, t.tries, t.nonce ?? null, t.raw ?? null, t.sentNonce ?? null, t.watch === true, t.batch ?? null]);
 
 const INSERT = `
-  insert into faucet_requests (ticket, address, client_key, amount, state, reason, batch_id, nonce, tx_hash, signed_raw, counts, requested_at, sent_at, final_at, final_block, tries, sent_nonce, watching, updated_at)
-  values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, case when $5 in ('sent', 'final') then $13::timestamptz end, case when $5 = 'final' then $13::timestamptz end, $14, $15, $16, $17, now())
+  insert into faucet_requests (ticket, address, client_key, amount, state, reason, batch_id, nonce, tx_hash, signed_raw, counts, requested_at, sent_at, final_at, final_block, tries, sent_nonce, watching, builder_account, updated_at)
+  values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, case when $5 in ('sent', 'final') then $13::timestamptz end, case when $5 = 'final' then $13::timestamptz end, $14, $15, $16, $17, $18, now())
   on conflict (ticket) do`;
 /**
  * A row only moves forward: queued, then sent, then final or failed. An instance that lost the lead may still be writing what it knew when it lost it, and
@@ -179,8 +183,8 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
   /** Writes a ticket as it stands in the copy it is given, and says what it wrote (and whether the row took it). The caller records it as written once the transaction has committed. */
   async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<[string, string, boolean]> {
     const done = await c.query(INSERT + (keepExisting ? " nothing" : UPDATE), [
-      uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), amountWei.toString(), t.status, t.reason, t.batch ?? null, t.nonce ?? t.sentNonce ?? null, bytes(t.hash), bytes(t.raw),
-      t.status !== "failed", new Date(t.at), new Date(now()), t.status === "final" ? t.block : null, t.tries, t.sentNonce ?? null, t.watch === true, 
+      uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), (t.amount ?? amountWei.toString()), t.status, t.reason, t.batch ?? null, t.nonce ?? t.sentNonce ?? null, bytes(t.hash), bytes(t.raw),
+      t.status !== "failed", new Date(t.at), new Date(now()), t.status === "final" ? t.block : null, t.tries, t.sentNonce ?? null, t.watch === true, bytes(t.account),
     ]);
     return [t.id, signature(t), (done.rowCount ?? 0) > 0];
   }
@@ -219,7 +223,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       const addresses = new Map<string, number>(), ips = new Map<string, number>(), hourly: number[] = [];
       for (const t of tickets) {
         if (t.status === "failed") continue;
-        if (t.at + w.addressMs > w.now) addresses.set(t.to, t.at);
+        if (t.at + w.addressMs > w.now && !t.account) addresses.set(t.to, t.at);
         if (t.ip !== null && t.at + w.ipMs > w.now) ips.set(t.ip, t.at);
         if (t.at + 3600_000 > w.now) hourly.push(t.at);
       }
@@ -245,16 +249,20 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       let wrote: [string, string, boolean] | null = null;
       const refused = await inTransaction(async (c) => {
         await c.query("select pg_advisory_xact_lock($1, $2)", [LOCK_CLASS, CLAIM_LOCK]);
-        const { rows } = await c.query<{ address: boolean; ip: boolean; hour: string }>(
-          `select exists (select 1 from faucet_requests where address = $1 and counts and requested_at > $2) as address,
+        const { rows } = await c.query<{ address: boolean; account: boolean; ip: boolean; hour: string; day: string }>(
+          `select exists (select 1 from faucet_requests where address = $1 and counts and (builder_account is not null) = $6::boolean and requested_at > $2) as address,
+                  ($7::bytea is not null and exists (select 1 from faucet_requests where builder_account = $7 and counts and requested_at > $2)) as account,
                   ($3::bytea <> ''::bytea and exists (select 1 from faucet_requests where client_key = $3 and counts and requested_at > $4)) as ip,
-                  (select count(*) from faucet_requests where counts and requested_at > $5) as hour`,
-          [bytes(t.to), new Date(t.at - r.addressMs), bytes(t.ip) ?? Buffer.alloc(0), new Date(t.at - r.ipMs), new Date(t.at - 3600_000)],
+                  (select count(*) from faucet_requests where counts and requested_at > $5) as hour,
+                  (select count(*) from faucet_requests where $6::boolean and counts and builder_account is not null and requested_at > $8) as day`,
+          [bytes(t.to), new Date(t.at - (r.builder?.accountMs ?? r.addressMs)), bytes(t.ip) ?? Buffer.alloc(0), new Date(t.at - r.ipMs), new Date(t.at - 3600_000), r.builder !== undefined, r.builder ? bytes(t.account) : null, new Date(t.at - 86400_000)],
         );
         const s = rows[0]!;
-        if (s.address) return "address";
+        if (s.account) return "account";
+        if (s.address) return r.builder ? "builder-address" : "address";
         if (s.ip) return "ip";
         if (Number(s.hour) >= r.maxPerHour) return "hour";
+        if (r.builder && Number(s.day) >= r.builder.maxPerDay) return "day";
         wrote = await put(c, copy);
         return null;
       });
@@ -371,6 +379,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async purge(t) {
       await pool.query("update faucet_requests set signed_raw = null where signed_raw is not null and state in ('final', 'failed')");
       await pool.query("update faucet_requests set client_key = ''::bytea where client_key <> ''::bytea and requested_at < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
+      await pool.query("update faucet_requests set builder_account = null where builder_account is not null and requested_at < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
       await pool.query("delete from faucet_refusals where minute < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
       // Settled requests older than 90 days leave only their day's count, in one step so a request is never deleted without being counted.
       await pool.query(

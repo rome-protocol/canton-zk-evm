@@ -35,7 +35,7 @@ export interface MoveCardProps {
   /** Puts the wallet on Ostia; says why not, in words, when it cannot. */
   ensureChain(): Promise<string | null>;
   /** The inline faucet for gas: shown when the account holds none. Null when this site has no faucet. */
-  faucet: { label: string; busy: boolean; coming?: boolean; onGet(): void } | null;
+  faucet: { label: string; busy: boolean; coming?: boolean; onGet(): void; /** Shown under the inline faucet: the builder grant's offer, when it is on. */ extra?: ReactNode } | null;
   /** Called with what the wallet holds of the chain's coin, each time it is read (null while not known). */
   onGas?(gas: bigint | null): void;
   /** Counts up when the balances should be read again (after the faucet is asked). */
@@ -275,6 +275,7 @@ export function MoveCard(p: MoveCardProps) {
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {extra}
           {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${config?.chain.coin.symbol ?? "Test coin"} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
+          {p.faucet && bal.gas === 0n && p.faucet.extra}
           <details className="move-steps">
             <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
             <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? "Signed by this page" : "Automatic"}</span></li>)}</ol>

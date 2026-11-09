@@ -15,6 +15,8 @@ export interface FaucetInfo {
   sentToday?: number | null;
   finalToday?: number | null;
   beingProven?: number | null;
+  /** The builder grant (sign in with GitHub for a larger amount): on or off, and its amount (smallest unit), period, minimum account age and daily cap. Absent from a server that does not say it. */
+  builder?: { on: boolean; amount: string | null; perAccountSeconds: number | null; minAccountAgeDays: number | null; maxPerDay: number | null };
   /** The human check, when the faucet asks for one: the script to load and the key to give it. */
   captcha?: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }

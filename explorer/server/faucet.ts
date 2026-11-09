@@ -4,6 +4,7 @@ import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { alwaysLeader, type Leader } from "./leader.ts";
+import { createSignIn, type BuilderInfo, type BuilderOptions, type BuilderRedirect, type SignIn } from "./faucet-builder.ts";
 import { fileFaucetStore, type ClaimRefusal, type FaucetState, type FaucetStore, type Refused } from "./faucet-store.ts";
 import { RethError, type Reth } from "./reth.ts";
 import type { Tracker } from "./tracker.ts";
@@ -35,6 +36,8 @@ export interface FaucetOptions {
   leader?: Leader;
   /** Turns a client's address into the keyed hash that is kept in its place. Without one the address is kept as it is, which only a file store does. */
   clientKeyHash?: (clientKey: string) => string;
+  /** The builder grant (a GitHub account gets a larger amount), or null/absent for none. */
+  builder?: BuilderOptions | null;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
   reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc" | "balanceAt">>;
@@ -69,6 +72,8 @@ export interface FaucetInfo {
   /** Payouts sent and now in a block being proven, whatever day they went out: not the ones still waiting in reth's pool, and not tickets the faucet gave up on (null as for `sentToday`). */
   beingProven: number | null;
   captcha: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
+  /** The builder grant: on or off, and its amount (wei), period and limits. No secret is in it. */
+  builder: BuilderInfo;
 }
 
 /** Who is asking, and the proof that it is a person, when the faucet wants one. */
@@ -97,6 +102,10 @@ export interface Faucet {
   info(): Promise<FaucetInfo>;
   /** Takes a request for coin, if the limits allow, and answers with a ticket. Never throws: every outcome is an answer. */
   request(address: unknown, caller?: FaucetCaller): Promise<FaucetAnswer>;
+  /** Where a person who wants a builder grant for this address is sent first: GitHub's sign-in, or the Faucet page with a plain result. Null when the builder grant is off. */
+  builderStart(address: unknown, ip?: string): BuilderRedirect | null;
+  /** Where GitHub's return is answered: the Faucet page, with the result. `cookie` is the request's Cookie header, which must be the one the sign-in started with. Null when the builder grant is off. Never throws. */
+  builderCallback(query: URLSearchParams, ip?: string, cookie?: string): Promise<BuilderRedirect | null>;
   /** Where a ticket is. Null when there is no such ticket. */
   ticket(id: string): TicketView | null;
   /** One pass of the worker: sends the next batch if the last one has left the pool. Resolves when the pass is over. */
@@ -156,12 +165,15 @@ export interface Ticket {
   watch?: boolean;
   /** The batch it was signed in, once the store has numbered it. */
   batch?: number | null;
+  /** A builder grant: the keyed hash of the GitHub account it was given to (never the account itself), and its amount in wei as a decimal string. A plain request has neither. */
+  account?: string | null; amount?: string | null;
   /** True from the moment the request is in memory until the store has checked the limits against every instance's requests and written it. The worker leaves it alone. */
   claiming?: boolean;
 }
 
 export const TICKETS_MAX = 10000;
 const HOUR = 3600_000;
+const DAY = 24 * HOUR;
 /** How long the faucet follows, by hash, a transfer the tracker stopped following. After this the ticket says so and is left. */
 const WATCH_MS = 48 * HOUR;
 /** The most late transfers looked at in one pass, oldest look first, so a long list costs reth a few calls a second at most. */
@@ -176,11 +188,12 @@ const NO_SENDER = "0x0000000000000000000000000000000000000000";
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 
 /** A refusal also says which limit was hit, so a page can word it without reading the message. */
-type Reason = "address" | "ip" | "hour" | "queue" | "captcha" | "checks" | "empty";
+type Reason = "address" | "ip" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
 const answer = (status: number, error: string, headers?: Record<string, string>, reason?: Reason): FaucetAnswer => ({
   status, body: { error, ...(reason ? { reason } : {}) }, ...(headers ? { headers } : {}),
 });
 const seconds = (ms: number) => String(Math.max(1, Math.ceil(ms / 1000)));
+const days = (s: number) => (s % 86400 === 0 ? `${s / 86400} day${s === 86400 ? "" : "s"}` : period(s));
 const period = (s: number) => (s % 3600 === 0 ? `${s / 3600} hour${s === 3600 ? "" : "s"}` : s % 60 === 0 ? `${s / 60} minutes` : `${s} seconds`);
 
 /**
@@ -217,6 +230,11 @@ export function createFaucet(o: FaucetOptions): Faucet {
   // Each map is in the order of time: a key is set only when it is not there, so the oldest is always the first.
   const addresses = new Map<string, number>(), ips = new Map<string, number>();
   let hourly: number[] = [];
+  // The builder grant's limits, in the order of time like the maps above: one grant per GitHub account and one per address in a period, and a count for the day.
+  const builder = o.builder ?? null;
+  const builderMs = (builder?.perAccountSeconds ?? 0) * 1000;
+  const builderAccounts = new Map<string, number>(), builderAddresses = new Map<string, number>();
+  let builderDaily: number[] = [];
   const tickets = new Map<string, Ticket>();
   const queue: Ticket[] = [];
   /** Tickets whose transfer is in reth and not yet settled. */
@@ -273,6 +291,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
       tickets.set(t.id, t);
       if (t.status === "queued") queue.push(t);
       else if (t.status === "sent") (t.watch ? watching : open).add(t);
+    }
+    // The builder limits are what the grants say, inside their windows. A grant that came to nothing does not count.
+    if (builder) {
+      const t0 = now();
+      for (const t of [...s.tickets].filter((x) => x.account && x.status !== "failed").sort((a, b) => a.at - b.at)) {
+        if (t.at + builderMs > t0) { builderAccounts.set(t.account!, t.at); builderAddresses.set(t.to, t.at); }
+        if (t.at + DAY > t0) builderDaily.push(t.at);
+      }
     }
   }
 
@@ -384,27 +410,42 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
   // --- the limits
   function forget(t: number): void {
-    for (const [m, ms] of [[addresses, addressMs], [ips, ipMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
+    for (const [m, ms] of [[addresses, addressMs], [ips, ipMs], [builderAccounts, builderMs], [builderAddresses, builderMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
     let i = 0;
     while (i < hourly.length && hourly[i]! + HOUR <= t) i++;
     if (i) hourly = hourly.slice(i);
+    let j = 0;
+    while (j < builderDaily.length && builderDaily[j]! + DAY <= t) j++;
+    if (j) builderDaily = builderDaily.slice(j);
   }
 
   /** The refusal for a limit, with the wait it asks for. */
   function turnedAway(limit: ClaimRefusal, waitMs: number): FaucetAnswer {
+    const header = { "Retry-After": seconds(waitMs) };
+    if (limit === "account") return answer(429, `This GitHub account was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "account");
+    if (limit === "builder-address") return answer(429, `This address was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "builder-address");
+    if (limit === "day") return answer(429, `The builder grants for today are all given out (${o.builder?.maxPerDay ?? 0}). Try again tomorrow.`, header, "day");
     if (limit === "address") return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "address");
     if (limit === "ip") return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "ip");
     return answer(429, `The faucet has given out all it gives in an hour (${o.maxPerHour} requests). Try again later.`, { "Retry-After": seconds(waitMs) }, "hour");
   }
 
   /** The refusal for a caller, or null when the limits let it through. */
-  function limited(to: string, ip: string | undefined, t: number): FaucetAnswer | null {
+  function limited(to: string, ip: string | undefined, t: number, account?: string): FaucetAnswer | null {
     forget(t);
-    const a = addresses.get(to);
-    if (a !== undefined) return turnedAway("address", a + addressMs - t);
+    if (account !== undefined) {
+      const c = builderAccounts.get(account);
+      if (c !== undefined) return turnedAway("account", c + builderMs - t);
+      const b = builderAddresses.get(to);
+      if (b !== undefined) return turnedAway("builder-address", b + builderMs - t);
+    } else {
+      const a = addresses.get(to);
+      if (a !== undefined) return turnedAway("address", a + addressMs - t);
+    }
     const i = ip === undefined ? undefined : ips.get(ip);
     if (i !== undefined) return turnedAway("ip", i + ipMs - t);
     if (hourly.length >= o.maxPerHour) return turnedAway("hour", hourly[0]! + HOUR - t);
+    if (account !== undefined && builderDaily.length >= (builder?.maxPerDay ?? 0)) return turnedAway("day", builderDaily[0]! + DAY - t);
     if (queue.length >= o.queueMax) {
       return answer(503, "The faucet's line is full, so this request was turned away, not lost: nothing was taken from you. Try again in a little while.", { "Retry-After": String(Math.max(5, Math.ceil(queue.length / o.batch) * BLOCK_SECONDS)) }, "queue");
     }
@@ -421,7 +462,12 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
   /** Takes back what a request used, when it came to nothing. */
   function refund(t: Ticket): void {
-    if (addresses.get(t.to) === t.at) addresses.delete(t.to);
+    if (t.account) {
+      if (builderAccounts.get(t.account) === t.at) builderAccounts.delete(t.account);
+      if (builderAddresses.get(t.to) === t.at) builderAddresses.delete(t.to);
+      const d = builderDaily.indexOf(t.at);
+      if (d >= 0) builderDaily.splice(d, 1);
+    } else if (addresses.get(t.to) === t.at) addresses.delete(t.to);
     if (t.ip !== null && ips.get(t.ip) === t.at) ips.delete(t.ip);
     const i = hourly.indexOf(t.at);
     if (i >= 0) hourly.splice(i, 1);
@@ -442,7 +488,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
       () => view, // reth cannot be reached: the last reading is all there is
     ).finally(() => { viewing = null; }));
   }
-  const cost = (gasPrice: bigint) => o.amountWei + FAUCET_GAS * gasPrice * 2n;
+  const amountOf = (t: Pick<Ticket, "amount">): bigint => (t.amount ? BigInt(t.amount) : o.amountWei);
+  const cost = (gasPrice: bigint, amount: bigint = o.amountWei) => amount + FAUCET_GAS * gasPrice * 2n;
 
   /** The tracker no longer follows this transfer, and reth may still mine it: the faucet follows it by hash from here on. */
   function late(t: Ticket, nonce?: number): void {
@@ -575,7 +622,9 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const maxFeePerGas = gasPrice * 2n;
     const batch = queue.filter((t) => !t.claiming).slice(0, o.batch);
     if (!batch.length) return;
-    const afford = balance / cost(gasPrice) < BigInt(batch.length) ? Number(balance / cost(gasPrice)) : batch.length;
+    // As many from the front of the batch as the balance pays for, each at its own amount.
+    let afford = 0, left = balance;
+    for (const t of batch) { const c = cost(gasPrice, amountOf(t)); if (left < c) break; left -= c; afford++; }
     // The coins are gone: the requests that cannot be paid are told so, and may ask again once the faucet is filled.
     for (const t of batch.slice(afford)) { queue.splice(queue.indexOf(t), 1); fail(t, "The faucet ran out of coins before this request was sent."); }
     const going = batch.slice(0, afford);
@@ -584,7 +633,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     try {
       for (const [i, t] of going.entries()) {
         const raw = await account.signTransaction({
-          type: "eip1559", chainId: o.chainId, nonce: nonce + i, to: t.to as Hex, value: o.amountWei, gas: FAUCET_GAS, maxFeePerGas, maxPriorityFeePerGas: tip < maxFeePerGas ? tip : maxFeePerGas,
+          type: "eip1559", chainId: o.chainId, nonce: nonce + i, to: t.to as Hex, value: amountOf(t), gas: FAUCET_GAS, maxFeePerGas, maxPriorityFeePerGas: tip < maxFeePerGas ? tip : maxFeePerGas,
         });
         t.raw = raw; t.hash = keccak256(raw); t.nonce = nonce + i;
       }
@@ -710,10 +759,89 @@ export function createFaucet(o: FaucetOptions): Faucet {
     refresh(t);
     const s = t.status === "sent" && t.hash ? o.tracker?.state(t.hash) : undefined;
     return {
-      ticket: t.id, status: t.status, position: t.status === "queued" ? Math.max(1, queue.indexOf(t) + 1) : null, to: t.to, amount: o.amountWei.toString(),
+      ticket: t.id, status: t.status, position: t.status === "queued" ? Math.max(1, queue.indexOf(t) + 1) : null, to: t.to, amount: amountOf(t).toString(),
       hash: t.status === "queued" ? null : t.hash, state: s ? s.state : null, block: t.block ?? s?.block ?? null, reason: t.reason,
     };
   }
+
+  /** What the queued and the open requests will take, each at its own amount. */
+  const owed = (gasPrice: bigint): bigint => {
+    let sum = 0n;
+    for (const t of queue) sum += cost(gasPrice, amountOf(t));
+    for (const t of open) sum += cost(gasPrice, amountOf(t));
+    return sum;
+  };
+
+  /**
+   * Takes a request for coin. A plain request (no `account`) asks for the faucet's amount and passes the human check. A builder grant (`account` is the keyed
+   * hash of the GitHub account) asks for the builder amount, and GitHub's sign-in stands in for the human check. The queue, the batch, the per-client and the
+   * hourly limits are the same for both.
+   */
+  async function submit(raw: unknown, caller: FaucetCaller, grantee?: string): Promise<FaucetAnswer> {
+    if (!address) return answer(503, "The faucet is off.");
+    if (grantee !== undefined && !builder) return answer(503, "The builder grant is off.");
+    const to = typeof raw === "string" ? raw.toLowerCase() : "";
+    if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
+    const ip = hashed(clientKey(caller.ip));
+    const early = limited(to, ip, now(), grantee);
+    if (early) return counted(early);
+    if (grantee === undefined) {
+      const refused = await human(caller.captcha, caller.ip);
+      if (refused) return counted(refused);
+    }
+    const seen = await chain();
+    // Time has passed while the check and the balance were read: the limits are looked at again, and nothing awaits between that look and the ticket.
+    const t = now();
+    const late = limited(to, ip, t, grantee);
+    if (late) return counted(late);
+    const amount = grantee === undefined ? o.amountWei : builder!.amountWei;
+    if (seen && seen.balance < owed(seen.gasPrice) + cost(seen.gasPrice, amount)) return answer(503, "The faucet is empty.", undefined, "empty");
+    const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0, ...(grantee !== undefined ? { account: grantee, amount: amount.toString() } : {}) };
+    tickets.set(ticket.id, ticket);
+    queue.push(ticket);
+    if (grantee !== undefined) { builderAccounts.set(grantee, t); builderAddresses.set(to, t); builderDaily.push(t); } else addresses.set(to, t);
+    if (ip !== undefined) ips.set(ip, t);
+    hourly.push(t);
+    if (store?.claim) {
+      // With a database, other instances take requests too. The limits are checked against all of them as the request is written. Until then
+      // the worker leaves the request alone, and if the store turns it away, the request is taken back as if it had never been made.
+      ticket.claiming = true;
+      let turned: ClaimRefusal | null = null;
+      try {
+        turned = await store.claim(ticket, { addressMs, ipMs, maxPerHour: o.maxPerHour, ...(grantee !== undefined ? { builder: { accountMs: builderMs, maxPerDay: builder!.maxPerDay } } : {}) });
+      } catch (e) {
+        console.error(`faucet: cannot write the request: ${(e as Error).message}`);
+        unqueue(ticket);
+        return answer(503, "The faucet cannot save requests right now, so this one was turned away, not lost: nothing was taken from you. Try again in a moment.", { "Retry-After": "5" });
+      }
+      ticket.claiming = false;
+      if (turned) {
+        unqueue(ticket);
+        const wait = turned === "address" ? addressMs : turned === "ip" ? ipMs : turned === "account" || turned === "builder-address" ? builderMs : turned === "day" ? DAY : HOUR;
+        return counted(turnedAway(turned, wait));
+      }
+    }
+    trim();
+    save();
+    if (started && !running) void process().catch((e) => console.error(`faucet: ${(e as Error).message}`));
+    return { status: 202, body: { ticket: ticket.id, position: queue.indexOf(ticket) + 1, to, amount: amount.toString() } };
+  }
+
+  /** The sign-in with GitHub, when the builder grant is on. It hands an account it has read to the same submit as a plain request. */
+  const signIn: SignIn | null = builder && account ? createSignIn(builder, {
+    fetch: doFetch, now,
+    grant: (to, who, ip) => submit(to, { ip }, who),
+    early: (to, ip) => {
+      forget(now());
+      const b = builderAddresses.get(to);
+      if (b !== undefined) return { outcome: "address", wait: Math.ceil((b + builderMs - now()) / 1000) };
+      const h = hashed(clientKey(ip));
+      const i = h === undefined ? undefined : ips.get(h);
+      if (i !== undefined) return { outcome: "ip", wait: Math.ceil((i + ipMs - now()) / 1000) };
+      if (builderDaily.length >= builder.maxPerDay) return { outcome: "day", wait: Math.ceil((builderDaily[0]! + DAY - now()) / 1000) };
+      return null;
+    },
+  }) : null;
 
   load();
 
@@ -763,6 +891,9 @@ export function createFaucet(o: FaucetOptions): Faucet {
         on: account !== null, address, balance, balanceBlock, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
         maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
         captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
+        builder: builder
+          ? { on: account !== null, amount: builder.amountWei.toString(), perAccountSeconds: builder.perAccountSeconds, minAccountAgeDays: builder.minAccountAgeDays, maxPerDay: builder.maxPerDay }
+          : { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null },
       };
     },
 
@@ -785,49 +916,9 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (running) halted = true; // the batch in hand ends after its current send
     },
 
-    async request(raw, caller = {}) {
-      if (!account) return answer(503, "The faucet is off.");
-      const to = typeof raw === "string" ? raw.toLowerCase() : "";
-      if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
-      const ip = hashed(clientKey(caller.ip));
-      const early = limited(to, ip, now());
-      if (early) return counted(early);
-      const refused = await human(caller.captcha, caller.ip);
-      if (refused) return counted(refused);
-      const seen = await chain();
-      // Time has passed while the check and the balance were read: the limits are looked at again, and nothing awaits between that look and the ticket.
-      const t = now();
-      const late = limited(to, ip, t);
-      if (late) return counted(late);
-      if (seen && seen.balance < BigInt(queue.length + open.size + 1) * cost(seen.gasPrice)) return answer(503, "The faucet is empty.", undefined, "empty");
-      const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0 };
-      tickets.set(ticket.id, ticket);
-      queue.push(ticket);
-      addresses.set(to, t);
-      if (ip !== undefined) ips.set(ip, t);
-      hourly.push(t);
-      if (store?.claim) {
-        // With a database, other instances take requests too. The limits are checked against all of them as the request is written. Until then
-        // the worker leaves the request alone, and if the store turns it away, the request is taken back as if it had never been made.
-        ticket.claiming = true;
-        let turned: ClaimRefusal | null = null;
-        try {
-          turned = await store.claim(ticket, { addressMs, ipMs, maxPerHour: o.maxPerHour });
-        } catch (e) {
-          console.error(`faucet: cannot write the request: ${(e as Error).message}`);
-          unqueue(ticket);
-          return answer(503, "The faucet cannot save requests right now, so this one was turned away, not lost: nothing was taken from you. Try again in a moment.", { "Retry-After": "5" });
-        }
-        ticket.claiming = false;
-        if (turned) {
-          unqueue(ticket);
-          return counted(turnedAway(turned, turned === "address" ? addressMs : turned === "ip" ? ipMs : HOUR));
-        }
-      }
-      trim();
-      save();
-      if (started && !running) void process().catch((e) => console.error(`faucet: ${(e as Error).message}`));
-      return { status: 202, body: { ticket: ticket.id, position: queue.indexOf(ticket) + 1, to, amount: o.amountWei.toString() } };
-    },
+    request: (raw, caller = {}) => submit(raw, caller),
+
+    builderStart: (address, ip) => (signIn ? signIn.start(address, ip) : null),
+    builderCallback: async (query, ip, cookie) => (signIn ? signIn.callback(query, ip, cookie) : null),
   };
 }

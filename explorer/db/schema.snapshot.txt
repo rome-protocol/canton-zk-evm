@@ -440,9 +440,12 @@ table faucet_requests
   column sent_nonce bigint
   column watching boolean not null default false
   column updated_at timestamp with time zone not null default now()
+  column builder_account bytea
   constraint faucet_requests_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES faucet_batches(batch_id)
   constraint faucet_requests_pkey PRIMARY KEY (ticket)
   CREATE INDEX faucet_requests_address_requested_at_idx ON public.faucet_requests USING btree (address, requested_at DESC)
+  CREATE INDEX faucet_requests_builder_account_idx ON public.faucet_requests USING btree (builder_account, requested_at DESC) WHERE (builder_account IS NOT NULL)
+  CREATE INDEX faucet_requests_builder_requested_at_idx ON public.faucet_requests USING btree (requested_at) WHERE (builder_account IS NOT NULL)
   CREATE INDEX faucet_requests_client_key_requested_at_idx ON public.faucet_requests USING btree (client_key, requested_at DESC)
   CREATE INDEX faucet_requests_requested_at_idx ON public.faucet_requests USING btree (requested_at)
   CREATE INDEX faucet_requests_sent_at_idx ON public.faucet_requests USING btree (sent_at) WHERE (sent_at IS NOT NULL)

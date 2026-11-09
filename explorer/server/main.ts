@@ -7,6 +7,7 @@ import { createFinalBlocks } from "./chain-db.ts";
 import { ConfigError, loadConfig } from "./config.ts";
 import { randomBytes } from "node:crypto";
 import { createFaucet, loadFaucetKey } from "./faucet.ts";
+import { loadBuilder } from "./faucet-builder.ts";
 import { clientHasher, loadClientKey } from "./faucet-store.ts";
 import { createVerifyApi } from "./verifier/api.ts";
 import { JobQueue } from "./verifier/jobs.ts";
@@ -30,7 +31,7 @@ try {
   const ledger = ledgerFromConfig(config);
   const index = createFinalBlocks(chain);
   const tracker = createTracker({ reth, index, file: config.tracker.file, ...storage.tracker, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, maxPendingMs: config.tracker.maxPendingMinutes * 60000, pollMs: config.pollMs });
-  const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), ...storage.faucet, chainId: config.chainId, reth, tracker });
+  const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), builder: loadBuilder(config.faucet.keyFile ? config.faucet.github : null, config.faucet.clientKeyFile, loadClientKey), ...storage.faucet, chainId: config.chainId, reth, tracker });
   const rpc = config.publicRpc.on
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, heavyConcurrency: config.publicRpc.heavyConcurrency, heavyQueue: config.publicRpc.heavyQueue, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;

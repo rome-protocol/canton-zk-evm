@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { bridgeReads } from "../api.ts";
 import { CardHead, unready } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { BuilderGrant } from "../faucet/builder.tsx";
 import { createFaucetClient, type CoinResult, type FaucetInfo } from "../faucet/faucet-client.ts";
 import { formatCoin } from "../faucet/format.ts";
 import { short } from "../format.ts";
@@ -209,7 +210,7 @@ export function Bridge() {
           <MoveCard
             config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
-            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome } : null} onGas={setGas} refresh={refresh} poll={poll} onCanton={setHeld} onMoved={() => setRefresh((n) => n + 1)}
+            faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome, extra: <BuilderGrant info={info} address={wallet.account} coin={chain.coin} /> } : null} onGas={setGas} refresh={refresh} poll={poll} onCanton={setHeld} onMoved={() => setRefresh((n) => n + 1)}
           />
           <MoveBar session={session} pairs={pairs} chainName={chain.chainName} />
         </div>
@@ -242,6 +243,7 @@ export function Bridge() {
                 <>
                   <p className="small" role="status">Get test {sym} first. Every move on {chain.chainName} needs a little for fees.</p>
                   <button type="button" className="btn" disabled={rome.s === "working" || coming} onClick={getRome}>{rome.s === "working" ? "Asking the faucet…" : coming ? `${sym} is on its way…` : `Get test ${sym}`}</button>
+                  <BuilderGrant info={info} address={wallet.account} coin={chain.coin} />
                 </>
               ) : (
                 <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>

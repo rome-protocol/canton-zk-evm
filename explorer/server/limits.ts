@@ -17,6 +17,8 @@ export const RULES = {
   etherscan: [{ capacity: 10, perSecond: 10 }, { capacity: 600, perSecond: 10 }],
   /** Contract verification: 30 an hour. */
   verification: [{ capacity: 30, perSecond: 30 / 3600 }],
+  /** The builder grant's sign-in (its start and its return, a sign-in uses one of each): 10 a minute. Each call to GitHub's token endpoint carries the app's secret. */
+  builder: [{ capacity: 10, perSecond: 10 / 60 }],
 } as const satisfies Record<string, readonly Bucket[]>;
 
 /** The biggest source a verification request may carry (the queue checks the decoded source against it). */
@@ -62,10 +64,10 @@ export function createLimiter(buckets: readonly Bucket[], now: () => number = Da
   };
 }
 
-export interface Limits { rest: Limiter; etherscan: Limiter; verification: Limiter }
+export interface Limits { rest: Limiter; etherscan: Limiter; verification: Limiter; builder: Limiter }
 
 export function createLimits(now: () => number = Date.now): Limits {
-  return { rest: createLimiter(RULES.rest, now), etherscan: createLimiter(RULES.etherscan, now), verification: createLimiter(RULES.verification, now) };
+  return { rest: createLimiter(RULES.rest, now), etherscan: createLimiter(RULES.etherscan, now), verification: createLimiter(RULES.verification, now), builder: createLimiter(RULES.builder, now) };
 }
 
 /** The answers of 6.6. A client that is refused is told how long to wait, in whole seconds. */

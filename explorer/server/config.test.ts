@@ -31,7 +31,7 @@ describe("settings", () => {
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", ledgerTokenFile: null, pollMs: 2000,
     });
     expect(c.database).toBeNull();
-    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null });
+    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
     expect(c.captcha).toBeNull();
   });
 
@@ -235,5 +235,36 @@ describe("pin key ranges", () => {
   it("refuses at startup, naming the file", () => {
     expect(() => load({}, `${base}programVK@100=${VK2}\n`)).toThrow(ConfigError);
     expect(load({}, two).pins.keys).toHaveLength(2);
+  });
+});
+
+describe("the builder grant's settings", () => {
+  const on = { FAUCET_GITHUB_CLIENT_ID: "Iv1.abc123", FAUCET_GITHUB_CLIENT_SECRET_FILE: "/run/gh-secret", FAUCET_CLIENT_KEY_FILE: "/run/ck", FAUCET_GITHUB_REDIRECT_URL: "https://explorer.example.org/api/faucet/github/callback" };
+
+  it("is off until a client id is set, and then has its defaults", () => {
+    expect(load().faucet.github).toBeNull();
+    expect(load({ FAUCET_GITHUB_CLIENT_ID: "  " }).faucet.github).toBeNull();
+    expect(load(on).faucet.github).toEqual({
+      clientId: "Iv1.abc123", clientSecretFile: "/run/gh-secret", redirectUrl: "https://explorer.example.org/api/faucet/github/callback", amountWei: 100n * 10n ** 18n,
+      perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200,
+    });
+  });
+
+  it("takes its own amount, period, age and daily cap", () => {
+    const g = load({ ...on, FAUCET_BUILDER_AMOUNT: "2.5", FAUCET_BUILDER_PER_ACCOUNT_SECONDS: "3600", FAUCET_BUILDER_MIN_ACCOUNT_AGE_DAYS: "0", FAUCET_BUILDER_MAX_PER_DAY: "7" }).faucet.github!;
+    expect(g).toMatchObject({ amountWei: 25n * 10n ** 17n, perAccountSeconds: 3600, minAccountAgeDays: 0, maxPerDay: 7 });
+    expect(() => load({ ...on, FAUCET_BUILDER_AMOUNT: "lots" })).toThrow(/FAUCET_BUILDER_AMOUNT/);
+    expect(() => load({ ...on, FAUCET_BUILDER_AMOUNT: "0" })).toThrow(/FAUCET_BUILDER_AMOUNT/);
+    expect(() => load({ ...on, FAUCET_BUILDER_MAX_PER_DAY: "0" })).toThrow(/FAUCET_BUILDER_MAX_PER_DAY/);
+  });
+
+  it("refuses to start without what it needs: the secret's file, the key file, and the callback address", () => {
+    expect(() => load({ ...on, FAUCET_GITHUB_CLIENT_SECRET_FILE: "" })).toThrow(/FAUCET_GITHUB_CLIENT_SECRET_FILE must be set/);
+    expect(() => load({ ...on, FAUCET_CLIENT_KEY_FILE: "" })).toThrow(/FAUCET_CLIENT_KEY_FILE must be set/);
+    expect(() => load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "" })).toThrow(/FAUCET_GITHUB_REDIRECT_URL/);
+    expect(() => load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "http://explorer.example.org/api/faucet/github/callback" })).toThrow(/FAUCET_GITHUB_REDIRECT_URL/);
+    expect(() => load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "https://explorer.example.org/faucet" })).toThrow(/FAUCET_GITHUB_REDIRECT_URL/);
+    expect(load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "http://localhost:8088/api/faucet/github/callback" }).faucet.github).not.toBeNull();
+    expect(() => load({ ...on, FAUCET_GITHUB_CLIENT_ID: "a b" })).toThrow(/FAUCET_GITHUB_CLIENT_ID/);
   });
 });
