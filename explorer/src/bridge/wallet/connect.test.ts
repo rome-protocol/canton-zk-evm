@@ -30,6 +30,7 @@ function installExtension() {
 }
 // The SDK registers its web components when it is imported, which it may do once: a reload is the module forgetting its client.
 const load = async () => { const m = await import("./connect.ts"); m.startOver(); return m; };
+const loopLibrary = async () => (await import("@fivenorth/loop-sdk")).loop;
 const OPTIONS = { wallets: ["extension" as const], gatewayUrl: null, networkName: "DevNet" };
 
 beforeEach(() => { localStorage.clear(); installExtension(); });
@@ -76,10 +77,57 @@ describe("connecting a wallet through the SDK", () => {
   });
   it("registers Loop's own provider as an adapter that has the provider's calls", async () => {
     const m = await load();
-    const adapter = m.loopAdapter(OPTIONS);
+    const adapter = m.loopAdapter(await loopLibrary(), OPTIONS);
     expect(adapter.getInfo()).toMatchObject({ providerId: "loop", name: "Loop" });
     const provider = adapter.provider();
     for (const call of ["request", "on", "removeListener"] as const) expect(typeof provider[call]).toBe("function");
     expect(adapter.provider()).toBe(provider);   // the library's provider is made once
+  });
+});
+
+describe("Loop and the chain's network", () => {
+  it("is not offered, and not started, while the network is not known (the library would start on mainnet)", async () => {
+    const lib = await loopLibrary();
+    const init = vi.spyOn(lib, "init");
+    const m = await load();
+    expect(await m.choices({ ...OPTIONS, wallets: ["loop"], networkName: null })).toEqual([]);
+    expect(await m.choices({ ...OPTIONS, wallets: ["loop"], networkName: undefined })).toEqual([]);
+    expect(await m.choices({ ...OPTIONS, wallets: ["loop"], networkName: "Localnet" })).toEqual([]);   // a name that is none of the three
+    expect(() => m.loopAdapter(lib, { ...OPTIONS, wallets: ["loop"], networkName: null }).provider()).toThrow();
+    expect(init).not.toHaveBeenCalled();
+    init.mockRestore();
+  });
+  it("is offered once the network is known, without starting over: a client made before that does not keep the choice", async () => {
+    const m = await load();   // one client for the first call
+    expect(await m.choices({ ...OPTIONS, wallets: ["loop", "extension"], networkName: null })).toEqual([{ id: "browser:ext:fake", name: "Fake Wallet" }]);
+    expect((await m.choices({ ...OPTIONS, wallets: ["loop", "extension"], networkName: "DevNet" })).map((c) => c.name)).toEqual(["Loop", "Fake Wallet"]);
+  });
+  it("is started with the chain's network, and is never started again for another", async () => {
+    const lib = await loopLibrary();
+    const init = vi.spyOn(lib, "init");
+    const m = await load();
+    const first = m.loopAdapter(lib, { ...OPTIONS, wallets: ["loop"], networkName: "DevNet" });
+    first.provider();
+    first.provider();
+    expect(init.mock.calls.length).toBeLessThanOrEqual(1);   // once for the page's life (an earlier test may have started it)
+    if (init.mock.calls.length === 1) expect(init).toHaveBeenCalledWith(expect.objectContaining({ network: "devnet" }));
+    expect(() => m.loopAdapter(lib, { ...OPTIONS, wallets: ["loop"], networkName: "TestNet" }).provider()).toThrow("another network");
+    init.mockRestore();
+  });
+});
+
+describe("a link made late does not end a newer connection", () => {
+  it("leaves the SDK's session alone when it is no longer this link's own, and ends it when it still is", async () => {
+    const m = await load();
+    const older = await m.connectWallet(OPTIONS, "browser:ext:fake");
+    const newer = await m.connectWallet(OPTIONS, "browser:ext:fake");   // the SDK's session is now the newer link's: an extension's provider is made for each connection
+    const asked = () => wallet.requests.filter((r) => r.method === "disconnect").length;
+    await older.disconnect();   // the late end of the older one
+    expect(asked()).toBe(0);
+    expect(newer.closed).toBe(false);
+    await newer.disconnect();   // the newer one's own end reaches the wallet
+    expect(asked()).toBe(1);
+    const later = await load();
+    expect(await later.restoreWallet(OPTIONS)).toBeNull();
   });
 });

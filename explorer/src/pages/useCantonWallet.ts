@@ -7,7 +7,7 @@ import type { Choice } from "../bridge/wallet/connect.ts";
 import type { WalletAccount } from "../bridge/wallet/adapter.ts";
 import type { WalletLink } from "../bridge/wallet/link.ts";
 import { WALLET_WORDS } from "../bridge/wallet/link.ts";
-import { plainWords } from "../bridge/words.ts";
+import { PageError, plainWords } from "../bridge/words.ts";
 
 export type WalletState =
   | { s: "idle" }
@@ -16,11 +16,16 @@ export type WalletState =
   | { s: "failed"; message: string }
   | { s: "ready"; link: WalletLink; account: WalletAccount; opted: boolean; opting: boolean; note: string | null };
 
+/** The wallet libraries' code (connect.ts), asked for once however many calls need it at the same time. */
+let connectCode: Promise<typeof import("../bridge/wallet/connect.ts")> | null = null;
+const connectModule = () => (connectCode ??= import("../bridge/wallet/connect.ts").catch((e) => { connectCode = null; throw e; }));
+
 /** One error of connecting or of reading the wallet's account, in plain words. */
 export function connectWords(e: unknown): string { return e instanceof Refused ? e.message : plainWords(e); }
 /** One error of the opt-in, in plain words: a refusal by Canton says what it most likely means for a wallet. */
 export function optInWords(e: unknown, name: string): string {
-  if (e instanceof Unanswered) { const w = inWallet(name); return `${w.charAt(0).toUpperCase()}${w.slice(1)} did not say whether it took this. Check again in a minute; nothing is asked twice.`; }
+  if (e instanceof Unanswered) { const w = inWallet(name); return `${w.charAt(0).toUpperCase()}${w.slice(1)} did not say whether it took this. Check again in a minute.`; }
+  if (e instanceof PageError && e.code === "acceptances_missing") return "Your wallet's opt-in does not show yet. Press Opt in again in a moment.";
   if (e instanceof Refused) return e.message === WALLET_WORDS.rejected ? `Canton did not take this. Your wallet may not support Ostia's tokens yet. Nothing was changed.` : e.message;
   return plainWords(e);
 }
@@ -41,12 +46,14 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
       const { walletAccount, optedIn } = await import("../bridge/wallet/adapter.ts");
       const account = walletAccount(link, chain!);
       const opted = await optedIn(account);
-      if (epoch.current !== mine) return;
+      if (epoch.current !== mine) return link.release();   // a later connection has taken over: this link only lets go of its listeners
       link.onLost(() => { if (epoch.current === mine) { epoch.current++; forgetWallet(); setState({ s: "failed", message: "Your Canton wallet was disconnected or changed its account. Connect it again." }); } });
       setState({ s: "ready", link, account, opted, opting: false, note: null });
     } catch (e) {
+      if (epoch.current !== mine) return link.release();
       void link.disconnect();
-      if (epoch.current === mine) { forgetWallet(); setState({ s: "failed", message: connectWords(e) }); }
+      forgetWallet();
+      setState({ s: "failed", message: connectWords(e) });
     }
   }, [chain]);
 
@@ -59,9 +66,9 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     const mine = ++epoch.current;
     setState({ s: "working", note: "Opening your Canton wallet." });
     (async () => {
-      const { restoreWallet } = await import("../bridge/wallet/connect.ts");
+      const { restoreWallet } = await connectModule();
       const link = await restoreWallet(latest.current);
-      if (epoch.current !== mine) return void link?.disconnect();
+      if (epoch.current !== mine) return link?.release();
       if (!link) { forgetWallet(); return setState({ s: "idle" }); }
       await adopt(link, mine);
     })().catch(() => { if (epoch.current === mine) { forgetWallet(); setState({ s: "idle" }); } });
@@ -74,9 +81,9 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     const mine = ++epoch.current;
     setState({ s: "working", note: "Approve the connection in your wallet." });
     try {
-      const { connectWallet } = await import("../bridge/wallet/connect.ts");
+      const { connectWallet } = await connectModule();
       const link = await connectWallet(options, id);
-      if (epoch.current !== mine) return void link.disconnect();
+      if (epoch.current !== mine) return link.release();   // a late approval of an earlier try: the wallet's session now belongs to a later one, so it is not ended
       rememberWallet();
       await adopt(link, mine);
     } catch (e) { if (epoch.current === mine) setState({ s: "failed", message: connectWords(e) }); }
@@ -85,17 +92,19 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
   /** "Connect your Canton wallet": the wallets this browser can reach are listed (one is connected at once). */
   const connect = useCallback(async () => {
     if (!on || state.s === "working") return;
+    // Loop's library starts on mainnet when it is given no network, so nothing is offered until the chain has said which one it is on.
+    if (config.wallets.includes("loop") && networkName === null) return setState({ s: "failed", message: "Ostia has not answered yet. Try again in a moment." });
     const mine = ++epoch.current;
     setState({ s: "working", note: "Looking for your Canton wallet." });
     try {
-      const { choices } = await import("../bridge/wallet/connect.ts");
+      const { choices } = await connectModule();
       const found = await choices(options);
       if (epoch.current !== mine) return;
       if (found.length === 0) return setState({ s: "failed", message: "No Canton wallet was found in this browser. Open your wallet or install its extension, then try again." });
       if (found.length === 1) return void (await pick(found[0]!.id));
       setState({ s: "choosing", choices: found });
     } catch (e) { if (epoch.current === mine) setState({ s: "failed", message: connectWords(e) }); }
-  }, [on, state.s, options, pick]);
+  }, [on, state.s, config, networkName, options, pick]);
 
   const optIn = useCallback(async () => {
     if (state.s !== "ready" || state.opting || state.opted) return;

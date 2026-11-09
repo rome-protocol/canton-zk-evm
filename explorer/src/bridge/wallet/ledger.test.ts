@@ -39,6 +39,13 @@ describe("what the page reads of a connected wallet's account", () => {
       expect(pages).toHaveLength(3);
       expect(pages[1]).toMatchObject({ activeAtOffset: 42, pageToken: "2" });
     });
+    it("say so in plain words when the account holds more than the page follows (20 pages of 200)", async () => {
+      const { w, ledger } = await setup({ pageSize: 1000 });
+      for (let i = 0; i < 20 * 200 + 1; i++) w.holding("1", COIN);
+      const e = await ledger.holdings(null, WALLET_PARTY).catch((x) => x);
+      expect(e).toBeInstanceOf(Refused);
+      expect(e.message).toBe("Your wallet's account holds too much for this page to read.");
+    });
     it("are not read for any other party", async () => {
       const { ledger } = await setup();
       await expect(ledger.holdings(null, id("bob", 9))).rejects.toThrow(Refused);
