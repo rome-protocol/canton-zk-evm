@@ -519,4 +519,4 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
 @media (max-width: 720px) { .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; } }
 @media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } } /* a row of tabs scrolls inside itself on a phone */
-@media (max-width: 720px) { .builder-grant .gh-btn { width: 100%; } .faucet-page .builder-grant .gh-btn { width: auto; } } /* full width beside the Bridge's full-width button; on the Faucet page the main button keeps its own width */
+@media (max-width: 720px) { .builder-grant .gh-btn { width: 100%; } .faucet-page .builder-grant .gh-btn, .bridge-page .account .builder-grant .gh-btn { width: auto; } } /* full width only beside the move card's full-width button; on the Faucet page and in the account sheet the main button keeps its own width, so the offer never outweighs it */
