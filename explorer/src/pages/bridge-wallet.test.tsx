@@ -87,7 +87,8 @@ describe("the Bridge page with Canton wallets in the build", () => {
     expect(screen.queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
     expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));
+    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));   // back to the choice
+    await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
     await screen.findByText("Connected");
   });
 
@@ -97,7 +98,7 @@ describe("the Bridge page with Canton wallets in the build", () => {
     await openSheet();
     await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
     expect(await screen.findByText("Connected")).toBeInTheDocument();
-    expect(screen.getAllByTitle(WALLET_PARTY)[0]).toHaveTextContent("alice::1220a1a1a1…a1a1a1");
+    expect(screen.getAllByTitle(WALLET_PARTY)[0]).toHaveTextContent("alice::1220a1a1a…a1a1a1");
     expect(sheet()).toHaveTextContent("Loop");
     expect(sheet()).toHaveTextContent("Opt in once: Ostia tokens and withdrawals. You approve two steps in Loop.");
     expect(mocks.createSession).not.toHaveBeenCalled();   // not before the opt-in

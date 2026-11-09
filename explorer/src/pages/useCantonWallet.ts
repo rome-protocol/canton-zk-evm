@@ -50,19 +50,23 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     }
   }, [chain]);
 
+  // The wallet is opened again once, when the page knows the chain's network (Loop's library needs it): a change of the options afterwards does not start it over.
+  const known = networkName !== null;
+  const latest = useRef(options);
+  latest.current = options;
   useEffect(() => {
-    if (!on || !wasConnected()) return;
+    if (!on || !known || !wasConnected()) return;
     const mine = ++epoch.current;
     setState({ s: "working", note: "Opening your Canton wallet." });
     (async () => {
       const { restoreWallet } = await import("../bridge/wallet/connect.ts");
-      const link = await restoreWallet(options);
+      const link = await restoreWallet(latest.current);
       if (epoch.current !== mine) return void link?.disconnect();
       if (!link) { forgetWallet(); return setState({ s: "idle" }); }
       await adopt(link, mine);
     })().catch(() => { if (epoch.current === mine) { forgetWallet(); setState({ s: "idle" }); } });
     return () => { epoch.current++; };
-  }, [on, options, adopt]);
+  }, [on, known, adopt]);
 
   /** Connects the wallet the person picked; the wallet asks the person to approve. */
   const pick = useCallback(async (id: string) => {
