@@ -13,7 +13,7 @@ permissions:
 jobs:
   # A fake Canton JSON Ledger API only. The service uses the standard library alone.
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -31,7 +31,7 @@ jobs:
   # The service on the real, pinned Canton (the protocol version PINS names): an external party from an Ed25519 key made in the test, a WithdrawalAcceptance
   # of the real Daml package created for it with that key's signature, and its holdings.
   canton:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

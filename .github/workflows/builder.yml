@@ -13,7 +13,7 @@ permissions:
 jobs:
   # Fakes only: a fake reth, a fake Canton Ledger API and a fake prover. No real Canton, GPU or reth.
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -30,7 +30,7 @@ jobs:
   # The block gas limit ramp on a real reth, started only through network/reth/launch.sh (peer discovery off): the limit rises toward the
   # target by less than 1/1024 of its parent per block and stops at the target or at the chain's cap.
   gas-ramp:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -45,7 +45,7 @@ jobs:
         run: PYTHON="$RUNNER_TEMP/venv/bin/python" builder/tests/real_reth_gas_ramp.sh
 
   shellcheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

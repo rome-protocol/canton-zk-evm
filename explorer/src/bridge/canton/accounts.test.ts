@@ -81,6 +81,21 @@ describe("the account service client", () => {
     await Promise.all([c.prepare(key, PARTY, [command]), c.prepare(key, PARTY, [command])]);
     expect(f).toHaveBeenCalledTimes(2);
   });
+  it("a read asked after a write never joins a read that started before it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const f = vi.fn(async (url: string) => {
+      if (url.includes("/holdings/")) { await gate; return answer(200, { party: PARTY, holdings: [] }); }
+      return answer(200, { party: PARTY, preparedTransaction: "AA==", preparedTransactionHash: "AA==", hashingSchemeVersion: "V2" });
+    });
+    const c = client(f);
+    const before = c.holdings(key, PARTY);   // on its way
+    await c.prepare(key, PARTY, []);   // a write answers meanwhile
+    const after = c.holdings(key, PARTY);   // asked after the write: its own request
+    await vi.waitFor(() => expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(2));
+    release();
+    await Promise.all([before, after]);
+  });
   it("takes the party from the key, never from the service", async () => {
     const mine = await partyOf(key.publicKey);
     const other = "bridge::1220" + "ee".repeat(32);

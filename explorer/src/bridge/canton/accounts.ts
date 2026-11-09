@@ -100,7 +100,7 @@ export function retryAfterSeconds(value: string | null, now = Date.now()): numbe
 const sha256Hex = async (text: string) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))));
 
 export class AccountsClient {
-  private used = new Set<string>();   // the service takes each (account, second, signature) once: a repeat of a request takes an earlier second
+  private used = new Set<string>();   // the service takes each POST's (account, second, signature) once and does not remember GETs: a repeat of a request takes an earlier second (harmless for a GET)
   private base: string;
   private fetcher: typeof fetch;
   private clock: () => number;
@@ -115,7 +115,11 @@ export class AccountsClient {
 
   private send(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey, timeoutMs?: number): Promise<any> {
     // A read that changes nothing is shared while it is in flight: one request and one answer for the same path and account (the page never sends two at once).
-    if (method !== "GET" || !key || body !== undefined) return this.request(method, path, body, key, timeoutMs);
+    // A write forgets the reads on their way, when it is sent and when it ends, so a read asked after a write never joins one that started before it.
+    if (method !== "GET" || !key || body !== undefined) {
+      this.reading.clear();
+      return this.request(method, path, body, key, timeoutMs).finally(() => this.reading.clear());
+    }
     const id = `${path} ${hex(key.publicKey)}`;
     const going = this.reading.get(id);
     if (going) return going;
