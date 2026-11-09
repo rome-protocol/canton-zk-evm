@@ -19,12 +19,11 @@ function fakeWallet(accounts: string[]) {
     on: vi.fn(),
     removeListener: vi.fn(),
   };
-  vi.stubGlobal("ethereum", w);
   (window as unknown as { ethereum: unknown }).ethereum = w;
   return asked;
 }
 
-afterEach(() => { vi.unstubAllGlobals(); delete (window as unknown as { ethereum?: unknown }).ethereum; });
+afterEach(() => { delete (window as unknown as { ethereum?: unknown }).ethereum; });
 
 describe("useWallet after a reload", () => {
   it("picks up the account the site is already connected to, without asking for a connection", async () => {
