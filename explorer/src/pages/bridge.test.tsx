@@ -392,6 +392,24 @@ describe("the Bridge page", () => {
     expect(mocks.reopenAccount).toHaveBeenCalledTimes(1);   // the other address had no key kept: nothing opened for it
   });
 
+  it("is busy as soon as a kept account is found: it says so, and a sign-in cannot start while the reopen runs", async () => {
+    setUp();
+    mocks.kept = { wallet: ME };
+    let finish!: (a: unknown) => void;
+    mocks.reopenAccount.mockReturnValue(new Promise((done) => { finish = done; }));
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    const busy = await screen.findByRole("button", { name: "Opening your account." });
+    expect(busy).toBeDisabled();
+    await userEvent.click(busy);
+    const asked = () => (window as unknown as { ethereum: { request: { mock: { calls: [{ method: string }][] } } } }).ethereum.request.mock.calls.some(([a]) => a.method === "eth_signTypedData_v4");
+    expect(asked()).toBe(false);
+    expect(mocks.openAccount).not.toHaveBeenCalled();
+    await act(async () => { finish(opened(true)); });
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(mocks.openAccount).not.toHaveBeenCalled();
+  });
+
   it("ignores an account that finishes reopening after the wallet has switched to another", async () => {
     setUp();
     mocks.kept = { wallet: ME };

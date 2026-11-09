@@ -3,9 +3,10 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { extname, join, resolve } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { fromBase64 } from "../src/bridge/canton/key.ts";
+import { contentSecurityPolicy } from "../server/csp.ts";
 import { partyOf } from "../src/bridge/canton/topology.ts";
 
 /**
@@ -38,6 +39,11 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     active = wallet;
   });
 
+  /** What the browser refused under the Content-Security-Policy: no test may have any. */
+  const refused: string[] = [];
+  beforeEach(() => { refused.length = 0; });
+  afterEach(() => { expect(refused).toEqual([]); });
+
   beforeAll(async () => {
     server = createServer(async (req, res) => {
       const path = new URL(req.url!, ORIGIN).pathname;
@@ -68,7 +74,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       if (path.startsWith("/api/") || path.startsWith("/accounts/")) return json(404, { error: "Not found." });
       let file = join(resolve(dist!), path);
       if (!existsSync(file) || !statSync(file).isFile()) file = join(resolve(dist!), "index.html");
-      res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" });
+      res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream", ...(extname(file) === ".html" ? { "content-security-policy": contentSecurityPolicy() } : {}) });   // the pages run under the policy the explorer's server sends
       createReadStream(file).pipe(res);
     });
     await new Promise<void>((done) => server.listen(PORT, "127.0.0.1", done));
@@ -97,6 +103,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       }
       throw new Error(`the wallet was asked ${method}`);
     });
+    page.on("console", (m: any) => { if (/content security policy/i.test(m.text())) refused.push(m.text()); });
     await page.addInitScript(() => { (window as any).ethereum = { request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []), on() {}, removeListener() {} }; });
     await page.goto(origin + path, { waitUntil: "load" });
     return { page, scripts };

@@ -82,7 +82,12 @@ describe("a key that comes back from the store", () => {
     expect(await keyFromStored(new Uint8Array(32), made.publicKey)).toBeNull();   // raw bytes are never taken
     expect(await keyFromStored(made.privateKey, new Uint8Array(31))).toBeNull();
     const seed = new Uint8Array(32).fill(7);
-    const extractable = await crypto.subtle.importKey("pkcs8", new Uint8Array([...Buffer.from("302e020100300506032b657004220420", "hex"), ...seed]), { name: "Ed25519" }, true, ["sign"]);
-    expect(await keyFromStored(extractable, made.publicKey)).toBeNull();
+    const pkcs8 = new Uint8Array([...Buffer.from("302e020100300506032b657004220420", "hex"), ...seed]);
+    const publicHalf = await (await import("@noble/ed25519")).getPublicKeyAsync(seed);   // the extractable key's OWN public half: only the extractable check can refuse it
+    const extractable = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, true, ["sign"]);
+    expect(await keyFromStored(extractable, publicHalf)).toBeNull();
+    // The same seed and public half with a key that is not extractable is taken, so the refusal above is the extractable check and nothing else.
+    const fixed = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
+    expect(await keyFromStored(fixed, publicHalf)).not.toBeNull();
   });
 });

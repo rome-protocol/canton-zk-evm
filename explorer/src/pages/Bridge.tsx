@@ -80,29 +80,35 @@ export function Bridge() {
   // for it is ignored when it ends. `epoch` counts the wallet's accounts: work that began under an earlier count is the old account's.
   const epoch = useRef(0);
   const holding = useRef<Account | null>(null);
+  /** True while a kept account is being looked for and reopened: a sign-in started now would ask the wallet for a signature the reopen does not need. */
+  const reopening = useRef(false);
   const [closeNote, setCloseNote] = useState<string | null>(null);
   const clear = () => { setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({}); setCloseNote(null); };
   useEffect(() => {
     epoch.current++;
     holding.current?.close();
     holding.current = null;
+    reopening.current = false;
     clear();
     // An account this browser kept for this wallet address opens again without a signature (a reload, or the wallet coming back to an address it opened before). Nothing kept, or any
     // failure, leaves the sign-in as it was.
     const address = wallet.account;
     if (!address || !settings || location.origin !== settings.origin) return;
     const mine = epoch.current, same = () => epoch.current === mine;
+    reopening.current = true;
     (async () => {
       // The signing code is fetched only when this browser keeps a key for this address; otherwise it is fetched when the person signs in.
       const store = browserKeyStore();
       if (!(await store.load(address))) return;
+      // From here the page is busy with the reopen: the sign-in button is off and a sign-in started by other means returns at once.
+      if (same()) setPhase({ s: "working", note: "Opening your account." });
       const { reopenAccount } = await import("../bridge/account.ts");
       const account = await reopenAccount(address, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same, store);
       if (!same()) return account?.close();
       if (!account) return setPhase({ s: "idle" });
       holding.current = account;
       setPhase({ s: "ready", account });
-    })().catch(() => { if (same()) setPhase({ s: "idle" }); });
+    })().catch(() => { if (same()) setPhase({ s: "idle" }); }).finally(() => { if (same()) reopening.current = false; });
   }, [wallet.account]);
   const ready = phase.s === "ready";
   const connected = wallet.account !== null;
@@ -166,7 +172,7 @@ export function Bridge() {
 
   async function signIn() {
     const w = injected();
-    if (!w || !wallet.account || !settings || phase.s === "working") return;
+    if (!w || !wallet.account || !settings || phase.s === "working" || reopening.current) return;
     const mine = epoch.current, same = () => epoch.current === mine;
     // The page signs only on the address it was set up for: a copy of it on another address is refused.
     if (wrongSite) return setPhase({ s: "failed", message: plainWords(new PageError("origin_mismatch", "origin")) });
@@ -250,7 +256,7 @@ export function Bridge() {
         </div>
       )}
       {!ready && note(rome)}
-      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} sender={sender} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />}
+      {settings && wallet.account && <AccountPanel wallet={wallet.account} party={opened?.party ?? null} pairs={pairs} held={held} chainName={chain.chainName} sender={sender} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} kept={opened?.kept ? { onClose: () => closeHere(opened), note: closeNote } : null} />}
       {settings && showSheet && (
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
@@ -264,13 +270,6 @@ export function Bridge() {
               </div>
               {note(coin)}
               {note(rome)}
-              {phase.account.kept && (
-                <>
-                  <p className="small muted">This browser keeps your account open: a reload does not ask your wallet again. The key is stored here and cannot be read out.</p>
-                  <button type="button" className="btn ghost" onClick={() => closeHere(phase.account)}>Close my Canton account on this browser</button>
-                  {closeNote && <p className="small bad" role="alert">{closeNote}</p>}
-                </>
-              )}
             </>
           ) : (
             <>

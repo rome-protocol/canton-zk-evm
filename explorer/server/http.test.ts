@@ -129,6 +129,45 @@ describe("the http server", () => {
   });
 });
 
+describe("the Content-Security-Policy", () => {
+  const POLICY = "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'";
+
+  it("is on every HTML answer (the home page and any route the pages own), and on nothing else", async () => {
+    for (const path of ["/", "/block/12", "/index.html"]) {
+      const res = await get(path);
+      expect(res.headers.get("content-security-policy"), path).toBe(POLICY);
+    }
+    expect((await get("/assets/app.js")).headers.get("content-security-policy")).toBeNull();
+    expect((await get("/api/status")).headers.get("content-security-policy")).toBeNull();
+  });
+
+  it("names the human check's origin, and only that, when its script is set; a setting that is no address adds nothing", async () => {
+    const api = async () => ({ status: 200, body: {} });
+    const asked = async (url: string | null) => {
+      const s = createHttpServer(api, join(dir, "dist"), undefined, null, undefined, undefined, url);
+      await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+      const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/faucet`);
+      await new Promise((ok) => s.close(ok));
+      return res.headers.get("content-security-policy");
+    };
+    expect(await asked("https://check.example/api.js?render=explicit")).toBe("script-src 'self' 'wasm-unsafe-eval' https://check.example; object-src 'none'; base-uri 'self'");
+    expect(await asked("not an address")).toBe(POLICY);
+    expect(await asked(null)).toBe(POLICY);
+  });
+
+  it("holds the built page's shape: its only script is a file of this site, with no inline script and no handler in its markup", () => {
+    const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+    const scripts = [...page.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const [, attrs, inline] of scripts) {
+      expect(attrs).toMatch(/\bsrc="\//);
+      expect(inline!.trim()).toBe("");
+    }
+    expect(page).not.toMatch(/\son[a-z]+\s*=/i);
+    expect(page).not.toMatch(/javascript:/i);
+  });
+});
+
 describe("the client's address for the faucet", () => {
   async function serve(ipHeader: string | null | undefined) {
     const api = async (_m: string, _t: string, _b?: string, ip?: string) => ({ status: 200, body: { ip } });

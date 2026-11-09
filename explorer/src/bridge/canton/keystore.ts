@@ -46,6 +46,8 @@ export function indexedDbKeyStore(factory: IDBFactory | undefined = typeof index
     try {
       const t = db.transaction(STORE, mode);
       const done = finished(t);
+      // If `run` fails the transaction is left to abort and `done` is never awaited: its rejection is taken here so it is not reported as unhandled.
+      done.catch(() => {});
       const result = await run(t.objectStore(STORE));
       await done;
       return result;

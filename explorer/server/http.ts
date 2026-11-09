@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { textOf } from "./rest/cache.ts";
+import { contentSecurityPolicy } from "./csp.ts";
 
 const gzipAsync = promisify(gzip);
 import { extname, resolve, sep } from "node:path";
@@ -74,9 +75,10 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
   return last || req.socket.remoteAddress || "unknown";
 }
 
-/** `ipHeader` names the header that carries the client's address for the faucet's and the REST limits (6.6), and is the public RPC's when none is given. `limits` holds the per-client limits of the REST routes, the Etherscan door and verification; `/rpc`, the live streams and the faucet keep their own. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub, limits: Limits = createLimits()): Server {
+/** `ipHeader` names the header that carries the client's address for the faucet's and the REST limits (6.6), and is the public RPC's when none is given. `captchaScriptUrl` is the faucet's human-check script (its origin may run scripts on the pages, see `csp.ts`). `limits` holds the per-client limits of the REST routes, the Etherscan door and verification; `/rpc`, the live streams and the faucet keep their own. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub, limits: Limits = createLimits(), captchaScriptUrl: string | null = null): Server {
   const root = resolve(dist);
+  const csp = contentSecurityPolicy(captchaScriptUrl);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
     try { name = decodeURIComponent(pathname); } catch { return null; }
@@ -208,7 +210,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
       } else {
         const found = await page(pathname);
         if (!found) return void res.writeHead(404, { "content-type": "text/plain" }).end("Not found");
-        res.writeHead(200, { "content-type": TYPES[extname(found.file)] ?? "application/octet-stream", "content-length": found.bytes.length, "x-content-type-options": "nosniff", ...(ICONS.has(pathname) ? { "cache-control": "public, max-age=86400" } : {}) }).end(method === "HEAD" ? undefined : found.bytes);
+        res.writeHead(200, { "content-type": TYPES[extname(found.file)] ?? "application/octet-stream", "content-length": found.bytes.length, "x-content-type-options": "nosniff", ...(extname(found.file) === ".html" ? { "content-security-policy": csp } : {}), ...(ICONS.has(pathname) ? { "cache-control": "public, max-age=86400" } : {}) }).end(method === "HEAD" ? undefined : found.bytes);
       }
     } catch (e) {
       console.error(`${method} ${pathname}: ${(e as Error).message}`);
