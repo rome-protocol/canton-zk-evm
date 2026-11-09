@@ -16,6 +16,10 @@ export type WalletState =
   | { s: "failed"; message: string }
   | { s: "ready"; link: WalletLink; account: WalletAccount; opted: boolean; opting: boolean; note: string | null };
 
+/** The wallet libraries' code (connect.ts), asked for once however many calls need it at the same time. */
+let connectCode: Promise<typeof import("../bridge/wallet/connect.ts")> | null = null;
+const connectModule = () => (connectCode ??= import("../bridge/wallet/connect.ts").catch((e) => { connectCode = null; throw e; }));
+
 /** One error of connecting or of reading the wallet's account, in plain words. */
 export function connectWords(e: unknown): string { return e instanceof Refused ? e.message : plainWords(e); }
 /** One error of the opt-in, in plain words: a refusal by Canton says what it most likely means for a wallet. */
@@ -62,7 +66,7 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     const mine = ++epoch.current;
     setState({ s: "working", note: "Opening your Canton wallet." });
     (async () => {
-      const { restoreWallet } = await import("../bridge/wallet/connect.ts");
+      const { restoreWallet } = await connectModule();
       const link = await restoreWallet(latest.current);
       if (epoch.current !== mine) return link?.release();
       if (!link) { forgetWallet(); return setState({ s: "idle" }); }
@@ -77,7 +81,7 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     const mine = ++epoch.current;
     setState({ s: "working", note: "Approve the connection in your wallet." });
     try {
-      const { connectWallet } = await import("../bridge/wallet/connect.ts");
+      const { connectWallet } = await connectModule();
       const link = await connectWallet(options, id);
       if (epoch.current !== mine) return link.release();   // a late approval of an earlier try: the wallet's session now belongs to a later one, so it is not ended
       rememberWallet();
@@ -93,7 +97,7 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     const mine = ++epoch.current;
     setState({ s: "working", note: "Looking for your Canton wallet." });
     try {
-      const { choices } = await import("../bridge/wallet/connect.ts");
+      const { choices } = await connectModule();
       const found = await choices(options);
       if (epoch.current !== mine) return;
       if (found.length === 0) return setState({ s: "failed", message: "No Canton wallet was found in this browser. Open your wallet or install its extension, then try again." });

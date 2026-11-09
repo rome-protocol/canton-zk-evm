@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Unanswered } from "../bridge/canton/accounts.ts";
 import { AccountsError } from "../bridge/canton/accounts.ts";
 import { PageError } from "../bridge/words.ts";
@@ -17,8 +17,6 @@ vi.mock("../bridge/wallet/connect.ts", () => ({ choices: mocks.choices, connectW
 const LOOP = { wallets: ["loop" as const], gatewayUrl: null };
 const disconnects = (w: ReturnType<typeof fakeWallet>) => w.requests.filter((r) => r.method === "disconnect").length;
 const deferred = <T,>() => { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
-// Two imports of the mocked module at once (the hook's, twice, under StrictMode) are not answered alike by the test runner: the module is loaded once, first.
-beforeAll(async () => { await import("../bridge/wallet/connect.ts"); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
 
 describe("a connection that ends late", () => {

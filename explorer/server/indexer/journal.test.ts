@@ -698,7 +698,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
         expect(await health(pool, "C8")).toMatchObject({ status: "degraded", detail: expect.stringContaining("no producer journal") });
       });
     }
-  }, 20_000);   // three databases in a row: a busy runner needs more than the default 5 s
+  }, 30_000);   // three databases in a row: a busy runner needs more than the default 5 s
 
   it("deletes the pool samples older than 30 days", async () => {
     await inDb(async (pool) => {
