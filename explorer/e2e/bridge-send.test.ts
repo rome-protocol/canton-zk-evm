@@ -169,7 +169,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
     return send;
   }
 
-  it("sends Canton Coin: the person confirms a line, the page signs with the account's key, and says it waits for the receiver to accept, with the Canton update", async () => {
+  it("sends Canton Coin: the person confirms a line, the page signs with the account's key, and says it waits for the receiver to accept, with the Canton update id to copy", async () => {
     const page = await open("/bridge");
     await signedIn(page);
     const send = await fill(page, "5", RECEIVER);
@@ -179,7 +179,10 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
     expect(await inside(page)).toBe(true);
     await send.getByRole("button", { name: "Send" }).click();
     await send.getByText("Sent; waiting for the receiver to accept.").waitFor({ timeout: 30_000 });
-    expect(await send.getByRole("link", { name: "Canton update" }).getAttribute("href")).toBe(`/canton/${SEND_UPDATE}`);
+    // The explorer holds only the Canton updates that carry an Ostia block: a person's own send has no link, the update id is shown to copy.
+    expect(await send.getByRole("link").count()).toBe(0);
+    await send.getByText(/Done on Canton/).first().waitFor();
+    expect(await send.getByRole("button", { name: "Copy update id" }).count()).toBe(1);
     // What the page asked the registry for, and signed: the person's receiver, amount and instrument, from the account's own holding.
     expect(seen.factories).toHaveLength(1);
     expect(seen.factories[0]).toMatchObject({ admin: CC_ADMIN, party, excludeDebugFields: true, choiceArguments: { expectedAdmin: CC_ADMIN, transfer: { sender: party, receiver: RECEIVER, amount: "5.0000000000", instrumentId: { admin: CC_ADMIN, id: "Amulet" }, inputHoldingCids: [CC_HOLDING] } } });

@@ -55,7 +55,8 @@ describe("the account service client", () => {
     const c = client(f);
     const [a, b] = [c.holdings(key, PARTY), c.holdings(key, PARTY)];
     const other = c.open(key, PARTICIPANT).catch(() => null);   // another path is its own request
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(1));   // signing is asynchronous: the request goes a moment later
+    await new Promise((r) => setTimeout(r, 50));   // and the second read has had its time to (not) send
     expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(1);
     release();
     expect(await a).toEqual(await b);
