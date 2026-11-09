@@ -100,7 +100,7 @@ export function retryAfterSeconds(value: string | null, now = Date.now()): numbe
 const sha256Hex = async (text: string) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))));
 
 export class AccountsClient {
-  private used = new Set<string>();   // the service takes each (account, second, signature) once: a repeat of a request takes an earlier second
+  private used = new Set<string>();   // the service takes each POST's (account, second, signature) once and does not remember GETs: a repeat of a request takes an earlier second (harmless for a GET)
   private base: string;
   private fetcher: typeof fetch;
   private clock: () => number;
@@ -111,7 +111,24 @@ export class AccountsClient {
 
   private recordBy = new Map<string, number>();   // a prepared transaction -> the time (ms) the service will record it by, until it is executed
 
-  private async send(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey, timeoutMs?: number): Promise<any> {
+  private reading = new Map<string, Promise<any>>();   // the signed GETs on their way: an identical one asked for meanwhile gets the same answer
+
+  private send(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey, timeoutMs?: number): Promise<any> {
+    // A read that changes nothing is shared while it is in flight: one request and one answer for the same path and account (the page never sends two at once).
+    // A write forgets the reads on their way, when it is sent and when it ends, so a read asked after a write never joins one that started before it.
+    if (method !== "GET" || !key || body !== undefined) {
+      this.reading.clear();
+      return this.request(method, path, body, key, timeoutMs).finally(() => this.reading.clear());
+    }
+    const id = `${path} ${hex(key.publicKey)}`;
+    const going = this.reading.get(id);
+    if (going) return going;
+    const p = this.request(method, path, body, key, timeoutMs).finally(() => { if (this.reading.get(id) === p) this.reading.delete(id); });
+    this.reading.set(id, p);
+    return p;
+  }
+
+  private async request(method: "GET" | "POST", path: string, body?: unknown, key?: CantonKey, timeoutMs?: number): Promise<any> {
     const text = body === undefined ? "" : JSON.stringify(body);   // signed exactly as it is sent
     const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
     if (key) headers["X-Account-Signature"] = await this.accountSignature(key, method, path, text);

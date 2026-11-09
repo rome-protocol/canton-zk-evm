@@ -641,7 +641,8 @@ class Accounts:
 
     def authenticate(self, party, method: str, path: str, raw: bytes, header, ip: str = "") -> None:
         """Proof of the account's key on a request about it: header `<unix seconds>.<base64 signature>`, the signature over
-        `accounts-v1\\n<METHOD>\\n<PATH>\\n<hex sha256 of the body>\\n<unix seconds>`, within AUTH_WINDOW of the server's time, and not seen before."""
+        `accounts-v1\\n<METHOD>\\n<PATH>\\n<hex sha256 of the body>\\n<unix seconds>`, within AUTH_WINDOW of the server's time. A request that changes something
+        (anything but GET) must also not have been seen before; a GET only reads, so repeating it is harmless (two reads in the same second carry the same signature)."""
         key = self.key_of(party)
         m = re.fullmatch(r"(\d{1,12})\.([A-Za-z0-9+/=]{1,100})", header or "")
         try:
@@ -654,11 +655,12 @@ class Accounts:
         message = f"accounts-v1\n{method}\n{path}\n{hashlib.sha256(raw).hexdigest()}\n{seconds}".encode()
         if abs(self.wall() - seconds) > AUTH_WINDOW:
             raise HttpError(401, "the account's signature is not valid for this request, or is too old")
-        if self.replays.used(party, seconds, signature):
+        changes = method != "GET"   # the replay memory guards what changes something; a read repeated is idempotent and stays under the account's rate
+        if changes and self.replays.used(party, seconds, signature):
             raise HttpError(401, "this signature was used already")
         if not self.proves(key, message, signature, ip):
             raise HttpError(401, "the account's signature is not valid for this request, or is too old")
-        if not self.replays.add(party, seconds, signature):
+        if changes and not self.replays.add(party, seconds, signature):
             raise HttpError(401, "this signature was used already")
 
     def health(self) -> dict:
