@@ -2,7 +2,7 @@
 
 ![Ostia: a ZK EVM on Canton, live on DevNet](2026-11-ostia-card-5x2.png)
 
-*Published 2026-11-09.*
+*Published 2026-11-09 on X: https://x.com/RomeProtocol/status/2119877820411199959 (thread: https://x.com/RomeProtocol/status/2119879190577357272).*
 
 Ostia is an EVM chain that settles on Canton. Every block is proven with zero-knowledge, and one Canton transaction carries the block, its proof and the Canton actions the block asked for. It is live on Canton DevNet today. It is open source under Apache-2.0, and anyone can use it.
 
@@ -61,7 +61,7 @@ One safety note. Your Canton key comes from that signature. Anyone who gets you 
 
 - The faucet gives every address 1 tROME a day.
 - The Bridge gives your Canton account 20 test Canton Coin a day.
-- Builders who sign in with GitHub on the Faucet page get 100 tROME. The GitHub account must be at least 30 days old. Each GitHub account and each address can take one grant every 7 days. Rome reads only the account's id and age from GitHub, and asks for no permissions.
+- Builders get 100 tROME by signing in with GitHub on the Faucet page: https://ostia.devnet.romeprotocol.xyz/faucet The GitHub account must be at least 30 days old. Each GitHub account and each address can take one grant every 7 days. Rome reads only the account's id and age from GitHub, and asks for no permissions.
 
 Full steps: https://docs.rome.builders/canton-zk-evm/bridge
 
@@ -130,6 +130,6 @@ This is DevNet: tROME has no value, and Rome runs the Ostia services today. What
 
 1. Open https://ostia.devnet.romeprotocol.xyz/bridge, connect your wallet and sign one message.
 2. Take the test tROME and Canton Coin, make one of the four moves, and send some to another Canton address.
-3. Building something? Sign in with GitHub on the faucet for 100 tROME.
+3. Building something? Open https://ostia.devnet.romeprotocol.xyz/faucet, paste your address and sign in with GitHub for 100 tROME.
 4. Add Ostia DevNet to your wallet and deploy a contract.
 5. Tell us what you are building, and where it breaks, in a GitHub issue: https://github.com/rome-protocol/canton-zk-evm/issues
