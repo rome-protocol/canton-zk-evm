@@ -24,6 +24,8 @@ export interface WalletLink {
   ledgerApi(request: LedgerRequest): Promise<unknown>;
   /** Ends the connection. */
   disconnect(): Promise<void>;
+  /** Lets this link go without ending the wallet's connection: only its own listeners are dropped (for a link that was made late, after the page moved on to another connection). */
+  release(): void;
   /** Says once when the wallet's account is no longer this one (disconnected, or another account chosen). Returns a function that stops listening. */
   onLost(fn: () => void): () => void;
   /** True once the wallet's account is gone: nothing more is sent. */
@@ -166,6 +168,7 @@ export async function linkWallet(provider: Cip103, o: LinkOptions): Promise<Wall
       lose();
       try { await (o.disconnect ? o.disconnect() : provider.request({ method: "disconnect" })); } catch { /* the wallet is let go either way */ }
     },
+    release() { if (closed) return; closed = true; stop(); lost.clear(); },
     onLost(fn) { if (closed) { queueMicrotask(fn); return () => {}; } lost.add(fn); return () => { lost.delete(fn); }; },
   };
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHAIN, fakeWallet, WALLET_PARTY } from "../bridge/wallet/fake-wallet.ts";
@@ -155,6 +155,46 @@ describe("the Bridge page with Canton wallets in the build", () => {
       await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
       expect(await screen.findByText("Connected")).toBeInTheDocument();
     });
+  });
+
+  it("goes from a Bridge account that is Ready to the wallet, and back to the Ready account when the wallet is disconnected", async () => {
+    setUp();
+    connectsTo();
+    const BRIDGE_PARTY = "rome::1220" + "ab".repeat(32);
+    mocks.openAccount.mockResolvedValue({ party: BRIDGE_PARTY, close: async () => {}, kept: false });
+    await openSheet();
+    await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(sheet()).toHaveTextContent("rome::1220ababab…ababab");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(wasConnected()).toBe(false);
+    expect(wallet.requests.some((r) => r.method === "disconnect")).toBe(true);
+  });
+
+  it("lets a pending wallet connection go when the person turns to the Bridge account: the sign-in sheet stays, and nothing changes when the connection ends later", async () => {
+    setUp();
+    connectsTo();
+    let approve!: () => void;
+    mocks.connectWallet.mockImplementationOnce(() => new Promise((resolve) => { approve = () => resolve(linkWallet(wallet.provider, { name: "Loop" })); }));
+    await openSheet();
+    await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+    expect(await screen.findByRole("button", { name: "Approve the connection in your wallet." })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
+    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    await act(async () => { approve(); await new Promise((r) => setTimeout(r, 30)); });   // the wallet's approval comes late
+    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(wasConnected()).toBe(false);
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(wallet.requests.some((r) => r.method === "disconnect")).toBe(false);   // the late connection is let go without ending the wallet's session
   });
 
   it("connects the wallet, shows its short address and name, asks to opt in once, and then the moves are made for the wallet's account", async () => {

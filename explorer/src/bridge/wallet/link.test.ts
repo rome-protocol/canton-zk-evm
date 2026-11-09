@@ -170,5 +170,18 @@ describe("a connected wallet", () => {
       await new Promise((r) => setTimeout(r, 1));
       expect(lost).toHaveBeenCalledTimes(1);   // the account is gone: a late listener is told at once
     });
+    it("lets a link go without ending the wallet's connection: no disconnect is asked, the wallet's own events no longer reach it", async () => {
+      const w = fakeWallet();
+      const disconnect = vi.fn(async () => {});
+      const link = await linkWallet(w.provider, { name: "W", disconnect });
+      const lost = vi.fn();
+      link.onLost(lost);
+      link.release();
+      expect(link.closed).toBe(true);
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(w.requests.some((r) => r.method === "disconnect")).toBe(false);
+      w.emit("statusChanged", { connection: { isConnected: false } });
+      expect(lost).not.toHaveBeenCalled();
+    });
   });
 });

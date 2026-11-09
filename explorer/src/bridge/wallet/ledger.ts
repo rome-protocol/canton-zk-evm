@@ -49,7 +49,7 @@ export class WalletLedger {
   }
 
   /** The created events of the party's active contracts that match the filter, all pages of one snapshot. */
-  private async active(party: string, filters: object[], what: string): Promise<Created[]> {
+  private async active(party: string, filters: object[]): Promise<Created[]> {
     let request: Record<string, unknown> = { eventFormat: { filtersByParty: { [party]: { cumulative: filters.map((identifierFilter) => ({ identifierFilter })) } }, verbose: false }, maxPageSize: PAGE };
     const out: Created[] = [];
     for (let i = 0; i < PAGES; i++) {
@@ -59,24 +59,24 @@ export class WalletLedger {
       if (!page?.nextPageToken) return out;
       request = { ...request, activeAtOffset: page.activeAtOffset, pageToken: page.nextPageToken };
     }
-    throw new Refused(`Your account has more ${what} than this page lists.`);
+    throw new Refused("Your wallet's account holds too much for this page to read.");
   }
 
-  private views(party: string, interfaceIdText: string, what: string) {
-    return this.active(party, [{ InterfaceFilter: { value: { interfaceId: interfaceIdText, includeInterfaceView: true, includeCreatedEventBlob: false } } }], what)
+  private views(party: string, interfaceIdText: string) {
+    return this.active(party, [{ InterfaceFilter: { value: { interfaceId: interfaceIdText, includeInterfaceView: true, includeCreatedEventBlob: false } } }])
       .then((found) => found.flatMap((e) => (e.interfaceViews ?? []).map((v) => ({ contractId: String(e.contractId), view: v.viewValue }))));
   }
 
   /** The party's own holdings (the holding's view says its owner): a holding the party only sees is not its own. */
   async holdings(_key: unknown, party: string): Promise<Holding[]> {
-    return (await this.views(this.only(party), HOLDING_ID, "holdings"))
+    return (await this.views(this.only(party), HOLDING_ID))
       .filter(({ view }) => view && typeof view === "object" && view.owner === party)
       .map(({ contractId, view }) => ({ contractId, instrumentId: view.instrumentId, amount: view.amount, locked: Boolean(view.lock) }));
   }
 
   /** The party's own allocations (the party is the sender of the leg). */
   async allocations(_key: unknown, party: string): Promise<AllocationView[]> {
-    return (await this.views(this.only(party), ALLOCATION_ID, "allocations"))
+    return (await this.views(this.only(party), ALLOCATION_ID))
       .filter(({ view }) => view && typeof view === "object" && view.allocation?.transferLeg?.sender === party)
       .map(({ contractId, view }) => ({ contractId, allocation: view.allocation, holdingCids: view.holdingCids ?? [] }));
   }
@@ -85,7 +85,7 @@ export class WalletLedger {
   async openRequests(_key: unknown, party: string): Promise<OpenState> {
     this.only(party);
     const c = this.chain;
-    const found = await this.active(party, Object.values(TEMPLATES).map((t) => ({ TemplateFilter: { value: { templateId: t.id, includeCreatedEventBlob: false } } })), "open requests");
+    const found = await this.active(party, Object.values(TEMPLATES).map((t) => ({ TemplateFilter: { value: { templateId: t.id, includeCreatedEventBlob: false } } })));
     const ofChain = (a: Record<string, unknown>) => a.operator === c.operator && a.confirmer === c.confirmer && a.gateway === c.gateway && a.builder === c.builder && String(a.chainId) === String(c.chainId);
     const pick = (t: keyof typeof TEMPLATES): OpenRequest[] => {
       const want = TEMPLATES[t];

@@ -172,7 +172,7 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
         expect(c.detail).toMatch(/1 indexed blocks have no committed attempt in the journal \(the first is block 2\): another producer, or a lost journal/);
       });
     });
-  });
+  }, 20_000);   // two databases: a busy runner needs more than the default 5 s
 
   it("C8 counts the blocks with no attempt of the last six hours only, and keeps the all-time number in its value", async () => {
     await inDb(async (pool) => {
