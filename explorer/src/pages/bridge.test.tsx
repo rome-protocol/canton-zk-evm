@@ -81,7 +81,7 @@ describe("the Bridge page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(mocks.openAccount).toHaveBeenCalledWith(expect.anything(), ME, expect.objectContaining({ origin: ORIGIN, participant: env.VITE_CANTON_PARTICIPANT }), expect.any(Function), undefined, expect.any(Function));
-    expect(screen.getByTitle(PARTY)).toHaveTextContent("rome::1220abab…ababab");
+    expect(screen.getByTitle(PARTY)).toHaveTextContent("rome::1220ababab…ababab");
     expect(screen.getByRole("button", { name: "Copy account id" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Get 1 tROME" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Your Canton account" }).textContent).not.toMatch(/party|allocation|vault|external/i);   // no technical names on the screen
@@ -280,7 +280,7 @@ describe("the Bridge page", () => {
     await openSheet();
     await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
     expect(await within(panel).findByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false })).toHaveTextContent("This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.");
-    expect(within(panel).getByText("rome::1220abab…ababab")).toBeInTheDocument();
+    expect(within(panel).getByText("rome::1220ababab…ababab")).toBeInTheDocument();
     expect(within(panel).queryByText("Not opened yet")).toBeNull();
     expect(within(panel).getByRole("list", { name: "On Canton" })).toBeInTheDocument();   // the rows say whose balances they are, beside the wallet's own address
     await waitFor(() => expect(within(within(panel).getByRole("list")).getAllByRole("listitem").map((r) => r.textContent)).toEqual(["TKA1.234567", "Canton Coin1.234567"]));   // by the names people know, cut down and never up
