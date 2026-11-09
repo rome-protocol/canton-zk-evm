@@ -143,8 +143,11 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   /** A page at 360 px (a small phone), with the wallet: the fixed key signs in this process, and the chain's sends go to the fake chain. */
   async function open(path: string) {
     const page = await browser.newPage({ viewport: { width: 360, height: 740 } });
+    let connected = false;
     await page.exposeFunction("__wallet", async (method: string, params: any[]) => {
-      if (method === "eth_requestAccounts" || method === "eth_accounts") return [wallet.address];
+      // Like MetaMask: no account is shared with a page until it has asked eth_requestAccounts (unless the site was connected before).
+      if (method === "eth_requestAccounts") { connected = true; return [wallet.address]; }
+      if (method === "eth_accounts") return connected ? [wallet.address] : [];
       if (method === "eth_chainId") return "0x" + (770101).toString(16);
       if (method === "wallet_switchEthereumChain") return null;
       if (method === "eth_signTypedData_v4") {
@@ -355,7 +358,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
 
     await page.reload({ waitUntil: "load" });
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });   // the wallet stays connected across the reload
     await page.getByRole("tab", { name: "Activity" }).click();
     const activity = page.getByRole("region", { name: "Activity" });
     const row = activity.getByRole("listitem").filter({ hasText: "5 TKA to Ostia" });
