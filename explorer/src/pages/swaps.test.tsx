@@ -273,7 +273,10 @@ describe("the swap page", () => {
     expect(steps[1]).toHaveTextContent("Payment");
     expect(within(steps[1]!).getByRole("link", { name: "Block 16816" })).toHaveAttribute("href", "/block/16816");
     expect(within(steps[1]!).getByRole("link", { name: "0x0404…0404" })).toHaveAttribute("href", `/tx/${hash(0x04)}`);
+    // The payment and the claim each link to their Canton update, which the explorer holds.
+    expect(within(steps[1]!).getByRole("link", { name: update(0xad).slice(0, 8) + "…" + update(0xad).slice(-4) })).toHaveAttribute("href", `/canton/${update(0xad)}`);
     expect(steps[2]).toHaveTextContent("Claim");
+    expect(within(steps[2]!).getByRole("link", { name: update(0xf0).slice(0, 8) + "…" + update(0xf0).slice(-4) })).toHaveAttribute("href", `/canton/${update(0xf0)}`);
     expect(within(steps[2]!).getByRole("link", { name: "Block 16823" })).toHaveAttribute("href", "/block/16823");
     expect(within(steps[2]!).getByRole("link", { name: "0x3737…3737" })).toHaveAttribute("href", `/tx/${hash(0x37)}`);
   });
