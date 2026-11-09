@@ -10,9 +10,9 @@
 #          if it holds too little, and approves the gateway).
 #          Run 3, a withdrawal: U's address withdraws 4 wTKB to U's party.
 #          Each transaction is waited for at reth's finalized block (the producer makes the blocks; this script never builds one). Then it
-#          checks that the block has exactly one leg of the kind, that Canton's BlockRecord is that block (and holds a proof), that the
-#          BlockRecord and the new holding came from one Canton update (canton.py settled), the TKB and wTKB balances, and that Canton's custody
-#          equals wTKB's supply. It stops at the first claim that does not hold, and writes $CZE_LIVE_RESULTS/live-<date>.txt.
+#          checks that the block holds the run's own leg once and of its kind (found by its transaction and id: other legs in the block are
+#          anyone's and are not counted), that Canton's BlockRecord is that block (and holds a proof), that the BlockRecord and the new holding
+#          came from one Canton update (canton.py settled), the TKB and wTKB balances, and that Canton's custody equals wTKB's supply. It stops at the first claim that does not hold, and writes $CZE_LIVE_RESULTS/live-<date>.txt.
 #   cycle  A balanced cycle, repeated: the three runs of `legs` (a deposit of 10 TKB, a payment, a withdrawal of the 10 wTKB that the deposit made),
 #          then V sends U the 10 TKB the payment moved (canton.py return-tkb, the token standard's plain transfer) and U sends V the WtROME it was paid
 #          (evm.py give). Every balance is back where it was when the cycle ends, so the lane can run for as long as it is asked to: U needs 20 TKB, and no
@@ -176,13 +176,19 @@ wrapped() { evm wrapped "$WTKB" "$1" finalized; }   # <holder address>: {"balanc
 coin() { local b; b=$(evm balance "$1" "$2" finalized) && jq -r .tka <<<"$b"; }   # <token> <holder>: whole tokens
 fin_number() { local b; b=$(evm block finalized); jq -r .number <<<"$b"; }
 
-# <block number> <kind> <party> <block hash>: one leg of that kind in the block, Canton's record is that block, and the block and the party's
-# newest TKB holding were made by one Canton update. Prints the update id.
+# <block number> <kind> <party> <block hash> <tx> [<leg id>]: the block holds this run's own leg once (its transaction, and the leg's id, each in one
+# leg of the block) and of that kind, Canton's record is that block, and the block and the party's newest TKB holding were made by one Canton update.
+# Prints the update id. Other legs in the block are not counted: anyone may make legs, and they share blocks with the lane's.
 check_leg() {
-  local n=$1 found legs head update record finalized
+  local n=$1 tx found legs mine head update record finalized
+  tx=$(tr A-F a-f <<<"$5")
   legs=$(evm legs "$n")
-  is "$(jq -r .legs <<<"$legs")" 1 "the legs in block $n"
-  is "$(jq -c .kinds <<<"$legs")" "[\"$2\"]" "the kind of block $n's leg"
+  mine=$(jq -c --arg tx "$tx" '[.calls[] | select(.tx == $tx)]' <<<"$legs")
+  is "$(jq length <<<"$mine")" 1 "the legs of $tx in block $n"
+  is "$(jq -c '[.[].kind]' <<<"$mine")" "[\"$2\"]" "the kind of $tx's leg in block $n"
+  if [ -n "${6:-}" ]; then
+    is "$(jq --arg id "$(tr A-F a-f <<<"${6#0x}")" '[.calls[] | select(.id == $id)] | length' <<<"$legs")" 1 "the legs with the id ${6#0x} in block $n"
+  fi
   finalized=$(fin_number)
   [ "$finalized" -ge "$n" ] || fail "reth's finalized block is below block $n"
   found=$(canton block "$n" "$3")   # read from the update of that party's newest holding: not every record of a long chain
@@ -232,7 +238,7 @@ run_deposit() {
   DEP_JSON=$deposit; DEP_ID=$(jq -r .depositId <<<"$deposit")
   DEP_TX=$(evm claim u "$DEP_ID" "$WTKB" "$amount" | jq -r .tx)
   local r; r=$(final "$DEP_TX" "the claim"); DEP_N=$(jq -r .block <<<"$r"); DEP_H=$(jq -r .blockHash <<<"$r")
-  DEP_UPDATE=$(check_leg "$DEP_N" claim gateway "$DEP_H"); DEP_REC=$(canton block "$DEP_N" gateway | jq -c .record)
+  DEP_UPDATE=$(check_leg "$DEP_N" claim gateway "$DEP_H" "$DEP_TX" "$DEP_ID"); DEP_REC=$(canton block "$DEP_N" gateway | jq -c .record)
   AFTER=$(canton balances); W_AFTER=$(wrapped "$U_ADDR")
   is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" "-$amount")" "U's TKB after run 1"
   is "$(num "$(total "$AFTER" gateway)")" "$(sum "$(total "$before" gateway)" "$amount")" "the custody after run 1"
@@ -261,7 +267,7 @@ run_payment() {
   is "$PAY_ID" "$pid" "the payment id of $tag-dvp"
   PAY_TX=$(evm pay v "$PAY_ID" "$CZE_WTROME" "$U_ADDR" "$PAY" | jq -r .tx)
   local r; r=$(final "$PAY_TX" "the payment"); PAY_N=$(jq -r .block <<<"$r"); PAY_H=$(jq -r .blockHash <<<"$r")
-  PAY_UPDATE=$(check_leg "$PAY_N" pay v "$PAY_H"); PAY_REC=$(canton block "$PAY_N" v | jq -c .record)
+  PAY_UPDATE=$(check_leg "$PAY_N" pay v "$PAY_H" "$PAY_TX" "$PAY_ID"); PAY_REC=$(canton block "$PAY_N" v | jq -c .record)
   AFTER=$(canton balances)
   is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" -10)" "U's TKB after run 2"
   is "$(num "$(total "$AFTER" v)")" "$(sum "$(total "$before" v)" 10)" "V's TKB after run 2"
@@ -278,7 +284,7 @@ run_withdraw() {
   W_BEFORE=$(wrapped "$U_ADDR")
   WD_TX=$(evm withdraw u "$WTKB" "$amount" "$U_PARTY" | jq -r .tx)
   local r; r=$(final "$WD_TX" "the withdrawal"); WD_N=$(jq -r .block <<<"$r"); WD_H=$(jq -r .blockHash <<<"$r")
-  WD_UPDATE=$(check_leg "$WD_N" withdraw u "$WD_H"); WD_REC=$(canton block "$WD_N" u | jq -c .record)
+  WD_UPDATE=$(check_leg "$WD_N" withdraw u "$WD_H" "$WD_TX"); WD_REC=$(canton block "$WD_N" u | jq -c .record)
   AFTER=$(canton balances); W_AFTER=$(wrapped "$U_ADDR")
   is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" "$amount")" "U's TKB after run 3"
   is "$(num "$(total "$AFTER" gateway)")" "$(sum "$(total "$before" gateway)" "-$amount")" "the custody after run 3"
@@ -345,7 +351,7 @@ legs() {
     echo "withdrawal_tx=$WD_TX"
     echo "withdrawal_canton_update=$WD_UPDATE"
     echo "withdrawal_proof_sha256=$(jq -r .proofSha256 <<<"$WD_REC")"
-    echo "one_leg_per_block=yes"
+    echo "own_leg_once_per_block=yes"
     echo "block_record_and_holding_in_one_update=yes"
     echo "reth_finalized=yes"
     echo "tkb_u_before=$(total "$start" u)"
