@@ -37,7 +37,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     canton.holding("20.0000000000", { admin: CC_ADMIN, id: "Amulet" });
     Object.assign(seen, { signRequests: 0, factoryAsked: 0, factoryBody: null, signedHeader: false, accountService: 0 });
   });
-  const refused: string[] = [];
+  const refused: string[] = [], logs: string[] = [];
   beforeEach(() => { refused.length = 0; });
   afterEach(() => { expect(refused).toEqual([]); });
 
@@ -96,7 +96,8 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
       catch (e) { throw new Error(`code:${(e as { code?: number }).code ?? 0} ${(e as Error).message}`); }
     });
     canton.provider.on("txChanged", (payload) => { page.evaluate((p: unknown) => window.postMessage({ type: "SPLICE_WALLET_REQUEST", target: "fake", request: { jsonrpc: "2.0", method: "txChanged", params: p } }, "*"), payload).catch(() => {}); });
-    page.on("console", (m: any) => { if (/content security policy/i.test(m.text())) refused.push(m.text()); });
+    page.on("console", (m: any) => { logs.push(m.type() + ": " + m.text()); if (/content security policy/i.test(m.text())) refused.push(m.text()); });
+    page.on("pageerror", (e: Error) => logs.push("pageerror: " + e.message));
     await page.addInitScript(() => {
       (window as any).ethereum = { request: ({ method, params }: any) => (window as any).__wallet(method, params ?? []).catch((e: Error) => { throw Object.assign(new Error(e.message), /rejected/i.test(e.message) ? { code: 4001 } : {}); }), on() {}, removeListener() {} };
       // A browser-extension wallet: answers the SDK's handshake, announces itself, and answers each request (the standard's JSON-RPC over the window's messages).
@@ -121,7 +122,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     await page.getByRole("button", { name: "Connect MetaMask" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Connect your Canton wallet" }).click();
-    await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 });
+    await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 }).catch(async (e: Error) => { console.log("PAGE TEXT:", (await page.locator(".account").innerText()).slice(0, 600), "\nLOG:", logs.join("\n").slice(0, 2000)); throw e; });
   }
 
   it("connects the wallet, opts in with two approvals in it, and moves Canton Coin to Ostia: the wallet approves the allocation and the deposit request, one claim in MetaMask, then final", async () => {
