@@ -46,7 +46,7 @@ function Body({ s }: { s: SwapItem }) {
       <section className="card" aria-label="Journey">
         <div className="sec-h"><h3>Journey</h3><Info about="the journey">The offer is made on Canton. The buyer's payment lands in a block of Ostia. The claim moves the Canton side to the buyer's wallet.</Info></div>
         <ol className="sw-road">
-          <Step name="Offer" where="On Canton"><span>Canton update <HashLink value={s.offer.updateId} kind="update" to={`/canton/${s.offer.updateId}`} /></span></Step>
+          <Step name="Offer" where="On Canton"><span>Canton update <HashLink value={s.offer.updateId} kind="update" /></span></Step>
           <Step name="Payment" where="On Ostia"><Landed step={s.payment} /></Step>
           {s.claim ? <Step name="Claim" where="On Ostia"><Landed step={s.claim} /></Step> : <Step name="Claim" where="On Ostia" waiting><span className="muted">Waiting for the buyer to claim</span></Step>}
         </ol>

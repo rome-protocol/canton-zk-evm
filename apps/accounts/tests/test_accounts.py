@@ -149,6 +149,13 @@ class Case(unittest.TestCase):
     def sig(message_b64, seed=SEED):
         return base64.b64encode(sign(seed, base64.b64decode(message_b64))).decode()
 
+    def replayed(self, path, body):
+        """The same signed POST sent twice with one X-Account-Signature: what the first answers (anything but 401), and what the second answers."""
+        header = {"X-Account-Signature": self.account_signature("POST", path, json.dumps(body).encode())}
+        first = self.req("POST", path, body, headers=header)[0]
+        self.assertNotEqual(first, 401, path)
+        return first, self.req("POST", path, body, headers=header)[0]
+
     def execute_body(self, prepared, seed=SEED):
         return {"preparedTransaction": prepared["preparedTransaction"], "partySignatures": [{"party": PARTY, "signature": self.sig(prepared["preparedTransactionHash"], seed)}]}
 
@@ -1107,6 +1114,12 @@ class Authentication(Case):
         # and the memory of a POST does not make a GET refused, nor the other way round
         self.assertEqual(self.holdings()[0], 200)
 
+    def test_a_replayed_execute_is_401(self):
+        self.make_account()
+        _, p, _ = self.req("POST", "/accounts/v1/prepare", {"party": PARTY, "commands": [{"CreateCommand": {"templateId": DEPOSIT, "createArguments": {"party": PARTY, **CHAIN}}}]})
+        _, second = self.replayed("/accounts/v1/execute", self.execute_body(p))
+        self.assertEqual(second, 401)   # not the 404 of a transaction that is spent: the signature is refused first
+
     def test_a_read_outside_the_time_window_is_still_401_and_still_counts_against_the_account_rate(self):
         self.start(account_rate=A.Limiter(2, 60))
         self.make_account()
@@ -1415,6 +1428,18 @@ class RegistryRelay(OutsideCase):
         # the party is the account's proof, not the registry's business; the token and the contact go along
         self.assertEqual(self.outside.calls, [("/scan-proxy/registry/allocation-instruction/v1/allocation-factory", {"choiceArguments": {"x": 1}}, "Bearer " + HANDLE, A.USER_AGENT)])
 
+    def test_a_replayed_signature_is_401_on_every_registry_relay_post(self):
+        self.outside.answer = {**FACTORY, "transferKind": "offer"}
+        self.with_registry()
+        body = {"party": PARTY, "meta": {}, "excludeDebugFields": True}
+        for name, path in (("allocation-factory", f"/accounts/v1/registry/{ADMIN}/allocation-factory"),
+                           ("transfer-factory", f"/accounts/v1/registry/{ADMIN}/transfer-factory"),
+                           ("transfer accept-context", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/{INSTRUCTION}/accept-context"),
+                           ("transfer withdraw-context", f"/accounts/v1/registry/{ADMIN}/transfer-instruction/{INSTRUCTION}/withdraw-context"),
+                           ("allocation withdraw-context", f"/accounts/v1/registry/{ADMIN}/allocation/{INSTRUCTION}/withdraw-context")):
+            with self.subTest(name):
+                self.assertEqual(self.replayed(path, body)[1], 401)
+
     def transfer_factory(self, body=None, admin=ADMIN, **kw):
         return self.req("POST", f"/accounts/v1/registry/{admin}/transfer-factory", {"party": PARTY, "choiceArguments": {"x": 1}, "excludeDebugFields": True} if body is None else body, **kw)
 
@@ -1602,6 +1627,12 @@ class Faucets(OutsideCase):
 
     def ask(self, **kw):
         return self.req("POST", "/accounts/v1/faucet", {"party": PARTY}, **kw)
+
+    def test_a_replayed_signature_is_401_on_the_faucet(self):
+        self.outside.answer = COMPLETED
+        self.with_faucet(per_day=100)
+        self.faucet_reset()
+        self.assertEqual(self.replayed("/accounts/v1/faucet", {"party": PARTY})[1], 401)
 
     def faucet_reset(self):
         self.service.faucet.per_account = A.Limiter(1, DAY)

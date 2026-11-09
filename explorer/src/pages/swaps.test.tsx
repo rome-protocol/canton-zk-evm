@@ -266,7 +266,10 @@ describe("the swap page", () => {
     const steps = journey().getAllByRole("listitem");
     expect(steps).toHaveLength(3);
     expect(steps[0]).toHaveTextContent("Offer");
-    expect(within(steps[0]!).getByRole("link", { name: update(0x85).slice(0, 8) + "…" + update(0x85).slice(-4) })).toHaveAttribute("href", `/canton/${update(0x85)}`);
+    // The offer's update carries no block, so the explorer does not hold it: the id is shown to copy, with no link.
+    expect(within(steps[0]!).getByText(update(0x85).slice(0, 8) + "…" + update(0x85).slice(-4))).toBeInTheDocument();
+    expect(within(steps[0]!).queryByRole("link")).toBeNull();
+    expect(within(steps[0]!).getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(steps[1]).toHaveTextContent("Payment");
     expect(within(steps[1]!).getByRole("link", { name: "Block 16816" })).toHaveAttribute("href", "/block/16816");
     expect(within(steps[1]!).getByRole("link", { name: "0x0404…0404" })).toHaveAttribute("href", `/tx/${hash(0x04)}`);
