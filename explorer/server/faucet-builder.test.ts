@@ -7,7 +7,7 @@ import { generatePrivateKey } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "./db/testing.ts";
 import { createFaucet, type Faucet, type FaucetOptions } from "./faucet.ts";
-import { accountHash, loadBuilder, loadSecretFile, type BuilderOptions } from "./faucet-builder.ts";
+import { accountHash, loadBuilder, loadSecretFile, type BuilderOptions, type BuilderRedirect } from "./faucet-builder.ts";
 import { clientHasher, databaseFaucetStore, loadClientKey } from "./faucet-store.ts";
 
 checkRequired();
@@ -44,7 +44,9 @@ interface Account { id: number; created_at: string }
 class FakeGithub {
   accounts = new Map<string, Account>();
   calls: { url: string; method: string; headers: Record<string, string>; body: string }[] = [];
-  mode: "ok" | "token-500" | "token-unreachable" | "user-500" | "user-garbage" | "huge" | "bad-code" | "no-token" | "slow" = "ok";
+  /** Set when the explorer stopped reading a streamed answer. */
+  cancelled = false;
+  mode: "ok" | "token-500" | "token-unreachable" | "user-500" | "user-garbage" | "huge" | "user-stream" | "bad-code" | "no-token" | "slow" = "ok";
   /** The user a code signs in, made `days` days old at the clock now. */
   signIn(code: string, id: number, days: number): void {
     this.accounts.set(code, { id, created_at: new Date(clock.now - days * DAY_MS).toISOString() });
@@ -64,6 +66,15 @@ class FakeGithub {
     }
     if (u === "https://api.github.com/user") {
       if (this.mode === "user-500") return new Response("{}", { status: 502 });
+      if (this.mode === "user-stream") {
+        // A valid start of the answer, then more than the cap, with no content-length and no end: only the cap stops the read.
+        const who = JSON.stringify({ id: 4242, created_at: new Date(clock.now - 400 * DAY_MS).toISOString() }).slice(0, -1) + ',"pad":"';
+        let sentHead = false;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull: (c) => { c.enqueue(new TextEncoder().encode(sentHead ? "x".repeat(16 * 1024) : who)); sentHead = true; },
+          cancel: () => { this.cancelled = true; },
+        }));
+      }
       if (this.mode === "user-garbage") return new Response("<html>no</html>");
       const code = (headers.authorization ?? "").replace("Bearer tok-", "");
       const who = this.accounts.get(code);
@@ -98,15 +109,27 @@ async function rig(over: Partial<FaucetOptions> = {}, builder: Partial<BuilderOp
 }
 
 /** Starts a sign-in for an address and returns the state GitHub would send back. */
-function begin(f: Faucet, address: string): string {
-  const to = f.builderStart(address)!;
-  return new URL(to).searchParams.get("state")!;
+const cookies = new Map<string, string>();
+function remember(to: BuilderRedirect): string {
+  const state = new URL(to.location).searchParams.get("state")!;
+  // The browser keeps the cookie the start sets and sends it back with the return.
+  cookies.set(state, to.setCookie!.split(";")[0]!);
+  return state;
 }
-const cb = (f: Faucet, code: string, state: string, ip = "1.1.1.1") => f.builderCallback(new URLSearchParams({ code, state }), ip);
-const query = (location: string | null) => Object.fromEntries(new URL(location!, "https://x").searchParams.entries());
+const begin = (f: Faucet, address: string, ip = "1.1.1.1"): string => remember(f.builderStart(address, ip)!);
+/** The address a start sends the browser to, or null when the grant is off. */
+const startLoc = (f: Faucet, address: unknown, ip = "1.1.1.1") => f.builderStart(address, ip)?.location ?? null;
+/** The return of GitHub, in the browser that holds the cookie of this state unless another cookie is named (`null` for a browser with none). */
+const cb = (f: Faucet, code: string, state: string, ip = "1.1.1.1", cookie: string | null | undefined = cookies.get(state)) => f.builderCallback(new URLSearchParams({ code, state }), ip, cookie ?? undefined);
+const query = (to: string | BuilderRedirect | null) => Object.fromEntries(new URL(typeof to === "string" || to === null ? to! : to.location, "https://x").searchParams.entries());
 /** A whole sign-in for an address, as a person does it: the start, GitHub's page, and the return with the code. */
-async function grant(r: Rig, address: string, code: string, id: number, days = 90, ip = "1.1.1.1", state = begin(r.f, address)) {
+async function grant(r: Rig, address: string, code: string, id: number, days = 90, ip = "1.1.1.1", state?: string) {
   r.gh.signIn(code, id, days);
+  if (state === undefined) {
+    const to = r.f.builderStart(address, ip)!;
+    if (!to.setCookie) return query(to); // turned away at the start, with no trip to GitHub
+    state = remember(to);
+  }
   return query(await cb(r.f, code, state, ip));
 }
 
@@ -119,23 +142,23 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
   describe("the start of the sign-in", () => {
     it("sends the person to GitHub with the client id, the callback and a state, and no scope", async () => {
       const { f } = await make();
-      const to = new URL(f.builderStart(addr(1))!);
+      const to = new URL(startLoc(f, addr(1))!);
       expect(`${to.origin}${to.pathname}`).toBe("https://github.com/login/oauth/authorize");
       expect([...to.searchParams.keys()].sort()).toEqual(["client_id", "redirect_uri", "state"]);
       expect(to.searchParams.get("client_id")).toBe("Iv1.testclient");
       expect(to.searchParams.get("redirect_uri")).toBe(REDIRECT);
       expect(to.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-      expect(f.builderStart(addr(1))).not.toBe(f.builderStart(addr(1))); // a state is made for each start
+      expect(startLoc(f, addr(1))).not.toBe(startLoc(f, addr(1))); // a state is made for each start
     });
 
     it("sends a wrong address back to the page with a word for it, and never to GitHub", async () => {
       const { f } = await make();
-      for (const bad of [undefined, "", "0x12", "hello", null, 5]) expect(f.builderStart(bad)).toBe("/faucet?builder=bad");
+      for (const bad of [undefined, "", "0x12", "hello", null, 5]) expect(startLoc(f, bad)).toBe("/faucet?builder=bad");
     });
 
     it("answers null when the builder grant is off, for both routes", async () => {
       const { f } = await make({}, null);
-      expect(f.builderStart(addr(1))).toBeNull();
+      expect(startLoc(f, addr(1))).toBeNull();
       expect(await f.builderCallback(new URLSearchParams({ code: "c", state: "s" }), "1.1.1.1")).toBeNull();
       expect((await f.info()).builder).toEqual({ on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null });
     });
@@ -143,12 +166,94 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
     it("says at once, without GitHub, that an address already has its grant", async () => {
       const r = await make();
       expect(await grant(r, addr(1), "c1", 11)).toMatchObject({ builder: "queued" });
-      expect(query(r.f.builderStart(addr(1)))).toMatchObject({ builder: "address", wait: String(7 * DAY) });
+      expect(query(startLoc(r.f, addr(1)))).toMatchObject({ builder: "address", wait: String(7 * DAY) });
     });
 
     it("is off, with no key on the faucet itself (the faucet is off)", async () => {
       const { f } = await make({ key: null });
-      expect(f.builderStart(addr(1))).toBeNull();
+      expect(startLoc(f, addr(1))).toBeNull();
+    });
+  });
+
+
+  describe("the browser that started the sign-in", () => {
+    it("sets a cookie at the start: HttpOnly, SameSite=Lax, on the two routes only, for ten minutes, and Secure on https", async () => {
+      const { f } = await make();
+      const c = f.builderStart(addr(1), "1.1.1.1")!.setCookie!;
+      expect(c).toMatch(/^faucet_github=[0-9a-f]{32}; Max-Age=600; Path=\/api\/faucet\/github; HttpOnly; SameSite=Lax; Secure$/);
+      const local = await make({}, { redirectUrl: "http://localhost:8088/api/faucet/github/callback" });
+      expect(local.f.builderStart(addr(1), "1.1.1.1")!.setCookie).toMatch(/; SameSite=Lax$/);
+      expect(f.builderStart(addr(1), "1.1.1.1")!.setCookie).not.toBe(c); // a secret for each start
+    });
+
+    it("keeps the cookie's secret out of the state, which anyone can read", async () => {
+      const { f } = await make();
+      const to = f.builderStart(addr(1), "1.1.1.1")!;
+      const mine = to.setCookie!.split(";")[0]!.split("=")[1]!;
+      expect(Buffer.from(new URL(to.location).searchParams.get("state")!.split(".")[0]!, "base64url").toString("hex")).not.toContain(mine);
+    });
+
+    it("refuses a return with no cookie, or with another browser's cookie, before any call to GitHub, and the state is not used up", async () => {
+      const r = await make();
+      r.gh.signIn("c", 77, 90);
+      const state = begin(r.f, addr(1));
+      const mine = cookies.get(state)!;
+      const theirs = cookies.get(begin(r.f, addr(2), "2.2.2.2"))!;
+      expect(query(await cb(r.f, "c", state, "1.1.1.1", null))).toEqual({ builder: "state" });
+      expect(query(await cb(r.f, "c", state, "1.1.1.1", theirs))).toEqual({ builder: "state" });
+      for (const bad of ["faucet_github=", "faucet_github=zz", `other=${mine.split("=")[1]}`, `faucet_github=${"0".repeat(32)}`, `faucet_github=${mine.split("=")[1]}00`]) {
+        expect(query(await cb(r.f, "c", state, "1.1.1.1", bad))).toEqual({ builder: "state" });
+      }
+      expect(r.gh.calls).toEqual([]);
+      expect(r.f.queued()).toBe(0);
+      // The right browser, with its cookie among others, still finishes it.
+      expect(query(await cb(r.f, "c", state, "1.1.1.1", `a=1; ${mine}; b=2`))).toMatchObject({ builder: "queued" });
+    });
+
+    it("does not queue a grant for a victim who was handed a link made for the attacker's address", async () => {
+      const r = await make();
+      r.gh.signIn("victim-code", 500, 90);
+      const attackerState = begin(r.f, addr(66), "6.6.6.6"); // the attacker's own start, for the attacker's address
+      const victimCookie = cookies.get(begin(r.f, addr(1), "7.7.7.7")); // the victim's browser has a cookie of its own, or none
+      expect(query(await cb(r.f, "victim-code", attackerState, "7.7.7.7", victimCookie))).toEqual({ builder: "state" });
+      expect(query(await cb(r.f, "victim-code", attackerState, "7.7.7.7", null))).toEqual({ builder: "state" });
+      expect(r.gh.calls).toEqual([]);
+      expect(r.f.queued()).toBe(0);
+    });
+
+    it("clears the cookie at the return, whatever the result", async () => {
+      const r = await make();
+      r.gh.signIn("c", 1, 90);
+      const ok = await cb(r.f, "c", begin(r.f, addr(1)));
+      expect(ok!.setCookie).toMatch(/^faucet_github=; Max-Age=0; Path=\/api\/faucet\/github;/);
+      expect((await cb(r.f, "c", "nope"))!.setCookie).toMatch(/Max-Age=0/);
+      expect((await r.f.builderCallback(new URLSearchParams({ error: "access_denied" }), "1.1.1.1", undefined))!.setCookie).toMatch(/Max-Age=0/);
+    });
+
+    it("keeps a state for the second try when the first was only refused for being busy", async () => {
+      const gate: Array<() => void> = [];
+      const inner = new FakeGithub();
+      inner.signIn("x", 9999, 90);
+      let asked = 0;
+      const r = await make({ fetch: (async (u: unknown, init?: RequestInit) => {
+        if (asked++ < 20) { await new Promise<void>((go) => gate.push(go)); return new Response("{}", { status: 500 }); }
+        return inner.fetch(u as string, init);
+      }) as typeof fetch });
+      const pending = Array.from({ length: 20 }, (_, i) => cb(r.f, "c" + i, begin(r.f, addr(i + 1)), `10.0.0.${i}`));
+      await vi.waitFor(() => expect(gate.length).toBe(20));
+      const state = begin(r.f, addr(99), "10.0.0.99");
+      expect(query(await cb(r.f, "x", state, "10.0.0.99"))).toMatchObject({ builder: "busy" });
+      for (const go of gate) go();
+      await Promise.all(pending);
+      expect(query(await cb(r.f, "x", state, "10.0.0.99"))).toMatchObject({ builder: "queued" });
+    });
+
+    it("says at once, without GitHub, that this connection asked for coins a moment ago", async () => {
+      const r = await make();
+      expect((await r.f.request(addr(1), { ip: "3.3.3.3" })).status).toBe(202);
+      expect(query(startLoc(r.f, addr(2), "3.3.3.3"))).toEqual({ builder: "ip", wait: "600" });
+      expect(startLoc(r.f, addr(2), "3.3.3.4")).toContain("github.com");
+      expect(r.gh.calls).toEqual([]);
     });
   });
 
@@ -260,9 +365,9 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
     it("is refused without a code, with a code that is too long, and when GitHub says the user said no", async () => {
       const r = await make();
       const state = begin(r.f, addr(1));
-      expect(query(await r.f.builderCallback(new URLSearchParams({ state }), "1.1.1.1"))).toEqual({ builder: "state" });
-      expect(query(await r.f.builderCallback(new URLSearchParams({ code: "c".repeat(600), state }), "1.1.1.1"))).toEqual({ builder: "state" });
-      expect(query(await r.f.builderCallback(new URLSearchParams({ error: "access_denied", state }), "1.1.1.1"))).toEqual({ builder: "denied" });
+      expect(query(await r.f.builderCallback(new URLSearchParams({ state }), "1.1.1.1", cookies.get(state)))).toEqual({ builder: "state" });
+      expect(query(await r.f.builderCallback(new URLSearchParams({ code: "c".repeat(600), state }), "1.1.1.1", cookies.get(state)))).toEqual({ builder: "state" });
+      expect(query(await r.f.builderCallback(new URLSearchParams({ error: "access_denied", state }), "1.1.1.1", cookies.get(state)))).toEqual({ builder: "denied" });
       expect(r.gh.calls).toEqual([]);
     });
 
@@ -327,7 +432,7 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       expect(await grant(r, addr(2), "c2", 2, 90, "1.1.1.2")).toMatchObject({ builder: "queued" });
       clock.now += 3000;
       // The start says so at once; and a sign-in that began earlier is stopped when it comes back.
-      expect(query(r.f.builderStart(addr(3)))).toEqual({ builder: "day", wait: String(DAY - 6) });
+      expect(query(startLoc(r.f, addr(3)))).toEqual({ builder: "day", wait: String(DAY - 6) });
       expect(await grant(r, addr(3), "c3", 3, 90, "1.1.1.3", late)).toMatchObject({ builder: "day", wait: String(DAY - 6) });
       expect(r.f.queued()).toBe(2);
       clock.now += DAY_MS - 6000;
@@ -347,6 +452,14 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       const r = await make({ queueMax: 1 });
       expect(await grant(r, addr(1), "c1", 1, 90, "1.1.1.1")).toMatchObject({ builder: "queued" });
       expect(await grant(r, addr(2), "c2", 2, 90, "1.1.1.2")).toMatchObject({ builder: "queue" });
+    });
+
+    it("counts the grants already waiting at their own amount when it asks whether the faucet can pay", async () => {
+      const r = await make({ reth: reth({ balance: async () => 150n * COIN }) });
+      expect(await grant(r, addr(1), "c1", 1, 90, "1.1.1.1")).toMatchObject({ builder: "queued" });
+      // 100 are owed and another 100 would be: more than 150, though it would fit if the waiting grant were counted as 1.
+      expect(await grant(r, addr(2), "c2", 2, 90, "1.1.1.2")).toEqual({ builder: "empty" });
+      expect(r.f.queued()).toBe(1);
     });
 
     it("says the faucet is empty when its coins cannot pay the grant", async () => {
@@ -401,15 +514,27 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
     });
   });
 
+  describe("the size cap on GitHub's answers", () => {
+    it("stops reading a streamed answer past 64 KiB with no content-length, refuses, queues nothing and cancels the read", async () => {
+      const r = await make();
+      r.gh.signIn("big", 4242, 90);
+      r.gh.mode = "user-stream";
+      // The token call is answered normally by the fake in this mode (the code is known), and the user call is the stream.
+      expect(query(await cb(r.f, "big", begin(r.f, addr(1))))).toEqual({ builder: "github" });
+      expect(r.gh.cancelled).toBe(true);
+      expect(r.f.queued()).toBe(0);
+    });
+  });
+
   describe("what is kept and what is shown", () => {
     it("never puts the token, the secret, the code or anything of the person in the logs or in what it answers", async () => {
       const r = await make({ perIpSeconds: 1 });
       const answers: unknown[] = [];
       answers.push(await grant(r, addr(1), "the-code-1", 31337));
-      answers.push(await grant(r, addr(2), "the-code-2", 31337)); // refused: same account
-      r.gh.mode = "token-500"; answers.push(await grant(r, addr(3), "the-code-3", 5));
-      r.gh.mode = "user-500"; answers.push(await grant(r, addr(4), "the-code-4", 6));
-      answers.push(r.f.builderStart(addr(5)), await r.f.info(), r.f.ticket((answers[0] as { ticket: string }).ticket));
+      answers.push(await grant(r, addr(2), "the-code-2", 31337, 90, "1.1.1.2")); // refused: same account
+      r.gh.mode = "token-500"; answers.push(await grant(r, addr(3), "the-code-3", 5, 90, "1.1.1.3"));
+      r.gh.mode = "user-500"; answers.push(await grant(r, addr(4), "the-code-4", 6, 90, "1.1.1.4"));
+      answers.push(startLoc(r.f, addr(5)), await r.f.info(), r.f.ticket((answers[0] as { ticket: string }).ticket));
       const text = JSON.stringify(answers) + logged.join("\n");
       for (const leak of [SECRET, "tok-", "the-code-", "someone-secret-login", "private@example.org", "31337"]) expect(text).not.toContain(leak);
     });
@@ -442,8 +567,8 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       const two = await rig({ perIpSeconds: 1 }, { maxPerDay: 1 }, useDatabase, useDatabase ? null : file);
       clock.now += 3000;
       expect(await grant(two, addr(2), "c2", 5, 90, "1.1.1.2", early)).toMatchObject({ builder: "account" });
-      expect(query(two.f.builderStart(addr(1)))).toMatchObject({ builder: "address" });
-      expect(query(two.f.builderStart(addr(3)))).toMatchObject({ builder: "day" });
+      expect(query(startLoc(two.f, addr(1)))).toMatchObject({ builder: "address" });
+      expect(query(startLoc(two.f, addr(3)))).toMatchObject({ builder: "day" });
       // The grant's own amount is kept with it, so a restart signs it for the builder amount.
       const queued = one.f.queued() === 1 ? two : one;
       await queued.f.process();

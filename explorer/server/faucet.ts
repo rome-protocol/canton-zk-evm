@@ -4,7 +4,7 @@ import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { alwaysLeader, type Leader } from "./leader.ts";
-import { createSignIn, type BuilderInfo, type BuilderOptions, type SignIn } from "./faucet-builder.ts";
+import { createSignIn, type BuilderInfo, type BuilderOptions, type BuilderRedirect, type SignIn } from "./faucet-builder.ts";
 import { fileFaucetStore, type ClaimRefusal, type FaucetState, type FaucetStore, type Refused } from "./faucet-store.ts";
 import { RethError, type Reth } from "./reth.ts";
 import type { Tracker } from "./tracker.ts";
@@ -103,9 +103,9 @@ export interface Faucet {
   /** Takes a request for coin, if the limits allow, and answers with a ticket. Never throws: every outcome is an answer. */
   request(address: unknown, caller?: FaucetCaller): Promise<FaucetAnswer>;
   /** Where a person who wants a builder grant for this address is sent first: GitHub's sign-in, or the Faucet page with a plain result. Null when the builder grant is off. */
-  builderStart(address: unknown): string | null;
-  /** Where GitHub's return is answered: the Faucet page, with the result. Null when the builder grant is off. Never throws. */
-  builderCallback(query: URLSearchParams, ip?: string): Promise<string | null>;
+  builderStart(address: unknown, ip?: string): BuilderRedirect | null;
+  /** Where GitHub's return is answered: the Faucet page, with the result. `cookie` is the request's Cookie header, which must be the one the sign-in started with. Null when the builder grant is off. Never throws. */
+  builderCallback(query: URLSearchParams, ip?: string, cookie?: string): Promise<BuilderRedirect | null>;
   /** Where a ticket is. Null when there is no such ticket. */
   ticket(id: string): TicketView | null;
   /** One pass of the worker: sends the next batch if the last one has left the pool. Resolves when the pass is over. */
@@ -764,6 +764,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
     };
   }
 
+  /** What the queued and the open requests will take, each at its own amount. */
+  const owed = (gasPrice: bigint): bigint => {
+    let sum = 0n;
+    for (const t of queue) sum += cost(gasPrice, amountOf(t));
+    for (const t of open) sum += cost(gasPrice, amountOf(t));
+    return sum;
+  };
+
   /**
    * Takes a request for coin. A plain request (no `account`) asks for the faucet's amount and passes the human check. A builder grant (`account` is the keyed
    * hash of the GitHub account) asks for the builder amount, and GitHub's sign-in stands in for the human check. The queue, the batch, the per-client and the
@@ -787,7 +795,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const late = limited(to, ip, t, grantee);
     if (late) return counted(late);
     const amount = grantee === undefined ? o.amountWei : builder!.amountWei;
-    if (seen && seen.balance < BigInt(queue.length + open.size) * cost(seen.gasPrice) + cost(seen.gasPrice, amount)) return answer(503, "The faucet is empty.", undefined, "empty");
+    if (seen && seen.balance < owed(seen.gasPrice) + cost(seen.gasPrice, amount)) return answer(503, "The faucet is empty.", undefined, "empty");
     const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0, ...(grantee !== undefined ? { account: grantee, amount: amount.toString() } : {}) };
     tickets.set(ticket.id, ticket);
     queue.push(ticket);
@@ -823,10 +831,13 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const signIn: SignIn | null = builder && account ? createSignIn(builder, {
     fetch: doFetch, now,
     grant: (to, who, ip) => submit(to, { ip }, who),
-    early: (to) => {
+    early: (to, ip) => {
       forget(now());
       const b = builderAddresses.get(to);
       if (b !== undefined) return { outcome: "address", wait: Math.ceil((b + builderMs - now()) / 1000) };
+      const h = hashed(clientKey(ip));
+      const i = h === undefined ? undefined : ips.get(h);
+      if (i !== undefined) return { outcome: "ip", wait: Math.ceil((i + ipMs - now()) / 1000) };
       if (builderDaily.length >= builder.maxPerDay) return { outcome: "day", wait: Math.ceil((builderDaily[0]! + DAY - now()) / 1000) };
       return null;
     },
@@ -907,7 +918,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
     request: (raw, caller = {}) => submit(raw, caller),
 
-    builderStart: (address) => (signIn ? signIn.start(address) : null),
-    builderCallback: async (query, ip) => (signIn ? signIn.callback(query, ip) : null),
+    builderStart: (address, ip) => (signIn ? signIn.start(address, ip) : null),
+    builderCallback: async (query, ip, cookie) => (signIn ? signIn.callback(query, ip, cookie) : null),
   };
 }

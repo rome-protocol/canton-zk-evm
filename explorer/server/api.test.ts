@@ -599,7 +599,14 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
       const to = new URL(start.headers!.location!);
       expect(`${to.origin}${to.pathname}`).toBe("https://github.com/login/oauth/authorize");
       expect(to.searchParams.get("client_id")).toBe("Iv1.apitest");
-      const back = await api("GET", `/api/faucet/github/callback?code=abc&state=${encodeURIComponent(to.searchParams.get("state")!)}`, undefined, "7.7.7.7");
+      // The start sets the cookie that binds the sign-in to the browser; the browser sends it back with the return, and it is cleared by the answer.
+      const cookie = start.headers!["set-cookie"]!;
+      expect(cookie).toMatch(/^faucet_github=[0-9a-f]{32}; Max-Age=600; Path=\/api\/faucet\/github; HttpOnly; SameSite=Lax; Secure$/);
+      const returnUrl = `/api/faucet/github/callback?code=abc&state=${encodeURIComponent(to.searchParams.get("state")!)}`;
+      // Another browser, with no cookie, is refused with the state word, and the state is still good for the right one.
+      expect((await api("GET", returnUrl, undefined, "8.8.8.8")).headers).toMatchObject({ location: "/faucet?builder=state" });
+      const back = await api("GET", returnUrl, undefined, "7.7.7.7", cookie.split(";")[0]);
+      expect(back.headers!["set-cookie"]).toMatch(/^faucet_github=; Max-Age=0/);
       expect(back.status).toBe(302);
       const place = new URL(back.headers!.location!, "https://x");
       expect(place.pathname).toBe("/faucet");

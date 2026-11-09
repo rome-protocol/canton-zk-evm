@@ -9,6 +9,7 @@ import { MAX_VERIFY_BODY, createLimits } from "./limits.ts";
 
 let dir: string, server: ReturnType<typeof createHttpServer>, calls: { method: string; target: string; body?: string }[];
 let time = 1_000_000;
+let cookieSeen: string | undefined;
 const clock = { now: () => time, advance: (ms: number) => void (time += ms) };
 
 async function start(ipHeader: string | null = null) {
@@ -16,13 +17,35 @@ async function start(ipHeader: string | null = null) {
   mkdirSync(join(dir, "dist"), { recursive: true });
   writeFileSync(join(dir, "dist", "index.html"), "<html>home</html>");
   calls = [];
-  const api = async (method: string, target: string, body?: string) => { calls.push({ method, target, body }); return { status: 200, body: { ok: true } }; };
+  cookieSeen = undefined;
+  const api = async (method: string, target: string, body?: string, _ip?: string, cookie?: string) => { calls.push({ method, target, body }); cookieSeen = cookie; return { status: 200, body: { ok: true } }; };
   server = createHttpServer(api, join(dir, "dist"), undefined, ipHeader, undefined, createLimits(clock.now));
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
 }
 beforeEach(() => { time = 1_000_000; });
 afterEach(async () => { await new Promise((ok) => server.close(ok)); rmSync(dir, { recursive: true, force: true }); });
 const at = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`, init);
+
+describe("the builder grant's routes: 10 a minute for each client", () => {
+  it("sends a client over the rate back to the Faucet page with a wait, and never to the API, and serves it again as the bucket refills", async () => {
+    await start();
+    for (let i = 0; i < 10; i++) expect((await at("/api/faucet/github/start?address=0x1", { redirect: "manual" })).status).toBe(200);
+    const over = await at("/api/faucet/github/callback?code=a&state=b", { redirect: "manual" });
+    expect(over.status).toBe(302);
+    expect(over.headers.get("location")).toBe("/faucet?builder=busy&wait=6");
+    expect(over.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(calls).toHaveLength(10);
+    expect((await at("/api/status")).status).toBe(200); // the rest of the API is not in this rate
+    clock.advance(6000);
+    expect((await at("/api/faucet/github/start?address=0x1", { redirect: "manual" })).status).toBe(200);
+  });
+
+  it("hands the request's Cookie header to the API", async () => {
+    await start();
+    await at("/api/faucet/github/callback?code=a&state=b", { headers: { cookie: "faucet_github=abc" } });
+    expect(cookieSeen).toBe("faucet_github=abc");
+  });
+});
 
 describe("the REST routes' limit: 20 a second, bursts of 60", () => {
   it("answers 429 with Retry-After once a client is over, and serves it again as the bucket refills", async () => {

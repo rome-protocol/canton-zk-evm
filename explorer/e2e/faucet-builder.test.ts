@@ -28,6 +28,7 @@ const ACCOUNTS: Record<string, { id: number; days: number }> = { old: { id: 1001
 describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
   let server: Server, browser: any, faucet: Faucet, base = "";
   const browserAsked: string[] = [];
+  const strangerSaw: string[] = [];
   beforeAll(async () => {
     const github: typeof fetch = (async (url: unknown, init?: RequestInit) => {
       const u = String(url);
@@ -45,7 +46,7 @@ describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
       builder: { clientId: "Iv1.e2e", clientSecret: SECRET, redirectUrl: "http://127.0.0.1/api/faucet/github/callback", key: Buffer.alloc(32, 5), amountWei: 100n * COIN, perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 },
     });
     // The explorer's routes for the faucet and the status, as createApi has them; the rest is not found. The routes' own code is tested in server/api.test.ts.
-    const api: Api = async (method, target, _body, ip) => {
+    const api: Api = async (method, target, _body, ip, cookie) => {
       const url = new URL(target, "http://x");
       const route = url.pathname;
       if (route === "/api/status") return { status: 200, body: STATUS };
@@ -53,8 +54,8 @@ describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
       const ticket = /^\/api\/faucet\/ticket\/([0-9a-f]+)$/.exec(route);
       if (ticket) { const t = faucet.ticket(ticket[1]!); return t ? { status: 200, body: t } : { status: 404, body: { error: "No such ticket." } }; }
       if (method === "GET" && (route === "/api/faucet/github/start" || route === "/api/faucet/github/callback")) {
-        const to = route.endsWith("start") ? faucet.builderStart(url.searchParams.get("address")) : await faucet.builderCallback(url.searchParams, ip);
-        return { status: 302, body: {}, headers: { location: to ?? "/faucet?builder=off", "referrer-policy": "no-referrer" } };
+        const to = route.endsWith("start") ? faucet.builderStart(url.searchParams.get("address"), ip) : await faucet.builderCallback(url.searchParams, ip, cookie);
+        return { status: 302, body: {}, headers: { location: to?.location ?? "/faucet?builder=off", "referrer-policy": "no-referrer", ...(to?.setCookie ? { "set-cookie": to.setCookie } : {}) } };
       }
       return { status: 404, body: { error: "Not found." } };
     };
@@ -77,12 +78,23 @@ describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
       const answer = await route.fetch({ maxRedirects: 0 });
       const to = new URL(answer.headers().location);
       expect(answer.status()).toBe(302);
+      // The start sets the cookie that binds this sign-in to this browser: it is passed on to the browser, which sends it back with the return.
+      const cookie = answer.headers()["set-cookie"];
+      expect(cookie).toMatch(/^faucet_github=[0-9a-f]{32}; Max-Age=600; Path=\/api\/faucet\/github; HttpOnly; SameSite=Lax$/);
       expect(`${to.origin}${to.pathname}`).toBe("https://github.com/login/oauth/authorize");
       expect(to.searchParams.get("client_id")).toBe("Iv1.e2e");
       expect([...to.searchParams.keys()].sort()).toEqual(["client_id", "redirect_uri", "state"]);
       browserAsked.push("github " + to.search);
       const back = new URL(to.searchParams.get("redirect_uri")!);
-      await route.fulfill({ status: 302, headers: { location: `${base}${back.pathname}?code=${code}&state=${encodeURIComponent(to.searchParams.get("state")!)}` } });
+      const returnTo = `${base}${back.pathname}?code=${code}&state=${encodeURIComponent(to.searchParams.get("state")!)}`;
+      if (code === "elsewhere") {
+        // Another person's browser, with no cookie, is handed this link: the return is refused and GitHub is not asked.
+        const stranger = await browser.newContext({ viewport: { width: 360, height: 740 } });
+        const refused = await stranger.request.get(returnTo, { maxRedirects: 0 });
+        strangerSaw.push(new URL(refused.headers().location!, base).toString());
+        await stranger.close();
+      }
+      await route.fulfill({ status: 302, headers: { location: returnTo, "set-cookie": cookie } });
     });
     return page;
   }
@@ -131,6 +143,20 @@ describe.skipIf(!dist)("the builder grant, in a browser at 360 px", () => {
     await young.waitForSelector("text=less than 30 days old");
     expect(faucet.queued()).toBe(1);
     await young.close();
+  }, 60_000);
+
+  it("refuses a return in a browser that did not start the sign-in, and the grant is not queued", async () => {
+    await new Promise((done) => setTimeout(done, 1200));
+    const before = faucet.queued();
+    const page = await newPage("elsewhere");
+    ACCOUNTS.elsewhere = { id: 1004, days: 400 };
+    await signIn(page, "0x" + "7c".repeat(20));
+    await page.waitForSelector("text=Your builder grant of 100 tROME is queued.");
+    // The stranger's browser, which carried no cookie, was sent to the page with the state word, and nothing was queued for it.
+    expect(strangerSaw).toHaveLength(1);
+    expect(new URL(strangerSaw[0]!).searchParams.get("builder")).toBe("state");
+    expect(faucet.queued()).toBe(before + 1);
+    await page.close();
   }, 60_000);
 
   it("keeps the secret and the token out of everything the browser asked for and was shown", async () => {

@@ -34,8 +34,8 @@ const proofOf = (p: ProofCheck | null) => p && { programVK: fact(p.programVK), r
 export const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 export interface Answer { status: number; body: unknown; headers?: Record<string, string> }
-/** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
-export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
+/** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. `cookie` is the request's Cookie header, which only the builder grant's return reads. */
+export type Api = (method: string, target: string, body?: string, ip?: string, cookie?: string) => Promise<Answer>;
 /** What `createApi` makes: the API, and the paths of its routes (`GET /api/openapi.json` describes them, and a test holds that it describes all of them). */
 export type RoutedApi = Api & { routes: readonly string[] };
 /** With no `faucet`, the faucet is off. */
@@ -328,7 +328,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
-  const api: Api = async (method, target, body, ip) => {
+  const api: Api = async (method, target, body, ip, cookie) => {
     let url: URL, parts: string[];
     try {
       if (!/^\/(?!\/)/.test(target)) throw new Error("not a path");
@@ -353,8 +353,8 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
       // the API's own description, as they are for a browser and not for a program. The return's address holds a one-time code, so it is never sent on as a referrer.
       if (name === "faucet" && parts[2] === "github" && parts.length === 4 && (parts[3] === "start" || parts[3] === "callback")) {
         if (method !== "GET") return fail(405, "Use GET.");
-        const to = parts[3] === "start" ? faucet.builderStart(url.searchParams.get("address")) : await faucet.builderCallback(url.searchParams, ip);
-        return { status: 302, body: {}, headers: { location: to ?? "/faucet?builder=off", "referrer-policy": "no-referrer" } };
+        const to = parts[3] === "start" ? faucet.builderStart(url.searchParams.get("address"), ip) : await faucet.builderCallback(url.searchParams, ip, cookie);
+        return { status: 302, body: {}, headers: { location: to?.location ?? "/faucet?builder=off", "referrer-policy": "no-referrer", ...(to?.setCookie ? { "set-cookie": to.setCookie } : {}) } };
       }
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);
