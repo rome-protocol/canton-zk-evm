@@ -4,12 +4,13 @@ import { keyFromSignature, keyFromStored, storableKey } from "./key.ts";
 import { DB_NAME, indexedDbKeyStore, STORE, type KeyRecord } from "./keystore.ts";
 import { partyOf } from "./topology.ts";
 
+const HINT = "rome";
 const sig = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32) + "22".repeat(32) + "1b";
 const WALLET = "0x" + "ab".repeat(20), OTHER = "0x" + "cd".repeat(20);
 
 async function record(n: number, wallet = WALLET): Promise<KeyRecord> {
   const key = await keyFromSignature(sig(n));
-  return { wallet, party: await partyOf(key.publicKey), publicKey: key.publicKey, privateKey: storableKey(key)! };
+  return { wallet, party: await partyOf(key.publicKey, HINT), publicKey: key.publicKey, privateKey: storableKey(key)! };
 }
 /** Everything the browser holds in the store, read straight from IndexedDB. */
 async function everything(factory: IDBFactory): Promise<unknown[]> {
@@ -56,7 +57,7 @@ describe("the key store in IndexedDB", () => {
     await store.save(await record(2, OTHER));
     await store.save(await record(3));
     expect(await everything(factory)).toHaveLength(2);
-    expect((await store.load(WALLET))!.party).toBe(await partyOf((await record(3)).publicKey));
+    expect((await store.load(WALLET))!.party).toBe(await partyOf((await record(3)).publicKey, HINT));
   });
   it("removes the record of a wallet address, and only that one", async () => {
     const factory = new IDBFactory(), store = indexedDbKeyStore(factory);

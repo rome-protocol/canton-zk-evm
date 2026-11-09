@@ -5,7 +5,12 @@ const env = { VITE_CHAIN_OPERATOR: "o", VITE_CHAIN_CONFIRMER: "c", VITE_CHAIN_GA
 
 describe("the Bridge page's settings", () => {
   it("reads the chain, the participant, the service and the origin from the build's environment", () => {
-    expect(settingsFromEnv(env)).toEqual({ chain: { operator: "o", confirmer: "c", gateway: "g", builder: "b", chainId: 770101 }, participant: "PAR::p", accountsBase: "", origin: "https://ostia.example" });
+    expect(settingsFromEnv(env)).toEqual({ chain: { operator: "o", confirmer: "c", gateway: "g", builder: "b", chainId: 770101 }, participant: "PAR::p", partyHint: "rome", accountsBase: "", origin: "https://ostia.example" });
+  });
+  it("names accounts with VITE_PARTY_HINT, rome when it is not set, and refuses a name the service would not accept", () => {
+    expect(settingsFromEnv({ ...env, VITE_PARTY_HINT: "" }).partyHint).toBe("rome");
+    expect(settingsFromEnv({ ...env, VITE_PARTY_HINT: "ostia-1" }).partyHint).toBe("ostia-1");
+    for (const bad of ["a b", "a::b", "x".repeat(33), "é"]) expect(() => settingsFromEnv({ ...env, VITE_PARTY_HINT: bad }), bad).toThrow(/VITE_PARTY_HINT/);
   });
   it("asks this site for the service: /accounts is the only address, and another origin's is refused", () => {
     expect(accountsBase()).toBe("");

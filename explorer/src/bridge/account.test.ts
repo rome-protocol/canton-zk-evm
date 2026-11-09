@@ -7,7 +7,7 @@ import { getTestCoin, oneAtATime, openAccount, optIn } from "./account.ts";
 vi.mock("./canton/key.ts", async (original) => ({ ...(await original<typeof import("./canton/key.ts")>()), openKey: vi.fn(async () => ({ publicKey: new Uint8Array(32) })), confirmKey: vi.fn(async () => {}) }));
 
 const id = (tag: string, n: number) => `${tag}::1220${n.toString(16).padStart(2, "0").repeat(32)}`;
-const PARTY = id("bridge", 0xab), chain = { operator: id("operator", 1), confirmer: id("confirmer", 2), gateway: id("gateway", 3), builder: id("builder", 4), chainId: 770101 };
+const PARTY = id("rome", 0xab), chain = { operator: id("operator", 1), confirmer: id("confirmer", 2), gateway: id("gateway", 3), builder: id("builder", 4), chainId: 770101 };
 const DISCLOSED = { templateId: "t", contractId: "d1", createdEventBlob: "blob", synchronizerId: "sync" };
 const templates = (submitted: Built[]) => submitted.map((b) => ("CreateCommand" in b.command ? b.command.CreateCommand.templateId : b.command.ExerciseCommand.choice));
 
@@ -187,7 +187,7 @@ describe("test Canton Coin", () => {
 });
 
 describe("opening the account", () => {
-  const settings = { chain, participant: "PAR::p", accountsBase: "", origin: "https://ostia.example" };
+  const settings = { chain, participant: "PAR::p", partyHint: "rome", accountsBase: "", origin: "https://ostia.example" };
   const fake = (reads: ReturnType<typeof open>[]) => {
     let n = 0;
     return { open: vi.fn(async () => PARTY), openRequests: vi.fn(async () => reads[Math.min(n++, reads.length - 1)]!), prepare: vi.fn(async () => { throw conflict("already_accepted"); }) } as never;

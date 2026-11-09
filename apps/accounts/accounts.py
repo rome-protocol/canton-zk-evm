@@ -538,7 +538,7 @@ class Parties:
 
 
 class Accounts:
-    def __init__(self, ledger: Ledger, user: str, parties: Parties, allow, hint: str = "bridge", synchronizer: str = None, topology_version: int = None,
+    def __init__(self, ledger: Ledger, user: str, parties: Parties, allow, hint: str = "rome", synchronizer: str = None, topology_version: int = None,
                  creates: Limiter = None, rate: Limiter = None, topologies: Pending = None, prepared: Pending = None, chain: dict = None,
                  open_limits: dict = None, per_account: Limiter = None, per_client: Limiter = None, overall: Limiter = None, traffic: Limiter = None,
                  max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0, failures: Limiter = None, account_rate: Limiter = None,
@@ -1105,7 +1105,7 @@ def main(argv=None):
     p.add_argument("--listen", default="127.0.0.1:8081")
     p.add_argument("--synchronizer-id", help="the synchronizer to make accounts on; by default the one the participant is connected to")
     p.add_argument("--topology-protocol-version", type=int, help="ask for topology transactions of this protocol version; by default the synchronizer's own")
-    p.add_argument("--party-hint", default="bridge", help="the name every account is given before its key's fingerprint")
+    p.add_argument("--party-hint", default="rome", help="the name every account is given before its key's fingerprint (the page's VITE_PARTY_HINT must be the same)")
     p.add_argument("--allow", action="append", help="an allowed command: #package:Module:Entity (a create) or #package:Module:Entity#Choice (an exercise); repeat; replaces the built-in list")
     p.add_argument("--open-limit", action="append", metavar="TEMPLATE=N", help="open contracts one account may have of an allowed create (#package:Module:Entity=N, or =none for one "
                    "that names no other party); every allowed create needs one; repeat")

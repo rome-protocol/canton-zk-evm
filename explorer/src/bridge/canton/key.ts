@@ -43,8 +43,8 @@ const sign = (key: CantonKey, message: Uint8Array): Promise<Uint8Array> => {
 };
 
 /** The account's onboarding. It checks the account service's answer itself (`verifyOnboarding`: this key's party, on this participant, and nothing else), and signs the multi-hash it computed. */
-export async function signOnboarding(key: CantonKey, answer: TopologyAnswer, participant: string): Promise<Uint8Array> {
-  return sign(key, await verifyOnboarding(answer, key.publicKey, participant));
+export async function signOnboarding(key: CantonKey, answer: TopologyAnswer, participant: string, hint: string): Promise<Uint8Array> {
+  return sign(key, await verifyOnboarding(answer, key.publicKey, participant, hint));
 }
 /** A prepared transaction's hash (32 bytes). Only `signPrepared` (sign.ts) calls this, with a hash it computed itself from a transaction it checked. */
 export function signVerifiedTransaction(key: CantonKey, hash: Uint8Array): Promise<Uint8Array> {

@@ -10,7 +10,8 @@ import type { Settings } from "./settings.ts";
 
 const wallet = privateKeyToAccount(`0x${"11".repeat(32)}`), other = privateKeyToAccount(`0x${"22".repeat(32)}`);
 const chain = { operator: "o::1220" + "01".repeat(32), confirmer: "c::1220" + "02".repeat(32), gateway: "g::1220" + "03".repeat(32), builder: "b::1220" + "04".repeat(32), chainId: 770101 };
-const settings = { chain, participant: "PAR::p::1220" + "05".repeat(32), accountsBase: "/accounts", origin: "http://x" } as Settings;
+const HINT = "rome";
+const settings = { chain, participant: "PAR::p::1220" + "05".repeat(32), partyHint: HINT, accountsBase: "/accounts", origin: "http://x" } as Settings;
 const acceptance = { contractId: "00aa", arguments: {} };
 const nowallet = vi.fn(async (): Promise<unknown> => { throw new Error("the wallet must not be asked"); });
 
@@ -25,8 +26,8 @@ function signing(account = wallet) {
 /** The account service as it answers once the account is there with both acceptances. `known` is whether it knows the account. */
 function service(known = true) {
   const client = {
-    open: vi.fn(async (key: { publicKey: Uint8Array }) => partyOf(key.publicKey)),
-    find: vi.fn(async (publicKey: Uint8Array) => (known ? partyOf(publicKey) : null)),
+    open: vi.fn(async (key: { publicKey: Uint8Array }) => partyOf(key.publicKey, HINT)),
+    find: vi.fn(async (publicKey: Uint8Array) => (known ? partyOf(publicKey, HINT) : null)),
     openRequests: vi.fn(async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: acceptance, withdrawalAcceptance: acceptance })),
   };
   return client as typeof client & AccountsClient;
@@ -73,7 +74,7 @@ describe("an account that stays open", () => {
     expect(again).not.toBeNull();
     expect(again!.party).toBe(opened.party);
     expect(again!.kept).toBe(true);
-    expect(client.find).toHaveBeenCalledWith(opened.key.publicKey);   // the service is asked whether it knows the account, and the account is not made again
+    expect(client.find).toHaveBeenCalledWith(opened.key.publicKey, HINT);   // the service is asked whether it knows the account, and the account is not made again
     expect(client.open).not.toHaveBeenCalled();
     expect(client.openRequests).toHaveBeenCalled();   // both acceptances are read back before it is Ready
     const message = "accounts-v1\nGET\n/x\n" + "00".repeat(32) + "\n1";
@@ -94,9 +95,17 @@ describe("an account that stays open", () => {
   it("does not reopen, and removes the record, when the account address is not the fingerprint of the kept key", async () => {
     const store = memory();
     await openAccount(signing(), wallet.address, settings, undefined, service(), undefined, store);
-    store.rows[0] = { ...store.rows[0]!, party: "bridge::1220" + "ee".repeat(32) };
+    store.rows[0] = { ...store.rows[0]!, party: "rome::1220" + "ee".repeat(32) };
     const client = service();
     expect(await reopenAccount(wallet.address, settings, undefined, client, undefined, store)).toBeNull();
+    expect(client.find).not.toHaveBeenCalled();
+    expect(store.rows).toHaveLength(0);
+  });
+  it("does not reopen under another account name than this build's, and removes the record", async () => {
+    const store = memory();
+    await openAccount(signing(), wallet.address, settings, undefined, service(), undefined, store);
+    const client = service();
+    expect(await reopenAccount(wallet.address, { ...settings, partyHint: "bridge" }, undefined, client, undefined, store)).toBeNull();
     expect(client.find).not.toHaveBeenCalled();
     expect(store.rows).toHaveLength(0);
   });
@@ -104,7 +113,7 @@ describe("an account that stays open", () => {
     const store = memory();
     await openAccount(signing(), wallet.address, settings, undefined, service(), undefined, store);
     const stranger = await keyFromSignature("0x" + "33".repeat(32) + "22".repeat(32) + "1b");
-    store.rows[0] = { ...store.rows[0]!, publicKey: stranger.publicKey, party: await partyOf(stranger.publicKey) };
+    store.rows[0] = { ...store.rows[0]!, publicKey: stranger.publicKey, party: await partyOf(stranger.publicKey, HINT) };
     expect(await reopenAccount(wallet.address, settings, undefined, service(), undefined, store)).toBeNull();
     expect(store.rows).toHaveLength(0);
   });
@@ -121,7 +130,7 @@ describe("an account that stays open", () => {
     await openAccount(signing(), wallet.address, settings, undefined, service(), undefined, store);
     let live = true;
     const client = service();
-    client.find = vi.fn(async (publicKey: Uint8Array) => { live = false; return partyOf(publicKey); }) as never;
+    client.find = vi.fn(async (publicKey: Uint8Array) => { live = false; return partyOf(publicKey, HINT); }) as never;
     await expect(reopenAccount(wallet.address, settings, undefined, client, () => live, store)).rejects.toMatchObject({ code: "account_closed" });
     expect(client.openRequests).not.toHaveBeenCalled();
   });

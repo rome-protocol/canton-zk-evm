@@ -10,7 +10,7 @@ import type { Pair } from "../bridge/tokens.ts";
 import { AccountPanel } from "./AccountPanel.tsx";
 
 const id = (tag: string, n: number) => `${tag}::1220${n.toString(16).padStart(2, "0").repeat(32)}`;
-const PARTY = id("bridge", 0xab), OTHER = id("bridge", 0xcd), DSO = id("DSO", 5);
+const PARTY = id("rome", 0xab), OTHER = id("rome", 0xcd), DSO = id("DSO", 5);
 const COIN: Pair = { key: "wrapped:cc", kind: "wrapped", native: false, wrapped: null, erc20: ("0x" + "c1".repeat(20)) as `0x${string}`, ostia: { symbol: "wCC", decimals: 10 }, canton: { symbol: "Canton Coin", admin: DSO, id: "Amulet", decimals: 10 } };
 const TKA: Pair = { key: "twin:a", kind: "twin", native: false, wrapped: null, erc20: ("0x" + "aa".repeat(20)) as `0x${string}`, ostia: { symbol: "TKA", decimals: 6 }, canton: { symbol: "TKA", admin: id("gateway", 3), id: "erc20:" + "aa".repeat(20), decimals: 10 } };
 const UPDATE = "1220" + "ee".repeat(32);
@@ -64,7 +64,7 @@ describe("Send on Canton", () => {
     expect(send().queryByRole("alert")).toBeNull();
     expect(review).toBeDisabled();   // no receiver yet
     const to = send().getByRole("textbox", { name: "Receiver's Canton address" });
-    await user.type(to, "bridge");
+    await user.type(to, "rome");
     expect(send().getByRole("alert")).toHaveTextContent(/not a Canton address/);
     expect(review).toBeDisabled();
     await user.clear(to);
@@ -87,7 +87,7 @@ describe("Send on Canton", () => {
     await user.type(send().getByRole("textbox", { name: "Amount" }), ".50");
     await user.type(send().getByRole("textbox", { name: "Receiver's Canton address" }), OTHER);
     await user.click(send().getByRole("button", { name: "Review" }));
-    expect(send().getByRole("status")).toHaveTextContent("Send 0.5 Canton Coin to bridge::1220…cdcd on Canton");
+    expect(send().getByRole("status")).toHaveTextContent("Send 0.5 Canton Coin to rome::1220…cdcd on Canton");
     expect(sender.send).not.toHaveBeenCalled();
     await user.click(send().getByRole("button", { name: "Back" }));   // back to the form: nothing was sent
     expect(sender.send).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ describe("Incoming", () => {
     cleanup();
     show(fake({ waiting: vi.fn(async () => ({ offers: [offer(1), offer(2, "0.25")], sent: [], more: false })) }));
     const rows = await incoming().findAllByRole("listitem");
-    expect(rows.map((r) => r.textContent)).toEqual(["5 Canton Coin from bridge::1220…cdcdAccept", "0.25 Canton Coin from bridge::1220…cdcdAccept"]);
+    expect(rows.map((r) => r.textContent)).toEqual(["5 Canton Coin from rome::1220…cdcdAccept", "0.25 Canton Coin from rome::1220…cdcdAccept"]);
   });
 
   it("accepts one: the balance is read again, the offer goes and the page says it is in the account", async () => {
@@ -197,8 +197,8 @@ describe("Incoming", () => {
   it("says a lapsed send was not accepted in time, and still offers Take back", async () => {
     show(fake({ waiting: vi.fn(async () => ({ offers: [], sent: [mine(1, "2.5", true), mine(2, "1")], more: false })) }));
     const rows = await incoming().findAllByRole("listitem");
-    expect(rows[0]!.textContent).toBe("2.5 Canton Coin to bridge::1220…cdcd, not accepted in timeTake back");
-    expect(rows[1]!.textContent).toBe("1 Canton Coin to bridge::1220…cdcdTake back");
+    expect(rows[0]!.textContent).toBe("2.5 Canton Coin to rome::1220…cdcd, not accepted in timeTake back");
+    expect(rows[1]!.textContent).toBe("1 Canton Coin to rome::1220…cdcdTake back");
     expect(incoming().getAllByRole("button", { name: "Take back" })).toHaveLength(2);
   });
 

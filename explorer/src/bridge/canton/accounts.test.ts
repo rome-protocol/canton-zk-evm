@@ -3,16 +3,17 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AccountsClient, AccountsError, EXECUTE_MS, Unanswered, acceptChoice, factoryChoice, retryAfterSeconds, withdrawChoice } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
-import { partyOf } from "./topology.ts";
+import { fingerprintOf, partyOf } from "./topology.ts";
 
 // A real answer of the pinned Canton, printed by apps/accounts/tests/integration.py (fixtures.json): what the account service said of the account's allocations and open requests.
 // (The topology answers, and opening an account from them, are in topology.test.ts.)
 const fixtures = JSON.parse(readFileSync(new URL("./fixtures.json", import.meta.url), "utf8")) as Record<string, any>[];
 const fixture = (name: string) => fixtures.find((f) => f.name === name)!;
 const PARTICIPANT = "operator::1220" + "cd".repeat(32);
+const HINT = "rome";
 
 const key = await keyFromSignature("0x" + "11".repeat(32) + "22".repeat(32) + "1b");
-const PARTY = "bridge::1220" + "ab".repeat(32);
+const PARTY = "rome::1220" + "ab".repeat(32);
 const NOW = 1_800_000_000_000;
 
 const answer = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -54,7 +55,7 @@ describe("the account service client", () => {
     const f = vi.fn(async () => { await gate; return answer(200, { party: PARTY, holdings: [] }); });
     const c = client(f);
     const [a, b] = [c.holdings(key, PARTY), c.holdings(key, PARTY)];
-    const other = c.open(key, PARTICIPANT).catch(() => null);   // another path is its own request
+    const other = c.open(key, PARTICIPANT, HINT).catch(() => null);   // another path is its own request
     await vi.waitFor(() => expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(1));   // signing is asynchronous: the request goes a moment later
     await new Promise((r) => setTimeout(r, 50));   // and the second read has had its time to (not) send
     expect((f.mock.calls as unknown as [string][]).filter(([u]) => u.includes("/holdings/"))).toHaveLength(1);
@@ -97,20 +98,26 @@ describe("the account service client", () => {
     await Promise.all([before, after]);
   });
   it("takes the party from the key, never from the service", async () => {
-    const mine = await partyOf(key.publicKey);
-    const other = "bridge::1220" + "ee".repeat(32);
+    const mine = await partyOf(key.publicKey, HINT);
+    const other = "rome::1220" + "ee".repeat(32);
     for (const exists of [true, false]) {
       const f = vi.fn(async () => answer(200, { party: other, exists, multiHash: "AA==", topologyTransactions: ["AA=="], blob: "blob" }));
-      await expect(client(f).open(key, PARTICIPANT)).rejects.toThrow(/names bridge::1220e+/);
+      await expect(client(f).open(key, PARTICIPANT, HINT)).rejects.toThrow(/names rome::1220e+/);
       expect(f).toHaveBeenCalledTimes(1);
     }
-    expect(await client(vi.fn(async () => answer(200, { party: mine, exists: true }))).open(key, PARTICIPANT)).toBe(mine);
+    const old = `bridge::${await fingerprintOf(key.publicKey)}`;   // the key's own fingerprint under the old name: no path leads to it
+    for (const exists of [true, false]) {
+      const f = vi.fn(async () => answer(200, { party: old, exists, multiHash: "AA==", topologyTransactions: ["AA=="], blob: "blob" }));
+      await expect(client(f).open(key, PARTICIPANT, HINT)).rejects.toThrow(/names bridge::/);
+      expect(f).toHaveBeenCalledTimes(1);
+    }
+    expect(await client(vi.fn(async () => answer(200, { party: mine, exists: true }))).open(key, PARTICIPANT, HINT)).toBe(mine);
   });
   it("finds an account that exists without allocating or asking the wallet", async () => {
-    const mine = await partyOf(key.publicKey);
+    const mine = await partyOf(key.publicKey, HINT);
     const f = vi.fn(async () => answer(200, { party: mine, exists: true }));
     const confirm = vi.fn(async () => {});
-    expect(await client(f).open(key, PARTICIPANT, confirm)).toBe(mine);
+    expect(await client(f).open(key, PARTICIPANT, HINT, confirm)).toBe(mine);
     expect(f).toHaveBeenCalledTimes(1);
     expect(confirm).not.toHaveBeenCalled();
   });

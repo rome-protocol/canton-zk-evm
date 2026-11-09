@@ -15,6 +15,7 @@ const reals = ["topology-pv36", "topology-pv37"].map((name) => fixtures.find((f)
 const archived = fixtures.find((f) => f.name === "exercise-archive")!;
 const NOW = 1_800_000_000_000;
 const OTHER_PARTICIPANT = "operator::1220" + "ee".repeat(32);
+const HINT = "rome";   // the name the page and the service give every account (VITE_PARTY_HINT, --party-hint)
 
 const version = (fx: Real) => (fx.protocolVersion === 37 ? 31 : 30);
 const T = (fx: Real) => (version(fx) === 31 ? V31 : V30);
@@ -28,15 +29,24 @@ function remake(fx: Real, mutate: (tx: any, hosting: any) => void = () => {}, wr
 }
 const answer = async (fx: Real, txs: string[]) => ({ party: fx.party, topologyTransactions: txs, multiHash: base64(await topologyMultiHash(txs)) });
 const verify = async (fx: Real, txs: string[], over: Record<string, unknown> = {}, participant = fx.participant, publicKey = fx.publicKey) =>
-  verifyOnboarding({ ...(await answer(fx, txs)), ...over }, fromBase64(publicKey), participant);
+  verifyOnboarding({ ...(await answer(fx, txs)), ...over }, fromBase64(publicKey), participant, HINT);
 const other = (n = 44) => new Uint8Array(n).fill(7);
+
+describe("the party's name", () => {
+  it("is the hint it is given, then the key's fingerprint: partyOf never names an account by a hint of its own", async () => {
+    const key = other(32);
+    const fingerprint = await fingerprintOf(key);
+    expect(await partyOf(key, "rome")).toBe(`rome::${fingerprint}`);
+    expect(await partyOf(key, "ostia-1")).toBe(`ostia-1::${fingerprint}`);
+  });
+});
 
 describe.each(reals)("the real topology of protocol version $protocolVersion", (fx) => {
   const key = fromBase64(fx.publicKey);
   it("has the party, the multi-hash and the message version that the page computes and reads", async () => {
     expect(fx.participant).toMatch(/^operator::1220[0-9a-f]{64}$/);
-    expect(await partyOf(key)).toBe(fx.party);   // bridge:: and the fingerprint: 1220 and the SHA-256 (purpose 12) of the 32 raw bytes
-    expect(await fingerprintOf(key)).toBe(fx.party.slice("bridge::".length));
+    expect(await partyOf(key, HINT)).toBe(fx.party);   // rome:: and the fingerprint: 1220 and the SHA-256 (purpose 12) of the 32 raw bytes
+    expect(await fingerprintOf(key)).toBe(fx.party.slice("rome::".length));
     expect(hex(await topologyMultiHash(fx.topologyTransactions))).toBe(hex(fromBase64(fx.multiHash)));   // the participant's multi-hash of its transactions
     expect(fromBase64(fx.multiHash).length).toBe(34);
     expect(fx.topologyTransactions.length).toBe(1);
@@ -53,7 +63,7 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
     ["another signing key", (_t, p) => { p.partySigningKeys.keys[0].publicKey = other(); }, /this key alone/],
     ["a signing threshold of 2", (_t, p) => { p.partySigningKeys.threshold = 2; }, /this key alone/],
     ["no signing keys", (_t, p) => { p.partySigningKeys = undefined; }, /this key alone/],
-    ["another namespace", (_t, p) => { p.party = "bridge::1220" + "ee".repeat(32); }, /is for/],
+    ["another namespace", (_t, p) => { p.party = "rome::1220" + "ee".repeat(32); }, /is for/],
     ["another participant", (_t, p) => { p.participants[0].participantUid = OTHER_PARTICIPANT; }, /not hosted/],
     ["an extra participant", (_t, p) => p.participants.push({ ...p.participants[0], participantUid: OTHER_PARTICIPANT }), /not hosted/],
     ["the same participant twice", (_t, p) => p.participants.push({ ...p.participants[0] }), /not hosted/],
@@ -85,7 +95,7 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
     const wrapped = Uint8Array.from([...fromBase64(fx.topologyTransactions[0]!), 0x78, 0x01]);
     await expect(verify(fx, [base64(wrapped)])).rejects.toThrow(/does not decode/);
     await expect(verify(fx, [base64(new Uint8Array([0, 0, 0]))])).rejects.toThrow(UnexpectedOnboarding);
-    await expect(verifyOnboarding({ party: fx.party, topologyTransactions: ["not base64!"], multiHash: fx.multiHash }, key, fx.participant)).rejects.toThrow(UnexpectedOnboarding);
+    await expect(verifyOnboarding({ party: fx.party, topologyTransactions: ["not base64!"], multiHash: fx.multiHash }, key, fx.participant, HINT)).rejects.toThrow(UnexpectedOnboarding);
   });
   it("refuses a wrapper version other than 30 or 31, and a message in the other version's wrapper", async () => {
     for (const v of [0, 29, 32, 36, 37]) await expect(verify(fx, [remake(fx, undefined, v)]), String(v)).rejects.toThrow(/not 30 or 31/);
@@ -98,7 +108,8 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
     await expect(verify(fx, fx.topologyTransactions, { multiHash: "" })).rejects.toThrow(/not the hash/);
   });
   it("refuses another party than the key's, another key, and another participant", async () => {
-    await expect(verify(fx, fx.topologyTransactions, { party: "bridge::1220" + "ee".repeat(32) })).rejects.toThrow(/the party is/);
+    await expect(verify(fx, fx.topologyTransactions, { party: "rome::1220" + "ee".repeat(32) })).rejects.toThrow(/the party is/);
+    await expect(verify(fx, fx.topologyTransactions, { party: fx.party.replace(/^rome::/, "bridge::") })).rejects.toThrow(/the party is/);   // the key's own fingerprint under the old name
     await expect(verify(fx, fx.topologyTransactions, {}, fx.participant, base64(other(32)))).rejects.toThrow(/the party is/);
     await expect(verify(fx, fx.topologyTransactions, {}, OTHER_PARTICIPANT)).rejects.toThrow(/not hosted/);
   });
@@ -107,7 +118,7 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
 describe.each(reals)("opening an account on protocol version $protocolVersion", (fx) => {
   /** This test's own key, in the real transaction in place of the real key: so the page can sign it. */
   const run = async (publicKey: Uint8Array) => {
-    const party = await partyOf(publicKey);
+    const party = await partyOf(publicKey, HINT);
     const tx = remake(fx, (_t, p) => {
       const der = p.partySigningKeys.keys[0].publicKey as Uint8Array;
       p.party = party;
@@ -130,7 +141,7 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
       return url.endsWith("/topology") ? answered({ party, exists: false, multiHash, topologyTransactions: [tx], blob: "blob" }) : answered({ party, created: true });
     });
     const confirm = vi.fn(async () => { order.push("confirm"); });
-    expect(await client(f).open(k, fx.participant, confirm)).toBe(party);
+    expect(await client(f).open(k, fx.participant, HINT, confirm)).toBe(party);
     expect(order).toEqual(["topology", "confirm", "allocate"]);
     const calls = f.mock.calls as unknown as [string, RequestInit][];
     expect(calls.every(([, i]) => !("X-Account-Signature" in (i.headers as object)))).toBe(true);
@@ -142,12 +153,12 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
     const k = await key;
     const { party, tx, multiHash } = await run(k.publicKey);
     const answerOf = (over: Record<string, unknown> = {}) => ({ party, topologyTransactions: [tx], multiHash, ...over });
-    expect(await verifies(k.publicKey, fromBase64(multiHash), await signOnboarding(k, answerOf(), fx.participant))).toBe(true);
-    await expect(signOnboarding(k, answerOf({ multiHash: archived.preparedTransactionHash }), fx.participant)).rejects.toThrow(UnexpectedOnboarding);   // a transaction's hash is not an onboarding
-    await expect(signOnboarding(k, answerOf({ multiHash: base64(new Uint8Array([0x12, 0x20, ...other(32)])) }), fx.participant)).rejects.toThrow(/not the hash/);
-    await expect(signOnboarding(k, answerOf(), OTHER_PARTICIPANT)).rejects.toThrow(/not hosted/);
-    await expect(signOnboarding(k, answerOf({ party: "bridge::1220" + "ee".repeat(32) }), fx.participant)).rejects.toThrow(/the party is/);
-    await expect(signOnboarding({ publicKey: k.publicKey } as CantonKey, answerOf(), fx.participant)).rejects.toThrow("not a key made by this library");   // a look-alike has no signer
+    expect(await verifies(k.publicKey, fromBase64(multiHash), await signOnboarding(k, answerOf(), fx.participant, HINT))).toBe(true);
+    await expect(signOnboarding(k, answerOf({ multiHash: archived.preparedTransactionHash }), fx.participant, HINT)).rejects.toThrow(UnexpectedOnboarding);   // a transaction's hash is not an onboarding
+    await expect(signOnboarding(k, answerOf({ multiHash: base64(new Uint8Array([0x12, 0x20, ...other(32)])) }), fx.participant, HINT)).rejects.toThrow(/not the hash/);
+    await expect(signOnboarding(k, answerOf(), OTHER_PARTICIPANT, HINT)).rejects.toThrow(/not hosted/);
+    await expect(signOnboarding(k, answerOf({ party: "rome::1220" + "ee".repeat(32) }), fx.participant, HINT)).rejects.toThrow(/the party is/);
+    await expect(signOnboarding({ publicKey: k.publicKey } as CantonKey, answerOf(), fx.participant, HINT)).rejects.toThrow("not a key made by this library");   // a look-alike has no signer
   });
   it("signs nothing for a multi-hash the service names that is not the hash of the transaction (a prepared transaction's hash in place of the topology's multi-hash is refused)", async () => {
     const k = await key;
@@ -156,7 +167,7 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
     const confirm = vi.fn(async () => {});
     for (const multiHash of [archived.preparedTransactionHash, base64(new Uint8Array([0x12, 0x20, ...other(32)]))]) {
       const f = vi.fn(async (url: string) => { sentTo.push(url); return url.endsWith("/topology") ? answered({ party, exists: false, multiHash, topologyTransactions: [tx], blob: "blob" }) : answered({ party, created: true }); });
-      await expect(client(f).open(k, fx.participant, confirm)).rejects.toThrow(/not the hash/);
+      await expect(client(f).open(k, fx.participant, HINT, confirm)).rejects.toThrow(/not the hash/);
     }
     expect(sentTo.filter((u) => u.endsWith("/allocate"))).toEqual([]);
     expect(confirm).not.toHaveBeenCalled();
@@ -176,9 +187,9 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
       if (url.endsWith("/allocate")) allocated++;
       return url.endsWith("/topology") ? answered({ party: mine.party, exists: false, multiHash, topologyTransactions: txs, blob: "blob" }) : answered({ party: mine.party, created: true });
     });
-    await expect(client(serve(others.multiHash, [others.tx])).open(k, fx.participant)).rejects.toThrow(/the transaction is for/);
-    await expect(client(serve(mine.multiHash, [mine.tx])).open(k, OTHER_PARTICIPANT)).rejects.toThrow(/not hosted/);
-    await expect(client(serve(base64(await topologyMultiHash([hosted])), [hosted])).open(k, fx.participant)).rejects.toThrow(/not hosted/);
+    await expect(client(serve(others.multiHash, [others.tx])).open(k, fx.participant, HINT)).rejects.toThrow(/the transaction is for/);
+    await expect(client(serve(mine.multiHash, [mine.tx])).open(k, OTHER_PARTICIPANT, HINT)).rejects.toThrow(/not hosted/);
+    await expect(client(serve(base64(await topologyMultiHash([hosted])), [hosted])).open(k, fx.participant, HINT)).rejects.toThrow(/not hosted/);
     expect(allocated).toBe(0);
   });
   it("stops at the wallet that does not sign the same way twice, and at a service that makes another party", async () => {
@@ -189,8 +200,8 @@ describe.each(reals)("opening an account on protocol version $protocolVersion", 
       if (url.endsWith("/allocate")) { allocated++; return answered({ party: made, created: true }); }
       return answered({ party, exists: false, multiHash, topologyTransactions: [tx], blob: "blob" });
     });
-    await expect(client(serve(party)).open(k, fx.participant, async () => { throw new Error("this wallet does not sign the same way twice"); })).rejects.toThrow("same way twice");
+    await expect(client(serve(party)).open(k, fx.participant, HINT, async () => { throw new Error("this wallet does not sign the same way twice"); })).rejects.toThrow("same way twice");
     expect(allocated).toBe(0);
-    await expect(client(serve("bridge::1220" + "ee".repeat(32))).open(k, fx.participant)).rejects.toThrow(AccountsError);
+    await expect(client(serve("rome::1220" + "ee".repeat(32))).open(k, fx.participant, HINT)).rejects.toThrow(AccountsError);
   });
 });

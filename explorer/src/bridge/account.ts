@@ -90,7 +90,7 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
   const key = await openKey(wallet, address);
   still();
   progress("Opening your account.");
-  const party = await client.open(key, s.participant, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
+  const party = await client.open(key, s.participant, s.partyHint, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
   still();
   const account = makeAccount(key, party, client, s, current);
   progress("Setting up your account.");
@@ -102,7 +102,7 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
 
 /**
  * Opens the account again from the key this browser kept for this wallet address, with no signature of the wallet. It is null (and the person signs in as before) when nothing is kept for this
- * address, the kept key is not an Ed25519 private key that is not extractable and the pair of its public half, the account address is not the fingerprint of that public half, or the service does
+ * address, the kept key is not an Ed25519 private key that is not extractable and the pair of its public half, the account address is not this build's name and the fingerprint of that public half, or the service does
  * not know the account. A kept key that is not the account's is removed. The store is asked for exactly this wallet address, so another address's key is never looked at. Then the same
  * checks as a sign-in: both acceptances are read back before the account is Ready.
  */
@@ -112,9 +112,9 @@ export async function reopenAccount(address: string, s: Settings, progress: (not
   still();
   if (!record || record.wallet !== address.toLowerCase()) return null;
   const key = await keyFromStored(record.privateKey, record.publicKey);
-  if (!key || (await partyOf(key.publicKey)) !== record.party) { await store.remove(address).catch(() => {}); return null; }
+  if (!key || (await partyOf(key.publicKey, s.partyHint)) !== record.party) { await store.remove(address).catch(() => {}); return null; }
   progress("Opening your account.");
-  const party = await client.find(key.publicKey);
+  const party = await client.find(key.publicKey, s.partyHint);
   still();
   if (party !== record.party) return null;
   const account = makeAccount(key, party, client, s, current);

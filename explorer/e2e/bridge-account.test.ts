@@ -48,7 +48,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       if (path === "/accounts/v1/topology") {
         const publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
         seen.topologies.push(publicKey);
-        party = await partyOf(publicKey);
+        party = await partyOf(publicKey, "rome");
         return json(200, { party, exists: true });   // an account that is there already: the page needs no signature of the account's own
       }
       if (path === "/accounts/v1/prepare") {
@@ -78,12 +78,15 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
   afterAll(async () => { await browser?.close(); await new Promise((done) => server?.close(done)); });
 
   /** A page at the width of a phone, with the wallet: the fixed key signs in this process and the page asks it through a binding. */
-  async function open(path: string, origin = ORIGIN) {
+  async function open(path: string, origin = ORIGIN, alreadyConnected = false) {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const scripts: string[] = [];
     page.on("response", (r: any) => { if (r.request().resourceType() === "script") scripts.push(new URL(r.url()).pathname); });
+    let connected = alreadyConnected;
     await page.exposeFunction("__wallet", async (method: string, params: any[]) => {
-      if (method === "eth_requestAccounts" || method === "eth_accounts") return [active.address];
+      // Like MetaMask: no account is shared with a page until it has asked eth_requestAccounts (unless the site was connected before).
+      if (method === "eth_requestAccounts") { connected = true; return [active.address]; }
+      if (method === "eth_accounts") return connected ? [active.address] : [];
       if (method === "eth_chainId") return "0x" + (770101).toString(16);
       if (method === "wallet_switchEthereumChain") return null;
       if (method === "eth_signTypedData_v4") {
@@ -148,7 +151,8 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       };
     }));
   });
-  const connect = async (page: any) => { await page.getByRole("heading", { name: "Bridge" }).waitFor(); await page.waitForLoadState("networkidle"); const b = page.getByRole("button", { name: "Connect MetaMask" }); if (await b.count()) await b.first().click(); };
+  /** After a reload the wallet is still connected (the page asks it for its accounts), so there is no Connect button to press. */
+  const connect = (page: any) => page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });
 
   it("stays open after a reload: Ready again with no second signature, from a key that cannot be read out; Close removes it", async () => {
     const { page } = await open("/bridge");
@@ -165,7 +169,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     expect(await page.getByRole("button", { name: "Close my Canton account on this browser" }).count()).toBe(1);
 
     await page.reload({ waitUntil: "load" });
-    await connect(page);   // a page that restores the wallet's connection on its own has no button to press
+    await connect(page);
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
     expect(seen.signRequests).toBe(1);   // the wallet was not asked to sign again
     expect(seen.topologies).toHaveLength(2);
@@ -249,6 +253,14 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     expect(text).toBe("Your account already has as many of these open as it may. Wait for them to finish, then try again.");
     expect(text).not.toMatch(/too_many_open|409|party|allocation|vault/i);
     expect(await page.getByText("Ready", { exact: true }).count()).toBe(0);
+    await page.close();
+  }, 60_000);
+
+  it("after a reload picks up the wallet the site is already connected to: no Connect button, the next step shown, no signature asked", async () => {
+    const { page } = await open("/bridge", ORIGIN, true);
+    await page.getByRole("button", { name: "Open my Canton account" }).waitFor({ timeout: 30_000 });
+    expect(await page.getByRole("button", { name: "Connect MetaMask" }).count()).toBe(0);
+    expect(seen.signRequests).toBe(0);
     await page.close();
   }, 60_000);
 });
