@@ -18,10 +18,10 @@ vi.mock("../bridge/evm/config.ts", () => ({
 }));
 vi.mock("../bridge/evm/ostia.ts", () => ({ ostiaAdapter: () => ({ account: "0xe3", native: async () => { mocks.reads++; await mocks.hold; return mocks.gas; }, balanceOf: async () => 20n * 10n ** 18n }) }));
 vi.mock("../bridge/session.ts", () => ({
-  createSession: () => ({ party: "bridge", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalances: async (ins: unknown[]) => { mocks.holdings++; return ins.map(() => mocks.canton); }, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
+  createSession: () => ({ party: "rome", evm: {}, move: { state: { phase: "idle" }, subscribe: () => () => {}, resume: async () => ({ phase: "idle" }), start: async () => ({ phase: "idle" }) }, cantonBalances: async (ins: unknown[]) => { mocks.holdings++; return ins.map(() => mocks.canton); }, kept: () => [], open: async () => ({ depositRequests: [], redeemRequests: [], twinAcceptance: null, withdrawalAcceptance: null }), close: () => {} }),
 }));
 
-const PARTY = "bridge::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
+const PARTY = "rome::1220" + "ab".repeat(32), DSO = "DSO::1220" + "cd".repeat(32), ME = addr(0xe3), ORIGIN = location.origin;   // the page signs only on the address it is set up for: the test page's own
 const env = { VITE_CHAIN_OPERATOR: "operator::1220" + "01".repeat(32), VITE_CHAIN_CONFIRMER: "confirmer::1220" + "02".repeat(32), VITE_CHAIN_GATEWAY: "gateway::1220" + "03".repeat(32), VITE_CHAIN_BUILDER: "builder::1220" + "04".repeat(32), VITE_CHAIN_ID: "770101", VITE_CANTON_PARTICIPANT: "PAR::p::1220" + "05".repeat(32), VITE_SITE_ORIGIN: ORIGIN };
 const faucet = { on: true, address: addr(0xfa), balance: "1000000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0, balanceBlock: 21 };
 const twins = { through: 3, registryService: null, vaults: [], twins: [], legs: [], canton: [{ token: addr(0xcc), symbol: "wCC", instrumentAdmin: DSO, instrumentId: "Amulet" }] };
@@ -81,7 +81,7 @@ describe("the Bridge page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(mocks.openAccount).toHaveBeenCalledWith(expect.anything(), ME, expect.objectContaining({ origin: ORIGIN, participant: env.VITE_CANTON_PARTICIPANT }), expect.any(Function), undefined, expect.any(Function));
-    expect(screen.getByTitle(PARTY)).toHaveTextContent("bridge::1220abab…ababab");
+    expect(screen.getByTitle(PARTY)).toHaveTextContent("rome::1220abab…ababab");
     expect(screen.getByRole("button", { name: "Copy account id" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Get 1 tROME" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Your Canton account" }).textContent).not.toMatch(/party|allocation|vault|external/i);   // no technical names on the screen
@@ -280,7 +280,7 @@ describe("the Bridge page", () => {
     await openSheet();
     await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
     expect(await within(panel).findByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false })).toHaveTextContent("This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.");
-    expect(within(panel).getByText("bridge::1220abab…ababab")).toBeInTheDocument();
+    expect(within(panel).getByText("rome::1220abab…ababab")).toBeInTheDocument();
     expect(within(panel).queryByText("Not opened yet")).toBeNull();
     expect(within(panel).getByRole("list", { name: "On Canton" })).toBeInTheDocument();   // the rows say whose balances they are, beside the wallet's own address
     await waitFor(() => expect(within(within(panel).getByRole("list")).getAllByRole("listitem").map((r) => r.textContent)).toEqual(["TKA1.234567", "Canton Coin1.234567"]));   // by the names people know, cut down and never up

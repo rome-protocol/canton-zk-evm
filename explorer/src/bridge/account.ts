@@ -66,7 +66,7 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
   const key = await openKey(wallet, address);
   still();
   progress("Opening your account.");
-  const party = await client.open(key, s.participant, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
+  const party = await client.open(key, s.participant, s.partyHint, () => { still(); progress("Sign once more to confirm. This only happens when an account is first made."); return confirmKey(wallet, address, key); });
   still();
   // The check is made when a command starts, not when it is handed in: a command that waited its turn is not signed after the account was let go.
   const send = oneAtATime((built) => (account.closed || !current() ? Promise.reject(closedError()) : submit(client, key, party, built)));

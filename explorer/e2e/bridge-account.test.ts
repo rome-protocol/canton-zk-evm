@@ -46,7 +46,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
       if (path === "/accounts/v1/topology") {
         const publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
         seen.topologies.push(publicKey);
-        party = await partyOf(publicKey);
+        party = await partyOf(publicKey, "rome");
         return json(200, { party, exists: true });   // an account that is there already: the page needs no signature of the account's own
       }
       if (path === "/accounts/v1/prepare") {

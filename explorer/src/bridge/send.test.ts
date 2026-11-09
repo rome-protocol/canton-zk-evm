@@ -8,7 +8,7 @@ import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } fro
 import type { Pair } from "./tokens.ts";
 
 const id = (tag: string, n: number) => `${tag}::1220${n.toString(16).padStart(2, "0").repeat(32)}`;
-const PARTY = id("bridge", 0xab), OTHER = id("bridge", 0xcd), DSO = id("DSO", 5), GATEWAY = id("gateway", 3);
+const PARTY = id("rome", 0xab), OTHER = id("rome", 0xcd), DSO = id("DSO", 5), GATEWAY = id("gateway", 3);
 const NOW = Date.parse("2026-11-09T12:00:00Z");
 const key: CantonKey = { publicKey: new Uint8Array(32) };
 const COIN: Pair = { key: "wrapped:cc", kind: "wrapped", native: false, wrapped: null, erc20: "0x" + "c1".repeat(20) as `0x${string}`, ostia: { symbol: "wCC", decimals: 10 }, canton: { symbol: "Canton Coin", admin: DSO, id: "Amulet", decimals: 10 } };
@@ -22,14 +22,14 @@ describe("the send form's words and checks", () => {
   it("takes a Canton address and refuses anything else, and the account's own", () => {
     expect(checkReceiver(`  ${OTHER} `, PARTY)).toBe(OTHER);
     expect(() => checkReceiver("", PARTY)).toThrow(/Type the address/);
-    for (const bad of ["bridge", "bridge::1220ab", OTHER.toUpperCase(), OTHER + "0", "::1220" + "ab".repeat(32), OTHER.replace("::1220", "::1221"), `a b::1220${"ab".repeat(32)}`, "0x" + "ab".repeat(20)]) expect(() => checkReceiver(bad, PARTY), bad).toThrow(AmountError);
+    for (const bad of ["rome", "rome::1220ab", OTHER.toUpperCase(), OTHER + "0", "::1220" + "ab".repeat(32), OTHER.replace("::1220", "::1221"), `a b::1220${"ab".repeat(32)}`, "0x" + "ab".repeat(20)]) expect(() => checkReceiver(bad, PARTY), bad).toThrow(AmountError);
     expect(() => checkReceiver(PARTY, PARTY)).toThrow(/your own address/);
     expect(() => checkReceiver(`${PARTY}`, PARTY)).toThrow(/someone else/);
   });
   it("says an address and the line to confirm in the short form the panel uses", () => {
-    expect(shortAddress(OTHER)).toBe("bridge::1220…cdcd");
+    expect(shortAddress(OTHER)).toBe("rome::1220…cdcd");
     expect(shortAddress(DSO)).toBe("DSO::1220…0505");
-    expect(confirmLine("5", "Canton Coin", OTHER)).toBe("Send 5 Canton Coin to bridge::1220…cdcd on Canton");
+    expect(confirmLine("5", "Canton Coin", OTHER)).toBe("Send 5 Canton Coin to rome::1220…cdcd on Canton");
     expect(tidyAmount(".50", 10)).toBe("0.5");
     expect(tidyAmount("5.", 10)).toBe("5");
     expect(tidyAmount("007.250000", 10)).toBe("7.25");
@@ -141,7 +141,7 @@ const view = (contractId: string, over: Partial<TransferView["transfer"]> = {}, 
 describe("incoming transfers", () => {
   it("lists the offers to the account for tokens the page lists, and leaves out the rest", () => {
     const views = [
-      view("a"), view("own", { sender: PARTY, receiver: OTHER }), view("to-other", { receiver: id("bridge", 0x99) }), view("lapsed", { executeBefore: "2026-11-09T11:59:59Z" }),
+      view("a"), view("own", { sender: PARTY, receiver: OTHER }), view("to-other", { receiver: id("rome", 0x99) }), view("lapsed", { executeBefore: "2026-11-09T11:59:59Z" }),
       view("unlisted", { instrumentId: { admin: DSO, id: "Unlisted" } }), view("odd", { amount: "1.00000000001" }), view("twin", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id }, amount: "0.5" }, "ostia-twin"),
       view("lookalike", {}, "some-other-package"), view("no-package", {}, null), view("twin-in-coins-package", { instrumentId: { admin: GATEWAY, id: TWIN.canton.id } }),
       view("unknown-package", { instrumentId: { admin: DSO, id: "TKB" } }),

@@ -67,7 +67,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       }
       if (path === "/accounts/v1/topology") {
         publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
-        party = await partyOf(publicKey);
+        party = await partyOf(publicKey, "rome");
         return json(200, { party, exists: true });
       }
       if (/^\/accounts\/v1\/registry\/[^/]+\/allocation-factory$/.test(path)) {

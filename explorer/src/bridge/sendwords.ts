@@ -15,7 +15,7 @@ export function checkReceiver(text: string, own: string): string {
   return address;
 }
 
-/** An address for a sentence: its name and the start of its key's fingerprint, and the last four characters (bridge::1220…ab12). */
+/** An address for a sentence: its name and the start of its key's fingerprint, and the last four characters (rome::1220…ab12). */
 export const shortAddress = (address: string): string => {
   const at = address.indexOf("::1220");
   const lead = at < 0 ? 12 : at + 6;

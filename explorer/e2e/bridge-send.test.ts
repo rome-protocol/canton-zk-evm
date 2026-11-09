@@ -24,7 +24,7 @@ const STATUS = {
   ok: true, starting: false, problems: [], evm: true, canton: true, final: null, proving: null, latest: [], signers: null, faucet: { on: true }, publicRpc: true, indexHead: 1, indexLag: 0, deriveCursor: 1, chainInstance: "i1",
 };
 const GATEWAY_PARTY = "gateway::1220" + "03".repeat(32);   // the build's settings (the job sets VITE_CHAIN_GATEWAY to this)
-const RECEIVER = "bridge::1220" + "ab".repeat(32), SENDER = "friend::1220" + "cd".repeat(32);
+const RECEIVER = "rome::1220" + "ab".repeat(32), SENDER = "friend::1220" + "cd".repeat(32);
 const OFFER = "00" + "b1".repeat(40), SENT = "00" + "b2".repeat(40), SEND_UPDATE = "1220" + "ef".repeat(32);
 
 const body = (req: IncomingMessage) => new Promise<string>((done) => { let t = ""; req.on("data", (c) => (t += c)); req.on("end", () => done(t)); });
@@ -54,7 +54,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
       }
       if (path === "/accounts/v1/topology") {
         publicKey = fromBase64(JSON.parse(await body(req)).publicKey);
-        party = await partyOf(publicKey);
+        party = await partyOf(publicKey, "rome");
         return json(200, { party, exists: true });
       }
       if (/^\/accounts\/v1\/registry\/[^/]+\/transfer-factory$/.test(path)) {
@@ -174,7 +174,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
     await signedIn(page);
     const send = await fill(page, "5", RECEIVER);
     await send.getByRole("button", { name: "Review" }).click();
-    expect(await send.getByRole("status").textContent()).toBe("Send 5 Canton Coin to bridge::1220…abab on Canton");
+    expect(await send.getByRole("status").textContent()).toBe("Send 5 Canton Coin to rome::1220…abab on Canton");
     expect(seen.prepares.filter((p) => p.ExerciseCommand)).toHaveLength(0);   // nothing is signed before the person confirms
     expect(await inside(page)).toBe(true);
     await send.getByRole("button", { name: "Send" }).click();
@@ -211,7 +211,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
   it("refuses a bad address, the account's own address and too much, in plain words, and signs nothing", async () => {
     const page = await open("/bridge");
     await signedIn(page);
-    const send = await fill(page, "5", "bridge");
+    const send = await fill(page, "5", "rome");
     expect(await send.getByRole("alert").textContent()).toMatch(/not a Canton address/);
     expect(await send.getByRole("button", { name: "Review" }).isDisabled()).toBe(true);
     await send.getByRole("textbox", { name: "Receiver's Canton address" }).fill(party);
