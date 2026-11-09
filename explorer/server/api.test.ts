@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { keccak256, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createApi, FIELDS, NOT_FOUND } from "./api.ts";
@@ -634,6 +634,40 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
       }
       // The return comes from GitHub, so it is cross-site by nature and is not held to this rule.
       expect((await api("GET", "/api/faucet/github/callback?code=a&state=nope", undefined, "5.5.5.5", undefined, "cross-site")).headers!.location).toBe("/faucet?builder=state");
+    });
+
+    it("starts only for a visit: a Sec-Fetch-Mode that is present and is not navigate (an image, a frame, a script) is turned away with a code and no cookie", async () => {
+      const { api } = await boot(chain(), { faucet: true, builder, githubFetch: github });
+      const start = (mode?: string, site?: string) => api("GET", `/api/faucet/github/start?address=${BOB}`, undefined, "5.5.5.5", undefined, site, mode);
+      for (const mode of [undefined, "navigate"]) expect(new URL((await start(mode)).headers!.location!).origin, String(mode)).toBe("https://github.com");
+      expect(new URL((await start("navigate", "same-origin")).headers!.location!).origin).toBe("https://github.com");
+      for (const mode of ["no-cors", "cors", "same-origin", "websocket", "nested-navigate", "", "Navigate"]) {
+        const refused = await start(mode, "same-origin");
+        expect(refused.status, mode).toBe(302);
+        expect(refused.headers!.location, mode).toBe("/faucet?builder=origin");
+        expect(refused.headers!["set-cookie"], mode).toBeUndefined();
+      }
+      // The return is a visit too, but it is not held to this rule.
+      expect((await api("GET", "/api/faucet/github/callback?code=a&state=nope", undefined, "5.5.5.5", undefined, undefined, "no-cors")).headers!.location).toBe("/faucet?builder=state");
+    });
+
+    it("answers the two routes at their exact path only: another spelling (case, percent-encoding, a slash after) is a 404 that never reaches the sign-in", async () => {
+      const { api, faucet } = await boot(chain(), { faucet: true, builder, githubFetch: github });
+      const started = vi.spyOn(faucet, "builderStart"), returned = vi.spyOn(faucet, "builderCallback");
+      for (const path of [
+        "/api/faucet/github/CALLBACK?code=a&state=b", "/api/faucet/github/%63allback?code=a&state=b", "/api/faucet/github/Callback?code=a&state=b", "/api/Faucet/github/callback?code=a&state=b",
+        "/api/faucet/GITHUB/callback?code=a&state=b", "/api/faucet/%67ithub/callback?code=a&state=b", "/api/faucet/github/callback/?code=a&state=b",
+        `/api/faucet/github/START?address=${BOB}`, `/api/faucet/github/%73tart?address=${BOB}`, `/api/FAUCET/github/start?address=${BOB}`, `/api/faucet/github/start/?address=${BOB}`, "/api/faucet/github", "/api/faucet/github/",
+      ]) {
+        const a = await api("GET", path);
+        expect(a.status, path).toBe(404);
+        expect(a.headers?.location, path).toBeUndefined();
+        expect((await api("POST", path, "{}")).status, path).toBe(404);
+      }
+      expect(started).not.toHaveBeenCalled();
+      expect(returned).not.toHaveBeenCalled();
+      expect((await api("GET", "/api/faucet/github/callback?code=a&state=b")).status).toBe(302);
+      expect(returned).toHaveBeenCalledTimes(1);
     });
 
     it("sends a state that is no good back to the page, and takes only GET", async () => {

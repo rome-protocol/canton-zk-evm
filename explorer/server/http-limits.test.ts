@@ -11,16 +11,31 @@ let dir: string, server: ReturnType<typeof createHttpServer>, calls: { method: s
 let time = 1_000_000;
 let cookieSeen: string | undefined;
 let siteSeen: string | undefined;
+let modeSeen: string | undefined;
+let signIns = 0;
 const clock = { now: () => time, advance: (ms: number) => void (time += ms) };
 
-async function start(ipHeader: string | null = null) {
+/** `exactOnly` is an API that answers the builder grant's routes at their exact path only, as `api.ts` does, and counts the sign-ins it is asked to make. */
+async function start(ipHeader: string | null = null, exactOnly = false) {
   dir = mkdtempSync(join(tmpdir(), "explorer-limits-"));
   mkdirSync(join(dir, "dist"), { recursive: true });
   writeFileSync(join(dir, "dist", "index.html"), "<html>home</html>");
   calls = [];
   cookieSeen = undefined;
   siteSeen = undefined;
-  const api = async (method: string, target: string, body?: string, _ip?: string, cookie?: string, site?: string) => { calls.push({ method, target, body }); cookieSeen = cookie; siteSeen = site; return { status: 200, body: { ok: true } }; };
+  modeSeen = undefined;
+  signIns = 0;
+  const api = async (method: string, target: string, body?: string, _ip?: string, cookie?: string, site?: string, mode?: string) => {
+    calls.push({ method, target, body });
+    if (exactOnly) {
+      const path = new URL(target, "http://explorer").pathname;
+      if (path !== "/api/faucet/github/start" && path !== "/api/faucet/github/callback") return { status: 404, body: { error: "No such route." } };
+      signIns++;
+      return { status: 302, body: {}, headers: { location: "/faucet?builder=queued" } };
+    }
+    cookieSeen = cookie; siteSeen = site; modeSeen = mode;
+    return { status: 200, body: { ok: true } };
+  };
   server = createHttpServer(api, join(dir, "dist"), undefined, ipHeader, undefined, createLimits(clock.now));
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
 }
@@ -42,12 +57,35 @@ describe("the builder grant's routes: 10 a minute for each client", () => {
     expect((await at("/api/faucet/github/start?address=0x1", { redirect: "manual" })).status).toBe(200);
   });
 
+  it("limits the exact paths only: another spelling (case, percent-encoding) is a 404 that never reaches the sign-in, and does not use up the exact paths' rate", async () => {
+    await start(null, true);
+    for (const path of ["/api/faucet/github/CALLBACK?code=a&state=b", "/api/faucet/github/%63allback?code=a&state=b", "/api/Faucet/github/callback?code=a&state=b", "/api/faucet/GITHUB/start?address=0x1"]) {
+      for (let i = 0; i < 11; i++) expect((await at(path, { redirect: "manual" })).status, path).toBe(404);
+    }
+    expect(signIns).toBe(0);
+    // The 11th call to an exact path is the one sent back to the page with the busy word, and the first 10 reached the sign-in.
+    for (let i = 0; i < 10; i++) expect((await at("/api/faucet/github/callback?code=a&state=b", { redirect: "manual" })).status).toBe(302);
+    expect(signIns).toBe(10);
+    const over = await at("/api/faucet/github/callback?code=a&state=b", { redirect: "manual" });
+    expect(over.status).toBe(302);
+    expect(over.headers.get("location")).toBe("/faucet?builder=busy&wait=6");
+    expect(signIns).toBe(10);
+  });
+
   it("hands the request's Sec-Fetch-Site header to the API", async () => {
     await start();
     await at("/api/faucet/github/start?address=0x1", { headers: { "sec-fetch-site": "cross-site" } });
     expect(siteSeen).toBe("cross-site");
     await at("/api/faucet/github/start?address=0x1");
     expect(siteSeen).toBeUndefined();
+  });
+
+  it("hands the request's Sec-Fetch-Mode header to the API", async () => {
+    await start();
+    await at("/api/faucet/github/start?address=0x1", { headers: { "sec-fetch-mode": "no-cors" } });
+    expect(modeSeen).toBe("no-cors");
+    await at("/api/faucet/github/start?address=0x1");
+    expect(modeSeen).toBeUndefined();
   });
 
   it("hands the request's Cookie header to the API", async () => {
