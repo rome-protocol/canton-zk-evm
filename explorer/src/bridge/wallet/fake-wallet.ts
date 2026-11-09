@@ -25,6 +25,8 @@ export interface FakeOptions {
   refuse?: (command: unknown) => number | undefined;
   /** A command the wallet takes but never says it executed (an answer that does not come). */
   silent?: (command: unknown) => boolean;
+  /** A command the wallet says it executed and the ledger never shows. */
+  inert?: (command: unknown) => boolean;
 }
 
 /** The fake wallet: `provider` is what the page talks to; the rest is what a test looks at and sets up. */
@@ -89,7 +91,7 @@ export function fakeWallet(o: FakeOptions = {}) {
       if (code !== undefined) throw Object.assign(new Error("refused"), { code });
       if (params.actAs?.some((a: string) => a !== party)) throw Object.assign(new Error("not your party"), { code: 4100 });
       if (o.silent?.(command)) return null;
-      apply(command);
+      if (!o.inert?.(command)) apply(command);
       executed.push(command);
       queueMicrotask(() => emit("txChanged", { status: "executed", commandId: params.commandId, payload: { updateId: "update-" + executed.length, completionOffset: 100 + executed.length } }));
       return null;

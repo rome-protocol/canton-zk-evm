@@ -69,7 +69,7 @@ describe("the standing acceptances", () => {
     expect(w.commands()).toHaveLength(1);
   });
   it("are not taken as made until the ledger shows both", async () => {
-    const { account } = await setup({ silent: () => true });
+    const { account } = await setup({ inert: () => true });
     await expect(optIn(account, async () => {}, 2)).rejects.toMatchObject({ code: "acceptances_missing" });
   });
 });
@@ -119,12 +119,12 @@ describe("a redeem", () => {
   it("looks again after the wallet's rate is used up, instead of failing the wait", async () => {
     const { w, link } = await setup();
     w.holding("5", TWIN);
+    const adapter = walletAdapter(walletAccount(link, CHAIN, "", registry().fetcher), async () => {});
+    await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "r" });
     let limited = 2;
-    const limit = { ...link, party: link.party, ledgerApi: async (r: never) => { if (limited-- > 0) throw Object.assign(new Error("x"), { code: -32005 }); return link.ledgerApi(r); }, submit: link.submit };
-    const adapter = walletAdapter(walletAccount(limit as never, CHAIN, "", registry().fetcher), async () => {});
-    await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "r" }).catch(() => {});
-    limited = 2;
-    await adapter.waitRedeem("r");
+    const limit = { party: link.party, submit: link.submit, ledgerApi: async (r: never) => { if (limited-- > 0) throw Object.assign(new Error("x"), { code: -32005 }); return link.ledgerApi(r); } };
+    await walletAdapter(walletAccount(limit as never, CHAIN, "", registry().fetcher), async () => {}).waitRedeem("r");
+    expect(limited).toBeLessThan(0);
   });
 });
 

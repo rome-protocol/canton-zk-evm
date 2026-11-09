@@ -54,7 +54,7 @@ describe("a connected wallet", () => {
     it("is not sent twice while it is on its way, and a different command waits for it", async () => {
       const w = fakeWallet();
       const link = await linkWallet(w.provider, { name: "W" });
-      const a = built(), b = built(WALLET_PARTY, { ...CHAIN, chainId: 1 });
+      const a = built(), b = built(WALLET_PARTY, { ...CHAIN, gateway: id("gateway", 9) });
       const [one, two, three] = await Promise.all([link.submit(a), link.submit(a), link.submit(b)]);
       expect(one).toBe(two);
       expect(three).not.toBe(one);

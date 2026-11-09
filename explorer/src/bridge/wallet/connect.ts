@@ -2,7 +2,7 @@
 // `WalletLink` (link.ts). The SDK's discovery client holds the adapters: Loop's (its library has a CIP-0103 provider, and registers nothing in the browser by itself), a Wallet Gateway's, and the
 // browser wallets that announce themselves; it also restores a session after a reload. The Bridge page loads this file only when a person asks to connect, or when this browser connected a wallet before
 // (`wasConnected`): the SDK is not in the page's first script.
-import { DiscoveryClient, ExtensionAdapter, RemoteAdapter } from "@canton-network/dapp-sdk";
+import * as sdk from "@canton-network/dapp-sdk";
 import { loop } from "@fivenorth/loop-sdk";
 import { linkWallet, type Cip103, type WalletLink } from "./link.ts";
 import { loopNetwork, type WalletConfig } from "./wallets.ts";
@@ -36,9 +36,11 @@ interface Discovery {
   disconnect(): Promise<void>;
   getActiveSession(): { providerId: string; provider: Cip103 } | null;
 }
-const Client = DiscoveryClient as unknown as { create(config: { adapters: WalletAdapter[] }): Promise<Discovery> };
-const Extension = ExtensionAdapter as unknown as new (config: { providerId: string; name: string; icon?: string; description: string; target: string }) => WalletAdapter;
-const Remote = RemoteAdapter as unknown as new (config: { name: string; rpcUrl: string }) => WalletAdapter;
+const { DiscoveryClient: Client, ExtensionAdapter: Extension, RemoteAdapter: Remote } = sdk as unknown as {
+  DiscoveryClient: { create(config: { adapters: WalletAdapter[] }): Promise<Discovery> };
+  ExtensionAdapter: new (config: { providerId: string; name: string; icon?: string; description: string; target: string }) => WalletAdapter;
+  RemoteAdapter: new (config: { name: string; rpcUrl: string }) => WalletAdapter;
+};
 
 let started = false;
 /** Loop's own provider (the library's CIP-0103 one). It is started once: the library refuses a second start. */
