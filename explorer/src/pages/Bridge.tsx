@@ -56,8 +56,8 @@ export function Bridge() {
   const st = useStatus();
   const settings = useMemo(buildSettings, []);
   /** The Canton wallets this build offers (VITE_CANTON_WALLETS): none, and the page is the Bridge as it was. */
-  const wallets = useMemo(() => walletsFromEnv(import.meta.env), []);
-  const canton = useCantonWallet(wallets, settings?.chain ?? null, st.data?.networkName ?? null);
+  const walletConfig = useMemo(() => walletsFromEnv(import.meta.env), []);
+  const canton = useCantonWallet(walletConfig, settings?.chain ?? null, st.data?.networkName ?? null);
   /** The person chose a Bridge account from MetaMask over a Canton wallet (only when the build offers wallets). */
   const [bridgeAccount, setBridgeAccount] = useState(false);
   const wallet = useWallet(st.data);
@@ -275,7 +275,7 @@ export function Bridge() {
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
           {walletSheet ? (
-            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onOptIn={() => void canton.optIn()} onDisconnect={() => void canton.disconnect()} onBridgeAccount={() => setBridgeAccount(true)} />
+            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => void canton.disconnect()} onBridgeAccount={() => setBridgeAccount(true)} />
           ) : phase.s === "ready" ? (
             <>
               <p className="ready"><span className="sd ok"><i /><b>Ready</b></span> <span className="mono" title={phase.account.party}>{short(phase.account.party, 16, 6)}</span>

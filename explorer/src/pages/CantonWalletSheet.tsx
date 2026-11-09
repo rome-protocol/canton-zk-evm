@@ -5,15 +5,15 @@ import { inWallet } from "../bridge/wallet/wallets.ts";
 import type { WalletState } from "./useCantonWallet.ts";
 
 /**
- * The Canton side of the sheet when the build offers Canton wallets: "Connect your Canton wallet" (Canton's own wallet picker opens), the way to the Bridge account from MetaMask, and once a wallet is
+ * The Canton side of the sheet when the build offers Canton wallets: "Connect your Canton wallet" (the wallet asks to approve), the way to the Bridge account from MetaMask, and once a wallet is
  * connected its address and name, the opt-in the first time, and Disconnect. Moves are approved in the wallet, which shows each Canton step before it signs.
  */
-export function CantonWalletSheet({ state, onConnect, onOptIn, onDisconnect, onBridgeAccount }: { state: WalletState; onConnect(): void; onOptIn(): void; onDisconnect(): void; onBridgeAccount(): void }) {
+export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconnect, onBridgeAccount }: { state: WalletState; onConnect(): void; onPick(id: string): void; onOptIn(): void; onDisconnect(): void; onBridgeAccount(): void }) {
   const [copied, setCopied] = useState(false);
   const party = state.s === "ready" ? state.link.party : "";
   useEffect(() => setCopied(false), [party]);
-  // The wallet's code is fetched ahead of the click, so the picker opens at once (a browser lets a page open a window only just after a click).
-  useEffect(() => { if (state.s !== "ready") void import("../bridge/wallet/connect.ts"); }, [state.s]);
+  // The wallet's code is fetched ahead of the click, so a wallet that opens a window can do it at once (a browser lets a page open a window only just after a click).
+  useEffect(() => { if (state.s === "idle" || state.s === "failed") void import("../bridge/wallet/connect.ts"); }, [state.s]);
 
   if (state.s === "ready") {
     const where = inWallet(state.link.name);
@@ -34,6 +34,15 @@ export function CantonWalletSheet({ state, onConnect, onOptIn, onDisconnect, onB
         )}
         <p className="small muted">The Canton Coin faucet on this page is for Bridge accounts only. Get test Canton Coin in {where}.</p>
         <div className="actions"><button type="button" className="btn ghost" onClick={onDisconnect}>Disconnect</button></div>
+      </>
+    );
+  }
+  if (state.s === "choosing") {
+    return (
+      <>
+        <p className="lead">Which wallet?</p>
+        <div className="actions">{state.choices.map((c) => <button key={c.id} type="button" className="btn" onClick={() => onPick(c.id)}>{c.name}</button>)}</div>
+        <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from MetaMask</button></p>
       </>
     );
   }
