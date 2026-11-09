@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { Refused, Waited } from "../moves/moves.ts";
 import { depositIdOf } from "../moves/state.ts";
 import { CHAIN, COIN, fakeWallet, WALLET_PARTY } from "./fake-wallet.ts";
-import { NO_KEY, optedIn, optIn, walletAccount, walletAdapter } from "./adapter.ts";
+import { NO_KEY, optedIn, optIn, walletAccount, WALLET_POLL_MS } from "./adapter.ts";
+import { accountAdapter } from "../session.ts";
 import { linkWallet, WALLET_WORDS } from "./link.ts";
 
 const TWIN = { admin: CHAIN.gateway, id: "erc20:" + "aa".repeat(20) };
@@ -26,7 +27,7 @@ async function setup(o = {}, make = (w: ReturnType<typeof fakeWallet>) => linkWa
   const link = await make(w);
   const reg = registry();
   const account = walletAccount(link, CHAIN, "", reg.fetcher);
-  const adapter = walletAdapter(account, async () => {});
+  const adapter = accountAdapter(account, async () => {});
   return { w, link, reg, account, adapter };
 }
 const created = (w: ReturnType<typeof fakeWallet>, entity: string) => w.commands().filter((c) => c.CreateCommand?.templateId.endsWith(entity));
@@ -90,9 +91,9 @@ describe("a redeem", () => {
   it("is not made again by a page that was reloaded: a new adapter on the same wallet looks at the ledger first", async () => {
     const { w, account } = await setup();
     w.holding("5", TWIN);
-    const first = walletAdapter(account, async () => {});
+    const first = accountAdapter(account, async () => {});
     await first.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
-    const second = walletAdapter(walletAccount(await linkWallet(w.provider, { name: "W" }), CHAIN, "", registry().fetcher), async () => {});
+    const second = accountAdapter(walletAccount(await linkWallet(w.provider, { name: "W" }), CHAIN, "", registry().fetcher), async () => {});
     await second.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "ref-1" });
     expect(created(w, "RedeemRequest")).toHaveLength(1);
   });
@@ -116,14 +117,20 @@ describe("a redeem", () => {
     const { adapter } = await setup();
     await expect(adapter.waitRedeem("never")).rejects.toBeInstanceOf(Waited);
   });
+  it("looks at the ledger every WALLET_POLL_MS in a wait, as the session builds the adapter", async () => {
+    const { account } = await setup();
+    const slept: number[] = [];
+    await expect(accountAdapter(account, async (ms) => { slept.push(ms); }).waitRedeem("never")).rejects.toBeInstanceOf(Waited);
+    expect(new Set(slept)).toEqual(new Set([WALLET_POLL_MS]));
+  });
   it("looks again after the wallet's rate is used up, instead of failing the wait", async () => {
     const { w, link } = await setup();
     w.holding("5", TWIN);
-    const adapter = walletAdapter(walletAccount(link, CHAIN, "", registry().fetcher), async () => {});
+    const adapter = accountAdapter(walletAccount(link, CHAIN, "", registry().fetcher), async () => {});
     await adapter.signRedeem({ asset: TOKEN as never, amount: "5", recipient: TO as never, ref: "r" });
     let limited = 2;
     const limit = { party: link.party, submit: link.submit, ledgerApi: async (r: never) => { if (limited-- > 0) throw Object.assign(new Error("x"), { code: -32005 }); return link.ledgerApi(r); } };
-    await walletAdapter(walletAccount(limit as never, CHAIN, "", registry().fetcher), async () => {}).waitRedeem("r");
+    await accountAdapter(walletAccount(limit as never, CHAIN, "", registry().fetcher), async () => {}).waitRedeem("r");
     expect(limited).toBeLessThan(0);
   });
 });
@@ -190,7 +197,7 @@ describe("a deposit of Canton Coin", () => {
     await adapter.allocateDeposit(input);
     const depositId = depositIdOf(WALLET_PARTY, "label-1");
     await adapter.signDeposit({ ...input, depositId, recipient: TO as never });
-    const broken = walletAdapter({ ...account, client: Object.assign(Object.create(account.client), { allocationWithdrawContext: async () => { throw Object.assign(new Error("gone"), { status: 404 }); } }) }, async () => {});
+    const broken = accountAdapter({ ...account, client: Object.assign(Object.create(account.client), { allocationWithdrawContext: async () => { throw Object.assign(new Error("gone"), { status: 404 }); } }) }, async () => {});
     await expect(broken.recoverDeposit({ label: "label-1", depositId })).rejects.toMatchObject({ status: 404 });
     expect(await broken.appeared({ deposit: depositId })).toBe(false);
   });

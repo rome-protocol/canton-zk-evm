@@ -87,9 +87,74 @@ describe("the Bridge page with Canton wallets in the build", () => {
     expect(screen.queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
     expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));   // back to the choice
-    await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));   // back, and the connection starts
     await screen.findByText("Connected");
+  });
+
+  describe("the person's choice decides the sheet, in every state of the connection", () => {
+    const toBridgeAccount = async () => {
+      await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
+      expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).toBeNull();
+    };
+    it("after no wallet was found: the Bridge account from MetaMask opens", async () => {
+      setUp();
+      mocks.choices.mockResolvedValue([]);
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("No Canton wallet was found");
+      await toBridgeAccount();
+    });
+    it("after the person declined in the wallet: the Bridge account from MetaMask opens", async () => {
+      setUp();
+      connectsTo();
+      mocks.connectWallet.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: 4001 }));
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+      await screen.findByRole("alert");
+      await toBridgeAccount();
+    });
+    it("while several wallets are listed: the Bridge account from MetaMask opens", async () => {
+      setUp("loop,extension");
+      connectsTo("Loop");
+      mocks.choices.mockResolvedValue([{ id: "loop", name: "Loop" }, { id: "browser:ext:fake", name: "Fake Wallet" }]);
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+      await screen.findByRole("button", { name: "Fake Wallet" });
+      await toBridgeAccount();
+    });
+    it("after the wallet was lost by itself: the Bridge account from MetaMask opens", async () => {
+      setUp();
+      connectsTo();
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+      await screen.findByText("Connected");
+      wallet.emit("statusChanged", { connection: { isConnected: false } });
+      await screen.findByRole("alert");
+      await toBridgeAccount();
+    });
+    it("after the MetaMask sign-in failed: Connect your Canton wallet connects the wallet", async () => {
+      setUp();
+      connectsTo();
+      mocks.openAccount.mockRejectedValueOnce(new Error("no"));
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await screen.findByRole("alert");
+      await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));
+      expect(await screen.findByText("Connected")).toBeInTheDocument();
+      expect(sheet()).toHaveTextContent("Loop");
+    });
+    it("while the MetaMask sign-in is waiting: Connect your Canton wallet connects the wallet", async () => {
+      setUp();
+      connectsTo();
+      mocks.openAccount.mockReturnValueOnce(new Promise(() => {}));
+      await openSheet();
+      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
+      expect(await screen.findByText("Connected")).toBeInTheDocument();
+    });
   });
 
   it("connects the wallet, shows its short address and name, asks to opt in once, and then the moves are made for the wallet's account", async () => {

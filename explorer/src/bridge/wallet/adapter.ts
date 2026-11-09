@@ -1,12 +1,10 @@
-// The Canton side of a move for a connected wallet. It is the move library's own Canton adapter (adapter.ts), with the wallet in the two places the account service and the page's key were: the reads
+// The Canton side of a move for a connected wallet. It is the move library's own Canton adapter (adapter.ts, built by the session's accountAdapter), with the wallet in the two places the account service and the page's key were: the reads
 // come from the wallet's ledger and the public registry route (ledger.ts), and each command goes to the wallet, which shows it to its person, signs it and sends it (link.ts). So every rule of that adapter holds
 // here too: each call looks at the ledger first and does nothing again for a ref, a label or a deposit id that is already there, and nothing is signed twice after a reload. The page's own check of a
 // prepared transaction (canton/sign.ts) does not run on this path: the wallet prepares the transaction itself, and it is the wallet that shows it.
-import { cantonAdapter } from "../adapter.ts";
 import { AccountsError } from "../canton/accounts.ts";
 import { twinAcceptance, withdrawalAcceptance, type Built, type Chain } from "../canton/commands.ts";
 import type { CantonKey } from "../canton/key.ts";
-import type { CantonAdapter } from "../moves/moves.ts";
 import { PageError } from "../words.ts";
 import type { WalletLink } from "./link.ts";
 import { PublicRegistry, WalletClient, WalletLedger } from "./ledger.ts";
@@ -25,15 +23,12 @@ export interface WalletAccount {
   client: WalletClient;
   chain: Chain;
   submit(built: Built): Promise<string>;
+  /** How often a wait looks at the ledger. */
+  pollMs: number;
 }
 
 export function walletAccount(link: Pick<WalletLink, "party" | "ledgerApi" | "submit">, chain: Chain, registryBase = "", fetcher?: typeof fetch): WalletAccount {
-  return { key: NO_KEY, party: link.party, client: new WalletClient(new WalletLedger(link, chain), new PublicRegistry(registryBase, fetcher)), chain, submit: (built) => link.submit(built) };
-}
-
-/** The Canton adapter of a connected wallet's account. */
-export function walletAdapter(a: Pick<WalletAccount, "party" | "client" | "chain" | "submit">, sleep: (ms: number) => Promise<void> = sleepFor, pollMs = WALLET_POLL_MS): CantonAdapter {
-  return cantonAdapter({ client: a.client, key: NO_KEY, party: a.party, chain: a.chain, submit: a.submit, sleep, pollMs });
+  return { key: NO_KEY, party: link.party, client: new WalletClient(new WalletLedger(link, chain), new PublicRegistry(registryBase, fetcher)), chain, submit: (built) => link.submit(built), pollMs: WALLET_POLL_MS };
 }
 
 /** Whether the account has made its two standing acceptances (of Ostia tokens, and of withdrawals): read from the ledger. */

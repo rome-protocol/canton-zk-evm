@@ -10,7 +10,7 @@ import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
-import { createMove, explorerCustody, explorerLeg, explorerSentSince, explorerTx, randomRef, Refused, webLocks, type Move } from "./moves/moves.ts";
+import { createMove, explorerCustody, explorerLeg, explorerSentSince, explorerTx, randomRef, Refused, webLocks, type CantonAdapter, type Move } from "./moves/moves.ts";
 import { keptMoves, moveStore, depositIdOf, releaseIdOf, type Checkpoint } from "./moves/state.ts";
 
 export interface Session {
@@ -61,13 +61,22 @@ export async function releaseUsed(evm: Pick<EvmAdapter, "used">, config: Pick<Br
 }
 
 /** What a move needs of the Canton account: the derived Bridge account, or a connected wallet's (wallet/adapter.ts). The reads take the key first, which a wallet's account does not use. */
-export type SessionAccount = Pick<Account, "key" | "party" | "chain" | "submit"> & { client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory" | "allocationWithdrawContext"> };
+export type SessionAccount = Pick<Account, "key" | "party" | "chain" | "submit"> & {
+  client: Pick<AccountsClient, "holdings" | "allocations" | "openRequests" | "allocationFactory" | "allocationWithdrawContext">;
+  /** How often a wait looks at the ledger; a wallet's account sets it (each look is a call through the wallet). Default: the adapter's. */
+  pollMs?: number;
+};
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
+/** The Canton side of a move for an open account (the Bridge account's, or a connected wallet's): the one adapter, with the account's own way of looking and submitting. */
+export function accountAdapter(account: SessionAccount, wait: (ms: number) => Promise<void> = sleep): CantonAdapter {
+  return cantonAdapter({ client: account.client, key: account.key, party: account.party, chain: account.chain, submit: account.submit, sleep: wait, pollMs: account.pollMs });
+}
+
 export function createSession(o: { evm: EvmAdapter; account: SessionAccount; config: BridgeConfig }): Session {
   const { evm, account, config } = o;
-  const canton = cantonAdapter({ client: account.client, key: account.key, party: account.party, chain: account.chain, submit: account.submit, sleep });
+  const canton = accountAdapter(account);
   const store = moveStore();
   const move = createMove({
     config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince, custody: explorerCustody,

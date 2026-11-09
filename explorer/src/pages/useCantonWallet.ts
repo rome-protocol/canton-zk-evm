@@ -116,6 +116,13 @@ export function useCantonWallet(config: WalletConfig, chain: Chain | null, netwo
     if (was.s === "ready") await was.link.disconnect();
   }, [state]);
 
+  /** Back to the start: whatever was being connected is dropped (a connection on its way is let go when it ends). A connected wallet stays: only Disconnect ends that. */
+  const reset = useCallback(() => {
+    if (state.s === "ready") return;
+    epoch.current++;
+    setState({ s: "idle" });
+  }, [state.s]);
+
   const ready = state.s === "ready" ? state : null;
-  return { on, state, connect, pick, optIn, disconnect, link: ready?.link ?? null, party: ready?.link.party ?? null, name: ready?.link.name ?? null, account: ready?.opted ? ready.account : null, inWallet };
+  return { on, state, connect, pick, optIn, disconnect, reset, link: ready?.link ?? null, party: ready?.link.party ?? null, name: ready?.link.name ?? null, account: ready?.opted ? ready.account : null, inWallet };
 }

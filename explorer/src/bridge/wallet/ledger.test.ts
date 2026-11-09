@@ -120,10 +120,21 @@ describe("the public registry route", () => {
   it("asks for the context to take an allocation back, and for a twin's transfer factory, on the signed relay's paths", async () => {
     const fetcher = answering(200, { choiceContextData: { values: {} } });
     const r = new PublicRegistry("https://x.example", fetcher as never);
-    await r.allocationWithdrawContext(admin, "00ab");
+    const cid = "00" + "ab".repeat(20);
+    await r.allocationWithdrawContext(admin, cid);
     await r.transferFactory(admin, { a: 1 });
-    expect(fetcher.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([`https://x.example/accounts/v1/public-registry/${admin}/allocation/00ab/withdraw-context`, `https://x.example/accounts/v1/public-registry/${admin}/transfer-factory`]);
+    expect(fetcher.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([`https://x.example/accounts/v1/public-registry/${admin}/allocation/${cid}/withdraw-context`, `https://x.example/accounts/v1/public-registry/${admin}/transfer-factory`]);
     expect(JSON.parse((fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ meta: {}, excludeDebugFields: true });
+  });
+  it("builds no path from a party or a contract id that is not the shape the relay accepts, and sends nothing", async () => {
+    const fetcher = answering(200, {});
+    const r = new PublicRegistry("", fetcher as never);
+    const cid = "00" + "ab".repeat(20);
+    for (const bad of ["../x", "a/b::1220" + "ab".repeat(32), "x::1220" + "ab".repeat(32) + "/..", "DSO::1220" + "ab".repeat(32) + "?q", ""]) {
+      await expect(r.allocationFactory(bad, {})).rejects.toMatchObject({ kind: "bad-request" });
+    }
+    for (const bad of ["../../x", "00ab", cid + "/..", "zz" + cid, ""]) await expect(r.allocationWithdrawContext(admin, bad)).rejects.toMatchObject({ kind: "bad-request" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
   it("says what each refusal is: 404 an unknown registry (which waiting does not clear), 400 a request that is too long, 429 a used-up rate with its wait, 5xx an outage", async () => {
     const ask = (status: number, headers = {}) => new PublicRegistry("", answering(status, { error: "x" }, headers) as never).allocationFactory(admin, {}).catch((e) => e);

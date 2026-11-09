@@ -106,6 +106,10 @@ const WORDS: Record<string, string> = {
   network: "The bridge could not be reached. Check your connection and try again.",
 };
 
+/** The shapes the relay accepts: a party id with no `/` or other path character, and a contract id (`00` and hex). */
+const ADMIN = /^[^:\s/?#%\\]+::1220[0-9a-f]{64}$/;
+const CONTRACT = /^00[0-9a-f]{20,252}$/;
+
 /**
  * The token registries' answers for an account the account service does not know: the allocation factory, the transfer factory of a twin, and the context for taking an allocation back. The route is
  * `/accounts/v1/public-registry/<admin>/<what>`: the same paths as the signed relay, with no signature and no `party` (the request body is the registry's own request, sent on unchanged). It
@@ -126,14 +130,20 @@ export class PublicRegistry {
     throw new AccountsError(kind, r.status, WORDS[kind] ?? "Something went wrong. Nothing was lost. Try again in a moment.", retryAfterSeconds(r.headers.get("Retry-After")), undefined, undefined, typeof answer?.registryStatus === "number" ? answer.registryStatus : undefined);
   }
 
+  /** The path of one registry call. The registry's party and a contract id come from outside (the wallet's own answers), so each is checked against the shape the relay accepts before it goes into a path. */
+  private path(admin: string, what: string, contract?: string): string {
+    if (!ADMIN.test(admin) || (contract !== undefined && !CONTRACT.test(contract))) throw new AccountsError("bad-request", 400, WORDS["bad-request"]!);
+    return `/accounts/v1/public-registry/${admin}/${what.replace("<cid>", contract ?? "")}`;
+  }
+
   allocationFactory(admin: string, choiceArguments: object): Promise<FactoryAnswer> {
-    return this.post(`/accounts/v1/public-registry/${admin}/allocation-factory`, { choiceArguments, excludeDebugFields: true });
+    return this.post(this.path(admin, "allocation-factory"), { choiceArguments, excludeDebugFields: true });
   }
   transferFactory(admin: string, choiceArguments: object): Promise<TransferFactoryAnswer> {
-    return this.post(`/accounts/v1/public-registry/${admin}/transfer-factory`, { choiceArguments, excludeDebugFields: true });
+    return this.post(this.path(admin, "transfer-factory"), { choiceArguments, excludeDebugFields: true });
   }
   allocationWithdrawContext(admin: string, allocation: string): Promise<ChoiceContext> {
-    return this.post(`/accounts/v1/public-registry/${admin}/allocation/${allocation}/withdraw-context`, { meta: {}, excludeDebugFields: true });
+    return this.post(this.path(admin, "allocation/<cid>/withdraw-context", allocation), { meta: {}, excludeDebugFields: true });
   }
 }
 

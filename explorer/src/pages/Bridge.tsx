@@ -238,7 +238,11 @@ export function Bridge() {
   const openSheet = () => { setSheet(true); setNudge((n) => n + 1); };
   const showSheet = sheet || phase.s !== "idle" || (wrongSite && connected) || canton.state.s !== "idle";
   /** The sheet is the Canton wallet's while one is being connected or is connected, and at first when the build offers wallets (the Bridge account from MetaMask is one click away). */
-  const walletSheet = canton.on && (canton.state.s !== "idle" || (phase.s === "idle" && !bridgeAccount));
+  const walletSheet = canton.on && !bridgeAccount && (canton.state.s !== "idle" || phase.s !== "ready");
+  /** "Use a Bridge account from MetaMask": the person's choice decides the sheet, whatever the wallet's connection was doing. */
+  const toBridgeAccount = () => { canton.reset(); setBridgeAccount(true); setSheet(true); };
+  /** "Connect your Canton wallet" from any sheet: the wallet sheet comes back and the connection starts. */
+  const toWallet = () => { setBridgeAccount(false); setSheet(true); void canton.connect(); };
   const note = (c: Coin) => c.s === "done" || c.s === "failed" ? <p className={`small ${c.s === "failed" ? "bad" : "muted"}`} role="status">{c.message}</p> : null;
   const faucetOn = info === null || info.on;
   /** The wallet holds none of the chain's coin and the site has a faucet: the coin comes before the sign-in. */
@@ -275,7 +279,7 @@ export function Bridge() {
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
           {walletSheet ? (
-            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => { setSheet(true); void canton.disconnect(); }} onBridgeAccount={() => setBridgeAccount(true)} />
+            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => { setSheet(true); void canton.disconnect(); }} onBridgeAccount={toBridgeAccount} />
           ) : phase.s === "ready" ? (
             <>
               <p className="ready"><span className="sd ok"><i /><b>Ready</b></span> <span className="mono" title={phase.account.party}>{short(phase.account.party, 16, 6)}</span>
@@ -286,7 +290,7 @@ export function Bridge() {
               </div>
               {note(coin)}
               {note(rome)}
-              {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={() => void canton.connect()}>Connect your Canton wallet</button></p>}
+              {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={toWallet}>Connect your Canton wallet</button></p>}
             </>
           ) : (
             <>
@@ -303,7 +307,7 @@ export function Bridge() {
               <p className="small muted">You are on <b className="mono">{here}</b>. Sign in only if that is the address you meant to open.</p>
               {wrongSite && <p className="small bad" role="alert">This page is open at {here}, but this bridge is set up for {settings.origin}. Signing is turned off here. Open the bridge from its own address.</p>}
               {phase.s === "failed" && <p className="small bad" role="alert">{phase.message}</p>}
-              {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={() => setBridgeAccount(false)}>Connect your Canton wallet</button></p>}
+              {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={toWallet}>Connect your Canton wallet</button></p>}
             </>
           )}
         </section>
