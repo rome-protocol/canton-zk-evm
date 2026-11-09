@@ -39,7 +39,9 @@ export function ledgerError(e: unknown): unknown {
 
 /** The ledger as the wallet shows it to this page. */
 export class WalletLedger {
-  constructor(private readonly link: Pick<WalletLink, "party" | "ledgerApi">, private readonly chain: Chain) {}
+  private readonly link: Pick<WalletLink, "party" | "ledgerApi">;
+  private readonly chain: Chain;
+  constructor(link: Pick<WalletLink, "party" | "ledgerApi">, chain: Chain) { [this.link, this.chain] = [link, chain]; }
 
   private only(party: string): string {
     if (party !== this.link.party) throw new Refused("This is not the account of the connected wallet.");
@@ -110,7 +112,9 @@ const WORDS: Record<string, string> = {
  * answers 404 for an unknown registry, 400 for a body that is too long, and 429 when this client's rate is used up.
  */
 export class PublicRegistry {
-  constructor(private readonly base = "", private readonly fetcher: typeof fetch = (...a) => fetch(...a)) {}
+  private readonly base: string;
+  private readonly fetcher: typeof fetch;
+  constructor(base = "", fetcher: typeof fetch = (...a) => fetch(...a)) { [this.base, this.fetcher] = [base, fetcher]; }
 
   private async post(path: string, body: object): Promise<any> {
     let r: Response;
@@ -135,7 +139,9 @@ export class PublicRegistry {
 
 /** The reads of the move library for a connected wallet, with the signature of `AccountsClient`'s (the first argument, an account's key, is not used: the wallet holds the key). */
 export class WalletClient {
-  constructor(private readonly ledger: WalletLedger, private readonly registry: PublicRegistry) {}
+  private readonly ledger: WalletLedger;
+  private readonly registry: PublicRegistry;
+  constructor(ledger: WalletLedger, registry: PublicRegistry) { [this.ledger, this.registry] = [ledger, registry]; }
   holdings(key: unknown, party: string) { return this.ledger.holdings(key, party); }
   allocations(key: unknown, party: string) { return this.ledger.allocations(key, party); }
   openRequests(key: unknown, party: string) { return this.ledger.openRequests(key, party); }
