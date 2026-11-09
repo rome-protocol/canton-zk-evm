@@ -1618,6 +1618,79 @@ class RegistryRelay(OutsideCase):
         self.assertEqual(len(self.outside.calls), 2)
 
 
+class PublicRegistryRelay(OutsideCase):
+    """The registry relay for wallets this service did not make: no account, no signature."""
+    BODY = {"choiceArguments": {"x": 1, "nested": {"y": [1, 2]}}, "excludeDebugFields": True}
+
+    def setUp(self):
+        super().setUp()
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)})   # no account is made: the callers have none here
+
+    def public(self, suffix, body=None, admin=ADMIN, **kw):
+        return self.req("POST", f"/accounts/v1/public-registry/{admin}/{suffix}", self.BODY if body is None else body, **kw)
+
+    def test_each_suffix_reaches_its_registry_path_and_the_answer_comes_back_as_it_is(self):
+        for suffix, path in (("allocation-factory", "/registry/allocation-instruction/v1/allocation-factory"),
+                             ("transfer-factory", "/registry/transfer-instruction/v1/transfer-factory"),
+                             (f"transfer-instruction/{INSTRUCTION}/accept-context", f"/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/accept"),
+                             (f"transfer-instruction/{INSTRUCTION}/withdraw-context", f"/registry/transfer-instruction/v1/{INSTRUCTION}/choice-contexts/withdraw"),
+                             (f"allocation/{INSTRUCTION}/withdraw-context", f"/registry/allocations/v1/{INSTRUCTION}/choice-contexts/withdraw")):
+            with self.subTest(suffix):
+                self.outside.calls.clear()
+                status, out, _ = self.public(suffix)
+                self.assertEqual((status, out), (200, self.outside.answer))
+                self.assertEqual(self.outside.calls, [("/scan-proxy" + path, self.BODY, "Bearer " + HANDLE, A.USER_AGENT)])
+
+    def test_the_body_goes_on_unchanged(self):
+        body = {"party": "someone::1220" + "11" * 32, "meta": {"k": "v"}, "choiceArguments": {"a": [1, {"b": None}]}}
+        self.assertEqual(self.public("allocation-factory", body)[0], 200)
+        self.assertEqual(self.outside.calls[0][1], body)   # not even `party` is taken out: there is no account to prove
+        self.assertEqual(self.public("allocation-factory", raw=b"")[0], 200)   # no body: an empty request
+        self.assertEqual(self.outside.calls[1][1], {})
+
+    def test_no_signature_and_no_account_are_needed(self):
+        self.assertEqual(self.service.parties.parties, {})
+        self.assertEqual(self.public("transfer-factory", signed=False)[0], 200)
+        self.assertEqual(self.public("transfer-factory", headers={"X-Account-Signature": "1.AAAA"})[0], 200)   # a header that is no use is not read
+
+    def test_two_identical_requests_are_both_answered_and_the_account_rate_is_not_used(self):
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, account_rate=A.Limiter(1, 60))
+        self.assertEqual([self.public("allocation-factory")[0] for _ in range(3)], [200, 200, 200])
+        self.assertEqual(len(self.outside.calls), 3)
+        self.assertEqual(self.service.replays.seen, {})   # nothing is remembered: there is no signature
+
+    def test_an_unknown_admin_or_path_is_404_and_asks_nobody(self):
+        self.assertEqual(self.public("allocation-factory", admin="DSO::1220" + "ee" * 32)[0], 404)
+        for suffix in ("reject-context", f"transfer-instruction/{INSTRUCTION}/reject-context", "transfer-instruction/nope/accept-context", f"allocation/{INSTRUCTION}/accept-context", "allocation-factory/more"):
+            with self.subTest(suffix):
+                self.assertEqual(self.public(suffix)[0], 404)
+        self.assertEqual(self.req("GET", f"/accounts/v1/public-registry/{ADMIN}/allocation-factory")[0], 404)   # a POST only
+        self.assertEqual(self.outside.calls, [])
+
+    def test_a_request_longer_than_the_limit_is_400(self):
+        status, out, _ = self.public("allocation-factory", {"choiceArguments": {"x": "a" * A.RELAY_MAX_BODY}})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.outside.calls, [])
+
+    def test_each_client_has_its_own_rate(self):
+        self.assertEqual(A.PUBLIC_RELAY_RATE, 30)
+        self.start(registries={ADMIN: (self.outside.url + "/scan-proxy", self.bearer_file)}, public_relay_rate=A.Limiter(2, 60))
+        status = [self.public("allocation-factory")[0] for _ in range(3)]
+        self.assertEqual(status, [200, 200, 429])
+        self.assertEqual(len(self.outside.calls), 2)
+        self.assertIn("Retry-After", self.public("allocation-factory")[2])
+        # another client is not held back by it
+        self.service.handle("POST", f"/accounts/v1/public-registry/{ADMIN}/allocation-factory", {}, "203.0.113.9")
+        self.assertEqual(len(self.outside.calls), 3)
+
+    def test_the_signed_relay_still_demands_a_signature(self):
+        self.assertEqual(self.make_account()[0], 200)
+        self.assertEqual(self.factory(signed=False)[0], 401)
+        self.assertEqual(self.factory(seed=OTHER_SEED)[0], 401)
+        self.assertEqual(self.outside.calls, [])
+        self.assertEqual(self.factory()[0], 200)
+
+
 class Faucets(OutsideCase):
     WALLET = "/v0/wallet/token-standard/transfers"
 
