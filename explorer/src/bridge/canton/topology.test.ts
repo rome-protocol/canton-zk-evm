@@ -109,6 +109,7 @@ describe.each(reals)("the real topology of protocol version $protocolVersion", (
   });
   it("refuses another party than the key's, another key, and another participant", async () => {
     await expect(verify(fx, fx.topologyTransactions, { party: "rome::1220" + "ee".repeat(32) })).rejects.toThrow(/the party is/);
+    await expect(verify(fx, fx.topologyTransactions, { party: fx.party.replace(/^rome::/, "bridge::") })).rejects.toThrow(/the party is/);   // the key's own fingerprint under the old name
     await expect(verify(fx, fx.topologyTransactions, {}, fx.participant, base64(other(32)))).rejects.toThrow(/the party is/);
     await expect(verify(fx, fx.topologyTransactions, {}, OTHER_PARTICIPANT)).rejects.toThrow(/not hosted/);
   });

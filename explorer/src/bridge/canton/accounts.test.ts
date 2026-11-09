@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AccountsClient, AccountsError, EXECUTE_MS, Unanswered, acceptChoice, factoryChoice, retryAfterSeconds, withdrawChoice } from "./accounts.ts";
 import { base64, fromBase64, keyFromSignature } from "./key.ts";
-import { partyOf } from "./topology.ts";
+import { fingerprintOf, partyOf } from "./topology.ts";
 
 // A real answer of the pinned Canton, printed by apps/accounts/tests/integration.py (fixtures.json): what the account service said of the account's allocations and open requests.
 // (The topology answers, and opening an account from them, are in topology.test.ts.)
@@ -103,6 +103,12 @@ describe("the account service client", () => {
     for (const exists of [true, false]) {
       const f = vi.fn(async () => answer(200, { party: other, exists, multiHash: "AA==", topologyTransactions: ["AA=="], blob: "blob" }));
       await expect(client(f).open(key, PARTICIPANT, HINT)).rejects.toThrow(/names rome::1220e+/);
+      expect(f).toHaveBeenCalledTimes(1);
+    }
+    const old = `bridge::${await fingerprintOf(key.publicKey)}`;   // the key's own fingerprint under the old name: no path leads to it
+    for (const exists of [true, false]) {
+      const f = vi.fn(async () => answer(200, { party: old, exists, multiHash: "AA==", topologyTransactions: ["AA=="], blob: "blob" }));
+      await expect(client(f).open(key, PARTICIPANT, HINT)).rejects.toThrow(/names bridge::/);
       expect(f).toHaveBeenCalledTimes(1);
     }
     expect(await client(vi.fn(async () => answer(200, { party: mine, exists: true }))).open(key, PARTICIPANT, HINT)).toBe(mine);
