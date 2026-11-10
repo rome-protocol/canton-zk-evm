@@ -23,7 +23,7 @@ for a in "$@"; do
   esac
 done
 
-docker run --rm --ipc=host -e WALLET_DEBUG="$DEBUG_FLAG" -e LIVE="$LIVE" -e UPDATE="$UPDATE" -e WALLETS="${WALLETS[*]:-}" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+docker run --rm --ipc=host -e WALLET_DEBUG="$DEBUG_FLAG" -e LIVE="$LIVE" -e UPDATE="$UPDATE" -e WALLETS="${WALLETS[*]:-}" -e BROWSER_IMAGE="$IMAGE" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$ROOT":/repo -w /repo/tests/wallets "$IMAGE" bash -euc '
     # whatever fails, the files this run made as root go back to the person who ran it (or `rm -rf tests/wallets/run` could not delete them)
     own() { chown -R "$HOST_UID:$HOST_GID" /repo/tests/wallets /repo/explorer/node_modules 2>/dev/null || true; }

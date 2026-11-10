@@ -37,11 +37,11 @@ jobs:
       - uses: ./.github/actions/pinned-images
         with:
           images: EXPLORER_BROWSER_IMAGE
-      - name: The harness's report and secret-scrubbing tests
+      - name: The harness's report, secret-scrubbing and signing-guard tests
         run: |
           set -a; . ./PINS; set +a
           docker run --rm --user "$(id -u):$(id -g)" --network none -v "$PWD:/repo" -w /repo/tests/wallets "$EXPLORER_BROWSER_IMAGE" \
-            node --experimental-transform-types --disable-warning=ExperimentalWarning --test src/report.test.ts src/scrub.test.ts
+            node --experimental-transform-types --disable-warning=ExperimentalWarning --test src/report.test.ts src/scrub.test.ts src/signatures.test.ts
 
   static:
     runs-on: ubuntu-latest

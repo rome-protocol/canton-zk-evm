@@ -9,6 +9,12 @@ const RUN = join(HERE, "run"), OUT = join(HERE, "results");
 export interface Row {
   id: string; name: string; status: "tested" | "not automated" | "not run"; reason?: string;
   version?: string; source?: string; downloadUrl?: string; sha256?: string; notes?: string; date: string;
+  /** The first address the wallet gave is the throwaway seed's first account. When it is not (another derivation path), a signature that differs from the reference says nothing about signing. */
+  addressIsReference?: boolean;
+  /** The browser of the run that tested it: the image (digest) and the Chromium version in it. */
+  browser?: { image: string; chromium: string };
+  /** The day of the live check behind `opensLiveBridge`, and the reference it was made against (every run makes a new one). */
+  liveDate?: string; liveReference?: string;
   sameTwice?: boolean; sameAfterRestart?: boolean; matchesReference?: boolean; rawMatchesReference?: boolean; form?: { v: string; lowS: boolean };
   /** The fingerprint of the throwaway key's reference in the run that tested this wallet. Every run makes a new seed, so wallets are compared with each other only within one run. */
   referenceFingerprint?: string; rawSha256?: string; normalisedSha256?: string; fingerprint?: string; matchesOtherWallets?: "same bytes" | "same after normalising" | "no" | "only one wallet tested";
@@ -17,7 +23,13 @@ export interface Row {
 }
 export interface Doc { reference: { party: string; fingerprint: string }; live: any | null; wallets: Row[] }
 
+/** Where the README says what is not covered (the table's file is the one most likely to be linked on its own). */
+export const NOT_COVERED = "Not covered: hardware wallets (Ledger, Trezor) and smart-contract wallets, which this harness cannot test (see [Not covered](../README.md#not-covered) in the README), and any wallet or version that is not in the table.";
+
 const yes = (b: boolean | undefined) => (b === undefined ? "not automated" : b ? "yes" : "NO");
+
+/** The day of a live check and the reference it was made against, for the rows that carry its verdict. */
+const liveStamp = (live: any): { liveDate?: string; liveReference?: string } => ({ liveDate: live?.date, liveReference: live?.referenceFingerprint });
 
 /** What the live check says of one wallet that it named. */
 function liveVerdict(live: any, id: string): Row["opensLiveBridge"] | null {
@@ -36,16 +48,19 @@ export function build(wallets: Record<string, any>, packages: Record<string, any
     const base = { id, name: names[id]!, version: p?.versionName ?? p?.version, source: p?.source, downloadUrl: p?.packageUrl, sha256: p?.sha256 ?? pins[id], ...(notes[id] ? { notes: notes[id] } : {}) };
     if (!r) {
       // not run now: its row from the committed results stands (with its date), and a live check that named it may add to it
-      if (old) { const v = liveVerdict(live, id); return v ? { ...old, opensLiveBridge: v } : old; }
+      if (old) { const v = liveVerdict(live, id); return v ? { ...old, opensLiveBridge: v, ...liveStamp(live) } : old; }
       return { ...base, status: "not run", reason: "not run, and there is no earlier result for it", date: "" } as Row;
     }
     if (r.status !== "tested") return { ...base, status: "not automated", reason: r.reason, date: r.date } as Row;
     // the live check belongs to the package it was made with: an earlier "yes" stands only if this is the same package
     const kept = old?.sha256 && old.sha256 === base.sha256 ? old.opensLiveBridge : undefined;
+    const verdict = liveVerdict(live, id);
+    const stamp = verdict ? liveStamp(live) : kept && kept !== "not tried" ? { liveDate: old?.liveDate, liveReference: old?.liveReference } : {};
     return {
       ...base, status: "tested", date: r.date, sameTwice: r.sameTwice, sameAfterRestart: r.sameAfterRestart, matchesReference: r.matchesReference, rawMatchesReference: r.rawMatchesReference,
       form: r.form, referenceFingerprint: reference.fingerprint, rawSha256: r.raw?.twice?.[0], normalisedSha256: r.normalisedSha256, fingerprint: r.fingerprint,
-      opensLiveBridge: liveVerdict(live, id) ?? kept ?? "not tried",
+      opensLiveBridge: verdict ?? kept ?? "not tried", ...stamp,
+      addressIsReference: r.addressIsReference, browser: r.browser,
     } as Row;
   });
   const tested = rows.filter((r) => r.status === "tested");
@@ -59,17 +74,25 @@ export function build(wallets: Record<string, any>, packages: Record<string, any
   return { reference: { party: reference.party, fingerprint: reference.fingerprint }, live: live ?? previous?.live ?? null, wallets: rows };
 }
 
+/** The live column: the verdict, and the day the live check was made when it is a verdict (the row's date is the day of its own run, which can be later). */
+const liveCell = (r: Row): string => (r.opensLiveBridge && r.opensLiveBridge !== "not tried" && r.liveDate ? `${r.opensLiveBridge} (${r.liveDate})` : (r.opensLiveBridge ?? "not tried"));
+
 export function table(doc: Doc): string {
   const head = "| Wallet | Version | Package source and SHA-256 | Same signature twice | Same after restart | Matches reference | Matches other wallets | Opens on the live Bridge | Date |\n|---|---|---|---|---|---|---|---|---|";
   const lines = doc.wallets.map((r) => {
     const pkg = r.source ? `[package](${r.source}) \`${r.sha256}\`` : r.sha256 ? `\`${r.sha256}\`` : "none";
-    if (r.status !== "tested") { const s = r.status === "not run" ? "not run" : "not automated"; return `| ${r.name} | ${r.version ?? ""} | ${pkg} | ${s} | ${s} | ${s} | ${s} | ${r.opensLiveBridge ?? "not tried"} | ${r.date} |`; }
-    return `| ${r.name} | ${r.version} | ${pkg} | ${yes(r.sameTwice)} | ${yes(r.sameAfterRestart)} | ${yes(r.matchesReference)} | ${r.matchesOtherWallets} | ${r.opensLiveBridge} | ${r.date} |`;
+    if (r.status !== "tested") { const s = r.status === "not run" ? "not run" : "not automated"; return `| ${r.name} | ${r.version ?? ""} | ${pkg} | ${s} | ${s} | ${s} | ${s} | ${liveCell(r)} | ${r.date} |`; }
+    // a wallet whose first address is not the seed's: its signature differs from the reference because the key is another, not because of how it signs
+    const matches = r.addressIsReference === false ? "NO (another first address)" : yes(r.matchesReference);
+    return `| ${r.name} | ${r.version} | ${pkg} | ${yes(r.sameTwice)} | ${yes(r.sameAfterRestart)} | ${matches} | ${r.matchesOtherWallets} | ${liveCell(r)} | ${r.date} |`;
   });
   // the run's own reason first; the manifest's background (what earlier attempts found) only as extra context after it
   const end = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
   const reasons = doc.wallets.filter((r) => r.status !== "tested").map((r) => `- ${r.name}: ${end(r.reason ?? "no reason recorded")}${r.notes ? ` Earlier attempts found: ${r.notes}` : ""}`);
-  return [head, ...lines, ...(reasons.length ? ["", "Not automated or not run, and why:", ...reasons] : [])].join("\n") + "\n";
+  const other = doc.wallets.filter((r) => r.status === "tested" && r.addressIsReference === false).map((r) => `- ${r.name}: its first account is not the throwaway seed's first account, so its signature is not expected to equal the reference's; the signing columns still compare the wallet with itself.`);
+  const browsers = [...new Set(doc.wallets.filter((r) => r.status === "tested" && r.browser).map((r) => `Chromium ${r.browser!.chromium} in ${r.browser!.image}`))];
+  const noted = doc.wallets.filter((r) => r.status === "tested" && r.notes).map((r) => `- ${r.name}: ${end(r.notes!)}`);
+  return [head, ...lines, "", NOT_COVERED, ...(noted.length ? ["", "Notes on the wallets that were tested:", ...noted] : []), ...(browsers.length ? ["", `Browser: ${browsers.join("; ")}.`] : []), ...(other.length ? ["", "Another first address:", ...other] : []), ...(reasons.length ? ["", "Not automated or not run, and why:", ...reasons] : [])].join("\n") + "\n";
 }
 
 if (import.meta.main) {

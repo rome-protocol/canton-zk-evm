@@ -56,7 +56,21 @@ export async function describe(page: Root): Promise<string> {
     const f = ins.nth(i);
     inputs.push(`${(await guard(f.getAttribute("type"), "")) ?? ""}:${(await guard(f.getAttribute("data-testid"), "")) || (await guard(f.getAttribute("placeholder"), "")) || (await guard(f.getAttribute("id"), "")) || ""}`);
   }
-  return `url=${url.pathname}${url.hash} text="${text}" buttons=${JSON.stringify(buttons)} inputs=${JSON.stringify(inputs)}`;
+  // the screen's text is the only place the phrase can appear: it is taken out here, word by word, and nowhere else
+  return scrub(`url=${url.pathname}${url.hash} text="${text}" buttons=${JSON.stringify(buttons)} inputs=${JSON.stringify(inputs)}`);
+}
+
+/** The text of a pop-up and of its frames (never logged, never written: only matched). */
+export async function popupText(page: Page): Promise<string> {
+  const parts: string[] = [];
+  for (const r of [page, ...page.frames().filter((f) => f !== page.mainFrame())] as Root[]) parts.push(await r.locator("body").innerText({ timeout: 2000 }).catch(() => ""));
+  return parts.join(" ").replace(/\s+/g, " ");
+}
+
+/** The browser's user agent, from a blank page of the context. */
+export async function userAgentOf(ctx: BrowserContext): Promise<string> {
+  const p = await ctx.newPage();
+  try { return await p.evaluate(() => navigator.userAgent); } finally { await p.close().catch(() => {}); }
 }
 
 /** Clicks the first visible, enabled button (or role=button, or link) whose name matches one of the patterns, in the order of the patterns. */

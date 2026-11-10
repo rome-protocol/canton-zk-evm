@@ -9,7 +9,7 @@ import { HERE } from "./paths.ts";
 const names = { a: "Wallet A", b: "Wallet B", c: "Wallet C" };
 const raw = (h: string) => ({ twice: [h, h], afterRestart: [h, h] });
 const ok = (norm: string, rawHash: string) => ({ status: "tested", date: "2026-01-01", sameTwice: true, sameAfterRestart: true, matchesReference: true, normalisedSha256: norm, raw: raw(rawHash), form: { v: "0x1b", lowS: true } });
-const liveOf = (over: object = {}) => ({ firstWallet: "a", secondWallet: "b", firstParty: "rome::1220ab", secondParty: "rome::1220ab", sameAccount: true, matchesReference: true, ...over });
+const liveOf = (over: object = {}) => ({ date: "2026-01-01", referenceFingerprint: "1220ab", firstWallet: "a", secondWallet: "b", firstParty: "rome::1220ab", secondParty: "rome::1220ab", sameAccount: true, matchesReference: true, ...over });
 const packages = { a: { versionName: "1.0", source: "https://example.test/a.zip", sha256: "aa" }, b: { version: "2", source: "https://example.test/b.zip", sha256: "bb" }, c: { version: "3", source: "https://example.test/c.zip", sha256: "cc" } };
 const ref = { party: "rome::1220ab", fingerprint: "1220ab" };
 
@@ -78,4 +78,37 @@ test("the manifest pins every GitHub release by tag and names every Chrome Web S
     else assert.match(w.source.extensionId ?? "", /^[a-p]{32}$/, w.id);
     assert.match(w.sha256 ?? "", /^[0-9a-f]{64}$/, `${w.id} has a pinned SHA-256`);
   }
+});
+
+test("a verdict of the live check is shown with the day it was made, and a rerun without it keeps that day, not the new run's", () => {
+  const before = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, liveOf(), ref);
+  assert.deepEqual([before.wallets[0]!.liveDate, before.wallets[0]!.liveReference], ["2026-01-01", "1220ab"]);
+  assert.match(table(before), /\| yes \(2026-01-01\) \| 2026-01-01 \|/);
+  // the same package rerun later without the live check: the date of the run is new, the live verdict is the old one with its own day
+  const later = build({ a: { ...ok("n", "r"), date: "2026-03-03" } }, { a: packages.a }, { a: "A", b: "B" }, null, { party: "rome::1220cd", fingerprint: "1220cd" }, {}, before);
+  assert.equal(later.wallets[0]!.date, "2026-03-03");
+  assert.equal(later.wallets[0]!.liveDate, "2026-01-01");
+  assert.equal(later.wallets[0]!.liveReference, "1220ab");
+  assert.match(table(later), /\| yes \(2026-01-01\) \| 2026-03-03 \|/);
+  // a wallet that was not live-checked has no day
+  assert.match(table(build({ c: ok("n", "r") }, packages, { c: "C" }, null, ref)), /\| not tried \| 2026-01-01 \|/);
+});
+
+test("a wallet whose first address is not the seed's is marked, not read as a signing difference; the browser is carried and printed", () => {
+  const other = { ...ok("m", "r9"), matchesReference: false, addressIsReference: false, browser: { image: "img@sha256:aa", chromium: "131.0.1" } };
+  const doc = build({ a: ok("n", "r"), b: other }, packages, { a: "A", b: "B" }, null, ref);
+  assert.equal(doc.wallets[1]!.addressIsReference, false);
+  assert.deepEqual(doc.wallets[1]!.browser, { image: "img@sha256:aa", chromium: "131.0.1" });
+  const md = table(doc);
+  assert.match(md, /\| B \| 2 \|.*\| NO \(another first address\) \|/);
+  assert.match(md, /- B: its first account is not the throwaway seed's first account/);
+  assert.match(md, /Browser: Chromium 131\.0\.1 in img@sha256:aa\./);
+});
+
+test("a note on a wallet that was tested is printed under the table", () => {
+  assert.match(table(build({ a: ok("n", "r") }, packages, { a: "A" }, null, ref, { a: "Run it again if it stops." })), /Notes on the wallets that were tested:\n- A: Run it again if it stops\./);
+});
+
+test("the table's file says what is not covered", () => {
+  assert.match(table(build({ a: ok("n", "r") }, packages, { a: "A" }, null, ref)), /Not covered: hardware wallets \(Ledger, Trezor\) and smart-contract wallets.*\(\.\.\/README\.md#not-covered\)/);
 });

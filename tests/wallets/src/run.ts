@@ -3,9 +3,9 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
-import { DEBUG, launch, log, sleep, withApprovals } from "./browser.ts";
+import { DEBUG, launch, log, sleep, userAgentOf, withApprovals } from "./browser.ts";
 import { drivers } from "./drivers.ts";
-import { fingerprintOf, form, normaliseSignature, reference, RUN, scrub, seed, sha256hex, TYPED_JSON } from "./lib.ts";
+import { browserImage, chromiumVersion, fingerprintOf, form, guardReason, normaliseSignature, reference, RUN, seed, sha256hex, TYPED_JSON } from "./lib.ts";
 import { startServer } from "./server.ts";
 
 const ids = process.argv.slice(2).filter((a) => !a.startsWith("--"));
@@ -36,6 +36,7 @@ for (const id of ids.length ? ids : Object.keys(drivers)) {
   try {
     // 1. a fresh profile: set the wallet up, connect, add the chain, sign twice
     stage = "start the browser"; let started = await launch(id, profile, spki); ctx = started.ctx;
+    out.browser = { image: browserImage(), chromium: chromiumVersion(await userAgentOf(ctx).catch(() => "")) };
     stage = "set the wallet up with the seed"; await d.onboard(ctx, started.extId, secret);
     log(id, "set up");
     const ask = async (what: string) => {
@@ -79,7 +80,7 @@ for (const id of ids.length ? ids : Object.keys(drivers)) {
     writeFileSync(join(RUN, `raw-${id}.json`), JSON.stringify({ signatures: all }), { mode: 0o600 });   // the signatures are the Canton key: they stay in the run folder
   } catch (e) {
     out.status = "not automated";
-    out.reason = `stopped at "${stage}": ${scrub(String((e as Error).message)).split("\n")[0]!.slice(0, 300)}`;   // a failing screen's text may show the phrase
+    out.reason = `stopped at "${stage}": ${guardReason(String((e as Error).message)).split("\n")[0]!.slice(0, 300)}`;   // a failing screen's text was scrubbed where it was read
     log(id, "failed:", out.reason);
   } finally {
     await ctx?.close().catch(() => {});

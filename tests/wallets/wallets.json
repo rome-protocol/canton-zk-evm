@@ -41,7 +41,8 @@
         "kind": "chrome-web-store",
         "extensionId": "mcohilncbfahbmgdjkbpemcciiolgcge"
       },
-      "sha256": "4ccaf8d2faaca6266a5fcfa205d48f91d719b40603eeee6bd5faa18ac1616a6f"
+      "sha256": "4ccaf8d2faaca6266a5fcfa205d48f91d719b40603eeee6bd5faa18ac1616a6f",
+      "notes": "Its screens are driven less reliably than the others': in one rerun a run stopped at the second signature (no signature in 90 s while the approval loop kept clicking Confirm), and an immediate rerun of this wallet alone passed with four identical signatures. If a run says 'not automated' for this wallet, run it again (tests/wallets/run.sh okx) before replacing a good row."
     },
     {
       "id": "phantom",

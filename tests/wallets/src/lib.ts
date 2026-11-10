@@ -7,7 +7,7 @@ import { generateMnemonic, english, mnemonicToAccount } from "viem/accounts";
 import { KEY_TYPED_DATA, keyFromSignature, normaliseSignature, hex } from "../../../explorer/src/bridge/canton/key.ts";
 import { partyOf } from "../../../explorer/src/bridge/canton/topology.ts";
 import { HERE } from "./paths.ts";
-import { scrubber } from "./scrub.ts";
+import { guard, scrubber } from "./scrub.ts";
 
 export { KEY_TYPED_DATA, HERE };
 export const RUN = join(HERE, "run");
@@ -28,6 +28,14 @@ export function seed(): { mnemonic: string; unlock: string } {
 let scrubbing: ((text: string) => string) | null = null;
 /** Text with the seed's words and the unlock password taken out: use it on everything that is logged or written to a result. */
 export const scrub = (text: string): string => (scrubbing ??= scrubber(seed()))(text);
+
+let guarding: ((text: string) => string) | null = null;
+/** For a harness message that goes into a result (a reason): only the password and runs of phrase words come out. The screen text in it was scrubbed word by word where it was read (`describe`). */
+export const guardReason = (text: string): string => (guarding ??= guard(seed()))(text);
+
+/** The browser a run used: the image the harness runs in (from `run.sh`, the pin in `PINS`) and the Chromium version in it (from the browser's own user agent). */
+export const browserImage = (): string => process.env.BROWSER_IMAGE || "not recorded";
+export const chromiumVersion = (userAgent: string): string => /Chrome\/([0-9.]+)/.exec(userAgent)?.[1] ?? "not recorded";
 
 export interface Reference {
   address: string;
