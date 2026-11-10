@@ -1,0 +1,12 @@
+{
+  "name": "canton-zk-evm-wallet-signature-tests",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Opt-in harness: does each browser wallet give the Bridge's account signature the same way every time? Run it by hand with tests/wallets/run.sh; it is not part of any CI job.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "dependencies": {
+    "playwright-core": "1.64.1",
+    "viem": "2.57.2"
+  }
+}

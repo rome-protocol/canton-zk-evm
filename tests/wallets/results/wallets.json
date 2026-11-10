@@ -1,0 +1,124 @@
+{
+  "reference": {
+    "party": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+    "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634"
+  },
+  "live": {
+    "date": "2026-11-10",
+    "site": "https://ostia.devnet.romeprotocol.xyz",
+    "firstWallet": "metamask",
+    "secondWallet": "rabby",
+    "firstParty": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+    "secondParty": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+    "firstShownMatches": true,
+    "secondShownMatches": true,
+    "sameAccount": true,
+    "matchesReference": true,
+    "steps": {
+      "first": [
+        "add the network",
+        "connect",
+        "faucet",
+        "open account sheet",
+        "sign in"
+      ],
+      "second": [
+        "add the network",
+        "open account sheet",
+        "sign in"
+      ]
+    }
+  },
+  "wallets": [
+    {
+      "id": "metamask",
+      "name": "MetaMask",
+      "version": "13.56.0",
+      "source": "https://github.com/MetaMask/metamask-extension/releases/download/v13.56.0/metamask-chrome-13.56.0.zip",
+      "downloadUrl": "https://github.com/MetaMask/metamask-extension/releases/download/v13.56.0/metamask-chrome-13.56.0.zip",
+      "sha256": "7618eda1fba0ca2068054b69faddb5c511dbb49e7d8e3ad411a8ab90551c7159",
+      "status": "tested",
+      "date": "2026-11-10",
+      "sameTwice": true,
+      "sameAfterRestart": true,
+      "matchesReference": true,
+      "rawMatchesReference": true,
+      "form": {
+        "v": "0x1b",
+        "lowS": true
+      },
+      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
+      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "opensLiveBridge": "yes",
+      "matchesOtherWallets": "same bytes"
+    },
+    {
+      "id": "rabby",
+      "name": "Rabby",
+      "version": "0.94.15",
+      "source": "https://github.com/RabbyHub/Rabby/releases/download/v0.94.15/Rabby_v0.94.15.zip",
+      "downloadUrl": "https://github.com/RabbyHub/Rabby/releases/download/v0.94.15/Rabby_v0.94.15.zip",
+      "sha256": "747eb5106352271e5bed051e970ce3e1dbffa16a2a777db529fa9994e5943ad7",
+      "status": "tested",
+      "date": "2026-11-10",
+      "sameTwice": true,
+      "sameAfterRestart": true,
+      "matchesReference": true,
+      "rawMatchesReference": true,
+      "form": {
+        "v": "0x1b",
+        "lowS": true
+      },
+      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
+      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "opensLiveBridge": "yes",
+      "matchesOtherWallets": "same bytes"
+    },
+    {
+      "id": "coinbase",
+      "name": "Coinbase Wallet",
+      "version": "3.151.0",
+      "source": "https://chromewebstore.google.com/detail/hnfanknocfeofbddgcijnmhnfnkdnaad",
+      "downloadUrl": "https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=131.0.0.0&lang=en-US&acceptformat=crx2,crx3&x=id%3Dhnfanknocfeofbddgcijnmhnfnkdnaad%26installsource%3Dondemand%26uc",
+      "sha256": "3216930a51551555b819219331c46129229fe7fbc3a27b586d3ffd3a208b0096",
+      "notes": "The wallet was set up with the seed phrase. It then opened no approval screen for the page's connect request, with the page using either the wallet's EIP-6963 provider or window.ethereum, and with the request started by a real click. The wallet's own pop-up address, opened by hand, showed its home screen and not the request.",
+      "status": "not automated",
+      "reason": "stopped at \"run 1: connect\": no approval screen was reached in 90 s (run 1 connect)",
+      "date": "2026-11-10"
+    },
+    {
+      "id": "okx",
+      "name": "OKX Wallet",
+      "version": "4.23.0",
+      "source": "https://chromewebstore.google.com/detail/mcohilncbfahbmgdjkbpemcciiolgcge",
+      "downloadUrl": "https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=131.0.0.0&lang=en-US&acceptformat=crx2,crx3&x=id%3Dmcohilncbfahbmgdjkbpemcciiolgcge%26installsource%3Dondemand%26uc",
+      "sha256": "4ccaf8d2faaca6266a5fcfa205d48f91d719b40603eeee6bd5faa18ac1616a6f",
+      "status": "tested",
+      "date": "2026-11-10",
+      "sameTwice": true,
+      "sameAfterRestart": true,
+      "matchesReference": true,
+      "rawMatchesReference": true,
+      "form": {
+        "v": "0x1b",
+        "lowS": true
+      },
+      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
+      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "opensLiveBridge": "not tried",
+      "matchesOtherWallets": "same bytes"
+    },
+    {
+      "id": "phantom",
+      "name": "Phantom (EVM)",
+      "version": "26.38.1",
+      "source": "https://chromewebstore.google.com/detail/bfnaelmomeimhlpmgjnjophhpkkoljpa",
+      "downloadUrl": "https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=131.0.0.0&lang=en-US&acceptformat=crx2,crx3&x=id%3Dbfnaelmomeimhlpmgjnjophhpkkoljpa%26installsource%3Dondemand%26uc",
+      "sha256": "425473795f87c2b8d7a47f60285b841f6fa6c4239fa6e52e2aa3b5e21fbbf97a",
+      "notes": "Its set-up asks for a username and checks it online; that check did not finish reliably from the test machine (it did in earlier attempts). When set-up did finish, the wallet opened no approval screen for the page's connect request, as with Coinbase Wallet. Whether it signs typed data for a chain id it does not list was not reached.",
+      "status": "not automated",
+      "reason": "stopped at \"set the wallet up with the seed\": phantom onboarding: the wallet did not get ready in 150 s (last screen: url=/onboarding.html text=\"Help Choose a username Personalize your account with a unique name. Usernames can be changed later on. Username @ Clear ​ Continue\" buttons=[\"Clear\",\"​\\nContinue(off)\"] inputs=[\"text:username\"])",
+      "date": "2026-11-10"
+    }
+  ]
+}

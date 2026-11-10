@@ -1,0 +1,11 @@
+| Wallet | Version | Package source and SHA-256 | Same signature twice | Same after restart | Matches reference | Matches other wallets | Opens on the live Bridge | Date |
+|---|---|---|---|---|---|---|---|---|
+| MetaMask | 13.56.0 | [package](https://github.com/MetaMask/metamask-extension/releases/download/v13.56.0/metamask-chrome-13.56.0.zip) `7618eda1fba0ca2068054b69faddb5c511dbb49e7d8e3ad411a8ab90551c7159` | yes | yes | yes | same bytes | yes | 2026-11-10 |
+| Rabby | 0.94.15 | [package](https://github.com/RabbyHub/Rabby/releases/download/v0.94.15/Rabby_v0.94.15.zip) `747eb5106352271e5bed051e970ce3e1dbffa16a2a777db529fa9994e5943ad7` | yes | yes | yes | same bytes | yes | 2026-11-10 |
+| Coinbase Wallet | 3.151.0 | [package](https://chromewebstore.google.com/detail/hnfanknocfeofbddgcijnmhnfnkdnaad) `3216930a51551555b819219331c46129229fe7fbc3a27b586d3ffd3a208b0096` | not automated | not automated | not automated | not automated | not tried | 2026-11-10 |
+| OKX Wallet | 4.23.0 | [package](https://chromewebstore.google.com/detail/mcohilncbfahbmgdjkbpemcciiolgcge) `4ccaf8d2faaca6266a5fcfa205d48f91d719b40603eeee6bd5faa18ac1616a6f` | yes | yes | yes | same bytes | not tried | 2026-11-10 |
+| Phantom (EVM) | 26.38.1 | [package](https://chromewebstore.google.com/detail/bfnaelmomeimhlpmgjnjophhpkkoljpa) `425473795f87c2b8d7a47f60285b841f6fa6c4239fa6e52e2aa3b5e21fbbf97a` | not automated | not automated | not automated | not automated | not tried | 2026-11-10 |
+
+Not automated, and why:
+- Coinbase Wallet: stopped at run 1: connect. The wallet was set up with the seed phrase. It then opened no approval screen for the page's connect request, with the page using either the wallet's EIP-6963 provider or window.ethereum, and with the request started by a real click. The wallet's own pop-up address, opened by hand, showed its home screen and not the request.
+- Phantom (EVM): stopped at set the wallet up with the seed. Its set-up asks for a username and checks it online; that check did not finish reliably from the test machine (it did in earlier attempts). When set-up did finish, the wallet opened no approval screen for the page's connect request, as with Coinbase Wallet. Whether it signs typed data for a chain id it does not list was not reached.
