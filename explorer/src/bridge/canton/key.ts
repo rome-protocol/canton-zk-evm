@@ -1,4 +1,4 @@
-// The Canton account's key, derived from one wallet signature. The same wallet makes the same key on any device. The page holds it in memory, and where the browser has WebCrypto's Ed25519 it may
+// The Canton account's key, derived from one wallet signature. A wallet that signs the same typed data to the same bytes each time makes the same key on any device (the page checks this once, on a first account). The page holds it in memory, and where the browser has WebCrypto's Ed25519 it may
 // also keep the key's non-extractable CryptoKey in IndexedDB (keystore.ts), so a reload does not ask the wallet again. The key's raw bytes are never stored.
 // The key signs through one function for each purpose (the account's onboarding, a transaction the page checked, a request to the account service) and has no
 // general signing method: the raw signer is private to this module.
@@ -17,12 +17,14 @@ export const DIFFERENT_SIGNATURES = "this wallet does not sign the same way twic
 export { originFromEnv } from "./env.ts";
 
 /** The words of the signature request. They are fixed: the signature is the Canton key, so a change of these words, of the domain below or of KEY_INFO makes another key for every
- * user and strands their accounts. They must never change for this deployment. The page shows its own origin beside the request, outside the signed text. They do not bind the
- * signature to the site: a wallet shows no origin of the page that asks, so a page of another site can ask for the same words. The mainnet account needs a sign-in-with-origin
- * message (the wallet puts the asking origin in it) or a passkey, which only the real site can use. */
+ * user and strands their accounts. They must never change for this deployment. The page shows its own origin beside the request, outside the signed text. The words do not bind the
+ * signature to this site: any site can ask the wallet for the identical payload, and the signature is the same whoever asks. So the person must sign it only on this site. The mainnet
+ * account needs a sign-in-with-origin message (the wallet puts the asking origin in it) or a passkey, which only the real site can use. */
 export const STATEMENT = "Open my Canton account on Ostia. This signature is your Canton key: sign it only on the Ostia bridge page you trust.";
 
-/** The EIP-712 request: a signature of it is bound to the name "Ostia bridge" and the chain, so a signature asked for by another site is another one. */
+/** The EIP-712 request. It names "Ostia bridge" and the chain, so a wallet shows both, but it does not bind the signature to this site: any site can ask for the identical payload.
+ * Identical typed data gives the same signing digest. The signature bytes are the same only if the wallet signs deterministically (for example with RFC 6979 nonces), which the page
+ * checks by asking twice on a first account; that check shows only that this wallet gave the same bytes then. The person must sign it only on this site. */
 export const KEY_TYPED_DATA = {
   types: { EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }], Open: [{ name: "statement", type: "string" }] },
   primaryType: "Open" as const,
@@ -146,7 +148,8 @@ export async function openKey(wallet: Eip1193, address: string): Promise<CantonK
   return keyFromSignature(await walletSignature(wallet, address));
 }
 
-/** On the first account: asks again, and refuses if the wallet signs another way (a wallet that is not deterministic would make another key each time, and lose the account). */
+/** On the first account: asks again, and refuses if the wallet signs another way (a wallet that is not deterministic would make another key each time, and lose the account). Two equal
+ * answers show that the wallet reproduced the signature then; they do not promise that it always will, and a wallet that later stops reproducing it cannot reopen the account. */
 export async function confirmKey(wallet: Eip1193, address: string, key: CantonKey): Promise<void> {
   const again = await keyFromSignature(await walletSignature(wallet, address));
   if (!sameBytes(again.publicKey, key.publicKey)) throw new PageError("wallet_not_deterministic", DIFFERENT_SIGNATURES);
