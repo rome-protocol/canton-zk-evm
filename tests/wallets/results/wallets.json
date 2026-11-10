@@ -37,14 +37,18 @@
   "liveAttempt": {
     "date": "2026-11-10",
     "site": "https://ostia.devnet.romeprotocol.xyz",
-    "referenceFingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+    "referenceFingerprint": "1220b7f55935c6e47547b6a13915bbb51380e3b0436f163f1ad5a9988fcd9d21ad46",
     "browser": {
       "image": "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
       "chromium": "156.0.0.0"
     },
     "errors": {
-      "first": "the account service refused to make a new account (429: it limits the accounts one address makes in a day; it said to retry after 76396 s)",
+      "first": "the account service refused to make a new account (429: it limits the new accounts one client (IP address) makes in a day, --accounts-per-day in apps/accounts/README.md; it said to retry after 70432 s)",
       "second": "not run: the first visit reached no account"
+    },
+    "refusedSignatures": {
+      "first": 0,
+      "second": 0
     }
   },
   "wallets": [

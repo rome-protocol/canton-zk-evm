@@ -31,9 +31,9 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
     await d.onboard(ctx, extId, seed());
     const page = await ctx.newPage();
     let party: string | null = null;
-    // The account service limits the accounts one address may make in a day (the live check makes one): its refusal is a 429 on `allocate`, and is written down as that, not as a wallet that failed.
+    // The account service limits the new accounts one client (IP address) may make in a day (`--accounts-per-day`) (the live check makes one): its refusal is a 429 on `allocate`, and is written down as that, not as a wallet that failed.
     let limited: string | null = null;
-    page.on("response", (r) => { if (r.status() === 429 && new URL(r.url()).pathname.endsWith("/accounts/v1/allocate")) limited = `the account service refused to make a new account (429: it limits the accounts one address makes in a day; it said to retry after ${r.headers()["retry-after"] ?? "an unknown time"} s)`; });
+    page.on("response", (r) => { if (r.status() === 429 && new URL(r.url()).pathname.endsWith("/accounts/v1/allocate")) limited = `the account service refused to make a new account (429: it limits the new accounts one client (IP address) makes in a day, --accounts-per-day in apps/accounts/README.md; it said to retry after ${r.headers()["retry-after"] ?? "an unknown time"} s)`; });
     // with --debug: the site's own requests that failed, and the account service's calls (the path and the status only)
     if (DEBUG) page.on("response", (r) => { const u = new URL(r.url()); if (u.origin === new URL(SITE).origin && (r.status() >= 400 || u.pathname.includes("/accounts/"))) log(tag, "response", r.request().method(), u.pathname, r.status()); });
     page.on("response", async (r) => {

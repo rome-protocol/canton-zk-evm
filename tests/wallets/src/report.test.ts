@@ -134,3 +134,22 @@ test("a live check that reached no account does not replace an earlier one that 
   const changed = build({ a: ok("n", "r") }, { a: { ...packages.a, sha256: "new" } }, { a: "A", b: "B" }, stopped, ref, {}, before);
   assert.equal(changed.wallets[0]!.opensLiveBridge, "not tried");
 });
+
+test("a run with no live result carries the earlier attempt forward; a live check that reached accounts drops it", () => {
+  const { referenceFingerprint, ...old } = liveOf();
+  const before = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, old, ref);
+  const stopped = { date: "2026-02-02", site: "https://site.test", referenceFingerprint: "1220cd", browser: { image: "i", chromium: "1" }, firstWallet: "a", secondWallet: "b", firstParty: null, secondParty: null, sameAccount: false, matchesReference: false, errors: { first: "refused (429)", second: "not run" } };
+  const attempted = build({ a: ok("n", "r") }, packages, { a: "A", b: "B" }, stopped, ref, {}, before);
+  const noLive = build({ a: { ...ok("n", "r"), date: "2026-02-03" } }, packages, { a: "A", b: "B" }, null, ref, {}, attempted);
+  assert.equal(noLive.liveAttempt.date, "2026-02-02");
+  assert.equal(noLive.liveAttempt.errors.first, "refused (429)");
+  const reached = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, liveOf({ date: "2026-02-04" }), ref, {}, noLive);
+  assert.equal(reached.liveAttempt, undefined);
+});
+
+test("a live check without refusedSignatures is noted as made before the signing guard; one with it is not", () => {
+  const old = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, liveOf(), ref);
+  assert.match(table(old), /The live check \(2026-01-01\) was made by an earlier version of the harness, before the signing guard/);
+  const guarded = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, liveOf({ refusedSignatures: { first: 0, second: 0 } }), ref);
+  assert.doesNotMatch(table(guarded), /earlier version of the harness/);
+});
