@@ -24,7 +24,7 @@ export const STATEMENT = "Open my Canton account on Ostia. This signature is you
 
 /** The EIP-712 request. It names "Ostia bridge" and the chain, so a wallet can show both, but it does not bind the signature to this site: any site can ask for the identical payload.
  * Identical typed data gives the same signing digest. The signature bytes are the same only if the wallet signs deterministically (for example with RFC 6979 nonces), which the page
- * checks by asking twice when the account is first made; that check shows only that this wallet gave the same bytes then. The person must sign it only on this site. */
+ * checks by asking twice when the account is first made; that check shows only that this wallet gave the same signature (in its normal form) then. The person must sign it only on this site. */
 export const KEY_TYPED_DATA = {
   types: { EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }], Open: [{ name: "statement", type: "string" }] },
   primaryType: "Open" as const,
@@ -149,7 +149,7 @@ export async function openKey(wallet: Eip1193, address: string): Promise<CantonK
 }
 
 /** On the first account: asks again, and refuses if the wallet signs another way (a wallet that is not deterministic would make another key each time, and lose the account). Two equal
- * answers show that the wallet reproduced the signature then; they do not promise that it always will, and a wallet that later stops reproducing it cannot reopen the account. */
+ * answers show that the wallet reproduced the signature then; they do not promise that it always will. A wallet that later stops reproducing it cannot make the key again, so only a browser that kept the key (keystore.ts) can still open the account. */
 export async function confirmKey(wallet: Eip1193, address: string, key: CantonKey): Promise<void> {
   const again = await keyFromSignature(await walletSignature(wallet, address));
   if (!sameBytes(again.publicKey, key.publicKey)) throw new PageError("wallet_not_deterministic", DIFFERENT_SIGNATURES);
