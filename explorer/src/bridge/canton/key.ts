@@ -1,4 +1,4 @@
-// The Canton account's key, derived from one wallet signature. A wallet that signs the same typed data to the same bytes each time makes the same key on any device (the page checks this once, on a first account). The page holds it in memory, and where the browser has WebCrypto's Ed25519 it may
+// The Canton account's key, derived from one wallet signature. A wallet that gives the same signature (in its normal form) for the same typed data each time makes the same key on any device (the page checks this once, when the account is first made). The page holds it in memory, and where the browser has WebCrypto's Ed25519 it may
 // also keep the key's non-extractable CryptoKey in IndexedDB (keystore.ts), so a reload does not ask the wallet again. The key's raw bytes are never stored.
 // The key signs through one function for each purpose (the account's onboarding, a transaction the page checked, a request to the account service) and has no
 // general signing method: the raw signer is private to this module.
@@ -18,13 +18,13 @@ export { originFromEnv } from "./env.ts";
 
 /** The words of the signature request. They are fixed: the signature is the Canton key, so a change of these words, of the domain below or of KEY_INFO makes another key for every
  * user and strands their accounts. They must never change for this deployment. The page shows its own origin beside the request, outside the signed text. The words do not bind the
- * signature to this site: any site can ask the wallet for the identical payload, and the signature is the same whoever asks. So the person must sign it only on this site. The mainnet
- * account needs a sign-in-with-origin message (the wallet puts the asking origin in it) or a passkey, which only the real site can use. */
+ * signature to this site: any site can ask the wallet for the identical payload, which has the same digest whoever asks. A wallet that signs deterministically then gives that site the same signature, and
+ * so the same key. So the person must sign it only on this site. This derived account is a Bridge-only option for DevNet and will not go beyond DevNet in this form. */
 export const STATEMENT = "Open my Canton account on Ostia. This signature is your Canton key: sign it only on the Ostia bridge page you trust.";
 
-/** The EIP-712 request. It names "Ostia bridge" and the chain, so a wallet shows both, but it does not bind the signature to this site: any site can ask for the identical payload.
+/** The EIP-712 request. It names "Ostia bridge" and the chain, so a wallet can show both, but it does not bind the signature to this site: any site can ask for the identical payload.
  * Identical typed data gives the same signing digest. The signature bytes are the same only if the wallet signs deterministically (for example with RFC 6979 nonces), which the page
- * checks by asking twice on a first account; that check shows only that this wallet gave the same bytes then. The person must sign it only on this site. */
+ * checks by asking twice when the account is first made; that check shows only that this wallet gave the same bytes then. The person must sign it only on this site. */
 export const KEY_TYPED_DATA = {
   types: { EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }], Open: [{ name: "statement", type: "string" }] },
   primaryType: "Open" as const,
