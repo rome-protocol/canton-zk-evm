@@ -81,7 +81,8 @@ export function build(wallets: Record<string, any>, packages: Record<string, any
     r.matchesOtherWallets = others.length === 0 ? "only one wallet tested" : others.every(sameRaw) ? "same bytes" : others.every((o) => o.normalisedSha256 === r.normalisedSha256) ? "same after normalising" : "no";
   }
   // the live check shown is this run's, else the committed one (its wallets' rows say whether it still stands)
-  const attempt = live && live !== shown ? { date: live.date, site: live.site, referenceFingerprint: live.referenceFingerprint, browser: live.browser, errors: live.errors } : undefined;
+  // a run with no live result at all (one wallet, or --no-live) carries the earlier attempt forward, so running one wallet does not erase what the last live check found
+  const attempt = live ? (live !== shown ? { date: live.date, site: live.site, referenceFingerprint: live.referenceFingerprint, browser: live.browser, errors: live.errors, ...(live.refusedSignatures ? { refusedSignatures: live.refusedSignatures } : {}) } : undefined) : previous?.liveAttempt;
   return { reference: { party: reference.party, fingerprint: reference.fingerprint }, live: shown ?? earlier ?? null, ...(attempt ? { liveAttempt: attempt } : {}), wallets: rows };
 }
 
@@ -103,6 +104,8 @@ export function table(doc: Doc): string {
   const other = doc.wallets.filter((r) => r.status === "tested" && r.addressIsReference === false).map((r) => `- ${r.name}: its first account is not the throwaway seed's first account, so its signature is not expected to equal the reference's; the signing columns still compare the wallet with itself.`);
   const liveNotes: string[] = [];
   if (doc.live?.referenceFingerprint && doc.live.referenceFingerprint !== doc.reference.fingerprint) liveNotes.push(`The live check (${doc.live.date}) was made with the throwaway account of an earlier run (\`${String(doc.live.referenceFingerprint).slice(0, 16)}…\`), not this run's (\`${doc.reference.fingerprint.slice(0, 16)}…\`); its verdict stands for the package it was made with.`);
+  // a live check made before the signing guard recorded no refused signatures: say so, so its verdict is not read as made under the guard
+  if (doc.live && doc.live.refusedSignatures === undefined) liveNotes.push(`The live check (${doc.live.date}) was made by an earlier version of the harness, before the signing guard that approves only the Bridge's request (it records no refused signatures).`);
   if (doc.liveAttempt) liveNotes.push(`A later live check (${doc.liveAttempt.date}) reached no account: ${end(String(doc.liveAttempt.errors?.first ?? "no reason recorded"))}`);
   const browsers = [...new Set(doc.wallets.filter((r) => r.status === "tested" && r.browser).map((r) => `Chromium ${r.browser!.chromium} in ${r.browser!.image}`))];
   const noted = doc.wallets.filter((r) => r.status === "tested" && r.notes).map((r) => `- ${r.name}: ${end(r.notes!)}`);
@@ -116,10 +119,12 @@ if (import.meta.main) {
   const notes = Object.fromEntries(manifest.wallets.filter((w) => w.notes).map((w) => [w.id, w.notes!]));
   const pins = Object.fromEntries(manifest.wallets.filter((w) => w.sha256).map((w) => [w.id, w.sha256!]));
   const live = read("live.json")?.live ?? null;
-  const ref = read("reference.json");
   const committed = join(OUT, "wallets.json");
   const previous = existsSync(committed) ? (JSON.parse(readFileSync(committed, "utf8")) as Doc) : null;
-  const doc = build(read("results.json") ?? {}, read("packages.json") ?? {}, names, live, ref, notes, previous, pins);
+  const results = read("results.json");
+  // a run that tested no wallet (only the live check) made a new throwaway seed that no row was tested against: the document keeps the reference its rows were tested against
+  const ref = !results && previous ? previous.reference : read("reference.json");
+  const doc = build(results ?? {}, read("packages.json") ?? {}, names, live, ref, notes, previous, pins);
   mkdirSync(OUT, { recursive: true });
   writeFileSync(committed, JSON.stringify(doc, null, 2) + "\n");
   writeFileSync(join(OUT, "wallets.md"), table(doc));

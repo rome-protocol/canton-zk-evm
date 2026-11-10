@@ -12,7 +12,8 @@ Notes on the wallets that were tested:
 - OKX Wallet: Its screens are driven less reliably than the others': in one rerun a run stopped at the second signature (no signature in 90 s while the approval loop kept clicking Confirm), and an immediate rerun of this wallet alone passed with four identical signatures. If a run says 'not automated' for this wallet, run it again (tests/wallets/run.sh okx) before replacing a good row.
 
 The live check (2026-11-10) was made with the throwaway account of an earlier run (`1220ec1eb66af7e2…`), not this run's (`122039f624847361…`); its verdict stands for the package it was made with.
-A later live check (2026-11-10) reached no account: the account service refused to make a new account (429: it limits the accounts one address makes in a day; it said to retry after 76396 s).
+The live check (2026-11-10) was made by an earlier version of the harness, before the signing guard that approves only the Bridge's request (it records no refused signatures).
+A later live check (2026-11-10) reached no account: the account service refused to make a new account (429: it limits the new accounts one client (IP address) makes in a day, --accounts-per-day in apps/accounts/README.md; it said to retry after 70432 s).
 
 Browser: Chromium 156.0.0.0 in mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf.
 

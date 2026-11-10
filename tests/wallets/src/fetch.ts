@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { chromium } from "playwright-core";
 import { HERE } from "./paths.ts";
 
 const RUN = join(HERE, "run");
@@ -17,6 +18,16 @@ const get = async (url: string): Promise<Buffer> => {
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return Buffer.from(await r.arrayBuffer());
 };
+/** The store serves the package that suits the browser that asks, so it is asked as the browser the harness tests in: that browser's major version (it reports it followed by zeros, as its user agent does). */
+function prodversion(): string {
+  try {
+    const out = execFileSync(chromium.executablePath(), ["--version"], { encoding: "utf8", timeout: 20_000 });
+    const major = /(\d+)\.\d+\.\d+\.\d+/.exec(out)?.[1];
+    if (major) return `${major}.0.0.0`;
+  } catch { /* no browser to ask: the fallback below */ }
+  return "156.0.0.0";   // the Chromium of the image PINS names, at the time of writing
+}
+const PRODVERSION = prodversion();
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
 const update = process.argv.includes("--update");
@@ -34,7 +45,7 @@ for (const w of manifest.wallets) {
     url = `https://github.com/${w.source.repo}/releases/download/${w.source.tag}/${w.source.asset}`;
     file = join(RUN, "dl", w.source.asset!);
   } else {
-    url = `https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=131.0.0.0&lang=en-US&acceptformat=crx2,crx3&x=id%3D${w.source.extensionId}%26installsource%3Dondemand%26uc`;
+    url = `https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=${PRODVERSION}&lang=en-US&acceptformat=crx2,crx3&x=id%3D${w.source.extensionId}%26installsource%3Dondemand%26uc`;
     file = join(RUN, "dl", `${w.id}.crx`);
   }
   const bytes = await get(url);
@@ -54,7 +65,7 @@ for (const w of manifest.wallets) {
   const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as { version: string; version_name?: string; name: string };
   packages[w.id] = { id: w.id, name: w.name, version: m.version, versionName: m.version_name ?? null, source: w.source.kind === "github" ? url : `https://chromewebstore.google.com/detail/${w.source.extensionId}`, packageUrl: url, sha256: sum, bytes: bytes.length };
   if (update || !w.sha256) w.sha256 = sum;
-  console.log(`${w.id} ${m.version} sha256 ${sum}`);
+  console.log(`${w.id} ${m.version} sha256 ${sum}${w.source.kind === "chrome-web-store" ? ` (asked as Chrome ${PRODVERSION})` : ""}`);
 }
 writeFileSync(packagesFile, JSON.stringify(packages, null, 2) + "\n");
 if (update || manifest.wallets.some((w) => w.sha256)) writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
