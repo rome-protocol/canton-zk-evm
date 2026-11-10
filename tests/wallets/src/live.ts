@@ -26,10 +26,16 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
   const steps: string[] = [];
   let rejected = 0;   // signature requests that did not show the Bridge's statement: refused, never signed
   const chromium = chromiumVersion(await userAgentOf(ctx).catch(() => ""));
+  chromiumSeen = chromium;
   try {
     await d.onboard(ctx, extId, seed());
     const page = await ctx.newPage();
     let party: string | null = null;
+    // The account service limits the accounts one address may make in a day (the live check makes one): its refusal is a 429 on `allocate`, and is written down as that, not as a wallet that failed.
+    let limited: string | null = null;
+    page.on("response", (r) => { if (r.status() === 429 && new URL(r.url()).pathname.endsWith("/accounts/v1/allocate")) limited = `the account service refused to make a new account (429: it limits the accounts one address makes in a day; it said to retry after ${r.headers()["retry-after"] ?? "an unknown time"} s)`; });
+    // with --debug: the site's own requests that failed, and the account service's calls (the path and the status only)
+    if (DEBUG) page.on("response", (r) => { const u = new URL(r.url()); if (u.origin === new URL(SITE).origin && (r.status() >= 400 || u.pathname.includes("/accounts/"))) log(tag, "response", r.request().method(), u.pathname, r.status()); });
     page.on("response", async (r) => {
       if (r.url().includes("/accounts/v1/topology") && r.request().method() === "POST") {
         const j = (await r.json().catch(() => null)) as { party?: string } | null;
@@ -65,6 +71,9 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
     let account: string | null = null;
     let shown = "";
     const once = new Set<string>();   // the faucet is asked once
+    // "Sign in" starts a flow of two signatures that takes a while: it is clicked again only after a minute without an account, as a person would wait, because a second click restarts the flow and the signatures never finish.
+    const lastClick = new Map<string, number>();
+    const WAIT: Record<string, number> = { "sign in": 60_000 };
     await approve("flow", async () => {
     // the chain: the API page's button adds it to the wallet (the same call the site makes), and the wallet then switches to it
     await page.goto(`${SITE}/docs/api`, { waitUntil: "domcontentloaded" });
@@ -72,12 +81,14 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
     if (await clickFirst(page, [/^add ostia to your wallet/i], ["button"])) { steps.push("add the network"); log(tag, "clicked add the network"); }
     await sleep(8000);
     while (Date.now() < end && !account) {
+      if (limited) throw new Error(limited);
       for (const [label, re] of steps_) {
         if (once.has(label)) continue;
+        if (Date.now() - (lastClick.get(label) ?? 0) < (WAIT[label] ?? 0)) continue;
         if (!page.url().includes("/bridge")) await page.goto(`${SITE}/bridge`, { waitUntil: "domcontentloaded" });
         const clicked = await clickFirst(page, [re], ["button"]);
         if (clicked) await sleep(3000);
-        if (clicked) { steps.push(label); log(tag, "clicked", label); if (label === "faucet" || label === "open account sheet" || label === "add the network") once.add(label); }
+        if (clicked) { lastClick.set(label, Date.now()); steps.push(label); log(tag, "clicked", label); if (label === "faucet" || label === "open account sheet" || label === "add the network") once.add(label); }
       }
       // the account's name on the page: "Your account on Canton" with the party, once it is open
       const body = (await page.locator("body").innerText({ timeout: 3000 }).catch(() => "")).replace(/\s+/g, " ");
@@ -91,15 +102,19 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
   } finally { await ctx.close(); }
 }
 
+let chromiumSeen = "not recorded";   // kept even when a visit fails
+
 /** A visit that fails (the site or the faucet changed, a wallet's screen) is written down as one that reached no account: the report then says the check was not completed, not that the accounts differ. */
 const tryVisit = async (d: Driver, tag: string) => {
   try { return { ...(await visit(d, tag)), error: null as string | null }; }
-  catch (e) { const error = guardReason(String((e as Error).message)).split("\n")[0]!.slice(0, 300); log(tag, "failed:", error); return { party: null as string | null, shown: "", steps: [] as string[], rejected: 0, chromium: "not recorded", error }; }
+  catch (e) { const error = guardReason(String((e as Error).message)).split("\n")[0]!.slice(0, 300); log(tag, "failed:", error); return { party: null as string | null, shown: "", steps: [] as string[], rejected: 0, chromium: chromiumSeen, error }; }
 };
 const first = await tryVisit(drivers[firstId]!, "first");
 log("first wallet", firstId, "opened", first.shown);
 await sleep(3000);
-const second = await tryVisit(drivers[secondId]!, "second");
+const second = first.party
+  ? await tryVisit(drivers[secondId]!, "second")
+  : { party: null as string | null, shown: "", steps: [] as string[], rejected: 0, chromium: "not recorded", error: "not run: the first visit reached no account" as string | null };
 log("second wallet", secondId, "opened", second.shown);
 // The account's name is its key's fingerprint after the `::`: compared by that, so a change of the site's name hint is not read as another key.
 const fingerprintOfParty = (party: string | null) => party?.split("::")[1] ?? null;

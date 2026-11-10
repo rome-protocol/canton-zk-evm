@@ -1,7 +1,7 @@
 {
   "reference": {
-    "party": "rome::1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
-    "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041"
+    "party": "rome::122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+    "fingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa"
   },
   "live": {
     "date": "2026-11-10",
@@ -31,6 +31,20 @@
     "errors": {
       "first": null,
       "second": null
+    },
+    "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041"
+  },
+  "liveAttempt": {
+    "date": "2026-11-10",
+    "site": "https://ostia.devnet.romeprotocol.xyz",
+    "referenceFingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+    "browser": {
+      "image": "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+      "chromium": "156.0.0.0"
+    },
+    "errors": {
+      "first": "the account service refused to make a new account (429: it limits the accounts one address makes in a day; it said to retry after 76396 s)",
+      "second": "not run: the first visit reached no account"
     }
   },
   "wallets": [
@@ -48,14 +62,21 @@
       "matchesReference": true,
       "rawMatchesReference": true,
       "form": {
-        "v": "0x1b",
+        "v": "0x1c",
         "lowS": true
       },
-      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
-      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "referenceFingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+      "rawSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "normalisedSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "fingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
       "opensLiveBridge": "yes",
+      "liveDate": "2026-11-10",
+      "liveReference": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "addressIsReference": true,
+      "browser": {
+        "image": "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+        "chromium": "156.0.0.0"
+      },
       "matchesOtherWallets": "same bytes"
     },
     {
@@ -72,14 +93,21 @@
       "matchesReference": true,
       "rawMatchesReference": true,
       "form": {
-        "v": "0x1b",
+        "v": "0x1c",
         "lowS": true
       },
-      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
-      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "referenceFingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+      "rawSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "normalisedSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "fingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
       "opensLiveBridge": "yes",
+      "liveDate": "2026-11-10",
+      "liveReference": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "addressIsReference": true,
+      "browser": {
+        "image": "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+        "chromium": "156.0.0.0"
+      },
       "matchesOtherWallets": "same bytes"
     },
     {
@@ -101,6 +129,7 @@
       "source": "https://chromewebstore.google.com/detail/mcohilncbfahbmgdjkbpemcciiolgcge",
       "downloadUrl": "https://clients2.google.com/service/update2/crx?response=redirect&os=linux&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=131.0.0.0&lang=en-US&acceptformat=crx2,crx3&x=id%3Dmcohilncbfahbmgdjkbpemcciiolgcge%26installsource%3Dondemand%26uc",
       "sha256": "4ccaf8d2faaca6266a5fcfa205d48f91d719b40603eeee6bd5faa18ac1616a6f",
+      "notes": "Its screens are driven less reliably than the others': in one rerun a run stopped at the second signature (no signature in 90 s while the approval loop kept clicking Confirm), and an immediate rerun of this wallet alone passed with four identical signatures. If a run says 'not automated' for this wallet, run it again (tests/wallets/run.sh okx) before replacing a good row.",
       "status": "tested",
       "date": "2026-11-10",
       "sameTwice": true,
@@ -108,14 +137,19 @@
       "matchesReference": true,
       "rawMatchesReference": true,
       "form": {
-        "v": "0x1b",
+        "v": "0x1c",
         "lowS": true
       },
-      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
-      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
-      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "referenceFingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
+      "rawSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "normalisedSha256": "7394c19afe5b2f9514961fb0fe72471dee43505bc10f66a021aeb618d5d57496",
+      "fingerprint": "122039f6248473618361a63fe2f7e351204c0668e61f6109265fadfdb1be106d77aa",
       "opensLiveBridge": "not tried",
+      "addressIsReference": true,
+      "browser": {
+        "image": "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+        "chromium": "156.0.0.0"
+      },
       "matchesOtherWallets": "same bytes"
     },
     {
@@ -127,7 +161,7 @@
       "sha256": "425473795f87c2b8d7a47f60285b841f6fa6c4239fa6e52e2aa3b5e21fbbf97a",
       "notes": "Its set-up asks for a username and checks it online; that check did not finish reliably from the test machine (it did in earlier attempts). When set-up did finish, the wallet opened no approval screen for the page's connect request, as with Coinbase Wallet. Whether it signs typed data for a chain id it does not list was not reached.",
       "status": "not automated",
-      "reason": "stopped at \"set the wallet up with the seed\": phantom onboarding: the wallet did not get ready in 150 s (last screen: url=/onboarding.html text=\"Help Choose a username Personalize your account with a unique name. Usernames can be changed later on. Username @ Clear ​ Continue\" buttons=[\"Clear\",\"​\\nContinue(off)\"] inputs=[\"text:username\"])",
+      "reason": "stopped at \"run 1: connect\": no approval screen was reached in 90 s (run 1 connect)",
       "date": "2026-11-10"
     }
   ]

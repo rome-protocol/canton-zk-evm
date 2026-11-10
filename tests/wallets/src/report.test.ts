@@ -112,3 +112,25 @@ test("a note on a wallet that was tested is printed under the table", () => {
 test("the table's file says what is not covered", () => {
   assert.match(table(build({ a: ok("n", "r") }, packages, { a: "A" }, null, ref)), /Not covered: hardware wallets \(Ledger, Trezor\) and smart-contract wallets.*\(\.\.\/README\.md#not-covered\)/);
 });
+
+test("a live check that reached no account does not replace an earlier one that did: the rows keep its verdict and day, and the attempt is recorded beside it", () => {
+  // the earlier check was made before checks named their reference: it matched, so its accounts are the reference's
+  const { referenceFingerprint, ...old } = liveOf();
+  const before = build({ a: ok("n", "r"), b: ok("n", "r") }, packages, { a: "A", b: "B" }, old, ref);
+  assert.equal(before.live.referenceFingerprint, undefined);
+  const stopped = { date: "2026-02-02", site: "https://site.test", referenceFingerprint: "1220cd", browser: { image: "i", chromium: "1" }, firstWallet: "a", secondWallet: "b", firstParty: null, secondParty: null, sameAccount: false, matchesReference: false, errors: { first: "the account service refused (429)", second: "not run" } };
+  const after = build({ a: { ...ok("n", "r"), date: "2026-02-02" }, b: { ...ok("n", "r"), date: "2026-02-02" } }, packages, { a: "A", b: "B" }, stopped, { party: "rome::1220cd", fingerprint: "1220cd" }, {}, before);
+  assert.deepEqual(after.wallets.map((r) => r.opensLiveBridge), ["yes", "yes"]);
+  assert.deepEqual(after.wallets.map((r) => r.liveDate), ["2026-01-01", "2026-01-01"]);
+  assert.deepEqual(after.wallets.map((r) => r.liveReference), ["1220ab", "1220ab"]);   // the reference the old check was made against, not the new run's
+  assert.equal(after.live.firstParty, "rome::1220ab");
+  assert.equal(after.live.referenceFingerprint, "1220ab");
+  assert.equal(after.liveAttempt.errors.first, "the account service refused (429)");
+  assert.equal(after.liveAttempt.date, "2026-02-02");
+  assert.match(table(after), /\| yes \(2026-01-01\) \| 2026-02-02 \|/);
+  assert.match(table(after), /The live check \(2026-01-01\) was made with the throwaway account of an earlier run \(`1220ab…`\), not this run's \(`1220cd…`\)/);
+  assert.match(table(after), /A later live check \(2026-02-02\) reached no account: the account service refused \(429\)\./);
+  // a package that changed since does not keep the verdict
+  const changed = build({ a: ok("n", "r") }, { a: { ...packages.a, sha256: "new" } }, { a: "A", b: "B" }, stopped, ref, {}, before);
+  assert.equal(changed.wallets[0]!.opensLiveBridge, "not tried");
+});
