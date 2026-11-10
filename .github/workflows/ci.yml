@@ -27,7 +27,21 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Lint every shell script
-        run: shellcheck network/*.sh network/reth/*.sh network/canton/*.sh network/external/*.sh tests/*.sh .github/actions/pinned-images/*.sh
+        run: shellcheck network/*.sh network/reth/*.sh network/canton/*.sh network/external/*.sh tests/*.sh tests/wallets/run.sh .github/actions/pinned-images/*.sh
+
+  # The wallet signature harness (tests/wallets) is opt-in: it downloads third-party wallets and opens a live site, so CI never runs it. Its own tests need no browser and download nothing.
+  wallet-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_BROWSER_IMAGE
+      - name: The harness's report, secret-scrubbing and signing-guard tests
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --user "$(id -u):$(id -g)" --network none -v "$PWD:/repo" -w /repo/tests/wallets "$EXPLORER_BROWSER_IMAGE" \
+            node --experimental-transform-types --disable-warning=ExperimentalWarning --test src/report.test.ts src/scrub.test.ts src/signatures.test.ts
 
   static:
     runs-on: ubuntu-latest
