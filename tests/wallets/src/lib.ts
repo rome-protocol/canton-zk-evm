@@ -7,6 +7,7 @@ import { generateMnemonic, english, mnemonicToAccount } from "viem/accounts";
 import { KEY_TYPED_DATA, keyFromSignature, normaliseSignature, hex } from "../../../explorer/src/bridge/canton/key.ts";
 import { partyOf } from "../../../explorer/src/bridge/canton/topology.ts";
 import { HERE } from "./paths.ts";
+import { scrubber } from "./scrub.ts";
 
 export { KEY_TYPED_DATA, HERE };
 export const RUN = join(HERE, "run");
@@ -24,6 +25,10 @@ export function seed(): { mnemonic: string; unlock: string } {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
+let scrubbing: ((text: string) => string) | null = null;
+/** Text with the seed's words and the unlock password taken out: use it on everything that is logged or written to a result. */
+export const scrub = (text: string): string => (scrubbing ??= scrubber(seed()))(text);
+
 export interface Reference {
   address: string;
   /** RFC 6979 signature by viem (the form viem gives: low s, v 27 or 28). */
@@ -39,7 +44,7 @@ export const TYPED_JSON = JSON.stringify(KEY_TYPED_DATA);
 
 export async function reference(): Promise<Reference> {
   const account = mnemonicToAccount(seed().mnemonic);   // the first account, m/44'/60'/0'/0/0
-  const signature = await account.signTypedData({ domain: KEY_TYPED_DATA.domain, types: { Open: [{ name: "statement", type: "string" }] }, primaryType: "Open", message: KEY_TYPED_DATA.message });
+  const signature = await account.signTypedData({ domain: KEY_TYPED_DATA.domain, types: KEY_TYPED_DATA.types, primaryType: KEY_TYPED_DATA.primaryType, message: KEY_TYPED_DATA.message });
   const key = await keyFromSignature(signature);
   const party = await partyOf(key.publicKey, "rome");
   return { address: account.address, signature, normalised: normaliseSignature(signature), publicKey: hex(key.publicKey), fingerprint: party.split("::")[1]!, party };

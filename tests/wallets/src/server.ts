@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { execFileSync } from "node:child_process";
+import { createHash, X509Certificate } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KEY_TYPED_DATA, RUN } from "./lib.ts";
@@ -40,10 +41,12 @@ function rpc(req: IncomingMessage, res: ServerResponse): void {
 }
 
 /** Starts the test page (http) and the stand-in chain's RPC (https with a certificate made for the run, because some wallets add a chain only by an https address; the browser is started to accept it). */
-export function startServer(): Promise<{ servers: Server[]; origin: string; chain: { chainId: string; chainName: string; nativeCurrency: { name: string; symbol: string; decimals: number }; rpcUrls: string[] } }> {
+export function startServer(): Promise<{ servers: Server[]; origin: string; spki: string; chain: { chainId: string; chainName: string; nativeCurrency: { name: string; symbol: string; decimals: number }; rpcUrls: string[] } }> {
   mkdirSync(join(RUN, "tls"), { recursive: true });
   const key = join(RUN, "tls", "key.pem"), cert = join(RUN, "tls", "cert.pem");
   execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+  // the browser is told to ignore certificate errors for this certificate only (its public key's hash), not for any site
+  const spki = createHash("sha256").update(new X509Certificate(readFileSync(cert)).publicKey.export({ type: "spki", format: "der" })).digest("base64");
   return new Promise((done) => {
     const page = createServer((req, res) => {
       if (req.url === "/rpc") return rpc(req, res);
@@ -53,7 +56,7 @@ export function startServer(): Promise<{ servers: Server[]; origin: string; chai
     const secure = createSecureServer({ key: readFileSync(key), cert: readFileSync(cert) }, rpc);
     secure.listen(0, "127.0.0.1", () => page.listen(0, "127.0.0.1", () => {
       const p = (page.address() as { port: number }).port, q = (secure.address() as { port: number }).port;
-      done({ servers: [page, secure], origin: `http://localhost:${p}`, chain: { chainId: "0x" + CHAIN_ID.toString(16), chainName: "Ostia (test)", nativeCurrency: { name: "tROME", symbol: "tROME", decimals: 18 }, rpcUrls: [`https://127.0.0.1:${q}/rpc`] } });
+      done({ servers: [page, secure], spki, origin: `http://localhost:${p}`, chain: { chainId: "0x" + CHAIN_ID.toString(16), chainName: "Ostia (test)", nativeCurrency: { name: "tROME", symbol: "tROME", decimals: 18 }, rpcUrls: [`https://127.0.0.1:${q}/rpc`] } });
     }));
   });
 }

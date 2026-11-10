@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { clickFirst, describe, DEBUG, launch, log, sleep, withApprovals } from "./browser.ts";
 import { drivers, type Driver } from "./drivers.ts";
-import { reference, RUN, seed } from "./lib.ts";
+import { reference, RUN, scrub, seed } from "./lib.ts";
 
 const SITE = process.env.LIVE_SITE ?? "https://ostia.devnet.romeprotocol.xyz";
 const [firstId, secondId] = [process.argv[2] ?? "metamask", process.argv[3] ?? "rabby"];
@@ -71,19 +71,27 @@ async function visit(d: Driver, tag: string): Promise<{ party: string | null; sh
   } finally { await ctx.close(); }
 }
 
-const first = await visit(drivers[firstId]!, "first");
+/** A visit that fails (the site or the faucet changed, a wallet's screen) is written down as one that reached no account: the report then says the check was not completed, not that the accounts differ. */
+const tryVisit = async (d: Driver, tag: string) => {
+  try { return { ...(await visit(d, tag)), error: null as string | null }; }
+  catch (e) { const error = scrub(String((e as Error).message)).split("\n")[0]!.slice(0, 300); log(tag, "failed:", error); return { party: null as string | null, shown: "", steps: [] as string[], error }; }
+};
+const first = await tryVisit(drivers[firstId]!, "first");
 log("first wallet", firstId, "opened", first.shown);
 await sleep(3000);
-const second = await visit(drivers[secondId]!, "second");
+const second = await tryVisit(drivers[secondId]!, "second");
 log("second wallet", secondId, "opened", second.shown);
+// The account's name is its key's fingerprint after the `::`: compared by that, so a change of the site's name hint is not read as another key.
+const fingerprintOfParty = (party: string | null) => party?.split("::")[1] ?? null;
 const lead = (shown: string, party: string | null) => party !== null && shown.length > 0 && party.startsWith(shown.split("…")[0]!) && party.endsWith(shown.split("…")[1]!);
 out.live = {
   date: new Date().toISOString().slice(0, 10), site: SITE, firstWallet: firstId, secondWallet: secondId,
   firstParty: first.party, secondParty: second.party,
   firstShownMatches: lead(first.shown, first.party), secondShownMatches: lead(second.shown, second.party),
   sameAccount: first.party !== null && first.party === second.party,
-  matchesReference: first.party === ref.party && second.party === ref.party,
+  matchesReference: first.party !== null && fingerprintOfParty(first.party) === ref.fingerprint && fingerprintOfParty(second.party) === ref.fingerprint,
   steps: { first: first.steps, second: second.steps },
+  errors: { first: first.error, second: second.error },
 };
 writeFileSync(resultsFile, JSON.stringify(out, null, 2) + "\n");
 log("live result", JSON.stringify(out.live));

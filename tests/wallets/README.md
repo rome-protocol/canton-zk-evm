@@ -25,16 +25,16 @@ The signatures are not kept in the results: a signature is the Canton key of tha
 | Same signature twice | Two requests in a row, in one browser session, gave identical bytes. This is the check the page makes itself when an account is first made (`confirmKey`). |
 | Same after restart | The browser was closed and the same profile opened again, the wallet unlocked, and the page asked twice more: all four signatures have identical bytes. |
 | Matches reference | The wallet's signature, after `normaliseSignature`, equals viem's RFC 6979 signature after the same. The raw form (the recovery byte and whether `s` is low) is in the JSON (`form`, `rawMatchesReference`). |
-| Matches other wallets | `same bytes` when every tested wallet gave identical raw bytes; `same after normalising` when they differ only in form (recovery byte 0/1 against 27/28, or the high-`s` twin) and the page's normal form makes them one; `no` otherwise. |
-| Opens on the live Bridge | `yes` for the two wallets of the live check when both reached the same account as the reference. `not tried` for the rest. |
+| Matches other wallets | `same bytes` when every tested wallet gave identical raw bytes; `same after normalising` when they differ only in form (recovery byte 0/1 against 27/28, or the high-`s` twin) and the page's normal form makes them one; `no` otherwise. Every run makes a new throwaway seed (a new reference), so this compares wallets tested in the same run; a wallet tested alone in a rerun says `only one wallet tested`, and the other rows keep the comparison their own run made. |
+| Opens on the live Bridge | The live check names two wallets. `yes`: both reached the same Canton account, and it is the reference's (compared by the key's fingerprint, the part after `::`). `no`: the check ran and they reached different accounts, or not the reference's: that is the finding the check exists to make. `incomplete`: the check ran but reached no account (the faucet, the site or a wallet screen failed; the reason is in `results/wallets.json`), so it says nothing about the wallets. `not tried`: the wallet was not in the live check, or its package changed since it was. |
 | Date | The day of the run. |
 
-A wallet that cannot be driven reliably is `not automated`, with the stage it stopped at. That is a limit of the harness, not a result about the wallet.
+A wallet that cannot be driven reliably is `not automated`, with the stage it stopped at and the reason of this run (and, after it, what earlier attempts found, from `wallets.json`). That is a limit of the harness, not a result about the wallet. A wallet that was not run in an invocation keeps the row it has in the committed results, with its own version, SHA-256 and date, so running one wallet changes one row; a wallet with no earlier result is `not run`.
 
 ## Not covered
 
-- **Hardware wallets (Ledger, Trezor).** They need a device and a person's button press, so they cannot be automated. Whether a device signs by RFC 6979 is its vendor's claim, not something this harness checked. A hardware wallet behind a software wallet is covered only as far as the software wallet's own signing path goes.
-- **Smart-contract wallets (Safe and others).** They cannot open a Bridge account. `walletSignature` in `key.ts` takes the signature, recovers the signer with `recoverTypedDataAddress` and refuses with `wrong_signer` when it is not the connected address; and `normaliseSignature` refuses anything that is not a 65-byte secp256k1 signature. A contract wallet's signature (ERC-1271) is not one, and its address is the contract's, never the address of a key that signed.
+- **Hardware wallets (Ledger, Trezor).** They need a device and a person's button press, so they cannot be automated. Whether a device signs by RFC 6979 is its vendor's claim, not something this harness checked. A hardware wallet used through a software wallet is not covered either, because the device makes the signature, not the software wallet.
+- **Smart-contract wallets (Safe and others).** They cannot open a Bridge account. `walletSignature` in `key.ts` takes the signature, recovers the signer with `recoverTypedDataAddress` and refuses with `wrong_signer` when it is not the connected address; and `normaliseSignature` refuses anything that is not a 65-byte secp256k1 signature. A contract wallet's signature (ERC-1271) is usually not a 65-byte key signature; and even when it is (a Safe's contract signature can be 65 bytes), it never recovers to the contract's address, so `wrong_signer` refuses it.
 - **Other wallets and versions.** Only what is in the table. A wallet that updates may change how it signs; run the harness again.
 
 ## Rerun it
@@ -42,22 +42,23 @@ A wallet that cannot be driven reliably is `not automated`, with the stage it st
 ```sh
 tests/wallets/run.sh              # all wallets, then the live check
 tests/wallets/run.sh --no-live    # without the live check (no faucet coin)
-tests/wallets/run.sh metamask     # one wallet
+tests/wallets/run.sh okx          # one wallet (the live check runs only when no wallet is named)
 tests/wallets/run.sh --debug rabby   # what the wallet's screens show, to fix a driver
 tests/wallets/run.sh --update     # accept the packages that are there now
 ```
 
-`run.sh` needs Docker and a network. It runs in the browser image that `PINS` names (`EXPLORER_BROWSER_IMAGE`), installs the explorer's and the harness's pinned npm packages, fetches the wallets, and writes `tests/wallets/run/` (the seed, the profiles, the downloaded packages: never commit it, and delete it when you are done: `rm -rf tests/wallets/run`) and `tests/wallets/results/`.
+`run.sh` needs Docker and a network. It runs in the browser image that `PINS` names (`EXPLORER_BROWSER_IMAGE`), installs the explorer's and the harness's pinned npm packages, fetches the wallets, and writes `tests/wallets/run/` (the seed, the profiles, the downloaded packages: never commit it, and delete it when you are done: `rm -rf tests/wallets/run`; whatever step fails, the files the container made are given back to you on the way out, so that command works) and `tests/wallets/results/`.
 
 **When a wallet updates.** `wallets.json` pins each package by SHA-256 (a GitHub release also by its tag). A newer package makes `fetch.ts` stop: change the tag and asset there for a GitHub release, then run with `--update` to test and record the new package. Read the table: a wallet that does not match the reference, or does not match the others, is the finding. If a wallet's screens changed so that the harness cannot drive it, the row says `not automated` and where it stopped: fix its entry in `src/drivers.ts` (`--debug` shows each screen's text and buttons).
 
 **Adding a wallet.** Add it to `wallets.json` (an official source and, for the store, its extension id) and to `src/drivers.ts` (`generic(...)` takes the wallet's first page, its buttons in order, the text of its ready screen and the address of its pop-ups). Wallets that draw in a frame (`frame`), or that need a narrow window (`narrow`), say so there.
 
-**Tests of the harness itself** need no browser: `cd tests/wallets && npm ci && node --experimental-transform-types --test src/report.test.ts`.
+**Tests of the harness itself** need no browser and download nothing: `cd tests/wallets && node --experimental-transform-types --test src/*.test.ts`. The CI job `wallet-harness` runs them (and `shellcheck` on `run.sh`); it never fetches a wallet or opens a browser, so the harness stays opt-in.
 
 ## Notes on how it works
 
-- The chain added to each wallet is a stand-in that the harness serves itself (HTTPS with a certificate made for the run, because some wallets add a chain only by an HTTPS address; the browser accepts it for this run only). The Bridge's chain id is what matters: wallets refuse typed data for a chain they are not on.
+- The chain added to each wallet is a stand-in that the harness serves itself (HTTPS with a certificate made for the run, because some wallets add a chain only by an HTTPS address). The browser ignores certificate errors only for that one certificate (`--ignore-certificate-errors-spki-list` with the hash of its public key), and only in the per-wallet run; the live check's browser checks every certificate as usual. The Bridge's chain id is what matters: wallets refuse typed data for a chain they are not on.
 - A wallet's own pop-up window is not reliably seen by the browser driver, so the harness opens the wallet's page of pending requests in a tab and clicks what it asks for. A wallet that shows nothing for the page's request is `not automated`.
 - `src/probe.ts` is a debug helper: `node src/probe.ts <wallet> [rounds] [path]` opens a wallet and prints what each of its pages shows.
+- Anything the harness logs, or writes to a reason in the results, first has the seed's words and the unlock password taken out (`src/scrub.ts`), because a failing wallet screen's text could show them. A few ordinary words that are also words of the phrase are removed from a reason too.
 - The harness's own downloads (the wallets' packages and checksums) carry the project's contact in their User-Agent.

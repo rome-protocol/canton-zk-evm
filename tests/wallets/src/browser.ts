@@ -2,7 +2,8 @@
 import { chromium, type BrowserContext, type Frame, type Page } from "playwright-core";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { RUN } from "./lib.ts";
+import { format } from "node:util";
+import { RUN, scrub } from "./lib.ts";
 
 /** Where a wallet draws its screens: its page, or a frame inside it (OKX draws in a sandbox frame). */
 export type Root = Page | Frame;
@@ -15,15 +16,16 @@ export const inFrame = (re: RegExp) => async (p: Page): Promise<Root> => {
 };
 
 export const DEBUG = process.env.WALLET_DEBUG === "1";
-export const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a);
+export const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), scrub(format(...a)));
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export async function launch(walletId: string, profile: string): Promise<{ ctx: BrowserContext; extId: string }> {
+/** `spki` is the base64 SHA-256 of the public key of the stand-in chain's certificate: only that certificate's errors are ignored (the live Bridge's certificates are checked as always). */
+export async function launch(walletId: string, profile: string, spki?: string): Promise<{ ctx: BrowserContext; extId: string }> {
   const ext = join(RUN, "ext", walletId);
   mkdirSync(profile, { recursive: true });
   const ctx = await chromium.launchPersistentContext(profile, {
     headless: false, viewport: { width: 1280, height: 900 },
-    args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`, "--no-first-run", "--ignore-certificate-errors", "--no-default-browser-check", "--disable-features=DisableLoadExtensionCommandLineSwitch"],
+    args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`, "--no-first-run", ...(spki ? [`--ignore-certificate-errors-spki-list=${spki}`] : []), "--no-default-browser-check", "--disable-features=DisableLoadExtensionCommandLineSwitch"],
   });
   let extId = "";
   for (let i = 0; i < 60 && !extId; i++) {

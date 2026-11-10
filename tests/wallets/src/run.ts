@@ -5,11 +5,11 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { DEBUG, launch, log, sleep, withApprovals } from "./browser.ts";
 import { drivers } from "./drivers.ts";
-import { fingerprintOf, form, normaliseSignature, reference, RUN, seed, sha256hex, TYPED_JSON } from "./lib.ts";
+import { fingerprintOf, form, normaliseSignature, reference, RUN, scrub, seed, sha256hex, TYPED_JSON } from "./lib.ts";
 import { startServer } from "./server.ts";
 
 const ids = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const { servers, origin, chain } = await startServer();
+const { servers, origin, chain, spki } = await startServer();
 const secret = seed();
 const ref = await reference();
 const packages = existsSync(join(RUN, "packages.json")) ? JSON.parse(readFileSync(join(RUN, "packages.json"), "utf8")) : {};
@@ -35,7 +35,7 @@ for (const id of ids.length ? ids : Object.keys(drivers)) {
   let stage = "start";
   try {
     // 1. a fresh profile: set the wallet up, connect, add the chain, sign twice
-    stage = "start the browser"; let started = await launch(id, profile); ctx = started.ctx;
+    stage = "start the browser"; let started = await launch(id, profile, spki); ctx = started.ctx;
     stage = "set the wallet up with the seed"; await d.onboard(ctx, started.extId, secret);
     log(id, "set up");
     const ask = async (what: string) => {
@@ -62,7 +62,7 @@ for (const id of ids.length ? ids : Object.keys(drivers)) {
     // 2. close the browser, reopen the same profile (the wallet is locked again), ask again
     await ctx.close(); ctx = null;
     await sleep(1500);
-    stage = "reopen the profile"; started = await launch(id, profile); ctx = started.ctx;
+    stage = "reopen the profile"; started = await launch(id, profile, spki); ctx = started.ctx;
     stage = "unlock the wallet"; await d.unlock(ctx, started.extId, secret);
     const second = await ask("run 2");
     const all = [...first.sigs, ...second.sigs];
@@ -79,7 +79,7 @@ for (const id of ids.length ? ids : Object.keys(drivers)) {
     writeFileSync(join(RUN, `raw-${id}.json`), JSON.stringify({ signatures: all }), { mode: 0o600 });   // the signatures are the Canton key: they stay in the run folder
   } catch (e) {
     out.status = "not automated";
-    out.reason = `stopped at "${stage}": ${String((e as Error).message).split("\n")[0]!.slice(0, 300)}`;
+    out.reason = `stopped at "${stage}": ${scrub(String((e as Error).message)).split("\n")[0]!.slice(0, 300)}`;   // a failing screen's text may show the phrase
     log(id, "failed:", out.reason);
   } finally {
     await ctx?.close().catch(() => {});

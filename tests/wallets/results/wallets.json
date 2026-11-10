@@ -1,15 +1,15 @@
 {
   "reference": {
-    "party": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
-    "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634"
+    "party": "rome::1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+    "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041"
   },
   "live": {
     "date": "2026-11-10",
     "site": "https://ostia.devnet.romeprotocol.xyz",
     "firstWallet": "metamask",
     "secondWallet": "rabby",
-    "firstParty": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
-    "secondParty": "rome::1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+    "firstParty": "rome::1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+    "secondParty": "rome::1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
     "firstShownMatches": true,
     "secondShownMatches": true,
     "sameAccount": true,
@@ -27,6 +27,10 @@
         "open account sheet",
         "sign in"
       ]
+    },
+    "errors": {
+      "first": null,
+      "second": null
     }
   },
   "wallets": [
@@ -47,8 +51,10 @@
         "v": "0x1b",
         "lowS": true
       },
-      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
-      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
       "opensLiveBridge": "yes",
       "matchesOtherWallets": "same bytes"
     },
@@ -69,8 +75,10 @@
         "v": "0x1b",
         "lowS": true
       },
-      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
-      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
       "opensLiveBridge": "yes",
       "matchesOtherWallets": "same bytes"
     },
@@ -103,8 +111,10 @@
         "v": "0x1b",
         "lowS": true
       },
-      "normalisedSha256": "b44eeb3f221e16d0530a3188941e55b5c4a1e0546c880f15a350114d39a7bcd4",
-      "fingerprint": "1220f80444e1747fdc72e816b47fdc3508ee0beae1b0de1167da21ff7e1eeeeae634",
+      "referenceFingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
+      "rawSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "normalisedSha256": "f38d7262b111f5f9765b6539577c73f9ec8633efaacff62b39c140988975a3ba",
+      "fingerprint": "1220ec1eb66af7e20b43f8243a302f50b706746db076f1f9d86a6a64b94eb49b1041",
       "opensLiveBridge": "not tried",
       "matchesOtherWallets": "same bytes"
     },
