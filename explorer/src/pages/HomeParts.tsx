@@ -31,10 +31,10 @@ export function Hero({ tries }: { tries: Array<{ label: string; q: string; words
 
 /** The final transactions since launch in short, with the blocks of the day; "total not counted yet" when the server cannot say, never 0. */
 export const SinceLaunch = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) =>
-  t ? <>{compactCount(t.total)} since launch · {plural(blocks, "block")}</> : <>total not counted yet · {plural(blocks, "block")}</>;
+  t ? <>{compactCount(t.total)} since launch, with Rome's own tests · {plural(blocks, "block")}</> : <>total not counted yet · {plural(blocks, "block")}</>;
 /** What the "i" of the day's transactions says: the count of all time and the block it stands at, the test runs in it, and that each block is one Canton transaction. */
 export const SinceLaunchNote = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) =>
-  <>{t ? `${count(t.total)} final in all, as of block ${t.asOfBlock}; runs marked as tests are counted. ` : ""}{`In ${plural(blocks, "block")}, each one Canton transaction.`}</>;
+  <>{t ? `${count(t.total)} final in all, as of block ${t.asOfBlock}; Rome's own test and load runs are counted in it. ` : ""}{`In ${plural(blocks, "block")}, each one Canton transaction.`}</>;
 
 type IconName = Parameters<typeof Icon>[0]["name"];
 /** The picture before each card's label, as screen 01 has it. It is decoration: the label says what the card is. */

@@ -19,6 +19,7 @@ const CODES: Record<string, string> = {
   account_closed: "Your wallet account changed. Sign in again with the account you want to use.",
   wallet_not_deterministic: "This wallet signs differently each time, so it cannot hold a Canton account here. Use another wallet.",
   wrong_signer: "Your wallet signed with a different account. Pick the connected account in your wallet and try again.",
+  second_account: "This browser has moves for another Canton account under this wallet address, so your wallet now signs differently. A new account here would be empty, and nothing was changed. Use the wallet you used before.",
   no_canton_coin: "This site does not offer Canton Coin yet.",
   faucet_no_offer: "The faucet did not send Canton Coin. Try again later.",
 };
@@ -64,8 +65,8 @@ export function plainWords(e: unknown): string {
 /** The sentence for a wallet that will not let this page sign. Codes 4100, 4900 and 4901 mean "not authorized" or "not connected": on the sign-in path the likely cause is a missing test coin or the wrong network. The test coin is named only when the wallet is not known to hold any. */
 export const walletWouldNotSign = (coin: string, chainName: string, hasCoin = false) =>
   hasCoin
-    ? `Your wallet did not let this page sign. Make sure MetaMask is on the ${chainName} network, then sign in again.`
-    : `Your wallet did not let this page sign. Get test ${coin} first and make sure MetaMask is on the ${chainName} network, then sign in again.`;
+    ? `Your wallet did not let this page sign. Make sure your wallet is on the ${chainName} network, then sign in again.`
+    : `Your wallet did not let this page sign. Get test ${coin} first and make sure your wallet is on the ${chainName} network, then sign in again.`;
 
 /** One error of the sign-in, in plain words: a wallet that refuses the signature gets the sentence above, any other error its usual one. `coinHeld` is what the wallet holds of the chain's coin (null while not known). */
 export function signInWords(e: unknown, coin: string, chainName: string, coinHeld: bigint | null = null): string {

@@ -36,7 +36,7 @@ describe("the button walks the steps", () => {
   it("asks to connect, then to open the Canton account, then for an amount, then moves", async () => {
     const m = fakeSession({ legs: () => [] });
     const first = show({ account: null, evm: null, session: null }, m);
-    await press("Connect MetaMask");
+    await press("Connect wallet");
     expect(first.props.onConnect).toHaveBeenCalledTimes(1);
     cleanup();
     const second = show({ session: null }, m);
@@ -51,8 +51,8 @@ describe("the button walks the steps", () => {
     expect(screen.getByRole("button", { name: "Move to Ostia" })).toBeInTheDocument();
   });
   it("says a connect problem in words, and an amount the bridge will not take", async () => {
-    show({ connectNote: "No wallet was found in this browser. Install MetaMask, then open this page again." });
-    expect(screen.getByRole("alert")).toHaveTextContent("No wallet was found in this browser. Install MetaMask, then open this page again.");
+    show({ connectNote: "No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again." });
+    expect(screen.getByRole("alert")).toHaveTextContent("No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again.");
     await type("1.00000000001");
     expect(screen.getByRole("status")).toHaveTextContent("use at most 10 decimals");
     expect(screen.getByRole("button", { name: "Enter an amount" })).toBeDisabled();
@@ -194,7 +194,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, TKA)] });
     show({}, m);
     await tka();
-    expect(screen.getByText(/About 2 min · 2 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 2 min · 2 wallet pop-ups/)).toBeInTheDocument();
     await type("1.5");
     await press("Move to Canton");
     await done();
@@ -206,7 +206,7 @@ describe("the four moves on the card", () => {
     const m = fakeSession({ evm: fakeEvm({ balance: 0n, native: 10n ** 20n }), legs: (ref) => [leg({ kind: "payment", legId: lockIdOf(PARTY, ref) }, WTROME)] });
     show({}, m);
     await choose("From", /^tROME on Ostia$/);
-    expect(screen.getByText(/About 2 min · 3 MetaMask pop-ups/)).toBeInTheDocument();
+    expect(screen.getByText(/About 2 min · 3 wallet pop-ups/)).toBeInTheDocument();
     await type("2");
     await press("Move to Canton");
     await done();
@@ -217,7 +217,7 @@ describe("the four moves on the card", () => {
     show({}, m);
     await tka();
     await press("Swap direction");
-    expect(screen.getByText(/About 1 min · 1 MetaMask pop-up$/)).toBeInTheDocument();
+    expect(screen.getByText(/About 1 min · 1 wallet pop-up$/)).toBeInTheDocument();
     await type("3");
     await press("Move to Ostia");
     await done();
@@ -352,10 +352,10 @@ describe("the folded steps line", () => {
     expect(steps).toHaveAttribute("open");
     expect(steps).toHaveClass("move-steps");   // not the block timeline's "steps", which draws a three-column grid with a line
     expect(steps).not.toHaveClass("steps");
-    expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA MetaMask pop-up", "Pay TKA in MetaMask pop-up", "Canton shows it in your account Automatic"]);
+    expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Approve TKA wallet pop-up", "Pay TKA in wallet pop-up", "Canton shows it in your account Automatic"]);
     await press("Swap direction");
     expect(steps.textContent).toMatch(/Sign the move back on Canton Signed by this page/);
-    expect(steps.textContent).toMatch(/1 in MetaMask, 1 by your Canton account\./);
+    expect(steps.textContent).toMatch(/1 in your wallet, 1 by your Canton account\./);
   });
 });
 
@@ -435,7 +435,7 @@ describe("the card on a phone", () => {
     expect(css).toMatch(/\.bridge-page \.amt textarea[^}]*overflow-wrap: anywhere/);
     expect(css).toMatch(/@media \(max-width: 480px\) \{[^}]*\.bridge-page \.amt \{ flex: 1 1 100%/);
     expect(css).not.toMatch(/\.amt[^{]*\{[^}]*overflow: hidden[^}]*max-height|\.amt[^{]*\{[^}]*(?<!-)height: \d/);
-    // The steps list: an amount in a step's line may break anywhere, and "MetaMask pop-up" moves whole to the next line, never split.
+    // The steps list: an amount in a step's line may break anywhere, and "wallet pop-up" moves whole to the next line, never split.
     expect(css).toMatch(/\.move-steps li > span:first-child \{[^}]*overflow-wrap: anywhere/);
     expect(css).toMatch(/\.move-steps \.by-wallet \{[^}]*white-space: nowrap/);
   });
