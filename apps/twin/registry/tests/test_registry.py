@@ -516,7 +516,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual([self.announce(str(i))[0] for i in range(3)], [200, 200, 200])
         status, out = self.announce("3")
         self.assertEqual(status, 429)
-        self.assertEqual(out["error"], "Too many moves to this Canton account are waiting. Try again in a few hours.")
+        self.assertEqual(out["error"], "Too many moves to this Canton account were started in the last few hours. Try again later.")
         self.assertEqual(self.headers["Retry-After"], str(R.LOCK_PARTS_TTL))
         self.assertEqual(self.announce("0")[0], 200)   # one that is held is announced again at no cost
         self.assertEqual(self.announce("x", self.OTHER)[0], 200)   # another receiver has room of its own
@@ -543,7 +543,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.announce("b", self.OTHER, ip="2001:db8:1:2::7")[0], 200)   # another /64 of the same /48, another receiver
         status, out = self.announce("c", ip="2001:db8:1:3::9")   # a third /64
         self.assertEqual(status, 429)
-        self.assertEqual(out["error"], "This network has too many moves waiting. Try again in a few hours, or from another network.")
+        self.assertEqual(out["error"], "This network has started too many moves in the last few hours. Try again later, or from another network.")
         self.assertEqual(self.announce("c", self.OTHER, ip="2001:db8:1:ffff::1")[0], 429)   # nor does another receiver help
         self.assertEqual(self.announce("a", ip="2001:db8:1:9::1")[0], 200)   # an entry it already holds is no new one
         self.assertEqual(self.announce("c", ip="2001:db8:2:1::1")[0], 200)   # another /48

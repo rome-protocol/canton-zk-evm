@@ -2048,6 +2048,50 @@ class NewAccountLimits(Behind):
         self.assertEqual((status, out["code"]), (429, "accounts_network_full"))
         self.assertEqual(len(self.calls_to("/external/allocate")), 1)
 
+    def topology_of(self, ip, i):
+        """The topology step alone, for the key of SEEDS[i], from a client at `ip`: no second signature is made and no allocate follows."""
+        party = "rome::1220" + ("%02x" % (i + 16)) * 32
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": party, "publicKeyFingerprint": party.split("::")[1], "topologyTransactions": ["t"], "multiHash": "bQ=="})
+        return self.at(ip, "POST", "/accounts/v1/topology", {"publicKey": base64.b64encode(public_key(SEEDS[i])).decode()})
+
+    def refused_at_topology(self, limits, first, second, code):
+        """One budget is spent by an account made from `first`; the topology step, asked from `second` (held back by that budget only) for a new key, says no itself: no blob, and no second signature is asked for."""
+        self.proxied(**limits)
+        self.assertEqual(self.open_account(first, 1)[0], 200)
+        status, out, headers = self.topology_of(second, 2)
+        self.assertEqual((status, out["code"]), (429, code))
+        self.assertNotIn("blob", out)
+        self.assertGreater(int(headers["retry-after"]), 0)
+        self.assertEqual(len(self.calls_to("/external/allocate")), 1)
+
+    def test_topology_refuses_a_spent_64_budget_itself(self):
+        self.refused_at_topology(dict(creates=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:1:1::1", "2001:db8:1:1::2", "accounts_network_full")
+
+    def test_topology_refuses_a_spent_48_budget_itself(self):
+        self.refused_at_topology(dict(creates_net=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:2:1::1", "2001:db8:2:2::1", "accounts_network_full")
+
+    def test_topology_refuses_a_spent_budget_for_everyone_itself(self):
+        self.refused_at_topology(dict(new_total=A.day_limit(1, A.ALL_ACCOUNTS)), "203.0.113.1", "198.51.100.1", "accounts_all_full")
+
+    def refused_again_when_cached(self, limits, ip, code):
+        """A topology handed out while the budget had room is not handed out again once the budget is full."""
+        self.proxied(**limits)
+        status, handed, _ = self.topology_of(ip, 3)
+        self.assertEqual((status, handed["exists"]), (200, False))
+        self.assertEqual(self.open_account(ip, 4)[0], 200)   # another account of the same client uses the budget up
+        status, out, _ = self.topology_of(ip, 3)   # the same key asks again: the cached blob
+        self.assertEqual((status, out["code"]), (429, code))
+        self.assertNotIn("blob", out)
+
+    def test_a_cached_topology_is_refused_again_once_the_64_budget_is_full(self):
+        self.refused_again_when_cached(dict(creates=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:3:1::1", "accounts_network_full")
+
+    def test_a_cached_topology_is_refused_again_once_the_48_budget_is_full(self):
+        self.refused_again_when_cached(dict(creates_net=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:4:1::1", "accounts_network_full")
+
+    def test_a_cached_topology_is_refused_again_once_everyones_budget_is_full(self):
+        self.refused_again_when_cached(dict(new_total=A.day_limit(1, A.ALL_ACCOUNTS)), "203.0.113.9", "accounts_all_full")
+
     def test_the_refusal_says_which_limit_is_shared_and_when_to_come_back(self):
         self.proxied(creates=A.day_limit(1, A.NETWORK_ACCOUNTS), new_total=A.day_limit(2, A.ALL_ACCOUNTS))
         self.assertEqual(self.open_account("203.0.113.5", 1)[0], 200)
@@ -2088,6 +2132,23 @@ class NewAccountLimits(Behind):
         status, out, _ = self.open_account("1.1.1.1", 0)
         self.assertEqual((status, out.get("restored")), (200, True))
         self.assertEqual(self.calls_to("/external/allocate"), [])
+
+    def test_the_take_back_ceilings_are_worded_as_take_backs_by_default_and_in_main(self):
+        service = A.Accounts(None, "svc", None, [])
+        self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
+        self.assertEqual((service.overall.code, service.traffic.code), ("send_all_full", "send_all_full"))
+        built = {}
+
+        def stop(service, *args, **kw):   # main() builds the service and hands it to the server: take it there
+            built["service"] = service
+            raise SystemExit(0)
+        argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--take-backs-per-day", "123", "--take-back-traffic-per-day", "456"]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", stop), self.assertRaises(SystemExit):
+            A.main(argv)
+        service = built["service"]
+        self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
+        self.assertEqual((service.take_backs.count, service.take_back_traffic.count), (123, 456))
+        self.assertEqual((service.overall.code, service.traffic.code), ("send_all_full", "send_all_full"))
 
     def test_the_default_limits_are_per_64_per_48_and_everyone(self):
         service = A.Accounts(None, "svc", None, [])

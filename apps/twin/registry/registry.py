@@ -243,11 +243,11 @@ class LockParts:
     def _full(self, receiver: str, client: str):
         """The refusal for an announcement of new parts that the caps do not allow, or None."""
         if len(self.parts) >= self.limit:
-            return HttpError(503, "Too many moves are waiting for everyone just now. Try again in a few hours.")
+            return HttpError(503, "The Bridge has started too many moves in the last few hours. Try again in a few hours.")
         if self.by_receiver[(receiver, client)] >= self.per_receiver:
-            return HttpError(429, "Too many moves to this Canton account are waiting. Try again in a few hours.", int(self.ttl))
+            return HttpError(429, "Too many moves to this Canton account were started in the last few hours. Try again later.", int(self.ttl))
         if client and self.by_client[client] >= self.per_client:
-            return HttpError(429, "This network has too many moves waiting. Try again in a few hours, or from another network.", int(self.ttl))
+            return HttpError(429, "This network has started too many moves in the last few hours. Try again later, or from another network.", int(self.ttl))
         return None
 
     def _forget(self, lid: str) -> None:
