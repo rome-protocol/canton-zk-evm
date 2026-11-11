@@ -14,6 +14,7 @@ import { JobQueue } from "./verifier/jobs.ts";
 import { createHttpServer } from "./http.ts";
 import { ledgerFromConfig } from "./ledger-config.ts";
 import { createPublicRpc } from "./public-rpc.ts";
+import { createLegCheck } from "./leg-check.ts";
 import { createReth } from "./reth.ts";
 import { createStreamHub, startStreamTimers } from "./rest/stream.ts";
 import { createStreamSource } from "./rest/stream-source.ts";
@@ -33,7 +34,7 @@ try {
   const tracker = createTracker({ reth, index, file: config.tracker.file, ...storage.tracker, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, maxPendingMs: config.tracker.maxPendingMinutes * 60000, pollMs: config.pollMs });
   const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), builder: loadBuilder(config.faucet.keyFile ? config.faucet.github : null, config.faucet.clientKeyFile, loadClientKey), ...storage.faucet, chainId: config.chainId, reth, tracker });
   const rpc = config.publicRpc.on
-    ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, heavyConcurrency: config.publicRpc.heavyConcurrency, heavyQueue: config.publicRpc.heavyQueue, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
+    ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, heavyConcurrency: config.publicRpc.heavyConcurrency, heavyQueue: config.publicRpc.heavyQueue, tracker, legCheck: config.publicRpc.legCheckUrl ? createLegCheck(config.publicRpc.legCheckUrl) : undefined }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
   // Verification (design 6.3): the routes are always registered with a database, and answer 503 until a verifier role is running. A client's address is kept only as a keyed hash,

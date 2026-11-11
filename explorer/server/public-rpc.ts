@@ -2,6 +2,7 @@ import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from
 import type { Tracker } from "./tracker.ts";
 import { isHexBytes } from "./hex.ts";
 import { createHeavyLimiter, isHeavy, MAX_IN_FLIGHT } from "./rpc-heavy.ts";
+import type { LegCheck } from "./leg-check.ts";
 
 /**
  * The public RPC: what a wallet or a script sees of the chain. It forwards to reth, but it shows only what is final on Canton.
@@ -16,6 +17,17 @@ export const PUBLIC_METHODS: ReadonlySet<string> = new Set([
   "eth_getTransactionCount", "eth_call", "eth_estimateGas", "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_feeHistory", "eth_getBlockByNumber",
   "eth_getBlockByHash", "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getLogs", "eth_sendRawTransaction",
 ]);
+
+/**
+ * How many nonces ahead of the sender's next one a transaction may be and still wait for the missing ones, as it does on an Ethereum node (which queues it).
+ * One account's batch of sends that arrive in another order than they were signed in (a `forge script` broadcast without `--slow`, parallel sends) gets through.
+ */
+export const MAX_NONCE_AHEAD = 16;
+/** The most transactions held back for a missing nonce, from all senders together, and the most bytes of them (signed transactions, as hex). */
+export const MAX_QUEUED = 2048;
+export const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+/** How long a transaction waits for the nonce before it, in milliseconds. After that it is forgotten, as a queued transaction is on a node. */
+export const QUEUE_TTL_MS = 10 * 60 * 1000;
 
 /** The most calls in one batch. */
 export const MAX_BATCH = 20;
@@ -41,6 +53,15 @@ export interface PublicRpcOptions {
   now?: () => number;
   /** How long the finalized number is reused. Zero asks reth every time. */
   finalizedTtlMs?: number;
+  /** Says before a send whether a Canton leg the transaction would record has no Canton side (see leg-check.ts). Absent: no check. */
+  legCheck?: LegCheck;
+  /** The most nonces ahead a transaction may be and wait for the missing ones. */
+  maxNonceAhead?: number;
+  /** The most transactions, and the most hex characters of them, that wait for a missing nonce, from all senders together. */
+  maxQueued?: number;
+  maxQueuedBytes?: number;
+  /** How long a transaction waits for its missing nonce. */
+  queueTtlMs?: number;
 }
 
 interface RpcError { code: number; message: string; data?: unknown }
@@ -83,6 +104,7 @@ export function clientKey(ip: string): string {
 
 export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = MAX_IN_FLIGHT, heavyConcurrency = 8, heavyQueue = 16 } = o;
+  const { maxNonceAhead = MAX_NONCE_AHEAD, maxQueued = MAX_QUEUED, maxQueuedBytes = MAX_QUEUED_BYTES, queueTtlMs = QUEUE_TTL_MS } = o;
   const heavy = createHeavyLimiter(heavyConcurrency, heavyQueue);
   let inFlight = 0;
   const perMs = o.ratePerMinute / 60000;
@@ -201,6 +223,81 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   /** The tail of each sender's chain of sends, by recovered address. */
   const lanes = new Map<string, Promise<void>>();
 
+  /** Runs `job` after the sender's earlier sends: one sender's sends go through reth one after another, in the order they arrive. */
+  function inLane<T>(from: string, job: () => Promise<T>): Promise<T> {
+    const before = lanes.get(from) ?? Promise.resolve();
+    const mine = before.then(job);
+    const tail = mine.then(() => undefined, () => undefined);
+    lanes.set(from, tail);
+    void tail.then(() => {
+      if (lanes.get(from) === tail) lanes.delete(from);
+    });
+    return mine;
+  }
+
+  /**
+   * Transactions that are ahead of their sender's next nonce, by sender and nonce. An Ethereum node holds such a transaction (it is "queued") and moves it on
+   * when the nonce before it arrives; this does the same, in this process, within bounds: a few nonces ahead for each sender, and a count, a size and a time
+   * for all senders together. They are not in reth's pool and not in the tracker, so a flood of them fills neither.
+   */
+  type Waiting = { raw: string; hash: string; at: number };
+  const waiting = new Map<string, Map<number, Waiting>>();
+  let waitingCount = 0, waitingBytes = 0;
+  let waitingTimer: ReturnType<typeof setInterval> | undefined;
+
+  function forget(from: string, nonce: number): void {
+    const q = waiting.get(from), w = q?.get(nonce);
+    if (!q || !w) return;
+    q.delete(nonce);
+    waitingCount--;
+    waitingBytes -= w.raw.length;
+    if (q.size === 0) waiting.delete(from);
+    if (waitingCount === 0 && waitingTimer) { clearInterval(waitingTimer); waitingTimer = undefined; }
+  }
+
+  /** Drops what has waited longer than `queueTtlMs`. */
+  function expire(): void {
+    const t = now();
+    for (const [from, q] of [...waiting]) for (const [nonce, w] of [...q]) if (t - w.at >= queueTtlMs) forget(from, nonce);
+  }
+
+  /** Sends on the transactions that wait for a nonce that has come, for every sender that has some. A sender's own sends move them on at once; this catches the rest (another instance took the missing nonce). */
+  function drainAll(): void {
+    expire();
+    for (const from of [...waiting.keys()]) {
+      // reth that cannot be reached is said by every other call; it is not said again here every second for each sender.
+      void inLane(from, () => release(from, undefined)).catch((e) => { if (!(e instanceof Unreachable)) console.error(`rpc: cannot send on the waiting transactions of ${from}: ${(e as Error).message}`); });
+    }
+  }
+
+  /**
+   * Sends on `from`'s waiting transactions, from nonce `next` (reth's pending count for the sender, read when it is not given) as long as the next nonce is there.
+   * Inside the sender's lane. One that is refused is dropped, and the ones after it wait for it for ever until they expire: its sender has its hash and
+   * finds it missing, as on a node that dropped it from its queue.
+   */
+  async function release(from: string, known: number | undefined): Promise<void> {
+    expire();
+    const q = waiting.get(from);
+    if (!q) return;
+    let next = known;
+    if (next === undefined) {
+      const pool = await up("eth_getTransactionCount", [from, "pending"]);
+      if ("error" in pool) return;
+      next = quantity(pool.result);
+      if (Number.isNaN(next)) return;
+    }
+    for (const nonce of [...q.keys()]) if (nonce < next) forget(from, nonce); // that nonce was used some other way
+    for (let w = q.get(next); w; w = q.get(next)) {
+      forget(from, next);
+      const sent = await forward(w.raw, w.hash, from, next).catch((e) => ({ error: { code: -32603, message: (e as Error).message } }) as Up);
+      if (!("result" in sent) && !("error" in sent && REFUSED_ANSWER.test(sent.error.message))) {
+        console.error(`rpc: a waiting transaction ${w.hash} from ${from} (nonce ${next}) was not accepted: ${"error" in sent ? sent.error.message : "no answer"}`);
+        return;
+      }
+      next++;
+    }
+  }
+
   async function sendRaw(params: unknown[]): Promise<Up> {
     const raw = params[0];
     if (params.length !== 1 || typeof raw !== "string" || !isHexBytes(raw, { upper: true, empty: false })) return err(-32602, "Send the signed transaction as one 0x hex string.");
@@ -220,28 +317,58 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       const base = await baseFee();
       if (base !== null && offered < base) return err(-32000, `max fee per gas is below the current base fee: this transaction pays at most ${offered} wei per gas, and the base fee is ${base} wei. Sign it again with a higher max fee per gas.`);
     }
+    // A call that would record a Canton leg with no Canton side is never mined and holds up the sender's later transactions: it is refused here, with the reason,
+    // before it takes a nonce. A creation records no leg. The check says nothing when it cannot tell, and then the send goes on.
+    if (o.legCheck && tx.to) {
+      const reason = await o.legCheck({ from, to: tx.to, data: tx.data ?? "0x", value: "0x" + (tx.value ?? 0n).toString(16), gas: "0x" + (tx.gas ?? 0n).toString(16) });
+      if (reason) return err(-32000, `This transaction would ask Canton for a leg that has no Canton side now, so no block would take it and it would hold up your later transactions. Make its Canton side first, then send it again. ${reason}`);
+    }
     // One sender's sends go through reth one after another, in the order they arrive: the nonce check below reads reth's pool, so the
     // second transaction of a batch (or of two overlapping requests) has to read it after the first is in the pool.
-    const before = lanes.get(from) ?? Promise.resolve();
-    const mine = before.then(() => sendLocked(raw, tx, from));
-    const tail = mine.then(() => undefined, () => undefined);
-    lanes.set(from, tail);
-    void tail.then(() => {
-      if (lanes.get(from) === tail) lanes.delete(from);
-    });
-    return mine;
+    return inLane(from, () => sendLocked(raw, tx, from));
   }
 
   async function sendLocked(raw: string, tx: ReturnType<typeof parseTransaction>, from: string): Promise<Up> {
     const hash = keccak256(raw as Hex), lower = raw.toLowerCase();
     // A transaction ahead of the sender's next nonce cannot go into a block yet. Following it would fill the tracker's list with
-    // entries that wait for something the sender may never send, so it is refused here, before the tracker or reth see it.
+    // entries that wait for something the sender may never send, so it is not sent to reth or followed: it waits here, within bounds, for the nonce before it.
     const nonce = tx.nonce ?? 0;
     const pool = await up("eth_getTransactionCount", [from, "pending"]);
     if ("error" in pool) return pool;
     const next = quantity(pool.result);
     if (Number.isNaN(next)) throw new Unreachable("eth_getTransactionCount: not a number");
-    if (nonce > next) return err(-32000, `nonce gap: send the missing transactions first. This transaction has nonce ${nonce}, and the chain expects ${next} next.`);
+    if (nonce > next) return hold(lower, hash, from, nonce, next);
+    const sent = await forward(lower, hash, from, nonce, raw);
+    // The nonce it took may be the one the waiting transactions of the sender wait for.
+    if ("result" in sent || ("error" in sent && REFUSED_ANSWER.test(sent.error.message))) await release(from, nonce + 1).catch((e) => console.error(`rpc: cannot send on the waiting transactions of ${from}: ${(e as Error).message}`));
+    return sent;
+  }
+
+  /** Keeps a transaction that is ahead of the sender's next nonce until the ones before it arrive, and answers with its hash, as a node that queues it does. */
+  function hold(lower: string, hash: string, from: string, nonce: number, next: number): Up {
+    if (nonce - next > maxNonceAhead) {
+      return err(-32000, `nonce too far ahead: this transaction has nonce ${nonce}, and the chain expects ${next} next. A transaction can wait for at most ${maxNonceAhead} missing nonces before it: send the missing transactions first.`);
+    }
+    expire();
+    const same = waiting.get(from)?.get(nonce);
+    if (same?.hash === hash) return { result: hash };
+    const replaced = same?.raw.length ?? 0;
+    if (waitingCount - (same ? 1 : 0) >= maxQueued || waitingBytes - replaced + lower.length > maxQueuedBytes) {
+      return err(-32005, `This RPC is holding as many transactions as it can for a missing nonce right now (${maxQueued} transactions, ${Math.round(maxQueuedBytes / 1024)} KiB). Send the missing transactions first, or try again in a moment.`);
+    }
+    if (same) forget(from, nonce); // a new transaction with the same nonce takes its place, as a replacement does on a node
+    let q = waiting.get(from);
+    if (!q) waiting.set(from, (q = new Map()));
+    q.set(nonce, { raw: lower, hash, at: now() });
+    waitingCount++;
+    waitingBytes += lower.length;
+    if (!waitingTimer) { waitingTimer = setInterval(drainAll, 1000); waitingTimer.unref(); }
+    return { result: hash };
+  }
+
+  /** What follows the nonce check: the tracker is asked, reth is sent the transaction, and the tracker follows it. */
+  async function forward(lower: string, hash: string, from: string, nonce: number, rawAsSent?: string): Promise<Up> {
+    const raw = rawAsSent ?? lower;
     // Ask before reth takes it: a transaction that cannot be followed is refused, not accepted and then forgotten.
     const full = tracker.admit(lower, hash, from);
     if (full) return err(-32005, full);

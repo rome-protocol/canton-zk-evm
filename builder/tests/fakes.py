@@ -129,6 +129,9 @@ class FakeReth:
         self.raw_blocks: dict = {}
         self.by_number: dict = {}   # number -> the hash of the block most recently built at that height
         self.jwt_failures = 0
+        self.trace_legs: dict = {}   # the `to` of a call (as the caller wrote it) -> the Leg events a debug_traceCall of a call to it shows, under the gateway
+        self.trace_error = None      # a debug_traceCall fails with this
+        self.traced: list = []       # the params of each debug_traceCall
         self.tx_legs: dict = {}   # transaction hash -> the Leg events that transaction makes, in order, when it is in a block (or a function from the block's transaction hashes to them)
         self.block_txs: dict = {}   # block hash -> the hashes of its transactions
         self.other_gateway_legs: dict = {}   # a registered gateway's address (40 hex) -> transaction hash -> the Leg events that transaction makes at that gateway
@@ -223,6 +226,14 @@ class FakeReth:
     def _rpc(self, method, params):
         if method == "txpool_content":
             return {"pending": {s: {str(int(t["nonce"], 16)): t for t in ts} for s, ts in self.pool.items()}, "queued": {}}
+        if method == "debug_traceCall":
+            self.traced.append(params)
+            if self.trace_error:
+                raise RpcError(self.trace_error)
+            call = params[0]
+            logs = [{"address": "0x" + GATEWAY, "topics": [LEG_TOPIC], "data": "0x" + leg.data().hex()} for leg in self.trace_legs.get(call.get("to"), [])]
+            return {"type": "CALL", "from": call["from"], "to": call.get("to"), "logs": [],
+                    "calls": [{"type": "CALL", "from": call.get("to"), "to": "0x" + GATEWAY, "logs": logs, "calls": []}] if logs else []}
         if method == "txpool_status":
             return {"pending": hex(sum(len(ts) for ts in self.pool.values())), "queued": "0x0"}
         if method == "eth_getRawTransactionByHash":
@@ -442,6 +453,11 @@ class FakeLedger:
         self.bad_auth = 0
         self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
+        self.hosting: dict = {}   # party -> {participant id: the permission that participant holds for it}, what GET /v2/state/connected-synchronizers says
+        self.hosting_failure = None   # an HTTP status that every hosting lookup answers
+        self.connected = True   # the participant is connected to a synchronizer (when not, it answers an empty list for every party)
+        self.confirm_timeout = None   # "completion": Advance is answered 408 and its completion says the mediator did not get the confirmations in time; "none": 408 and no completion at all
+        self.hosting_asked: list = []   # (party, participant id) of each lookup
         self.completion_queries: list = []   # (query string, body) of each completions read
         self.completions_delay = 0.0   # seconds the completions read takes to answer
         self.hold: "threading.Event | None" = None   # an Advance waits for this to be set before it is decided
@@ -589,6 +605,16 @@ class FakeLedger:
                 for prefix, code in ledger.get_failures.items():
                     if self.path.startswith(prefix):
                         return self._reply(code, {})
+                if self.path.split("?")[0] == "/v2/state/connected-synchronizers":
+                    if ledger.hosting_failure:
+                        return self._reply(ledger.hosting_failure, {"code": "FAILURE"})
+                    asked = urllib.parse.parse_qs(self.path.partition("?")[2])
+                    if "party" not in asked:
+                        return self._reply(200, {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "sync::1", "permission": "PARTICIPANT_PERMISSION_SUBMISSION"}] if ledger.connected else []})
+                    party, participant = asked["party"][0], asked["participantId"][0]
+                    ledger.hosting_asked.append((party, participant))
+                    permission = ledger.hosting.get(party, {}).get(participant)
+                    return self._reply(200, {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "sync::1", "permission": permission}] if permission and ledger.connected else []})
                 self._reply(200, {"offset": 42} if self.path == "/v2/state/ledger-end" else {})
 
             def do_POST(self):
@@ -697,6 +723,10 @@ class FakeLedger:
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
                     if ledger.reply_status:
                         return self._reply(ledger.reply_status, {"cause": "x"})
+                    if ledger.confirm_timeout:
+                        if ledger.confirm_timeout == "completion":
+                            ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "status": {"code": 10, "message": "MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe."}}
+                        return self._reply(408, {"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"})
                     exercise = body["commands"][0]["ExerciseCommand"]
                     header = bytes.fromhex(exercise["choiceArgument"]["headerHex"])
                     no = ledger.refusal(header, exercise["contractId"])
