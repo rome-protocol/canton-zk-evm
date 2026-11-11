@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon.tsx";
+import { OutLink } from "../components/Help.tsx";
+import { ACCOUNT_KEY_WORDS, TRUST_MODEL_URL } from "../copy.ts";
 import { short } from "../format.ts";
 import { showBalance } from "../bridge/amounts.ts";
 import type { Sender } from "../bridge/send.ts";
@@ -49,12 +51,12 @@ export function AccountPanel({ wallet, party, pairs, held, chainName, sender = n
           {cantonWallet ? (
             <p className="small muted">This is your address on Canton. Sending and accepting are done in {inWallet(cantonWallet)} itself.</p>
           ) : (
-            <p className="small muted">This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.</p>
+            <p className="small muted">{ACCOUNT_KEY_WORDS} <OutLink href={TRUST_MODEL_URL}>Limits</OutLink></p>
           )}
           {kept && (
             <>
-              <p className="small muted">This browser keeps your account open: a reload does not ask your wallet again. The key is stored here and cannot be read out.</p>
-              <button type="button" className="btn ghost" onClick={kept.onClose}>Close my Canton account on this browser</button>
+              <p className="small muted">This browser keeps your account's key: a reload does not ask your wallet again. The key is stored here and cannot be read out, but a script running on this page could still sign with it while it is kept. Removing it here does not close the account on Canton.</p>
+              <button type="button" className="btn ghost" onClick={kept.onClose}>Remove my Canton key from this browser</button>
               {kept.note && <p className="small bad" role="alert">{kept.note}</p>}
             </>
           )}

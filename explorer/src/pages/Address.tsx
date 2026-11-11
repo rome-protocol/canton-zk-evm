@@ -10,9 +10,14 @@ import { Contract } from "./Contract.tsx";
 import "./address.css";
 import "./tx.css";
 import { Info } from "../components/Info.tsx";
+import { labelName, useLabels } from "../labels.ts";
 
 /** The title: an address that holds no code. A contract and a token have their own pages. */
-const Title = ({ a }: { a: AddressDetail }) => <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span><CreatedChip a={a} to="?tab=contracts" /></div>;
+function Title({ a }: { a: AddressDetail }) {
+  // Rome's own test and load addresses are named, so a reader does not take their traffic for outside use.
+  const name = labelName(useLabels([a.address]).get(a.address));
+  return <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span>{name && <span className="chip" title="An address Rome uses for its own tests">{name}</span>}<CreatedChip a={a} to="?tab=contracts" /></div>;
+}
 
 /** The balance is what reth says at the final block; with no final block yet it is not known, and is never drawn as 0. */
 function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | undefined }) {

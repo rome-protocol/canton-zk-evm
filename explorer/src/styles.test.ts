@@ -114,8 +114,11 @@ describe("fonts and outside requests", () => {
 
   it("loads nothing from another host: no web address in the pages' styles, markup or code", () => {
     for (const f of [...sources(join(root, "src")), join(root, "index.html")]) {
-      // The one other address is the link to the source, which a person may follow: nothing is loaded from it.
-      expect(readFileSync(f, "utf8").replace(/http:\/\/www\.w3\.org\/2000\/svg/g, "").replace(/https:\/\/github\.com\/rome-protocol\/canton-zk-evm"/g, '"'), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
+      // The other addresses are links a person may follow (the source, the docs, the issues and the trust model), and the picture a shared link shows: they are named in copy.ts and index.html and nowhere else, and nothing is loaded from them.
+      const text = readFileSync(f, "utf8");
+      const named = /https:\/\/(github\.com\/rome-protocol\/canton-zk-evm|docs\.rome\.builders\/canton-zk-evm|ostia\.devnet\.romeprotocol\.xyz\/ostia-card\.png)[^"`\s]*/g;
+      if (!/(^|\/)(copy\.ts|index\.html)$/.test(f)) expect(text.match(named) ?? [], f).toEqual([]);
+      expect(text.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, "").replace(named, ""), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
     }
   });
 });

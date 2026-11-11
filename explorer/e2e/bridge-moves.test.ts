@@ -180,9 +180,9 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   /** Connects, opens the Canton account from the wallet, and waits until the card asks for an amount. */
   async function signedIn(page: any) {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();   // the card is drawn with its tokens, so the page does not move under the click
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
   }
   /** Opens the token picker of a field and takes a token of it (named as the picker names it, "Canton Coin on Canton"). */
@@ -195,7 +195,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   it("moves a token from Ostia to Canton: approve, then pay in, two pop-ups, then final", async () => {
     const page = await open("/bridge");
     await signedIn(page);
-    expect(await page.getByText("About 2 min · 2 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 2 wallet pop-ups").count()).toBe(1);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1.5");
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
@@ -248,7 +248,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await page.getByRole("button", { name: "Swap direction" }).click();
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 wallet pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
     expect(seen.executed).toBe(1);
@@ -269,7 +269,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^Canton Coin on Canton$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 wallet pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
     expect(seen.factoryAsked).toBe(1);   // the registry's allocation factory was asked once, through the account service
@@ -291,7 +291,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^wCC on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 wallet pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];
@@ -309,7 +309,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await signedIn(page);
     await pick(page, "From", /^tROME on Ostia$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("20.5");   // more than the wrapped coin held (20): the rest is wrapped first
-    expect(await page.getByText("About 2 min · 3 MetaMask pop-ups").count()).toBe(1);
+    expect(await page.getByText("About 2 min · 3 wallet pop-ups").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Canton" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 60_000 });
     const sent = [...chain.sent.values()];
@@ -373,7 +373,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     }
     await page.reload({ waitUntil: "load" });
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
-    await page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });   // the wallet stays connected across the reload
+    await page.getByRole("button", { name: "Connect wallet" }).waitFor({ state: "detached" });   // the wallet stays connected across the reload
     await page.getByRole("tab", { name: "Activity" }).click();
     const activity = page.getByRole("region", { name: "Activity" });
     const row = activity.getByRole("listitem").filter({ hasText: "5 TKA to Ostia" });
@@ -382,7 +382,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await noSideways(page)).toBe(true);
     if (forget) {
       await row.getByRole("button", { name: "Open my Canton account to continue" }).click();
-      await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+      await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     }   // else the browser kept the account's key: the account opens again by itself when the page loads, with no second signature, and the row carries on.
     await row.getByRole("button", { name: "Release on Ostia" }).click();
     await row.getByRole("link", { name: "Ostia block 36512" }).waitFor({ timeout: 90_000 });
@@ -417,7 +417,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   it("shows the account panel at 360 px: both addresses with their copy buttons and the Canton balances, nothing cut, no sideways scroll", async () => {
     const page = await open("/bridge");
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     const panel = page.getByRole("region", { name: "Your addresses" });
     await panel.waitFor();
     expect(await panel.getByText("Your wallet on Ostia").count()).toBe(1);
@@ -425,10 +425,10 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
     expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(0);
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByRole("button", { name: "Enter an amount" }).waitFor({ timeout: 30_000 });
     await panel.getByText("Your account on Canton").waitFor();
-    await panel.getByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false }).waitFor();
+    await panel.getByText("Canton Coin can be sent to it from any Canton address.", { exact: false }).waitFor();
     expect(await panel.getByRole("button", { name: "Copy your wallet address on Ostia" }).count()).toBe(1);
     expect(await panel.getByRole("button", { name: "Copy your account address on Canton" }).count()).toBe(1);
     await panel.getByText("20", { exact: true }).first().waitFor();   // the account holds 20 of the token (the fake service's holdings)
@@ -472,7 +472,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     });
   });
 
-  it("lays the folded steps list out one step to a line at 360 px and at 1280 px: each label and its MetaMask pop-up text on one line, nothing overlapping", async () => {
+  it("lays the folded steps list out one step to a line at 360 px and at 1280 px: each label and its wallet pop-up text on one line, nothing overlapping", async () => {
     service.extra = { wrapper: true, wrapped: true };
     const page = await open("/bridge");
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
@@ -490,12 +490,12 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
         steps.forEach((st: any, i: number) => {
           const at = `${width}px, ${st.label}`;
           for (const [what, b] of [["label", st.labelBox], ["note", st.noteBox]] as const) {
-            if (!/MetaMask pop-up/.test(st.note) && (what === "note" || width < 1280)) continue;   // a step that is not a pop-up: its note may wrap, and at phone width its label too
+            if (!/wallet pop-up/.test(st.note) && (what === "note" || width < 1280)) continue;   // a step that is not a pop-up: its note may wrap, and at phone width its label too
             expect(b.lines, `${at}: ${what} is on ${b.lines} lines`).toBe(1);
             expect(b.height, `${at}: ${what} is ${b.height} px high`).toBeLessThanOrEqual(b.line * 1.5);
           }
-          if (/MetaMask pop-up/.test(st.note)) popups++;
-          const flows = !/MetaMask pop-up/.test(st.note) && (st.noteBox.lines > 1 || st.labelBox.lines > 1);   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
+          if (/wallet pop-up/.test(st.note)) popups++;
+          const flows = !/wallet pop-up/.test(st.note) && (st.noteBox.lines > 1 || st.labelBox.lines > 1);   // a long note that is not a pop-up runs on from the label's line to the next: its box spans both
           const sameRow = Math.min(st.labelBox.bottom, st.noteBox.bottom) - Math.max(st.labelBox.top, st.noteBox.top) > 2;
           if (flows) { /* wraps by design */ } else if (sameRow) expect(st.labelBox.right, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.left + 1);   // on the same line: side by side
           else expect(st.labelBox.bottom, `${at}: label and note overlap`).toBeLessThanOrEqual(st.noteBox.top + 1);   // wrapped: one under the other

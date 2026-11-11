@@ -14,7 +14,7 @@ import { dateTime } from "../format.ts";
 import { MoveMarks } from "./MoveMarks.tsx";
 import { useMarks, useMoveState } from "./moveWatch.ts";
 
-export interface ActivityProps {
+import { StillStuck } from "../components/Help.tsx";export interface ActivityProps {
   /** The wallet's account, or null while the wallet is not connected. */
   account: string | null;
   /** The move's machinery, once the Canton account is open. Without it the list is shown, and a move cannot be continued. */
@@ -129,7 +129,7 @@ export function Activity(props: ActivityProps) {
     finally { setBusy(false); setStamp((n) => n + 1); }
   }, [session, busy]);
 
-  if (!account) return <section className="card" aria-label="Activity"><p className="muted">Connect MetaMask to see your moves.</p><button type="button" className="btn go" onClick={props.onConnect}>Connect MetaMask</button>{props.connectNote && <p className="small bad" role="alert">{props.connectNote}</p>}</section>;
+  if (!account) return <section className="card" aria-label="Activity"><p className="muted">Connect your wallet to see your moves.</p><button type="button" className="btn go" onClick={props.onConnect}>Connect wallet</button>{props.connectNote && <p className="small bad" role="alert">{props.connectNote}</p>}</section>;
   const going = RUNNING.includes(state.phase);
   return (
     <section className="card activity" aria-label="Activity">
@@ -139,7 +139,7 @@ export function Activity(props: ActivityProps) {
           {rows.map((e) => <Row key={e.ref} e={e} props={props} state={state} live={e.ref === liveRef} onCanton={open !== null && openOnCanton(e, open)} busy={busy || (going && e.ref !== liveRef)} onContinue={onContinue} />)}
         </ul>
       )}
-      {problem && <p className="small bad" role="alert">{problem}</p>}
+      {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck /></>}
     </section>
   );
 }

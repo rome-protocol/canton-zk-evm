@@ -48,9 +48,9 @@ const faucetAccepts = () => {
 const openSheet = async () => userEvent.click(await screen.findByRole("button", { name: "Open my Canton account" }));
 const signIn = async () => {
   renderApp("/bridge");
-  await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
   await openSheet();
-  await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
 };
 
 describe("the Bridge page", () => {
@@ -66,7 +66,7 @@ describe("the Bridge page", () => {
     renderApp("/bridge");
     expect(await screen.findByRole("tab", { name: "Move" })).toHaveAttribute("aria-selected", "true");
     await userEvent.click(screen.getByRole("tab", { name: "Activity" }));
-    expect(screen.getByRole("region", { name: "Activity" })).toHaveTextContent("Connect MetaMask to see your moves.");
+    expect(screen.getByRole("region", { name: "Activity" })).toHaveTextContent("Connect your wallet to see your moves.");
     expect(screen.queryByRole("region", { name: "Move tokens" })).toBeNull();   // the card is hidden, not gone
     await userEvent.click(screen.getByRole("tab", { name: "Move" }));
     expect(screen.getByRole("region", { name: "Move tokens" })).toBeInTheDocument();
@@ -77,10 +77,10 @@ describe("the Bridge page", () => {
     setUp();
     mocks.openAccount.mockResolvedValue(opened());
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await openSheet();
     expect(await screen.findByText(ORIGIN)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(mocks.openAccount).toHaveBeenCalledWith(expect.anything(), ME, expect.objectContaining({ origin: ORIGIN, participant: env.VITE_CANTON_PARTICIPANT }), expect.any(Function), undefined, expect.any(Function));
     expect(screen.getByTitle(PARTY)).toHaveTextContent("rome::1220ababab…ababab");
@@ -106,7 +106,7 @@ describe("the Bridge page", () => {
     mocks.openAccount.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: 4001 })).mockResolvedValue({ party: PARTY });
     await signIn();
     expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
   });
 
@@ -114,16 +114,58 @@ describe("the Bridge page", () => {
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
     fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) }));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("No wallet was found in this browser. Install MetaMask, then open this page again.");
+    expect(alert).toHaveTextContent("No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again.");
     expect(alert.textContent).not.toMatch(/EIP|ERC/);
+  });
+
+  it("makes only the promises the trust model makes at the sign-in: the account depends on the wallet, there is no recovery, and the Limits link goes to the trust model", async () => {
+    setUp();
+    renderApp("/bridge");
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
+    await openSheet();
+    const sheet = await screen.findByRole("region", { name: "Your Canton account" });
+    expect(sheet.textContent).not.toMatch(/on any device/);
+    expect(sheet).toHaveTextContent("If your wallet gives the same signature again, the same account opens on another device. Not every wallet does: MetaMask, Rabby and OKX on a computer have been tested.");
+    expect(sheet).toHaveTextContent("No recovery: DevNet test tokens only.");
+    expect(within(sheet).getByRole("link", { name: "Limits" })).toHaveAttribute("href", "https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature");
+    expect(within(sheet).getByRole("link", { name: "Limits" })).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("says which moves are public, and links the docs and the issues for help", async () => {
+    setUp();
+    renderApp("/bridge");
+    expect(await screen.findByText("Moves are public on Ostia. A move back to Canton shows your Canton account next to your Ostia address.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Read the docs" })).toHaveAttribute("href", "https://docs.rome.builders/canton-zk-evm/");
+    expect(screen.getByRole("link", { name: "open an issue" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm/issues");
+  });
+
+  it("gives a sign-in that failed the next step: where to open an issue, with the time to quote", async () => {
+    setUp();
+    mocks.openAccount.mockRejectedValueOnce(new Error("boom"));
+    await signIn();
+    await screen.findByRole("alert");
+    expect(screen.getByText(/Still stuck\?/)).toHaveTextContent(/quote \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+  });
+
+  it("tells a phone with no wallet in its browser what works: the wallet app's own browser, and that no phone wallet has been tested", async () => {
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148");
+    try {
+      fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) }));
+      renderApp("/bridge");
+      const note = await screen.findByRole("note");
+      expect(note).toHaveTextContent("On a phone, open this page in your wallet app's own browser. No phone wallet has been tested with this page yet: desktop MetaMask, Rabby and OKX have been.");
+      await userEvent.click(screen.getByRole("button", { name: "Connect wallet" }));
+      expect(await screen.findAllByText(/wallet app's own browser/)).not.toHaveLength(0);
+    } finally { agent.mockRestore(); }
   });
 
   it("shows the page's own origin beside the sign-in", async () => {
     setUp();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await openSheet();
     expect(await screen.findByText(location.origin)).toBeInTheDocument();
   });
@@ -132,11 +174,11 @@ describe("the Bridge page", () => {
     setUp();
     vi.stubEnv("VITE_SITE_ORIGIN", "https://ostia.example");   // the page is at the test page's address, not this one
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(`This page is open at ${location.origin}, but this bridge is set up for https://ostia.example. Signing is turned off here.`);
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     expect(mocks.openAccount).not.toHaveBeenCalled();
   });
 
@@ -148,7 +190,7 @@ describe("the Bridge page", () => {
       .mockResolvedValue(opened());
     await signIn();
     expect(await screen.findByRole("alert")).toHaveTextContent("A step for your account from a moment ago is still open. Try again in 10 minutes.");
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Nothing was lost. Try again in a moment."));
     expect(screen.getByRole("alert").textContent).not.toMatch(/TypeError|Cannot read|accounts\.ts|waiting_for_signature/);
   });
@@ -157,13 +199,13 @@ describe("the Bridge page", () => {
     setUp();
     mocks.gas = 0n;
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     expect(await screen.findByRole("button", { name: "Get test tROME" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open my Canton account" })).toBeNull();
     mocks.gas = 3n * 10n ** 18n;
     await userEvent.click(screen.getByRole("button", { name: "Get test tROME" }));   // the faucet asks again for the balance
     await openSheet();
-    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     expect(screen.queryByText(/Get test tROME first/)).toBeNull();
   });
 
@@ -173,10 +215,10 @@ describe("the Bridge page", () => {
     mocks.gas = 0n;
     const asked = faucetAccepts();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     const sheet = await screen.findByRole("region", { name: "Your Canton account" });
     expect(await within(sheet).findByText("Get test tROME first. Every move on Ostia needs a little for fees.")).toBeInTheDocument();
-    expect(within(sheet).queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Sign in with your wallet" })).toBeNull();
     await userEvent.click(within(sheet).getByRole("button", { name: "Get test tROME" }));
     expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
     expect(asked.n).toBe(1);
@@ -188,7 +230,7 @@ describe("the Bridge page", () => {
     mocks.gas = 0n;
     const asked = faucetAccepts();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await userEvent.click(await screen.findByRole("button", { name: "Get test tROME" }));
     expect(await screen.findByText("1 tROME is on its way to your wallet.")).toBeInTheDocument();
     const waiting = await screen.findByRole("button", { name: "tROME is on its way…" });
@@ -207,13 +249,13 @@ describe("the Bridge page", () => {
     let release = () => {};
     mocks.hold = new Promise<void>((r) => { release = r; });   // the balance is not known yet, so the card offers the account and the person opens the sheet
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await openSheet();
     const sheet = await screen.findByRole("region", { name: "Your Canton account" });
-    expect(within(sheet).getByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     release();   // the balance reads 0
     expect(await within(sheet).findByText("Get test tROME first. Every move on Ostia needs a little for fees.")).toBeInTheDocument();
-    expect(within(sheet).queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Sign in with your wallet" })).toBeNull();
     expect(within(sheet).getByRole("button", { name: "Get test tROME" })).toBeEnabled();
   });
 
@@ -227,11 +269,11 @@ describe("the Bridge page", () => {
       .mockRejectedValueOnce(Object.assign(new Error("User rejected the request."), { code: 4001 }))
       .mockResolvedValue(opened());
     await signIn();
-    const said = "Your wallet did not let this page sign. Get test tROME first and make sure MetaMask is on the Ostia network, then sign in again.";
+    const said = "Your wallet did not let this page sign. Get test tROME first and make sure your wallet is on the Ostia network, then sign in again.";
     for (let i = 0; i < 3; i++) {
       await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(said));
       expect(mocks.openAccount).toHaveBeenCalledTimes(i + 1);
-      await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+      await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     }
     expect(await screen.findByRole("alert")).toHaveTextContent("You declined it in your wallet.");
   });
@@ -244,13 +286,13 @@ describe("the Bridge page", () => {
       .mockRejectedValueOnce(Object.assign(new Error("Chain disconnected"), { code: 4901 }))
       .mockResolvedValue(opened());
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await waitFor(() => expect(mocks.reads).toBeGreaterThan(0));   // the card has read the wallet's 5 tROME
     await act(async () => {});
     await openSheet();
-    const said = "Your wallet did not let this page sign. Make sure MetaMask is on the Ostia network, then sign in again.";
+    const said = "Your wallet did not let this page sign. Make sure your wallet is on the Ostia network, then sign in again.";
     for (let i = 0; i < 3; i++) {
-      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
       await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(said));
       expect(screen.getByRole("alert").textContent).toBe(said);
       expect(mocks.openAccount).toHaveBeenCalledTimes(i + 1);
@@ -265,7 +307,7 @@ describe("the Bridge page", () => {
     mocks.openAccount.mockResolvedValue(opened());
     renderApp("/bridge");
     expect(screen.queryByRole("region", { name: "Your addresses" })).toBeNull();   // not connected: nothing to show yet
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     // Before the account is open: the short version, the wallet's address and a word for the other.
     const panel = await screen.findByRole("region", { name: "Your addresses" });
     expect(within(panel).getByText("Your wallet on Ostia")).toBeInTheDocument();
@@ -280,8 +322,8 @@ describe("the Bridge page", () => {
     expect(await within(panel).findByText("Copied")).toBeInTheDocument();
     // Once it is open: both addresses, the line, and the balance of each token this build lists.
     await openSheet();
-    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
-    expect(await within(panel).findByText("Anyone on Canton can send tokens to it; only your MetaMask can move them.", { exact: false })).toHaveTextContent("This is your address on Canton. Anyone on Canton can send tokens to it; only your MetaMask can move them.");
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
+    expect(await within(panel).findByText("Canton Coin can be sent to it from any Canton address.", { exact: false })).toHaveTextContent("This is your address on Canton. Canton Coin can be sent to it from any Canton address. Its key is made from your wallet's signature");
     expect(within(panel).getByText("rome::1220ababab…ababab")).toBeInTheDocument();
     expect(within(panel).queryByText("Not opened yet")).toBeNull();
     expect(within(panel).getByRole("list", { name: "On Canton" })).toBeInTheDocument();   // the rows say whose balances they are, beside the wallet's own address
@@ -302,10 +344,10 @@ describe("the Bridge page", () => {
     let release = () => {};
     mocks.hold = new Promise<void>((r) => { release = r; });   // the wallet's balance is not known yet, so the sheet offers the sign-in
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await openSheet();
     mocks.openAccount.mockResolvedValue(opened());
-    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     const sheet = screen.getByRole("region", { name: "Your Canton account" });
     await waitFor(() => expect(mocks.holdings).toBeGreaterThan(0));
@@ -337,7 +379,7 @@ describe("the Bridge page", () => {
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
     expect(closed).toHaveBeenCalledTimes(1);   // its key is dropped and nothing more is done for it
     await openSheet();   // another wallet account is another Canton account: its sheet starts closed
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeEnabled();
   });
 
   it("opens an account this browser kept for the wallet's address as soon as the wallet is connected, with no sign-in and no signature", async () => {
@@ -345,21 +387,21 @@ describe("the Bridge page", () => {
     mocks.kept = { wallet: ME };
     mocks.reopenAccount.mockResolvedValue(opened(true));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(mocks.reopenAccount).toHaveBeenCalledWith(ME, expect.objectContaining({ origin: ORIGIN }), expect.any(Function), undefined, expect.any(Function), expect.anything());
     expect(mocks.openAccount).not.toHaveBeenCalled();
     expect((window as unknown as { ethereum: { request: { mock: { calls: [{ method: string }][] } } } }).ethereum.request.mock.calls.some(([a]) => a.method === "eth_signTypedData_v4")).toBe(false);
-    expect(screen.getByRole("button", { name: "Close my Canton account on this browser" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove my Canton key from this browser" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with your wallet" })).toBeNull();
   });
 
   it("keeps the sign-in as it was when nothing is kept, or the kept key does not reopen the account", async () => {
     setUp();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await openSheet();
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeEnabled();
     expect(mocks.reopenAccount).not.toHaveBeenCalled();   // nothing kept: the signing code is not even fetched
     vi.clearAllMocks();
     act(() => handlers.accountsChanged!([addr(0xe4)]));
@@ -368,14 +410,14 @@ describe("the Bridge page", () => {
     act(() => handlers.accountsChanged!([ME]));
     await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(1));
     await openSheet();
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeEnabled();
     expect(screen.queryByText("Ready")).toBeNull();
     mocks.reopenAccount.mockRejectedValueOnce(new Error("the service is down"));
     act(() => handlers.accountsChanged!([addr(0xe5)]));
     act(() => handlers.accountsChanged!([ME]));
     await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(2));
     await openSheet();
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeEnabled();
   });
 
   it("closes a reopened account when the wallet switches to another address", async () => {
@@ -383,7 +425,7 @@ describe("the Bridge page", () => {
     mocks.kept = { wallet: ME };
     mocks.reopenAccount.mockResolvedValue(opened(true));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     mocks.kept = null;
     act(() => handlers.accountsChanged!([addr(0xe4)]));
@@ -398,7 +440,7 @@ describe("the Bridge page", () => {
     let finish!: (a: unknown) => void;
     mocks.reopenAccount.mockReturnValue(new Promise((done) => { finish = done; }));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     const busy = await screen.findByRole("button", { name: "Opening your account." });
     expect(busy).toBeDisabled();
     await userEvent.click(busy);
@@ -416,7 +458,7 @@ describe("the Bridge page", () => {
     let finish!: (a: unknown) => void;
     mocks.reopenAccount.mockReturnValue(new Promise((done) => { finish = done; }));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await waitFor(() => expect(mocks.reopenAccount).toHaveBeenCalledTimes(1));
     mocks.kept = null;
     act(() => handlers.accountsChanged!([addr(0xe4)]));
@@ -431,12 +473,12 @@ describe("the Bridge page", () => {
     mocks.reopenAccount.mockResolvedValue(opened(true));
     mocks.closeAccount.mockResolvedValue(undefined);
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Close my Canton account on this browser" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Remove my Canton key from this browser" }));
     expect(mocks.closeAccount).toHaveBeenCalledWith(expect.objectContaining({ party: PARTY }), ME);
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
     await openSheet();
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeEnabled();
   });
 
   it("says so, and keeps the account open, when the browser cannot remove the kept key; and shows no Close where nothing is kept", async () => {
@@ -445,17 +487,17 @@ describe("the Bridge page", () => {
     mocks.reopenAccount.mockResolvedValue(opened(true));
     mocks.closeAccount.mockRejectedValue(new Error("blocked"));
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Close my Canton account on this browser" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Remove my Canton key from this browser" }));
     expect(await screen.findByText("This browser could not remove it. Your account is still open.")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     mocks.kept = null;
     act(() => handlers.accountsChanged!([addr(0xe4)]));
     mocks.openAccount.mockResolvedValue(opened(false));   // a browser that cannot keep the key
     await openSheet();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Close my Canton account on this browser" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove my Canton key from this browser" })).toBeNull();
   });
 
   it("does not show Copied for another account after the wallet switches", async () => {
@@ -468,7 +510,7 @@ describe("the Bridge page", () => {
     act(() => handlers.accountsChanged!([addr(0xe4)]));
     await waitFor(() => expect(screen.queryByText("Ready")).toBeNull());
     await openSheet();
-    await userEvent.click(screen.getByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Copied")).toBeNull();
     expect(screen.getByRole("button", { name: "Copy account id" })).toHaveTextContent("Copy");
@@ -495,7 +537,7 @@ describe("the builder grant on the Bridge page", () => {
     withBuilder(builder);
     mocks.gas = 0n;
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await screen.findByRole("button", { name: "Get test tROME" });
     const link = await screen.findByRole("link", { name: "Sign in with GitHub" });
     expect(link).toHaveAttribute("href", `/api/faucet/github/start?address=${ME}`);
@@ -507,7 +549,7 @@ describe("the builder grant on the Bridge page", () => {
     withBuilder({ ...builder, on: false });
     mocks.gas = 0n;
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await screen.findByRole("button", { name: "Get test tROME" });
     expect(screen.queryByText(/Sign in with GitHub/)).toBeNull();
   });
@@ -515,7 +557,7 @@ describe("the builder grant on the Bridge page", () => {
   it("does not offer it when the wallet holds tROME already", async () => {
     withBuilder(builder);
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await screen.findByRole("button", { name: "Open my Canton account" });
     expect(screen.queryByText(/Sign in with GitHub/)).toBeNull();
   });

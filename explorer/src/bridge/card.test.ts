@@ -5,7 +5,7 @@ const base: ButtonInput = { connected: true, accountReady: true, config: "ready"
 
 describe("the move button", () => {
   it("walks the steps: connect, open the account, enter an amount, then move", () => {
-    expect(buttonOf({ ...base, connected: false, accountReady: false })).toEqual({ label: "Connect MetaMask", action: "connect", disabled: false });
+    expect(buttonOf({ ...base, connected: false, accountReady: false })).toEqual({ label: "Connect wallet", action: "connect", disabled: false });
     expect(buttonOf({ ...base, accountReady: false })).toEqual({ label: "Open my Canton account", action: "open", disabled: false });
     expect(buttonOf({ ...base, amount: "empty" })).toEqual({ label: "Enter an amount", action: "none", disabled: true });
     expect(buttonOf({ ...base, amount: "bad" })).toMatchObject({ label: "Enter an amount", disabled: true });
@@ -14,7 +14,7 @@ describe("the move button", () => {
   });
   it("takes the test coin first when the wallet holds none: connect, get the coin, open the account, enter an amount, move", () => {
     const none = { ...base, accountReady: false, needCoin: "tROME" };
-    expect(buttonOf({ ...none, connected: false })).toEqual({ label: "Connect MetaMask", action: "connect", disabled: false });
+    expect(buttonOf({ ...none, connected: false })).toEqual({ label: "Connect wallet", action: "connect", disabled: false });
     expect(buttonOf(none)).toEqual({ label: "Get test tROME", action: "faucet", disabled: false });
     expect(buttonOf({ ...none, asking: true })).toEqual({ label: "Asking the faucet…", action: "faucet", disabled: true });
     expect(buttonOf({ ...none, coming: true })).toEqual({ label: "tROME is on its way…", action: "faucet", disabled: true });   // queued, not seen in the wallet yet: no second ask
@@ -33,7 +33,7 @@ describe("the move button", () => {
     expect(buttonOf({ ...base, enough: null }).label).toBe("Move to Canton");   // a balance not known yet does not stop the move: the move checks it itself
     expect(buttonOf({ ...base, config: "loading" })).toMatchObject({ label: "Looking up the bridge…", disabled: true });
     expect(buttonOf({ ...base, config: "failed" })).toMatchObject({ label: "Not available here", disabled: true });
-    expect(buttonOf({ ...base, config: "failed", connected: false, accountReady: false }).label).toBe("Connect MetaMask");   // the account does not need the bridge's tokens
+    expect(buttonOf({ ...base, config: "failed", connected: false, accountReady: false }).label).toBe("Connect wallet");   // the account does not need the bridge's tokens
     expect(buttonOf({ ...base, config: "loading", accountReady: false }).label).toBe("Open my Canton account");
   });
   it("shows the move's progress while it runs, and offers Continue for a move that is paused or failed and kept", () => {

@@ -135,7 +135,8 @@ export const transferCountSql = (filter: string) =>
       union (select x.block_number, x.log_index, x.batch_index from token_transfers x where x.to_address = q.address and ${filter} limit $3)
     ) u limit $3) k)`;
 
-export function createAccountRest(pool: Pool) {
+/** `own` names Rome's own test and load addresses (lowercase address to name): the labels say so, so a reader can tell them from outside use. */
+export function createAccountRest(pool: Pool, own: Readonly<Record<string, string>> = {}) {
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
       return (await pool.query(sql, values)).rows;
@@ -186,11 +187,13 @@ export function createAccountRest(pool: Pool) {
       [addresses.map(bytes)],
     );
     // A kind is only said where the database holds it: a token, a contract (derived, or named by a final creation that stage 2 has not reached), an address it has seen. Else null.
-    return rows.map((r): LabelItem => ({
+    const items = rows.map((r): LabelItem => ({
       address: hex(r.address), name: r.token_name ?? r.contract_name, symbol: r.symbol,
       kind: r.is_token ? "token" : r.is_contract || r.seen_contract || r.is_created ? "contract" : r.is_seen ? "account" : null,
       standard: r.standard, decimals: num(r.decimals), verified: r.verified === true,
     }));
+    // An address Rome names as its own test or load account is an account with that name, unless the index says it is a token or a contract (the index's name stays then).
+    return items.map((l) => { const mine = l.kind === null || l.kind === "account" ? own[l.address] : undefined; return mine ? { ...l, name: mine, kind: "account" } : l; });
   }
 
   /** The most contracts of an address that are counted: a factory that made more says `createdCountCapped`, so that its page does not cost a count of millions. */
