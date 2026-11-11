@@ -3,8 +3,10 @@ one that does not answer must not be able to hold the chain up again and again. 
 test_builder.py: the check that a leg's parties are hosted on the participants the operator lists (`--hosted-on`), a block that fails on a
 confirmation timeout being a refusal that blames the parties of its legs (and never a transaction), and the pure bookkeeping of the blame
 (`PartyBlame`). Run: python3 -m unittest discover -s builder/tests"""
-import sys, unittest
+import sys, types, unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -12,6 +14,7 @@ sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
 import test_producer as tp
+import test_twin_legs as tt
 from fakes import tx
 
 ALICE, BOB, CAROL = tb.ALICE, tb.BOB, tb.CAROL
@@ -163,6 +166,78 @@ class Hosted(tb.LegCase):
         self.assertEqual(s.ledger.hosting_asked, [])   # held parties are not even looked up
 
 
+class TwinParties(tb.LegCase):
+    """A lock's receiver and a release's holder must be hosted too, in the block and in the leg check; and a claim names no party."""
+    setup_twin = tt.Twins.setup_twin
+
+    def setUp(self):
+        super().setUp()
+        b.REGISTRY_DOWN.clear()
+
+    def host(self, s, hosting):
+        s.cfg.hosted_on = (ROME,)
+        s.cfg.hosting = b.Hosting(s.cfg, s.cfg.hosted_on)
+        s.ledger.hosting = hosting
+
+    def cases(self):
+        yield "a lock's receiver", tt.LOCK, {}
+        yield "a redeemer", tt.RELEASE, {"redeems": [tt.REDEEM]}
+
+    def test_the_receiver_of_a_lock_and_the_holder_of_a_redeem_request_must_be_hosted_in_the_block(self):
+        for name, leg, k in self.cases():
+            with self.subTest(name, hosted=False):
+                s, t = self.setup_twin(leg, **k)
+                self.host(s, {tt.RECEIVER: {ELSEWHERE: SUBMISSION}})
+                result = self.assert_left_out(s, t, f"the party {tt.RECEIVER} is not hosted with the right to confirm")
+                self.assertNotIn("legParties", result)
+            with self.subTest(name, hosted=True):
+                s, t = self.setup_twin(leg, **k)
+                self.host(s, everyone_on_rome(tt.RECEIVER))
+                result = self.build(s)
+                self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+                self.assertEqual(result["legParties"], {t["hash"]: [tt.RECEIVER]})   # the block names the party whose participant must confirm
+
+    def test_the_leg_check_refuses_a_party_off_the_operators_participants_for_a_lock_and_a_release(self):
+        for name, leg, k in self.cases():
+            call = {"from": "0x" + "a1" * 20, "to": "0x" + "c9" * 20, "data": "0x1234", "value": "0x0", "gas": "0x30d40"}
+            with self.subTest(name, hosted=False):
+                s, t = self.setup_twin(leg, **k)
+                s.reth.trace_legs[call["to"]] = [leg]
+                self.host(s, {tt.RECEIVER: {ELSEWHERE: SUBMISSION}})
+                result = b.leg_check(s.cfg, call)
+                self.assertIs(result["ok"], False)
+                self.assertIn(f"the party {tt.RECEIVER} is not hosted with the right to confirm", result["reason"])
+            with self.subTest(name, hosted=True):
+                s, t = self.setup_twin(leg, **k)
+                s.reth.trace_legs[call["to"]] = [leg]
+                self.host(s, everyone_on_rome(tt.RECEIVER))
+                self.assertEqual(b.leg_check(s.cfg, call), {"ok": True})
+
+    def test_a_claim_leg_names_no_party_whatever_an_earlier_leg_left_under_its_id(self):
+        """A leg's parties are kept by the id of its dict, and a dict freed in an earlier pass can give its id to a later leg."""
+        class Stale(dict):
+            def get(self, key, default=None):
+                return super().get(key, ("stale::1",))
+        original = b.Canton.__init__
+
+        def init(canton, *a, **k):
+            original(canton, *a, **k)
+            canton.leg_parties = Stale()
+        s = self.setup({tb.ALICE: []})
+        s.ledger.claims, s.ledger.tokens = [tb.CLAIM], [tb.TOKEN]
+        t = self.leg_tx(s, tb.CLAIM_DEP)
+        s.reth.pool[tb.ALICE] = [t]
+        with mock.patch.object(b.Canton, "__init__", init):
+            result = self.build(s)
+        self.assertEqual(result["legs"], 1)
+        self.assertNotIn("legParties", result)
+
+    def test_the_parties_of_a_pass_are_forgotten_before_the_next(self):
+        canton = types.SimpleNamespace(leg_context_bytes={}, leg_disclosed={}, leg_parties={12345: ("old::1",)})
+        self.assertEqual(b.match_legs(canton, []), ([], []))
+        self.assertEqual(canton.leg_parties, {})
+
+
 class Timeout(tp.Loop):
     """A block whose Advance fails on a confirmation timeout."""
 
@@ -210,10 +285,66 @@ class Timeout(tp.Loop):
         self.assertEqual(self.reports[-1]["resolved"], "not committed")
         self.assertEqual((p.blame.until, p.blame.suspects), ({}, set()))
 
+    def test_a_proxys_504_page_followed_by_a_completion_that_failed_for_another_reason_is_no_timeout(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.late = True
+        s.ledger.late_reply = (504, {"cause": "<html><h1>504 Gateway Time-out</h1></html>"})
+        p = self.producer(s)
+        p.step()
+        s.ledger.land(ok=False, message="CONTRACT_NOT_FOUND")   # the command's completion: a refusal of its own, and not by a timeout
+        p.step()
+        self.assertEqual(self.reports[-1]["resolved"], "not committed")
+        self.assertNotIn("timedOut", self.reports[-1])
+        self.assertEqual((p.blame.until, p.blame.suspects), ({}, set()))
+
+    def test_a_proxys_504_page_and_a_completion_that_is_a_refusal_of_its_own_is_no_timeout_when_both_are_read_at_once(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.reply_status, s.ledger.reply_status_cause = 504, "<html><h1>504 Gateway Time-out</h1></html>"
+        s.ledger.reply_status_completion = "CONTRACT_NOT_FOUND: a refusal of one transaction's leg"
+        result = b.build_block(s.cfg)
+        self.assertEqual((result["committed"], result["rejected"]), (False, False))
+        self.assertNotIn("timedOut", result)   # nobody is blamed: the parties of the legs stay clear
+
+    def test_a_proxys_504_page_followed_by_a_completion_that_says_the_confirmations_timed_out_is_one(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.late = True
+        s.ledger.late_reply = (504, {"cause": "<html><h1>504 Gateway Time-out</h1></html>"})
+        p = self.producer(s)
+        p.step()
+        s.ledger.land(ok=False, message="MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): no confirmations")
+        p.step()
+        self.assertEqual(p.blame.suspects, {"u::1", "v::1"})
+
+    def test_a_definite_rejection_that_names_the_mediators_timeout_is_one(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.refuse = "MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): the mediator did not receive sufficient confirmations"
+        result = b.build_block(s.cfg)
+        self.assertEqual((result["committed"], result["rejected"], result.get("timedOut")), (False, True, True))
+
+    def test_no_completion_for_the_whole_window_is_not_a_confirmation_timeout(self):
+        """A mediator's timeout always gives the submitting participant a failed completion: no completion at all points at the operator's own side (a command
+        never taken, a restart, a synchronizer upgrade), so nobody's party is blamed for it."""
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout = "none"   # 408 and no completion
+        p = self.producer(s)
+        p.step()
+        self.assertIsNone(self.reports[-1]["committed"])
+        s.ledger.no_completion = True
+        self.now[0] += 10_000
+        s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's checkpoints are past the window
+        with mock.patch.object(b, "builder_now", lambda: 4102444800.0):
+            p.step()
+        self.assertEqual(self.reports[-1]["resolved"], "not committed")
+        self.assertEqual((p.blame.until, p.blame.suspects, p.blame.live), ({}, set(), set()))
+        self.assertEqual(p.status()["heldParties"], {})
+
     def test_a_command_that_was_not_sequenced_in_time_is_not_a_confirmation_timeout(self):
         self.assertTrue(b.confirmation_timeout("MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): the mediator did not receive sufficient confirmations"))
         self.assertTrue(b.confirmation_timeout("LOCAL_VERDICT_TIMEOUT"))
-        self.assertTrue(b.confirmation_timeout("The request timed out"))
+        self.assertFalse(b.confirmation_timeout("The request timed out"))   # only Canton's own codes count
+        self.assertFalse(b.confirmation_timeout("<html><h1>504 Gateway Time-out</h1></html>"))
+        self.assertFalse(b.confirmation_timeout("SEQUENCER_REQUEST_TIMEOUT"))
+        self.assertFalse(b.confirmation_timeout("Database task timed out"))
         self.assertFalse(b.confirmation_timeout("NOT_SEQUENCED_TIMEOUT(2,ab): the command was not sequenced in time"))
         self.assertFalse(b.confirmation_timeout('{"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"}'))   # the JSON API's own 408
         self.assertFalse(b.confirmation_timeout("CONTRACT_NOT_FOUND"))

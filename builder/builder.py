@@ -279,7 +279,7 @@ def registry_guard(who: str):
             except (NoCantonSide, ConnectionClosed):
                 raise
             except Exception as e:
-                raise NoCantonSide(f"the {who} gave an answer that cannot be used ({type(e).__name__}: {bounded_text(e)})") from None
+                raise Unreadable(f"the {who} gave an answer that cannot be used ({type(e).__name__}: {bounded_text(e)})") from None
         return guarded
     return decorate
 
@@ -318,25 +318,25 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
             return seen[lock_id]
         down = REGISTRY_DOWN.get(base_url)
         if down and time.monotonic() < down[0]:
-            raise NoCantonSide(down[1])
+            raise Unreadable(down[1])
         limit = min(deadline, budget - spent[0])
         if limit <= 0:
             why = f"the twin registry service cannot be read: the block's {budget:g} s for it are used"
             REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
-            raise NoCantonSide(why)
+            raise Unreadable(why)
         started = time.monotonic()
         try:
             seen[lock_id] = parse(fetch(lock_id, limit))
         except _RegistryStatus as e:
             if e.args[0] != 404:
-                raise NoCantonSide(f"the twin registry service answered HTTP {e.args[0]}") from e
+                raise Unreadable(f"the twin registry service answered HTTP {e.args[0]}") from e
             seen[lock_id] = None
         except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
-            raise NoCantonSide("the twin registry service gave an answer that is not the parts of a lock's id") from e
+            raise Unreadable("the twin registry service gave an answer that is not the parts of a lock's id") from e
         except (OSError, http.client.HTTPException) as e:
             why = f"the twin registry service cannot be read: {bounded_text(e)}"
             REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
-            raise NoCantonSide(why) from e
+            raise Unreadable(why) from e
         finally:
             spent[0] += time.monotonic() - started
         return seen[lock_id]
@@ -1231,7 +1231,12 @@ class NoCantonSide(Exception):
     """A leg that has no Canton side now; the message says why."""
 
 
-class ListUnreadable(NoCantonSide):
+class Unreadable(NoCantonSide):
+    """A leg that cannot be judged because a read for it failed (a Canton read that failed or timed out, a service that is down or backing off): the builder
+    could not find out, which is not the same as the leg having no Canton side. A block leaves the leg out for it; the leg check does not refuse a send for it."""
+
+
+class ListUnreadable(Unreadable):
     """A list of contracts that could not be read whole: no leg that needs it is matched on a part of it, or on another kind of contract instead."""
 
 
@@ -1292,6 +1297,12 @@ def gateway_evidence(cfg: "Config", sub: "Submission") -> dict:
 
 class Said(str):
     """A reason for leaving a transaction out that is already a whole sentence."""
+
+
+class Unread(Said):
+    """A reason that says the builder could not find out (a Canton read that failed or timed out, a service that is down or backing off, a hosting lookup
+    that got no answer), not that the leg has no Canton side. A block leaves the leg out for it, as for any reason; the leg check, which refuses a send
+    only on a fact, never refuses on this one."""
 
 
 def stamp(t: datetime) -> str:
@@ -1397,17 +1408,16 @@ HOSTING_FAILED_TTL = 30     # seconds a lookup that could not be made is kept: a
 HOSTING_CACHE = 10000       # the most parties remembered
 HOSTING_PERMISSIONS = ("PARTICIPANT_PERMISSION_SUBMISSION", "PARTICIPANT_PERMISSION_CONFIRMATION")   # the rights with which a participant confirms for a party; observation does not
 BLAME_CAP = 86400.0         # the longest a party is held back for one conviction, whatever the number of them
-# What a failed completion says when the mediator did not get the confirmations in time (Canton's MEDIATOR_SAYS_TX_TIMED_OUT and the like). A command that was
-# not sequenced in time (NOT_SEQUENCED_TIMEOUT) is the synchronizer's, not a participant's, and is not one; nor is the JSON API's own answer that it took too long
-# (REQUEST_TIME_OUT, HTTP 408), which says nothing about the confirmations: the command's completion does.
-CONFIRMATION_TIMEOUT = re.compile(r"time[d ]?[ _-]?out", re.IGNORECASE)
-NOT_CONFIRMATION_TIMEOUTS = ("NOT_SEQUENCED_TIMEOUT", "REQUEST_TIME_OUT")
+# What a failed completion says when the mediator did not get the confirmations in time: Canton's own codes MEDIATOR_SAYS_TX_TIMED_OUT and LOCAL_VERDICT_TIMEOUT,
+# and nothing else. Other timeouts are not one: a command that was not sequenced in time (NOT_SEQUENCED_TIMEOUT) is the synchronizer's, the JSON API's own
+# answer that it took too long (REQUEST_TIME_OUT, HTTP 408) and a proxy's "504 Gateway Time-out" page say nothing about the confirmations. The command's
+# completion does, and a text from the HTTP answer counts only when the answer is a definite rejection.
+CONFIRMATION_TIMEOUT = re.compile(r"\b(?:MEDIATOR_SAYS_TX_TIMED_OUT|LOCAL_VERDICT_TIMEOUT)\b")
 
 
 def confirmation_timeout(text) -> bool:
     """Whether the words of a failed command say that the confirmations did not come in time."""
-    text = str(text or "")
-    return bool(CONFIRMATION_TIMEOUT.search(text)) and not any(word in text for word in NOT_CONFIRMATION_TIMEOUTS)
+    return bool(CONFIRMATION_TIMEOUT.search(str(text or "")))
 
 
 class Hosting:
@@ -1464,7 +1474,9 @@ class Hosting:
     def problem(self, party: str) -> "Said | None":
         """Why a leg of this party is not taken, or None when the party is hosted on a participant the operator lists."""
         state, reason = self.check(party)
-        return None if state == "hosted" else Said(reason)
+        if state == "hosted":
+            return None
+        return Unread(reason) if state == "unknown" else Said(reason)
 
 
 def _locked(method):
@@ -1719,11 +1731,11 @@ class Canton:
                 raise NoCantonSide("the twin acceptance template is not on this participant") from None
             if e.code == 404:
                 raise NoCantonSide("the acceptance contract is not found by the participant") from None
-            raise NoCantonSide(f"the acceptance contract cannot be read: the participant answered HTTP {e.code}") from None
+            raise Unreadable(f"the acceptance contract cannot be read: the participant answered HTTP {e.code}") from None
         except (OSError, http.client.HTTPException) as e:   # a timeout, a refused or dropped connection
-            raise NoCantonSide(f"the acceptance contract cannot be read: {bounded_text(e)}") from None
+            raise Unreadable(f"the acceptance contract cannot be read: {bounded_text(e)}") from None
         except (ValueError, RecursionError):
-            raise NoCantonSide("the participant gave an answer for the acceptance contract that is not JSON") from None
+            raise Unreadable("the participant gave an answer for the acceptance contract that is not JSON") from None
         try:
             created = found["created"]["createdEvent"] if isinstance(found, dict) and found.get("created") else None
             archived = isinstance(found, dict) and bool(found.get("archived"))
@@ -1737,7 +1749,7 @@ class Canton:
             if arguments["party"] != receiver or arguments["admin"] != gateway:
                 raise NoCantonSide("the acceptance contract is not the receiver's acceptance of the chain's gateway")
         except (KeyError, TypeError, AttributeError):
-            raise NoCantonSide("the participant gave an answer for the acceptance contract that cannot be used") from None
+            raise Unreadable("the participant gave an answer for the acceptance contract that cannot be used") from None
         self.acceptances_read.add((cid, receiver))
 
     @property
@@ -1863,7 +1875,9 @@ def claim_leg(leg: LegEvent, canton: Canton, claimed: dict | None, claims: list)
     claim = first_fit(claims, problem, "")
     if claimed is not None:
         claimed["claims"].add(claim["contractId"])
-    return {"tag": "ClaimLeg", "value": {"claimCid": claim["contractId"], "tokenCid": claim["gatewayToken"]}}
+    leg_out = {"tag": "ClaimLeg", "value": {"claimCid": claim["contractId"], "tokenCid": claim["gatewayToken"]}}
+    canton.note_parties(leg_out)   # a claim has no party to confirm: nothing a freed leg of an earlier pass left under this dict's id may stay
+    return leg_out
 
 
 def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
@@ -2247,6 +2261,7 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
         legs, missing = [], []
         canton.leg_context_bytes.clear()   # each pass counts the legs it keeps, and only those
         canton.leg_disclosed.clear()
+        canton.leg_parties.clear()   # keyed by the id of a leg's dict, which a later leg can reuse once the first is freed
         for event in events:
             before = set(canton.leg_context_bytes)
             try:
@@ -2265,7 +2280,10 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
                 for key in set(canton.leg_context_bytes) - before:   # a leg left out after its context was recorded
                     canton.leg_context_bytes.pop(key, None)
                     canton.leg_disclosed.pop(key, None)
-                missing.append((event, e.args[0] if e.args and isinstance(e.args[0], Said) else str(e)))
+                reason = e.args[0] if e.args and isinstance(e.args[0], Said) else str(e)
+                if isinstance(e, Unreadable) and not isinstance(reason, Unread):   # worded as the block words a plain reason, and marked as one that could not be read
+                    reason = Unread(f"its {KINDS[event.kind]} leg has no Canton side: {reason}")
+                missing.append((event, reason))
         if missing:
             return legs, missing
     return legs, []
@@ -2338,6 +2356,8 @@ def leg_check(cfg: Config, call: dict) -> dict:
                 trace = reth.call("debug_traceCall", [call, "latest", {"tracer": "callTracer", "tracerConfig": {"withLog": True}}])
             except (BuilderError, TimeoutError, ValueError) as e:
                 return {"ok": True, "unknown": f"the call does not run now: {bounded_text(e)}"}
+            if isinstance(trace, dict) and trace.get("error"):   # a call that reverts at the top level is an answer, not an error: it records no leg
+                return {"ok": True, "unknown": f"the call does not run now: {bounded_text(trace['error'])}"}
             logs = trace_logs(trace)
             if not any(isinstance(x.get("topics"), list) and x["topics"] and str(x["topics"][0]).lower() == LEG_TOPIC for x in logs):
                 return {"ok": True}
@@ -2365,9 +2385,10 @@ def leg_check(cfg: Config, call: dict) -> dict:
         return {"ok": True, "unknown": f"the legs could not be checked: {bounded_text(e)}"}
     if any(isinstance(v, ListUnreadable) for v in canton.lists.values()):   # a list that could not be read says nothing about the leg
         return {"ok": True, "unknown": "a list of Canton's contracts could not be read"}
-    refused = [(event, reason) for event, reason in missing if not isinstance(reason, Waiting)]
-    if not refused:
-        return {"ok": True}
+    refused = [(event, reason) for event, reason in missing if not isinstance(reason, (Waiting, Unread))]
+    if not refused:   # a leg the builder could not look into (Unread) says nothing about its Canton side
+        unread = next((reason for _, reason in missing if isinstance(reason, Unread)), None)
+        return {"ok": True} if unread is None else {"ok": True, "unknown": str(unread)}
     said = [{"kind": KINDS[event.kind], "reason": str(reason) if isinstance(reason, Said) else f"its {KINDS[event.kind]} leg has no Canton side: {reason}"} for event, reason in refused]
     return {"ok": False, "reason": said[0]["reason"], "legs": said}
 
@@ -2994,7 +3015,7 @@ def send_advance(cfg: Config, sub: Submission) -> Reply:
         with e:
             text = e.read().decode(errors="replace")
         reply.reason, reply.rejected, reply.not_taken = text[:600], definite_rejection(e.code, text), e.code in NEVER_TAKEN_CODES
-        reply.timed_out = confirmation_timeout(text)
+        reply.timed_out = reply.rejected and confirmation_timeout(text)   # a proxy's or the API's own timeout page says nothing of the confirmations: the completion does
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
         reply.reason = f"no usable reply from Canton: {e}"
         reply.not_taken = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
@@ -3276,7 +3297,7 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         clear_unresolved(cfg)
         # A command that failed on a confirmation timeout, or that no one answered for its whole window, did not get its confirmations: `timedOut` lets the loop
         # blame the parties of its legs (Producer.settle_unknown). The record names them (`legParties`); a command that failed for another reason names none.
-        timed = how == "window" or (found is not None and confirmation_timeout(found.get("reason")))
+        timed = found is not None and confirmation_timeout(found.get("reason"))
         return False, lost, how, {"timedOut": True} if timed else {}
 
 

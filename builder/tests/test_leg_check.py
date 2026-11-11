@@ -3,12 +3,14 @@ would never be mined is refused with the reason. Against the same fakes as test_
 Run: python3 -m unittest discover -s builder/tests"""
 import http.client, json, sys, threading, unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
+import test_twin_legs as tt
 
 FROM, TO = "0x" + "a1" * 20, "0x" + "c9" * 20
 CALL = {"from": FROM, "to": TO, "data": "0x1234", "value": "0x0", "gas": "0x30d40"}
@@ -82,6 +84,31 @@ class Check(tb.LegCase):
         self.assertIn("does not run now", result["unknown"])
         self.assertEqual(s.ledger.queries, [])
 
+    def test_a_call_that_reverts_at_the_top_level_is_ok_but_unknown(self):
+        """reth answers such a call with a frame that has an error and still carries the logs the frame made: it records no leg."""
+        s = self.setup_check(tb.DEP)
+        s.reth.trace_top_error = "execution reverted"
+        result = b.leg_check(s.cfg, CALL)
+        self.assertIs(result["ok"], True)
+        self.assertIn("does not run now", result["unknown"])
+        self.assertIn("execution reverted", result["unknown"])
+        self.assertEqual(s.ledger.queries, [])
+        s.reth.trace_top_error = None
+        self.assertIs(b.leg_check(s.cfg, CALL)["ok"], False)   # the same call that runs is refused
+
+    def test_a_hosting_lookup_that_fails_says_nothing_about_the_leg_but_a_party_that_is_not_hosted_does(self):
+        s = self.setup_check(tb.PAY)
+        s.ledger.terms = [tb.TERMS]
+        s.cfg.hosted_on = ("PAR::rome::1220" + "aa" * 32,)
+        s.cfg.hosting = b.Hosting(s.cfg, s.cfg.hosted_on)
+        s.ledger.hosting_failure = 503
+        result = b.leg_check(s.cfg, CALL)
+        self.assertIs(result["ok"], True)
+        self.assertIn("HTTP 503", result["unknown"])
+        s.ledger.hosting_failure = None
+        s.cfg.hosting.cache.clear()
+        self.assertIs(b.leg_check(s.cfg, CALL)["ok"], False)   # asked and not hosted: a fact
+
     def test_a_list_that_cannot_be_read_says_nothing_about_the_leg(self):
         s = self.setup_check(tb.DEP)
         s.ledger.requests, s.ledger.tokens = list((tb.REQUEST,)), list((tb.TOKEN,))
@@ -108,6 +135,68 @@ class Check(tb.LegCase):
             return found
         s.reth._rpc = other
         self.assertEqual(b.leg_check(s.cfg, CALL), {"ok": True})
+
+
+class Twin(tb.LegCase):
+    """A lock whose Canton side cannot be read (the acceptance, the twin registry service) says nothing about it; one the reads show missing is refused."""
+    setup_twin = tt.Twins.setup_twin
+
+    def setUp(self):
+        super().setUp()
+        b.REGISTRY_DOWN.clear()
+
+    def lock(self, **k):
+        s, t = self.setup_twin(tt.LOCK, **k)
+        s.reth.trace_legs[TO] = [tt.LOCK]
+        return s
+
+    def test_the_lock_with_its_acceptance_is_ok(self):
+        self.assertEqual(b.leg_check(self.lock().cfg, CALL), {"ok": True})
+
+    def test_an_acceptance_that_cannot_be_read_is_ok_but_unknown(self):
+        for failure in (413, 500):
+            with self.subTest(failure):
+                s = self.lock()
+                s.ledger.acceptance_failure = failure
+                result = b.leg_check(s.cfg, CALL)
+                self.assertIs(result["ok"], True)
+                self.assertIn(f"HTTP {failure}", result["unknown"])
+        s = self.lock()
+        s.ledger.acceptance_failure, s.ledger.acceptance_delay = "timeout", 1.0
+        with mock.patch.object(b, "ACCEPTANCE_TIMEOUT", 0.2):
+            result = b.leg_check(s.cfg, CALL)
+        self.assertIs(result["ok"], True)
+        self.assertIn("cannot be read", result["unknown"])
+
+    def test_an_acceptance_that_is_missing_or_archived_is_refused(self):
+        s = self.lock(parts={tt.LOCK_ID: {**tt.PARTS, "acceptance": "acceptance-7"}})
+        self.assertIs(b.leg_check(s.cfg, CALL)["ok"], False)
+        s = self.lock()
+        s.ledger.archived_acceptances = {"acceptance-1"}
+        self.assertIn("archived", b.leg_check(s.cfg, CALL)["reason"])
+
+    def test_a_twin_registry_service_that_is_down_busy_or_wrong_is_ok_but_unknown(self):
+        for how in ("503", "unreachable", "bad answer"):
+            with self.subTest(how):
+                b.REGISTRY_DOWN.clear()
+                s = self.lock()
+                if how == "503":
+                    s.registry.status = 503
+                elif how == "bad answer":
+                    s.registry.raw = b"[1]"
+                else:
+                    s.registry.close()
+                result = b.leg_check(s.cfg, CALL)
+                self.assertIs(result["ok"], True, result)
+                self.assertIn("twin registry service", result["unknown"])
+                if how == "unreachable":   # and it is not asked again for a while: that is no answer either
+                    self.assertIs(b.leg_check(s.cfg, CALL)["ok"], True)
+
+    def test_a_twin_registry_service_that_has_no_parts_for_the_lock_is_refused(self):
+        s = self.lock(parts={})
+        result = b.leg_check(s.cfg, CALL)
+        self.assertIs(result["ok"], False)
+        self.assertIn("no parts", result["reason"])
 
 
 class Request(unittest.TestCase):
