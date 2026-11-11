@@ -563,11 +563,11 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     for (const l of body(a).items) same(l, F.label);
     // In the order asked, each address once.
     expect(body(a).items).toEqual([
-      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", decimals: 6, verified: false },
-      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, decimals: null, verified: true },
-      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", decimals: null, verified: false },
-      { address: nobody, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false },
-      { address: C, name: null, symbol: null, kind: "contract", standard: null, decimals: null, verified: false },
+      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", decimals: 6, verified: false, warning: null },
+      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, decimals: null, verified: true, warning: null },
+      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", decimals: null, verified: false, warning: null },
+      { address: nobody, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false, warning: null },
+      { address: C, name: null, symbol: null, kind: "contract", standard: null, decimals: null, verified: false, warning: null },
     ]);
   });
 
@@ -588,6 +588,42 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     const rest = createAccountRest(pool, { [B]: "Rome test loop", [fresh]: "Rome load test", [T1]: "Not this name" });
     const items = await rest.labels([B, fresh, T1, h(0x7b)]);
     expect(items.map((l) => [l.address, l.name, l.kind])).toEqual([[B, "Rome test loop", "account"], [fresh, "Rome load test", "account"], [T1, "Test Token", "token"], [h(0x7b), null, null]]);
+  });
+
+  it("warns of a token that carries a symbol of Rome's own, and lists Rome's own token first where two share a symbol", async () => {
+    const own = h(0xd1), other = h(0xd2), third = h(0xd3);
+    await sql("insert into addresses (address, first_seen_block, last_active_block, is_contract) values ($1, 1, 3, true), ($2, 1, 3, true), ($3, 1, 3, true)", [who(0xd1), who(0xd2), who(0xd3)]);
+    await sql(
+      `insert into contracts (address, origin, creator, creation_block, creation_tx_index, runtime_code_hash, name, interaction_count, last_interaction_block) values
+        ($1, 'create', $4, 2, 5, $5, 'Wrapped ROME', 1, 3), ($2, 'create', $4, 2, 6, $5, 'Wrapped ROME', 1, 3), ($3, 'create', $4, 2, 7, $5, 'Wrapped Other', 1, 3)`,
+      [who(0xd1), who(0xd2), who(0xd3), who(0xa1), Buffer.alloc(32, 1)],
+    );
+    await sql(
+      `insert into tokens (address, standard, name, symbol, decimals, total_supply, total_supply_block, holder_count, transfer_count, first_transfer_block, metadata_status, gateway_wrapped) values
+        ($1, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 1, 1, 2, 'read', true), ($2, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 500, 1, 2, 'read', false), ($3, 'ERC-20', 'Wrapped Other', 'WtOTHER', 18, 1, 3, 900, 1, 2, 'read', false)`,
+      [who(0xd1), who(0xd2), who(0xd3)],
+    );
+    try {
+      const rest = createAccountRest(pool, {}, { [other]: "Not Rome's WtROME twin" });
+      // The label, the token's own row and the search match carry the warning; Rome's own token and an unrelated one carry none.
+      expect((await rest.labels([own, other, third])).map((l) => [l.address, l.warning])).toEqual([[own, null], [other, "Not Rome's WtROME twin"], [third, null]]);
+      expect((await rest.token(other))?.warning).toBe("Not Rome's WtROME twin");
+      expect((await rest.token(own))?.warning).toBeNull();
+      expect((await rest.tokens("holders", null, 100)).filter((t) => t.address === other || t.address === own).map((t) => [t.address, t.warning])).toEqual(expect.arrayContaining([[own, null], [other, "Not Rome's WtROME twin"]]));
+      // Both share the symbol and the lookalike has more holders, yet Rome's own is first; the unrelated token is not moved by it.
+      expect((await rest.byName("wtrome", 10)).map((m) => [m.address, m.warning])).toEqual([[own, null], [other, "Not Rome's WtROME twin"]]);
+      expect((await rest.byName("wt", 10)).map((m) => m.address)).toEqual([third, own, other]);
+      // Without the list, a token the gateway did not wrap that shares the symbol of one it did is still placed after it.
+      expect((await createAccountRest(pool).byName("wtrome", 10)).map((m) => [m.address, m.warning])).toEqual([[own, null], [other, null]]);
+      // The route (which has no list of its own here) answers in the fields the allowlists name, and puts the wrapped token first by the same rule.
+      const found = body(await get(`/api/search?q=wtrome`));
+      for (const m of found.matches) same(m, F.searchMatch);
+      expect(found.matches.map((m: { address: string }) => m.address)).toEqual([own, other]);
+    } finally {
+      await sql("delete from tokens where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
+      await sql("delete from contracts where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
+      await sql("delete from addresses where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
+    }
   });
 
   it("leaves the token moves out of an address's CSV, which does not write them", async () => {

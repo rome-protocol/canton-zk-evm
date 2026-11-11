@@ -289,7 +289,7 @@ export const unverifiedSource = (n = 0xcb): ContractSource => ({
 /** Test USD as the token list gives it: an ERC-20 of 6 decimals with a million in supply, 5 holders and 6 transfers. */
 export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenListItem => ({
   address: addr(n), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", holderCount: 5, transferCount: 6, firstTransferBlock: 19,
-  gatewayWrapped: false, metadataStatus: "read", creator: addr(0xa1), creationBlock: 19, createdAt: "2026-01-01T00:00:00.000Z", verified: false, ...over,
+  gatewayWrapped: false, metadataStatus: "read", creator: addr(0xa1), creationBlock: 19, createdAt: "2026-01-01T00:00:00.000Z", verified: false, warning: null, ...over,
 });
 export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, canton: null, twin: null, ...over });
 /** What the gateway holds on Canton of a registered token's instrument: 1,000 whole units of 10 decimals. */
@@ -310,10 +310,10 @@ export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegList
 export function labelsOf(known: Label[]) {
   return (path: string): Reply => {
     const asked = decodeURIComponent(path.split("addresses=")[1]!).split(",");
-    return reply({ items: asked.map((a) => known.find((l) => l.address === a) ?? { address: a, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false }) });
+    return reply({ items: asked.map((a) => known.find((l) => l.address === a) ?? { address: a, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false, warning: null }) });
   };
 }
-export const tokenLabel = (over: Partial<Label> = {}): Label => ({ address: addr(0xcb), name: "Test token A", symbol: "TKA", kind: "token", standard: "ERC-20", decimals: 18, verified: true, ...over });
+export const tokenLabel = (over: Partial<Label> = {}): Label => ({ address: addr(0xcb), name: "Test token A", symbol: "TKA", kind: "token", standard: "ERC-20", decimals: 18, verified: true, warning: null, ...over });
 
 /** The DevNet swap of 27 October as /api/swaps gives it (ids and amounts as they are there, the update ids shortened to the fixture's own): 2 TKA paid for 2.5 TKB, paid in block 16816 and claimed in block 23. */
 export const swapItem = (over: Partial<SwapItem> = {}): SwapItem => ({

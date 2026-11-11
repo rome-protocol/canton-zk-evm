@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { getAllTokenTransfers, type AddressTransferItem, type TokenListItem, type TokenListPage, type TokenSort, type TokenStandard } from "../api.ts";
 import { ago } from "../block-times.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
+import { Warn } from "../components/Warn.tsx";
 import { CardHead, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
@@ -44,6 +45,7 @@ function Row({ t, n, now }: { t: TokenListItem; n: number; now: number }) {
               {t.name ? <Link to={to}>{t.name}</Link> : <span className="muted">{noName(t)}</span>}
               {t.symbol && <span className="muted tok-sym">{t.symbol}</span>}
               {t.verified && <span className="verified" role="img" aria-label="Verified" title="Its source code is verified"><Icon name="check" size={13} /></span>}
+              {t.warning && <Warn text={t.warning} />}
               {t.gatewayWrapped && <span className="chip chip-kind" title="The gateway made this wrapped token for a Canton token">From Canton</span>}
             </div>
             <HashLink value={t.address} to={t.name ? undefined : to} plain lead={10} tail={6} />

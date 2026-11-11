@@ -162,6 +162,7 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .chip-replaced { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
 .chip-dropped { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-line); }
 .chip-genesis { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
+.chip-warn { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); gap: 5px; padding-left: 8px; }
 
 /* home: the status strip */
 .sd { display: inline-flex; align-items: center; gap: 7px; }

@@ -7,6 +7,7 @@
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { gatewayOf, legKindOf, twinOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
+import { LOOKALIKES } from "../lookalikes.ts";
 import { createTwinsRest } from "./twins-rest.ts";
 import { addressOfKey, bytes, CUSTODY_DECIMALS, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
@@ -103,6 +104,8 @@ export interface TokenItem {
   gatewayWrapped: boolean; metadataStatus: string;
   /** Who made the token's contract, in which block and when; none of the three where the explorer saw no creation (a contract of the genesis state). */
   creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
+  /** A warning the explorer shows beside the token (it carries a symbol that is Rome's own, and is not it); null for any other token. */
+  warning: string | null;
 }
 /**
  * The gateway's custody of a registered token on Canton (`gateway_tokens`): base units of 10 decimals, and the token's own `supply` (its base units) read at the same
@@ -119,8 +122,8 @@ export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; twin: "lock" | "release" | null; legId: string; token: string; account: string; amount: string; party: string | null }
 /** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
-export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
-export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
+export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean; warning: string | null }
+export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string; warning: string | null }
 
 export type AccountRest = ReturnType<typeof createAccountRest>;
 
@@ -136,7 +139,8 @@ export const transferCountSql = (filter: string) =>
     ) u limit $3) k)`;
 
 /** `own` names Rome's own test and load addresses (lowercase address to name): the labels say so, so a reader can tell them from outside use. */
-export function createAccountRest(pool: Pool, own: Readonly<Record<string, string>> = {}) {
+export function createAccountRest(pool: Pool, own: Readonly<Record<string, string>> = {}, lookalikes: Readonly<Record<string, string>> = LOOKALIKES) {
+  const warningOf = (address: string): string | null => lookalikes[address] ?? null;
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
       return (await pool.query(sql, values)).rows;
@@ -190,7 +194,7 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
     const items = rows.map((r): LabelItem => ({
       address: hex(r.address), name: r.token_name ?? r.contract_name, symbol: r.symbol,
       kind: r.is_token ? "token" : r.is_contract || r.seen_contract || r.is_created ? "contract" : r.is_seen ? "account" : null,
-      standard: r.standard, decimals: num(r.decimals), verified: r.verified === true,
+      standard: r.standard, decimals: num(r.decimals), verified: r.verified === true, warning: warningOf(hex(r.address)),
     }));
     // An address Rome names as its own test or load account is an account with that name, unless the index says it is a token or a contract (the index's name stays then).
     return items.map((l) => { const mine = l.kind === null || l.kind === "account" ? own[l.address] : undefined; return mine ? { ...l, name: mine, kind: "account" } : l; });
@@ -469,6 +473,7 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
     address: hex(r.address), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), totalSupply: r.total_supply, holderCount: Number(r.holder_count),
     transferCount: Number(r.transfer_count), firstTransferBlock: Number(r.first_transfer_block), gatewayWrapped: r.gateway_wrapped, metadataStatus: r.metadata_status,
     creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), createdAt: r.created_ts === null || r.created_ts === undefined ? null : new Date(Number(r.created_ts) * 1000).toISOString(), verified: r.verified === true,
+    warning: warningOf(hex(r.address)),
   });
 
   /**
@@ -614,17 +619,20 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
   /** The tokens (by name or symbol) and verified contracts (by name) that start with the text, tokens first, at most `limit`. The text is matched as it is, never as a pattern. */
   async function byName(text: string, limit: number): Promise<NameMatch[]> {
     const like = text.replace(/[\\%_]/g, "\\$&") + "%";
+    // Where two tokens share a symbol, the one the gateway wrapped (Rome's own) comes before the one it did not, and a token with a warning comes after the others.
+    const flagged = Object.keys(lookalikes).map(bytes);
     const found = await query(
-      "select address, name, symbol from tokens where name ilike $1 or symbol ilike $1 order by holder_count desc, address limit $2",
-      [like, limit],
+      `select tk.address, tk.name, tk.symbol from tokens tk where tk.name ilike $1 or tk.symbol ilike $1
+       order by (tk.address = any($3::bytea[]) or (not tk.gateway_wrapped and tk.symbol is not null and exists (select 1 from tokens o where o.gateway_wrapped and lower(o.symbol) = lower(tk.symbol)))) asc, tk.holder_count desc, tk.address limit $2`,
+      [like, limit, flagged],
     );
-    const matches: NameMatch[] = found.map((r) => ({ kind: "token", name: r.name, symbol: r.symbol, address: hex(r.address) }));
+    const matches: NameMatch[] = found.map((r) => ({ kind: "token", name: r.name, symbol: r.symbol, address: hex(r.address), warning: warningOf(hex(r.address)) }));
     if (matches.length < limit) {
       const contracts = await query(
         "select c.address, c.name from contracts c where c.name ilike $1 and c.verified_source is not null and not exists (select 1 from tokens t where t.address = c.address) order by c.interaction_count desc, c.address limit $2",
         [like, limit - matches.length],
       );
-      matches.push(...contracts.map((r): NameMatch => ({ kind: "contract", name: r.name, symbol: null, address: hex(r.address) })));
+      matches.push(...contracts.map((r): NameMatch => ({ kind: "contract", name: r.name, symbol: null, address: hex(r.address), warning: null })));
     }
     return matches;
   }

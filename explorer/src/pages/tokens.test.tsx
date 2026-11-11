@@ -15,8 +15,8 @@ const FEED = [
   tokenTransfer(2, { methodId: "0xa1448194", token: addr(0xb2), standard: "ERC-721", amount: "1", tokenId: "3", from: "0x" + "00".repeat(20), block: 22 }),
 ];
 const LABELS = [
-  { address: addr(0xb1), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true },
-  { address: addr(0xb2), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true },
+  { address: addr(0xb1), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true, warning: null },
+  { address: addr(0xb2), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true, warning: null },
 ];
 async function open(answer: (path: string) => ReturnType<typeof reply> = () => list(LIST), feed: (path: string) => ReturnType<typeof reply> = () => reply({ ...page(FEED), derived: true })) {
   const base = route({ tokenPages: (_a, _s, path) => answer(path) });
@@ -33,6 +33,12 @@ describe("the tokens page to the screen", () => {
   it("says how many tokens there are and the final block the counts are as of", async () => {
     await open();
     expect(screen.getByText("2 tokens · counts as of final block 3")).toBeInTheDocument();
+  });
+
+  it("shows the warning of a token that has one in its row, and in no other", async () => {
+    await open(() => list([tokenItem(0xb1, { warning: "Not Rome's WtROME twin" }), tokenItem(0xb2)]));
+    expect(within(rows()[0]!).getByRole("note")).toHaveTextContent("Not Rome's WtROME twin");
+    expect(within(rows()[1]!).queryByRole("note")).toBeNull();
   });
 
   it("does not say 'as of' while the explorer is still reading blocks", async () => {

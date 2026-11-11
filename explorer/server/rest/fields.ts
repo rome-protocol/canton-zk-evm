@@ -78,7 +78,7 @@ export const REST_FIELDS = {
   /** `amount` is in the token's base units; `decimals` (null where the token's metadata is not held) says how to show it. */
   tokenMove: ["token", "amount", "tokenId", "standard", "decimals"],
   /** What is known of an address for showing it by name: nothing here is guessed, and an address nothing is known of has a null name and symbol. */
-  label: ["address", "name", "symbol", "kind", "standard", "decimals", "verified"],
+  label: ["address", "name", "symbol", "kind", "standard", "decimals", "verified", "warning"],
   labels: ["items"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived), its place in its block, and the fee caps the sender signed. */
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],
@@ -136,9 +136,9 @@ export const REST_FIELDS = {
     "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt", "matchNote", "method", "tool",
   ],
   sourceFile: ["path", "content"],
-  tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified"],
+  tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified", "warning"],
   tokenDetail: [
-    "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified",
+    "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified", "warning",
     "totalSupplyBlock", "balanceMode", "derived", "canton", "twin",
   ],
   /** What the gateway holds on Canton of a registered token's instrument and the token's supply, both read at one block (the custody at the ledger offset of its record): the instrument is public, no holding, owner or contract is. */
@@ -163,7 +163,7 @@ export const REST_FIELDS = {
   swapClaim: ["block", "txHash", "legIndex", "updateId", "recordTime"],
   /** What a search found: the page to open, and, for a name, the matches (at most ten). */
   search: ["path", "matches"],
-  searchMatch: ["kind", "name", "symbol", "address", "path"],
+  searchMatch: ["kind", "name", "symbol", "address", "warning", "path"],
   /** /api/stats/summary: the numbers of design section 8 over a window, and what is live now. Each nested object has the list below it. */
   statsSummary: [
     "window", "rows", "from", "to", "asOf", "dataSince", "tps", "blockTime", "timeToFinal", "proofTime", "commitTime", "served", "txsPerBlock", "blocks", "txs", "attempts", "fullness",

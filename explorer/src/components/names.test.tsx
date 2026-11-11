@@ -12,8 +12,8 @@ import { AddressCell } from "./AddressCell.tsx";
 import { Amount, TokenChip } from "./Amount.tsx";
 import { ICON_NAMES } from "./Icon.tsx";
 
-const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
-const pass: Label = { address: addr(0xe3), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true };
+const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true, warning: null };
+const pass: Label = { address: addr(0xe3), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true, warning: null };
 const move = (over: Partial<TokenMove> = {}): TokenMove => ({ token: usd.address, amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6, ...over });
 const cell = (a: string, label?: Label, to?: string) => render(<MemoryRouter><AddressCell address={a} label={label} to={to} /></MemoryRouter>);
 
@@ -26,8 +26,17 @@ describe("an address cell", () => {
     expect(screen.getByRole("link")).toHaveAttribute("title", usd.address);
   });
 
+  it("shows a warning beside a token's name, and none for a token without one", () => {
+    const { unmount } = cell(usd.address, usd);
+    expect(screen.queryByRole("note")).toBeNull();
+    unmount();
+    cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    expect(screen.getByRole("note")).toHaveTextContent("Not Rome's WtROME twin");
+    expect(screen.getByRole("link", { name: "Test USD (tUSD)" })).toHaveAttribute("href", `/token/${usd.address}`);
+  });
+
   it("shows a contract by its name and links to the contract", () => {
-    cell(addr(0xd1), { address: addr(0xd1), name: "Disperse", symbol: null, kind: "contract", standard: null, decimals: null, verified: true });
+    cell(addr(0xd1), { address: addr(0xd1), name: "Disperse", symbol: null, kind: "contract", standard: null, decimals: null, verified: true, warning: null });
     expect(screen.getByRole("link", { name: "Disperse" })).toHaveAttribute("href", `/contract/${addr(0xd1)}`);
   });
 
