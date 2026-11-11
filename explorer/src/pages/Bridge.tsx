@@ -9,7 +9,9 @@ import { formatCoin } from "../faucet/format.ts";
 import { short } from "../format.ts";
 import { timeoutSignal } from "../timeout.ts";
 import { useStatus } from "../useStatus.ts";
-import { injected, useWallet } from "../wallet.ts";
+import { injected, noWalletWords, onPhone, useWallet } from "../wallet.ts";
+import { HelpLine, OutLink, StillStuck } from "../components/Help.tsx";
+import { MOVES_ARE_PUBLIC, SIGN_IN_NO_RECOVERY, SIGN_IN_SAME_ACCOUNT, TRUST_MODEL_URL } from "../copy.ts";
 import { browserKeyStore } from "../bridge/canton/keystore.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
@@ -30,7 +32,6 @@ import { MoveBar } from "./MoveBar.tsx";
 import { MoveCard } from "./MoveCard.tsx";
 import "./bridge.css";
 
-const NO_WALLET = "No wallet was found in this browser. Install MetaMask, then open this page again.";
 type Config = { s: "loading" } | { s: "failed" } | { s: "ready"; config: BridgeConfig };
 
 const faucet = createFaucetClient();
@@ -200,7 +201,7 @@ export function Bridge() {
       setPhase({ s: "ready", account });
     } catch (e) { if (same()) setPhase({ s: "failed", message: signInWords(e, sym, chain.chainName, gas) }); }
   }
-  /** "Close my Canton account on this browser": the kept key is removed, and the open account is let go. The next sign-in asks the wallet again. */
+  /** "Remove my Canton key from this browser": the kept key is removed, and the open account is let go. The next sign-in asks the wallet again. */
   async function closeHere(account: Account) {
     if (!wallet.account) return;
     try {
@@ -230,7 +231,7 @@ export function Bridge() {
   /** Puts the wallet on Ostia before a move; says why not, in words. */
   async function ensureChain(): Promise<string | null> {
     const w = injected();
-    if (!w) return NO_WALLET;
+    if (!w) return noWalletWords();
     const on = await ensureOstia(w, chain);
     return on.ok ? null : plainText(on.message) ?? "Your wallet is not on " + chain.chainName + " yet.";
   }
@@ -239,7 +240,7 @@ export function Bridge() {
   const showSheet = sheet || phase.s !== "idle" || (wrongSite && connected) || canton.state.s !== "idle";
   /** The sheet is the Canton wallet's while one is being connected or is connected, and at first when the build offers wallets (the Bridge account from MetaMask is one click away). */
   const walletSheet = canton.on && !bridgeAccount && (canton.state.s !== "idle" || phase.s !== "ready");
-  /** "Use a Bridge account from MetaMask": the person's choice decides the sheet, whatever the wallet's connection was doing. */
+  /** "Use a Bridge account from your wallet": the person's choice decides the sheet, whatever the wallet's connection was doing. */
   const toBridgeAccount = () => { canton.reset(); setBridgeAccount(true); setSheet(true); };
   /** "Connect your Canton wallet" from any sheet: the wallet sheet comes back and the connection starts. */
   const toWallet = () => { setBridgeAccount(false); setSheet(true); void canton.connect(); };
@@ -247,7 +248,7 @@ export function Bridge() {
   const faucetOn = info === null || info.on;
   /** The wallet holds none of the chain's coin and the site has a faucet: the coin comes before the sign-in. */
   const needCoin = connected && gas === 0n && faucetOn;
-  const walletNote = noWallet ? NO_WALLET : wallet.error ? plainText(wallet.error) : null;
+  const walletNote = noWallet ? noWalletWords() : wallet.error ? plainText(wallet.error) : null;
   return (
     <div className="bridge-page">
       <div className="ptitle"><h1>Bridge</h1><span className="muted psub">Move tokens between {chain.chainName} and Canton</span></div>
@@ -294,7 +295,7 @@ export function Bridge() {
             </>
           ) : (
             <>
-              <p className="lead">Sign one message in your wallet. It opens your Canton account.{needCoin ? "" : " No gas and no new wallet."} The same wallet opens the same account on any device.</p>
+              <p className="lead">Sign one message in your wallet. It opens your Canton account.{needCoin ? "" : " No gas and no new wallet."} {SIGN_IN_SAME_ACCOUNT} {SIGN_IN_NO_RECOVERY} <OutLink href={TRUST_MODEL_URL}>Limits</OutLink></p>
               {needCoin && phase.s !== "working" ? (
                 <>
                   <p className="small" role="status">Get test {sym} first. Every move on {chain.chainName} needs a little for fees.</p>
@@ -302,11 +303,11 @@ export function Bridge() {
                   <BuilderGrant info={info} address={wallet.account} coin={chain.coin} />
                 </>
               ) : (
-                <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with MetaMask"}</button>
+                <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with your wallet"}</button>
               )}
               <p className="small muted">You are on <b className="mono">{here}</b>. Sign in only if that is the address you meant to open.</p>
               {wrongSite && <p className="small bad" role="alert">This page is open at {here}, but this bridge is set up for {settings.origin}. Signing is turned off here. Open the bridge from its own address.</p>}
-              {phase.s === "failed" && <p className="small bad" role="alert">{phase.message}</p>}
+              {phase.s === "failed" && <><p className="small bad" role="alert">{phase.message}</p><StillStuck /></>}
               {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={toWallet}>Connect your Canton wallet</button></p>}
             </>
           )}
@@ -315,7 +316,10 @@ export function Bridge() {
       {!settings && (
         <section className="card account" aria-label="Your Canton account"><CardHead title="Your Canton account" as="h2" /><p className="muted">The bridge is not set up on this site yet.</p></section>
       )}
+      {settings && !injected() && onPhone() && <p className="small muted" role="note">{noWalletWords()}</p>}
       <p className="small muted">Test coins have no value. <Link to="/faucet">The Faucet page</Link> has the limits.</p>
+      <p className="small muted">{MOVES_ARE_PUBLIC}</p>
+      <HelpLine />
     </div>
   );
 }

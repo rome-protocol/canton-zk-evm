@@ -119,7 +119,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
   /** Connects MetaMask, then the Canton wallet, and opts the wallet's account in. */
   async function connected(page: any) {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByRole("button", { name: "Connect your Canton wallet" }).click();
     await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 }).catch(async (e: Error) => { throw new Error(`${e.message}\nThe sheet says: ${(await page.locator(".account").innerText()).slice(0, 400)}\nThe page logged: ${logs.slice(0, 8).join(" | ")}`); });
@@ -140,7 +140,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     await page.getByRole("button", { name: /^From token/ }).click();
     await page.getByRole("dialog").getByRole("button", { name: /^Canton Coin on Canton$/ }).click();
     await page.getByRole("textbox", { name: "Amount to move" }).fill("5");
-    expect(await page.getByText("About 1 min · 1 MetaMask pop-up").count()).toBe(1);
+    expect(await page.getByText("About 1 min · 1 wallet pop-up").count()).toBe(1);
     await page.getByRole("button", { name: "Move to Ostia" }).click();
     await page.getByText(/Done\. It is final in/).waitFor({ timeout: 90_000 });
 
@@ -169,7 +169,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     await page.getByText(/Each Canton step of a move opens in/).waitFor({ timeout: 30_000 });
     const before = canton.commands().length;
     await page.reload({ waitUntil: "load" });
-    await page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Connect wallet" }).waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Open my Canton account" }).or(page.getByText("Connected", { exact: true })).first().waitFor({ timeout: 30_000 });
     if (await page.getByText("Connected", { exact: true }).count() === 0) await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByText(/Each Canton step of a move opens in/).waitFor({ timeout: 30_000 });

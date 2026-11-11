@@ -89,7 +89,13 @@ describe("the shell", () => {
     expect(await within(screen.getByRole("banner")).findByRole("link", { name: /Another/ })).toBeInTheDocument();
   });
 
-  it("ends every page with the numbers line and the five links: About, API, Health, the wallet and the source", async () => {
+  it("names the tab after the page and the site", async () => {
+    const { unmount } = renderApp("/bridge");
+    await waitFor(() => expect(document.title).toMatch(/^Bridge · Ostia/));
+    unmount();
+  });
+
+  it("ends every page with the numbers line and the seven links: About, API, Health, the wallet, the docs, help and the source", async () => {
     fakeApi(() => ({ status: 200, body: status() }));
     for (const route of ["/", "/faucet", "/nowhere"]) {
       const { unmount } = renderApp(route);
@@ -99,7 +105,9 @@ describe("the shell", () => {
       expect(foot.getByRole("link", { name: "Health" })).toHaveAttribute("href", "/api/health");
       expect(foot.getByRole("link", { name: "Source code" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm");
       expect(await foot.findByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
-      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["About", "API", "Health", "Add Ostia to your wallet", "Source code"]);
+      expect(foot.getByRole("link", { name: "Docs" })).toHaveAttribute("href", "https://docs.rome.builders/canton-zk-evm/");
+      expect(foot.getByRole("link", { name: "Get help" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm/issues");
+      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["About", "API", "Health", "Add Ostia to your wallet", "Docs", "Get help", "Source code"]);
       unmount();
     }
   });

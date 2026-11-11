@@ -125,7 +125,7 @@ describe("Send on Canton", () => {
     await user.click(send().getByRole("button", { name: "Review" }));
     await user.click(send().getByRole("button", { name: "Send" }));
     const alert = await send().findByRole("alert");
-    expect(alert).toHaveTextContent("Canton did not take this transfer. The receiver may not be set up for this token yet. Nothing was sent.");
+    expect(alert).toHaveTextContent("Canton did not take this transfer. The receiver may not be set up for this token yet: today only accounts on Rome's participants can hold twins. Nothing was sent.");
     expect(alert.textContent).not.toMatch(/INVALID|422|party|instruction|preapproval/i);
     expect(send().queryByText(/Sent/)).toBeNull();
   });

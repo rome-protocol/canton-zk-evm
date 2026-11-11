@@ -42,7 +42,7 @@ export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconn
       <>
         <p className="lead">Which wallet?</p>
         <div className="actions">{state.choices.map((c) => <button key={c.id} type="button" className="btn" onClick={() => onPick(c.id)}>{c.name}</button>)}</div>
-        <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from MetaMask</button></p>
+        <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>
       </>
     );
   }
@@ -50,7 +50,7 @@ export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconn
     <>
       <p className="lead">Use the Canton wallet you already have. It shows each Canton step of a move and you approve it there.</p>
       <button type="button" className="btn" disabled={state.s === "working"} onClick={onConnect}>{state.s === "working" ? state.note : "Connect your Canton wallet"}</button>
-      <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from MetaMask</button></p>
+      <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>
       {state.s === "failed" && <p className="small bad" role="alert">{state.message}</p>}
     </>
   );

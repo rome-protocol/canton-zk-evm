@@ -102,7 +102,7 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
       faucet: { store: faucetStore, leader: faucetStore ? leaders(FAUCET_LOCK) : alwaysLeader, clientKeyHash },
       chain: createChainDb(pool, healthPool),
       chainRest: createChainRest(pool),
-      accountRest: createAccountRest(pool),
+      accountRest: createAccountRest(pool, config.ownAddresses),
       etherscanRest: createEtherscanRest(pool),
       statsRest: createStatsRest(pool),
       pool,

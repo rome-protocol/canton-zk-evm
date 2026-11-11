@@ -215,7 +215,7 @@ describe("the four cards, from the stats routes", () => {
   it("shows, as screen 04 does, the day's transactions with the all-time total, the last hour's time to final, what is not final with how many are stuck, and the lost ones", async () => {
     await open({ stats: stats({}, dayOf()), inFlight: () => reply(inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 1, at: "2026-10-04T01:37:58Z" }, transactions: [] })) });
     await waitFor(() => expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("1,017"));
-    expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("1,021 since launch · 21 blocks");
+    expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("1,021 since launch, with Rome's own tests · 21 blocks");
     expect(within(tile("Transactions · 24\u00a0h")).getByRole("tooltip")).toHaveTextContent("1,021 final in all, as of block 21");
     expect(tile("Time to final · last hour")).toHaveTextContent(/p95/);
     await waitFor(() => expect(tile("Not final yet")).toHaveTextContent("1 waiting · 0 stuck"));

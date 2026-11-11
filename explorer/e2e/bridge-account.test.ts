@@ -116,12 +116,12 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     await home.page.close();
 
     const { page, scripts } = await open("/bridge");
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
     await page.getByText(ORIGIN, { exact: true }).waitFor();   // the site's origin, beside the sign-in
     expect(scripts.some((s) => /\/Bridge-/.test(s))).toBe(true);
     expect(scripts.some((s) => /\/account-/.test(s))).toBe(false);
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
     expect(scripts.some((s) => /\/account-/.test(s))).toBe(true);
 
@@ -159,21 +159,21 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     }));
   });
   /** After a reload the wallet is still connected (the page asks it for its accounts), so there is no Connect button to press. */
-  const connect = (page: any) => page.getByRole("button", { name: "Connect MetaMask" }).waitFor({ state: "detached" });
+  const connect = (page: any) => page.getByRole("button", { name: "Connect wallet" }).waitFor({ state: "detached" });
 
   it("stays open after a reload: Ready again with no second signature, from a key that cannot be read out; Close removes it", async () => {
     const { page } = await open("/bridge");
     expect(await page.evaluate(() => crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign"]).then(() => true, () => false))).toBe(true);   // this browser has Ed25519; a browser without it signs again (unit tests)
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
     expect(seen.signRequests).toBe(1);
 
     // What the browser holds: a CryptoKey that is not extractable (and which refuses every export), the public half, and the addresses. No bytes of the private key.
     const rows = await kept(page);
     expect(rows).toEqual([{ fields: ["party", "privateKey", "publicKey", "wallet"], wallet: wallet.address.toLowerCase(), party, publicBytes: 32, isCryptoKey: true, extractable: false, type: "private", algorithm: "Ed25519", exportable: false }]);
-    expect(await page.getByRole("button", { name: "Close my Canton account on this browser" }).count()).toBe(1);
+    expect(await page.getByRole("button", { name: "Remove my Canton key from this browser" }).count()).toBe(1);
 
     await page.reload({ waitUntil: "load" });
     await connect(page);
@@ -185,7 +185,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
     expect(await page.getByTitle(party).count()).toBe(1);
     expect(await kept(page)).toHaveLength(1);
 
-    await page.getByRole("button", { name: "Close my Canton account on this browser" }).click();
+    await page.getByRole("button", { name: "Remove my Canton key from this browser" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).waitFor();
     expect(await page.getByText("Ready", { exact: true }).count()).toBe(0);
     expect(await kept(page)).toEqual([]);
@@ -199,9 +199,9 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
 
   it("never opens another wallet address's account from the key it kept", async () => {
     const { page } = await open("/bridge");
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
     active = other;   // the wallet is on another account when the page loads again
     await page.reload({ waitUntil: "load" });
@@ -222,9 +222,9 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
   it("is not Ready until the account's list shows both acceptances, and says so in plain words when one never shows", async () => {
     service.hide = "withdrawal";   // the withdrawal acceptance never shows in the account's list
     const { page } = await open("/bridge");
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 60_000 });
     expect(await alert.textContent()).toBe("Your account is not set up yet. Try signing in again in a moment.");
@@ -235,13 +235,13 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
 
   it("refuses to sign on another address than the one the page is built for, and says so", async () => {
     const { page } = await open("/bridge", `http://localhost:${PORT}`);   // the same page, at an address its build does not name
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor();
     expect(await alert.textContent()).toBe(`This page is open at http://localhost:${PORT}, but this bridge is set up for ${ORIGIN}. Signing is turned off here. Open the bridge from its own address.`);
     expect(await page.getByText(`http://localhost:${PORT}`, { exact: true }).count()).toBe(1);   // the address it is on is shown beside the button
-    expect(await page.getByRole("button", { name: "Sign in with MetaMask" }).isDisabled()).toBe(true);
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click({ force: true }).catch(() => {});
+    expect(await page.getByRole("button", { name: "Sign in with your wallet" }).isDisabled()).toBe(true);
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click({ force: true }).catch(() => {});
     expect(seen.signRequests).toBe(0);
     expect(seen.topologies).toHaveLength(0);
     expect(seen.prepares).toHaveLength(0);
@@ -251,9 +251,9 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
   it("shows a refusal of the service in plain words, never its code", async () => {
     service.prepare = "too_many_open";
     const { page } = await open("/bridge");
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     const alert = page.getByRole("alert");
     await alert.waitFor({ timeout: 30_000 });
     const text = (await alert.textContent()) ?? "";
@@ -266,7 +266,7 @@ describe.skipIf(!dist)("the Bridge page, in a browser", () => {
   it("after a reload picks up the wallet the site is already connected to: no Connect button, the next step shown, no signature asked", async () => {
     const { page } = await open("/bridge", ORIGIN, true);
     await page.getByRole("button", { name: "Open my Canton account" }).waitFor({ timeout: 30_000 });
-    expect(await page.getByRole("button", { name: "Connect MetaMask" }).count()).toBe(0);
+    expect(await page.getByRole("button", { name: "Connect wallet" }).count()).toBe(0);
     expect(seen.signRequests).toBe(0);
     await page.close();
   }, 60_000);

@@ -155,9 +155,9 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
   }
   async function signedIn(page: any) {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
-    await page.getByRole("button", { name: "Connect MetaMask" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Sign in with MetaMask" }).click();
+    await page.getByRole("button", { name: "Sign in with your wallet" }).click();
     await page.getByRole("group", { name: "Send on Canton" }).waitFor({ timeout: 30_000 });
   }
   const noSideways = (page: any) => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
@@ -192,7 +192,7 @@ describe.skipIf(!dist)("Send on Canton and Incoming, in a browser", () => {
     expect(seen.executed).toBeGreaterThanOrEqual(1);
     expect(seen.verified).toBe(seen.executed);   // every command the page executed carried the account's own signature of the hash the page computed
     expect(seen.signRequests).toBe(1);   // the wallet signed in, and never again
-    expect(seen.walletSends).toBe(0);   // no MetaMask pop-up for the send
+    expect(seen.walletSends).toBe(0);   // no wallet pop-up for the send
     expect(await send.getByRole("textbox", { name: "Amount" }).inputValue()).toBe("");
     expect(await noSideways(page)).toBe(true);
     expect(await inside(page)).toBe(true);

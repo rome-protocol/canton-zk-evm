@@ -23,6 +23,17 @@ describe("the database for the tracker and the faucet", () => {
   });
 });
 
+describe("OWN_ADDRESSES", () => {
+  const A = "0x" + "ab".repeat(20), B = "0x" + "cd".repeat(20);
+  it("names Rome's own test and load addresses, in lowercase, and is empty when not set", () => {
+    expect(load().ownAddresses).toEqual({});
+    expect(load({ OWN_ADDRESSES: ` ${A.toUpperCase().replace("0X", "0x")}=Rome test loop , ${B}=Rome load test ` }).ownAddresses).toEqual({ [A]: "Rome test loop", [B]: "Rome load test" });
+  });
+  it("stops the server, naming the setting, for a pair that is not an address and a name", () => {
+    for (const bad of ["0x12=Rome", `${A}`, `${A}=`, `${A}=${"x".repeat(61)}`]) expect(() => load({ OWN_ADDRESSES: bad })).toThrow(/OWN_ADDRESSES/);
+  });
+});
+
 describe("settings", () => {
   it("has working defaults, and the chain's coin is tROME", () => {
     const c = load();
