@@ -15,14 +15,20 @@ afterEach(async () => { for (const d of databases.splice(0)) await d.drop(); });
 const settings = "programVK=0x" + "cd".repeat(32) + "\nrootC=0x" + "ef".repeat(32) + "\n";
 const ROUND = ["C4", "C5", "derive_lag", "C10"];
 
-interface World { reth?: boolean; canton?: boolean; started?: boolean; round?: boolean; faucet?: { balance: string | null; amount?: string; queue?: number; /** When the oldest waiting request was made; by default, when the test began. */ since?: number }; tracker?: { open: number; droppedLastHour: number } }
+interface World { reth?: boolean; canton?: boolean; started?: boolean; round?: boolean; faucet?: { balance: string | null; amount?: string; queue?: number; /** When the oldest waiting request was made; by default, when the test began. */ since?: number }; tracker?: { open: number; droppedLastHour: number };
+  /** The account service's `/healthz`: what it answers (a status and a body), or what it does when asked. */
+  accounts?: { status?: number; body?: unknown; down?: boolean } }
 
 /** An API instance `a` over a database of its own. Its reth and Canton answer unless the test says they do not; the indexer has written its four rounds unless it says it has not. */
 async function boot(w: World = {}) {
   const db = await makeDatabase(true);
   databases.push(db);
   const clock = { now: 1_000_000 }, start = clock.now;
-  const state = { reth: w.reth ?? true, canton: w.canton ?? true, faucet: w.faucet, tracker: w.tracker };
+  const state = { reth: w.reth ?? true, canton: w.canton ?? true, faucet: w.faucet, tracker: w.tracker, accounts: w.accounts };
+  const accountsFetch = (async () => {
+    if (state.accounts?.down) throw new Error("connect ECONNREFUSED 127.0.0.1:8081");
+    return new Response(JSON.stringify(state.accounts?.body ?? {}), { status: state.accounts?.status ?? 200 });
+  }) as unknown as typeof fetch;
   if (w.started ?? true) await db.pool.query("insert into cursors (stream, position, updated_at) values ('reader_updates', 1, now())");
   if ((w.started ?? true) && (w.round ?? true)) await writeRound(db, "ok");
   const health = createApiHealth({
@@ -32,6 +38,7 @@ async function boot(w: World = {}) {
     faucet: { on: true, isLeading: () => state.faucet !== undefined, info: async () => ({ balance: state.faucet!.balance, amount: state.faucet!.amount ?? "100", queue: state.faucet!.queue ?? 0 }) as never,
       oldestQueued: () => (state.faucet?.queue ? state.faucet.since ?? start : null) },
     tracker: { isLeading: () => state.tracker !== undefined, stats: () => state.tracker! },
+    ...(w.accounts ? { accounts: { url: "http://127.0.0.1:8081/healthz", fetch: accountsFetch } } : {}),
   });
   const config = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
   const reth = { block: async () => ({ number: 5 }) } as never, ledger = { ledgerEnd: async () => 9 } as never;
@@ -231,6 +238,59 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
       expect(check(body, "api/a/reth")).toMatchObject({ stale: true });
       expect(body.status).toBe("degraded");
     });
+  });
+
+  describe("the account service's limits", () => {
+    const usage = (over: Record<string, { used: number; limit: number }> = {}, accounts = 10) => ({
+      ok: true, accounts, accountCap: 1000, ceilings: { newAccountsDay: { used: 5, limit: 50 }, executesDay: { used: 100, limit: 2000 }, ...over },
+    });
+
+    it("write no row when the explorer is not told where the service is, and remove one that an earlier run wrote", async () => {
+      const { get, pool } = await boot();
+      expect(check((await get()).body, "accounts")).toBeUndefined();
+      await put(pool, "accounts", "down", "left over");
+      expect(check((await get()).body, "accounts")).toBeUndefined();
+    });
+
+    it("is ok while every ceiling and the account cap are under 60%, and shows each as a share", async () => {
+      const { get } = await boot({ accounts: { body: usage() } });
+      const { status, body } = await get();
+      expect(status).toBe(200);
+      expect(body.status).toBe("ok");
+      expect(check(body, "accounts")).toMatchObject({ status: "ok", value: { accounts: 10, accountCap: 1000, ceilings: { accounts: { used: 10, limit: 1000, percent: 1 }, newAccountsDay: { used: 5, limit: 50, percent: 10 } } }, threshold: { degradedAt: 0.6, downAt: 0.9 }, detail: null });
+    });
+
+    it("warns at 60% of a ceiling and names it, and the explorer stays in service", async () => {
+      const { get } = await boot({ accounts: { body: usage({ newAccountsDay: { used: 30, limit: 50 } }) } });
+      const { status, body } = await get();
+      expect(status).toBe(200);
+      expect(body.status).toBe("degraded");
+      expect(body.problems).toEqual(["accounts: new accounts opened today: 30 of 50 (60%)"]);
+    });
+
+    it("fails the row at 90%, in the row and in the problems, and the answer stays 200 and degraded (advisory)", async () => {
+      const { get } = await boot({ accounts: { body: usage({ executesDay: { used: 1800, limit: 2000 } }) } });
+      const { status, body } = await get();
+      expect(check(body, "accounts")).toMatchObject({ status: "down" });
+      expect(body.problems).toEqual(["accounts: transactions today: 1800 of 2000 (90%)"]);
+      expect([status, body.status]).toEqual([200, "degraded"]);
+    });
+
+    it("counts the accounts held against the participant's cap: 900 of 1000 fails, 600 warns", async () => {
+      const warn = await boot({ accounts: { body: usage({}, 600) } });
+      expect(check((await warn.get()).body, "accounts")).toMatchObject({ status: "degraded", detail: "accounts held against the participant's cap: 600 of 1000 (60%)" });
+      const fail = await boot({ accounts: { body: usage({}, 900) } });
+      expect(check((await fail.get()).body, "accounts")).toMatchObject({ status: "down", detail: "accounts held against the participant's cap: 900 of 1000 (90%)" });
+    });
+
+    it("is degraded, never down, when the service cannot be read or does not say its limits", async () => {
+      for (const accounts of [{ down: true }, { status: 503, body: {} }, { body: { ok: true } }, { body: { ok: true, accounts: 1, accountCap: 0, ceilings: {} } }]) {
+        const { get } = await boot({ accounts });
+        const { status, body } = await get();
+        expect([status, check(body, "accounts").status], JSON.stringify(accounts)).toEqual([200, "degraded"]);
+        expect(check(body, "accounts").detail).toMatch(/^the account service's limits cannot be read: /);
+      }
+    }, 30_000);
   });
 
   describe("the faucet, the tracker and the verifier", () => {

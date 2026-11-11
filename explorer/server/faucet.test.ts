@@ -7,7 +7,7 @@ import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { DATABASE_MODE, makeDatabase, type TestDatabase } from "./db/testing.ts";
-import { createFaucet, FAUCET_GAS, loadFaucetKey, type Faucet, type FaucetOptions } from "./faucet.ts";
+import { clientNet, createFaucet, FAUCET_GAS, loadFaucetKey, type Faucet, type FaucetOptions } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore } from "./faucet-store.ts";
 import { createReth, RethError, type Reth } from "./reth.ts";
 import type { Tracked, TxState } from "./tracker.ts";
@@ -953,6 +953,71 @@ describe("a client's address", () => {
     expect((await f.request(addr(5), { ip: "1.2.3.4" })).status).toBe(202);
     expect((await f.request(addr(6), { ip: "::ffff:1.2.3.4" })).body).toMatchObject({ reason: "ip" });
     expect((await f.request(addr(7), { ip: "::ffff:102:304" })).body).toMatchObject({ reason: "ip" });
+  });
+});
+
+describe("a client network", () => {
+  it("is limited as a whole: an IPv6 /48 makes so many requests in the window, though each of its /64s makes one", async () => {
+    const f = await faucet({ perIpSeconds: 600, perNetMax: 3 });
+    for (let i = 1; i <= 3; i++) expect((await f.request(addr(i), { ip: `2001:db8:1:${i}::1` })).status).toBe(202);
+    clock.now += 100_000;
+    const turned = await f.request(addr(4), { ip: "2001:db8:1:9::1" }); // a fourth /64 of the same /48
+    expect(turned).toMatchObject({ status: 429, headers: { "Retry-After": "500" }, body: { reason: "net" } });
+    expect((turned.body as { error: string }).error).toContain("This network");
+    expect((await f.request(addr(5), { ip: "2001:db8:2:1::1" })).status).toBe(202); // another /48
+    expect((await f.request(addr(6), { ip: "1.2.3.4" })).status).toBe(202); // an IPv4 address has no network but itself
+    clock.now += 500_000;
+    expect((await f.request(addr(7), { ip: "2001:db8:1:9::1" })).status).toBe(202); // the window moved on
+  });
+
+  it("counts a refusal of the per-/64 limit and the per-/48 limit apart, and the /64's first", async () => {
+    const f = await faucet({ perIpSeconds: 600, perNetMax: 2 });
+    expect((await f.request(addr(1), { ip: "2001:db8:1:1::1" })).status).toBe(202);
+    expect((await f.request(addr(2), { ip: "2001:db8:1:1::2" })).body).toMatchObject({ reason: "ip" });
+    expect((await f.request(addr(3), { ip: "2001:db8:1:2::1" })).status).toBe(202);
+    expect((await f.request(addr(4), { ip: "2001:db8:1:2::2" })).body).toMatchObject({ reason: "ip" }); // the /64 has had its turn
+    expect((await f.request(addr(5), { ip: "2001:db8:1:3::1" })).body).toMatchObject({ reason: "net" }); // a new /64 of a /48 that is full
+  });
+
+  it("gives a request that came to nothing its place in the network's count back", async () => {
+    const f = await faucet({ perIpSeconds: 600, perNetMax: 1 });
+    const t = ticketOf(await f.request(ALICE, { ip: "2001:db8:1:1::1" }));
+    expect((await f.request(BOB, { ip: "2001:db8:1:2::1" })).body).toMatchObject({ reason: "net" });
+    state.refuse = "insufficient funds";
+    for (let i = 0; i < 5; i++) await f.process();
+    expect(f.ticket(t)?.status).toBe("failed");
+    state.refuse = undefined;
+    expect((await f.request(BOB, { ip: "2001:db8:1:2::1" })).status).toBe(202);
+  });
+
+  it("is a /48 for an IPv6 address and nothing for the rest", async () => {
+    expect(clientNet("2001:db8:1:2:3:4:5:6")).toBe("2001:db8:1::/48");
+    expect(clientNet("2001:DB8:1::")).toBe("2001:db8:1::/48");
+    expect(clientNet("2001:db8:1:ffff:ffff:ffff:ffff:ffff")).toBe("2001:db8:1::/48");
+    for (const v4 of ["1.2.3.4", "::ffff:1.2.3.4", "not an address", undefined]) expect(clientNet(v4)).toBeUndefined();
+  });
+
+  it("is counted once for each request, and the default is ten", async () => {
+    const f = await faucet({ perIpSeconds: 600 });
+    for (let i = 1; i <= 10; i++) expect((await f.request(addr(i), { ip: `2001:db8:1:${i}::1` })).status).toBe(202);
+    expect((await f.request(addr(11), { ip: "2001:db8:1:11::1" })).body).toMatchObject({ reason: "net" });
+  });
+
+  it("keeps the network's count across a restart when the requests are in a file", async () => {
+    if (DATABASE_MODE) return; // the database keeps no network: its count starts empty after a restart (see `perNetMax`)
+    const dir = mkdtempSync(join(tmpdir(), "faucet-state-"));
+    try {
+      const stateFile = join(dir, "faucet.json");
+      const first = await faucet({ stateFile, perIpSeconds: 600, perNetMax: 2 });
+      expect((await first.request(addr(1), { ip: "2001:db8:1:1::1" })).status).toBe(202);
+      expect((await first.request(addr(2), { ip: "2001:db8:1:2::1" })).status).toBe(202);
+      await first.flush();
+      await fake!.close();
+      const again = await faucet({ stateFile, perIpSeconds: 600, perNetMax: 2 });
+      expect((await again.request(addr(3), { ip: "2001:db8:1:3::1" })).body).toMatchObject({ reason: "net" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -22,6 +22,8 @@ export interface FaucetOptions {
   perAddressSeconds: number;
   /** One request per client address in this many seconds. */
   perIpSeconds: number;
+  /** At most this many requests from one IPv6 /48 in the same `perIpSeconds`, on top of the one per /64 (a /48 holds 65,536 /64s). Counted in memory by each instance, so a restart empties it. Default 10. */
+  perNetMax?: number;
   /** The most requests accepted in any hour, from everyone. */
   maxPerHour: number;
   /** The most transfers sent in one batch. */
@@ -167,6 +169,8 @@ export interface Ticket {
   batch?: number | null;
   /** A builder grant: the keyed hash of the GitHub account it was given to (never the account itself), and its amount in wei as a decimal string. A plain request has neither. */
   account?: string | null; amount?: string | null;
+  /** The IPv6 /48 the request came from (hashed like `ip`), for the per-network count. A file keeps it with the ticket; the database does not, so after a restart on the database the count starts empty. */
+  net?: string | null;
   /** True from the moment the request is in memory until the store has checked the limits against every instance's requests and written it. The worker leaves it alone. */
   claiming?: boolean;
 }
@@ -188,7 +192,7 @@ const NO_SENDER = "0x0000000000000000000000000000000000000000";
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 
 /** A refusal also says which limit was hit, so a page can word it without reading the message. */
-type Reason = "address" | "ip" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
+type Reason = "address" | "ip" | "net" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
 const answer = (status: number, error: string, headers?: Record<string, string>, reason?: Reason): FaucetAnswer => ({
   status, body: { error, ...(reason ? { reason } : {}) }, ...(headers ? { headers } : {}),
 });
@@ -221,6 +225,16 @@ export function clientKey(ip: string | undefined): string | undefined {
   return `${n.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
 }
 
+/**
+ * The network a client belongs to when a limit also counts by network: an IPv6 address as its /48. An IPv4 address, an IPv4 address written as IPv6 and anything that does not read
+ * as an address have none (the per-client limit already counts them one by one).
+ */
+export function clientNet(ip: string | undefined): string | undefined {
+  const k = clientKey(ip);
+  if (k === undefined || !k.endsWith("::/64")) return undefined;
+  return `${k.slice(0, -"::/64".length).split(":").slice(0, 3).join(":")}::/48`;
+}
+
 export function createFaucet(o: FaucetOptions): Faucet {
   const now = o.now ?? Date.now;
   const account = o.key ? privateKeyToAccount(o.key) : null;
@@ -229,6 +243,9 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const addressMs = o.perAddressSeconds * 1000, ipMs = o.perIpSeconds * 1000;
   // Each map is in the order of time: a key is set only when it is not there, so the oldest is always the first.
   const addresses = new Map<string, number>(), ips = new Map<string, number>();
+  /** The times of the requests of each IPv6 /48 inside the window of the per-client limit, oldest first. In memory only (see `perNetMax`). */
+  const nets = new Map<string, number[]>();
+  const netMax = o.perNetMax ?? 10;
   let hourly: number[] = [];
   // The builder grant's limits, in the order of time like the maps above: one grant per GitHub account and one per address in a period, and a count for the day.
   const builder = o.builder ?? null;
@@ -292,6 +309,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (t.status === "queued") queue.push(t);
       else if (t.status === "sent") (t.watch ? watching : open).add(t);
     }
+    // The per-network count is what the tickets that kept their network say, inside the window.
+    for (const t of [...s.tickets].filter((x) => x.net && x.status !== "failed" && x.at + ipMs > now()).sort((a, b) => a.at - b.at)) nets.set(t.net!, [...(nets.get(t.net!) ?? []), t.at]);
     // The builder limits are what the grants say, inside their windows. A grant that came to nothing does not count.
     if (builder) {
       const t0 = now();
@@ -411,6 +430,12 @@ export function createFaucet(o: FaucetOptions): Faucet {
   // --- the limits
   function forget(t: number): void {
     for (const [m, ms] of [[addresses, addressMs], [ips, ipMs], [builderAccounts, builderMs], [builderAddresses, builderMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
+    for (const [k, times] of nets) {
+      let n = 0;
+      while (n < times.length && times[n]! + ipMs <= t) n++;
+      if (n === times.length) nets.delete(k);
+      else if (n) times.splice(0, n);
+    }
     let i = 0;
     while (i < hourly.length && hourly[i]! + HOUR <= t) i++;
     if (i) hourly = hourly.slice(i);
@@ -420,18 +445,19 @@ export function createFaucet(o: FaucetOptions): Faucet {
   }
 
   /** The refusal for a limit, with the wait it asks for. */
-  function turnedAway(limit: ClaimRefusal, waitMs: number): FaucetAnswer {
+  function turnedAway(limit: ClaimRefusal | "net", waitMs: number): FaucetAnswer {
     const header = { "Retry-After": seconds(waitMs) };
     if (limit === "account") return answer(429, `This GitHub account was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "account");
     if (limit === "builder-address") return answer(429, `This address was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "builder-address");
     if (limit === "day") return answer(429, `The builder grants for today are all given out (${o.builder?.maxPerDay ?? 0}). Try again tomorrow.`, header, "day");
     if (limit === "address") return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "address");
     if (limit === "ip") return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "ip");
+    if (limit === "net") return answer(429, `This network has asked for ${netMax} requests' worth of coins in the last ${period(o.perIpSeconds)}, which is the most it may. Try again later, or from another network.`, { "Retry-After": seconds(waitMs) }, "net");
     return answer(429, `The faucet has given out all it gives in an hour (${o.maxPerHour} requests). Try again later.`, { "Retry-After": seconds(waitMs) }, "hour");
   }
 
   /** The refusal for a caller, or null when the limits let it through. */
-  function limited(to: string, ip: string | undefined, t: number, account?: string): FaucetAnswer | null {
+  function limited(to: string, ip: string | undefined, t: number, account?: string, net?: string): FaucetAnswer | null {
     forget(t);
     if (account !== undefined) {
       const c = builderAccounts.get(account);
@@ -444,6 +470,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
     const i = ip === undefined ? undefined : ips.get(ip);
     if (i !== undefined) return turnedAway("ip", i + ipMs - t);
+    const n = net === undefined ? undefined : nets.get(net);
+    if (n !== undefined && n.length >= netMax) return turnedAway("net", n[0]! + ipMs - t);
     if (hourly.length >= o.maxPerHour) return turnedAway("hour", hourly[0]! + HOUR - t);
     if (account !== undefined && builderDaily.length >= (builder?.maxPerDay ?? 0)) return turnedAway("day", builderDaily[0]! + DAY - t);
     if (queue.length >= o.queueMax) {
@@ -469,6 +497,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (d >= 0) builderDaily.splice(d, 1);
     } else if (addresses.get(t.to) === t.at) addresses.delete(t.to);
     if (t.ip !== null && ips.get(t.ip) === t.at) ips.delete(t.ip);
+    const times = t.net ? nets.get(t.net) : undefined;
+    if (t.net && times) { const j = times.indexOf(t.at); if (j >= 0) times.splice(j, 1); if (!times.length) nets.delete(t.net); }
     const i = hourly.indexOf(t.at);
     if (i >= 0) hourly.splice(i, 1);
   }
@@ -742,7 +772,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
   /** Counts a refusal that is a limit or a failed human check, once, and hands the answer back. Only the reason is counted, in memory: the answer never waits for the database, and a timer writes the counts. */
   let refusalTimer: ReturnType<typeof setTimeout> | undefined;
   function counted(a: FaucetAnswer): FaucetAnswer {
-    const reason = (a.body as { reason?: string }).reason;
+    const said = (a.body as { reason?: string }).reason;
+    const reason = said === "net" ? "ip" : said;   // a network's limit is counted with the per-client one: the counts have no column of their own
     if ((reason === "address" || reason === "ip" || reason === "hour" || reason === "captcha") && store?.refused && store.flushRefusals) {
       store.refused(reason satisfies Refused, now());
       refusalTimer ??= setTimeout(() => { refusalTimer = undefined; void store.flushRefusals!(); }, o.refusalFlushMs ?? 5000).unref();
@@ -782,8 +813,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (grantee !== undefined && !builder) return answer(503, "The builder grant is off.");
     const to = typeof raw === "string" ? raw.toLowerCase() : "";
     if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
-    const ip = hashed(clientKey(caller.ip));
-    const early = limited(to, ip, now(), grantee);
+    const ip = hashed(clientKey(caller.ip)), net = hashed(clientNet(caller.ip));
+    const early = limited(to, ip, now(), grantee, net);
     if (early) return counted(early);
     if (grantee === undefined) {
       const refused = await human(caller.captcha, caller.ip);
@@ -792,15 +823,16 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const seen = await chain();
     // Time has passed while the check and the balance were read: the limits are looked at again, and nothing awaits between that look and the ticket.
     const t = now();
-    const late = limited(to, ip, t, grantee);
+    const late = limited(to, ip, t, grantee, net);
     if (late) return counted(late);
     const amount = grantee === undefined ? o.amountWei : builder!.amountWei;
     if (seen && seen.balance < owed(seen.gasPrice) + cost(seen.gasPrice, amount)) return answer(503, "The faucet is empty.", undefined, "empty");
-    const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0, ...(grantee !== undefined ? { account: grantee, amount: amount.toString() } : {}) };
+    const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0, ...(net !== undefined ? { net } : {}), ...(grantee !== undefined ? { account: grantee, amount: amount.toString() } : {}) };
     tickets.set(ticket.id, ticket);
     queue.push(ticket);
     if (grantee !== undefined) { builderAccounts.set(grantee, t); builderAddresses.set(to, t); builderDaily.push(t); } else addresses.set(to, t);
     if (ip !== undefined) ips.set(ip, t);
+    if (net !== undefined) nets.set(net, [...(nets.get(net) ?? []), t]);
     hourly.push(t);
     if (store?.claim) {
       // With a database, other instances take requests too. The limits are checked against all of them as the request is written. Until then

@@ -106,24 +106,26 @@ class RegistryTest(unittest.TestCase):
         self.now = 1_000_000.0
         self.start()
 
-    def start(self):
-        reg = R.Registry(R.Ledger(self.fake.ledger_url, "read-token"), R.Ostia(self.fake.rpc_url), ADMIN, R.LockParts(self.state, 100, clock=lambda: self.now), CHAIN_ID, ttl=0, supply_ttl=0, page_size=2)
+    def start(self, header=None, parts=None, **limits):
+        reg = R.Registry(R.Ledger(self.fake.ledger_url, "read-token"), R.Ostia(self.fake.rpc_url), ADMIN, R.LockParts(self.state, 100, clock=lambda: self.now, **(parts or {})), CHAIN_ID, ttl=0, supply_ttl=0, page_size=2, **limits)
         reg.refresh_acceptances()   # main does this, then every 10 s on a thread of its own
         self.registry = reg
         if getattr(self, "server", None):
             self.server.shutdown(); self.server.server_close()
-        self.server = R.make_server(reg, "127.0.0.1", 0)
+        self.server = R.make_server(reg, "127.0.0.1", 0, header, 1, R.TRUSTED_ADDRESSES)
         threading.Thread(target=lambda s=self.server: s.serve_forever(0.01), daemon=True).start()
         self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close()))
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def call(self, path, body=None, method=None):
+    def call(self, path, body=None, method=None, headers=None):
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(self.url + path, data, {"content-type": "application/json"}, method=method)
+        req = urllib.request.Request(self.url + path, data, {"content-type": "application/json", **(headers or {})}, method=method)
         try:
             with urllib.request.urlopen(req) as r:
+                self.headers = r.headers
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
+            self.headers = e.headers
             return e.code, json.load(e)
 
     def transfer_args(self, **over):
@@ -473,6 +475,147 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(e.exception.code, 400)
         self.assertEqual(self.call("/nothing")[0], 404)
         self.assertEqual(self.call("/registry/metadata/v1/info", {})[0], 404)
+
+    # ---- one client cannot fill what everyone needs
+
+    OTHER = "carol::1220" + "c" * 64
+
+    def accept_other(self):
+        self.fake.acceptances.append(acceptance_event(party=self.OTHER, cid="acceptance-2"))
+        self.registry.refresh_acceptances()
+
+    def announce(self, ref, receiver=RECEIVER, ip=None):
+        return self.call("/twin/v1/lock-parts", {"receiver": receiver, "ref": ref}, headers={"X-Real-IP": ip} if ip else None)
+
+    def test_the_defaults_keep_an_unpaid_announcement_for_hours_not_days(self):
+        self.assertEqual((R.LOCK_PARTS_TTL, R.PARTS_PER_RECEIVER), (6 * 3600, 20))
+        lid = self.announce("a")[1]["lockId"]
+        self.now += 6 * 3600 - 5
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[0], 200)
+        self.now += 10
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[0], 404)
+
+    def test_announcing_again_keeps_the_entry_for_another_life(self):
+        self.start(parts={"ttl": 3600})
+        lid = self.announce("a")[1]["lockId"]
+        self.now += 1800   # inside the first half of its life
+        self.assertEqual(self.announce("a")[1]["lockId"], lid)
+        self.now += 3000   # past the first life, inside the second
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[0], 200)
+        self.assertEqual(self.announce("a")[1]["lockId"], lid)   # in the second half: the line in the file is brought up to date too
+        with open(self.state) as f:
+            self.assertEqual(json.loads(f.readlines()[-1])["at"], self.now)
+        self.now += 3500
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[0], 200)
+        self.now += 200
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + lid)[0], 404)   # nobody announced it again
+
+    def test_one_receiver_holds_at_most_so_many_live_announcements(self):
+        self.accept_other()
+        self.start(parts={"per_receiver": 3})
+        self.assertEqual([self.announce(str(i))[0] for i in range(3)], [200, 200, 200])
+        status, out = self.announce("3")
+        self.assertEqual(status, 429)
+        self.assertIn("this receiver has 3 lock announcements waiting", out["error"])
+        self.assertEqual(self.headers["Retry-After"], str(R.LOCK_PARTS_TTL))
+        self.assertEqual(self.announce("0")[0], 200)   # one that is held is announced again at no cost
+        self.assertEqual(self.announce("x", self.OTHER)[0], 200)   # another receiver has room of its own
+        self.assertEqual(self.call("/twin/v1/lock-parts/" + R.lock_id(RECEIVER, "3"))[0], 404)   # nothing was kept
+        self.now += R.LOCK_PARTS_TTL + 1   # they expire, and the room is back
+        self.assertEqual(self.announce("3")[0], 200)
+
+    def test_a_client_network_holds_at_most_so_many_live_announcements_and_counts_by_its_48(self):
+        self.accept_other()
+        self.start(header="X-Real-IP", parts={"per_client": 2})
+        self.assertEqual(self.announce("a", ip="2001:db8:1:1::1")[0], 200)
+        self.assertEqual(self.announce("b", self.OTHER, ip="2001:db8:1:2::7")[0], 200)   # another /64 of the same /48, another receiver
+        status, out = self.announce("c", ip="2001:db8:1:3::9")   # a third /64
+        self.assertEqual(status, 429)
+        self.assertIn("this network has 2 lock announcements waiting", out["error"])
+        self.assertEqual(self.announce("c", self.OTHER, ip="2001:db8:1:ffff::1")[0], 429)   # nor does another receiver help
+        self.assertEqual(self.announce("a", ip="2001:db8:1:9::1")[0], 200)   # an entry it already holds is no new one
+        self.assertEqual(self.announce("c", ip="2001:db8:2:1::1")[0], 200)   # another /48
+        self.assertEqual(self.announce("d", ip="198.51.100.9")[0], 200)   # an IPv4 address
+        self.assertEqual(self.announce("e", ip="198.51.100.9")[0], 200)
+        self.assertEqual(self.announce("f", ip="198.51.100.9")[0], 429)
+        self.assertEqual(self.announce("f", ip="198.51.100.10")[0], 200)   # another IPv4 address
+
+    def test_the_counts_survive_a_restart_and_drop_with_expiry(self):
+        self.start(header="X-Real-IP", parts={"per_client": 2, "per_receiver": 5})
+        for ref in ("a", "b"):
+            self.assertEqual(self.announce(ref, ip="203.0.113.1")[0], 200)
+        self.start(header="X-Real-IP", parts={"per_client": 2, "per_receiver": 5})   # the state file says who announced them
+        self.assertEqual(self.announce("c", ip="203.0.113.1")[0], 429)
+        self.now += R.LOCK_PARTS_TTL + 1
+        self.assertEqual(self.announce("c", ip="203.0.113.1")[0], 200)
+        self.assertEqual(self.registry.parts.by_client["203.0.113.1"], 1)
+        self.assertEqual(self.registry.parts.by_receiver[RECEIVER], 1)
+
+    def test_an_entry_from_before_clients_were_kept_counts_for_its_receiver_only(self):
+        lid = R.lock_id(RECEIVER, "old")
+        with open(self.state, "w") as f:
+            f.write(json.dumps({"lockId": lid, "receiver": RECEIVER, "ref": "old", "at": self.now, "acceptance": "acceptance-1"}) + "\n")
+        self.start(header="X-Real-IP", parts={"per_client": 1, "per_receiver": 2})
+        self.assertEqual(self.announce("a", ip="203.0.113.1")[0], 200)
+        self.assertEqual(self.announce("b", ip="203.0.113.2")[0], 429)   # the receiver has its two
+        self.assertEqual(self.announce("old", ip="203.0.113.9")[0], 200)
+
+    def test_the_ceiling_a_minute_per_client_network_and_over_all_of_them(self):
+        self.start(header="X-Real-IP", announce_rate=R.Rate(3), announce_total=R.Rate(5))
+        self.assertEqual([self.announce(str(i), ip="2001:db8:1:1::1")[0] for i in range(3)], [200, 200, 200])
+        status, out = self.announce("x", ip="2001:db8:1:5::1")   # the same /48
+        self.assertEqual(status, 429)
+        self.assertIn("too many lock announcements just now", out["error"])
+        self.assertGreater(int(self.headers["Retry-After"]), 0)
+        self.assertEqual([self.announce(str(i), ip="198.51.100.1")[0] for i in range(2)], [200, 200])   # 5 in all now
+        self.assertEqual(self.announce("y", ip="198.51.100.77")[0], 429)   # the total's ceiling, for a client of its own
+        self.assertEqual(self.announce("a", ip="2001:db8:1:1::1")[0], 429)
+
+    def test_a_refused_announcement_counts_against_the_rate_too(self):
+        self.start(header="X-Real-IP", announce_rate=R.Rate(3))
+        for body in ({}, {"receiver": "x", "ref": "r"}, {"receiver": RECEIVER}):
+            self.assertEqual(self.call("/twin/v1/lock-parts", body, headers={"X-Real-IP": "198.51.100.1"})[0], 400)
+        self.assertEqual(self.announce("a", ip="198.51.100.1")[0], 429)
+
+    def test_the_rate_window_moves(self):
+        now = [0.0]
+        rate = R.Rate(2, 60, clock=lambda: now[0])
+        rate.hit("k"); rate.hit("k")
+        with self.assertRaises(R.HttpError) as e:
+            rate.hit("k")
+        self.assertEqual((e.exception.status, e.exception.retry_after), (429, 61))
+        now[0] = 61
+        rate.hit("k")
+        self.assertEqual(rate.used("k"), 1)
+        rate.prune()
+        self.assertEqual(list(rate.hits), ["k"])
+        now[0] = 200
+        rate.prune()
+        self.assertEqual(rate.hits, {})
+
+    def test_the_client_is_what_the_proxy_wrote_and_only_from_a_proxy(self):
+        self.assertEqual(R.client_net("2001:db8:1:2:3:4:5:6"), "2001:db8:1::/48")
+        self.assertEqual((R.client_net("::ffff:198.51.100.7"), R.client_net("198.51.100.7"), R.client_net("nonsense")), ("198.51.100.7", "198.51.100.7", "nonsense"))
+        self.assertEqual(R.client_address("127.0.0.1", "6.6.6.6, 9.9.9.1", 1, R.TRUSTED_ADDRESSES), "9.9.9.1")
+        self.assertEqual(R.client_address("203.0.113.9", "9.9.9.1", 1, R.TRUSTED_ADDRESSES), "203.0.113.9")   # a header from a peer that is no proxy is a client's own
+        self.start(header="X-Real-IP", parts={"per_client": 1})   # the peer is this machine: the header is read
+        self.assertEqual(self.announce("a", ip="198.51.100.1")[0], 200)
+        self.assertEqual(self.announce("b", ip="198.51.100.2")[0], 200)
+        self.assertEqual(self.announce("c", ip="198.51.100.1")[0], 429)
+
+    def test_healthz_says_how_full_the_store_is(self):
+        self.announce("a")
+        lock_parts = self.call("/healthz")[1]["lockParts"]
+        self.assertEqual((lock_parts["held"], lock_parts["limit"], lock_parts["perReceiver"], lock_parts["perClient"]), (1, 100, R.PARTS_PER_RECEIVER, R.PARTS_PER_CLIENT))
+        self.assertEqual((lock_parts["announcementsLastMinute"], lock_parts["announcementsPerMinute"]), (1, R.ANNOUNCE_PER_MINUTE_TOTAL))
+
+    def test_main_refuses_limits_that_are_not_limits(self):
+        import unittest.mock
+        base = ["--ledger-url", "http://127.0.0.1:1", "--admin", ADMIN, "--ostia-rpc", "http://127.0.0.1:2", "--chain-id", "7", "--state-file", self.state]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}):
+            for bad in (["--max-lock-parts-per-receiver", "0"], ["--max-lock-parts-per-client", "0"], ["--lock-parts-ttl-hours", "0"], ["--announcements-per-minute", "0"], ["--trusted-proxies", "0"]):
+                with self.assertRaises(SystemExit, msg=bad):
+                    R.main(base + bad)
 
 
 if __name__ == "__main__":

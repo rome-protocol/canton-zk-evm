@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AccountsError } from "./canton/accounts.ts";
 import { UnexpectedTransaction } from "./canton/sign.ts";
 import { UnexpectedOnboarding } from "./canton/topology.ts";
@@ -16,13 +16,40 @@ describe("plain words for what the person can see", () => {
     }
     expect(plainWords(conflict("a_code_from_a_newer_service"))).toBe(GENERIC);
   });
+  it("says which daily limit was reached, whether a network or everyone shares it, and when it is over", () => {
+    vi.useFakeTimers({ now: Date.parse("2026-11-11T12:00:00Z") });
+    try {
+      const limit = (code: string, seconds: number | undefined = 5 * 3600 + 120) => plainWords(new AccountsError("rate-limited", 429, "words of the service", seconds, code));
+      expect(limit("accounts_network_full")).toBe("This network has opened today's share of new Canton accounts. Try again after 17:02 UTC, or from another network.");
+      expect(limit("accounts_all_full")).toBe("Today's new Canton accounts are all taken. Try again after 17:02 UTC.");
+      expect(limit("send_network_full")).toMatch(/^This network has used today's share of Bridge transactions\. Try again after 17:02 UTC, or from another network\.$/);
+      expect(limit("send_account_full")).toContain("This account has used today's Bridge transactions");
+      expect(limit("send_all_full")).toContain("Taking back a deposit and accepting a transfer still work");
+      expect(limit("faucet_network_full")).toContain("or from another network");
+      expect(plainWords(new AccountsError("rate-limited", 429, "x", undefined, "accounts_all_full"))).toBe("Today's new Canton accounts are all taken. Try again tomorrow.");
+      for (const code of ["accounts_network_full", "accounts_all_full", "send_network_full", "send_account_full", "send_all_full", "faucet_account_full", "faucet_network_full", "faucet_all_full"]) {
+        expect(limit(code), code).not.toMatch(TECHNICAL);
+        expect(limit(code), code).not.toMatch(/Wait \d+ hours/);
+      }
+      expect(plainWords(new AccountsError("conflict", 409, "x", 60, "accounts_all_full"))).toBe(GENERIC);   // only a 429 carries these words
+      expect(limit("a_code_from_a_newer_service")).toBe("A limit for today has been reached. Try again after 17:02 UTC.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("has a sentence for each kind of answer of the service, with the wait when it names one", () => {
     for (const kind of ["bad-request", "unauthorized", "forbidden", "not-found", "refused", "unavailable", "network", "server", "rate-limited"] as const) {
       expect(plainWords(new AccountsError(kind, 500, "raw: 0xdeadbeef {\"a\":1}")), kind).not.toMatch(TECHNICAL);
     }
     expect(plainWords(new AccountsError("rate-limited", 429, "slow", 30))).toBe("Too many requests just now. Wait 30 seconds and try again.");
     expect(plainWords(new AccountsError("rate-limited", 429, "slow", 300))).toBe("Too many requests just now. Wait 5 minutes and try again.");
-    expect(plainWords(new AccountsError("rate-limited", 429, "x", 86400))).toBe("Too many requests just now. Wait 24 hours and try again.");
+    vi.useFakeTimers({ now: Date.parse("2026-11-11T12:00:00Z") });
+    try {
+      expect(plainWords(new AccountsError("rate-limited", 429, "x", 3600))).toBe("Too many requests just now. Wait 60 minutes and try again.");
+      expect(plainWords(new AccountsError("rate-limited", 429, "x", 72_000))).toBe("A limit for today has been reached. Try again after 08:00 UTC.");   // not "Wait 20 hours"
+    } finally {
+      vi.useRealTimers();
+    }
     expect(plainWords(new AccountsError("refused", 422, "DAML_FAILURE: stack", undefined, "INVALID_ARGUMENT"))).not.toMatch(/DAML|INVALID/);
   });
   it("has a sentence for the page's own refusals and for what the checks refuse", () => {

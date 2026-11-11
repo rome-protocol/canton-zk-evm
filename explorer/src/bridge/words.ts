@@ -37,6 +37,21 @@ const KINDS: Record<string, string> = {
 /** Errors that carry their own words, written in plain English by the page (a move that stopped for the person). */
 const OWN_WORDS = new Set(["Refused", "Waited"]);
 
+/** When a limit that said "wait this long" is over, as words: "after 14:32 UTC". */
+const until = (seconds: number, now = Date.now()) => `after ${new Date(now + seconds * 1000).toISOString().slice(11, 16)} UTC`;
+
+/** What the account service says when a daily budget is spent, by its code. A budget that a network or everyone shares says so, so that nobody at a workshop or an office is told only to wait. `at` says when it is over ("after 14:32 UTC", or "tomorrow" when the service gave no time). */
+const LIMITS: Record<string, (at: string) => string> = {
+  accounts_network_full: (at) => `This network has opened today's share of new Canton accounts. Try again ${at}, or from another network.`,
+  accounts_all_full: (at) => `Today's new Canton accounts are all taken. Try again ${at}.`,
+  send_network_full: (at) => `This network has used today's share of Bridge transactions. Try again ${at}, or from another network.`,
+  send_account_full: (at) => `This account has used today's Bridge transactions. Try again ${at}.`,
+  send_all_full: (at) => `The Bridge has used all of today's transactions for everyone. Taking back a deposit and accepting a transfer still work. Try again ${at}.`,
+  faucet_account_full: (at) => `This account has had its Canton Coin from the faucet today. Try again ${at}.`,
+  faucet_network_full: (at) => `This network has had Canton Coin from the faucet today. Try again ${at}, or from another network.`,
+  faucet_all_full: (at) => `The faucet has given out all of today's Canton Coin. Try again ${at}.`,
+};
+
 const wait = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} seconds` : seconds < 5400 ? `${Math.round(seconds / 60)} minutes` : `${Math.round(seconds / 3600)} hours`);
 
 /** One error, in plain words. */
@@ -50,7 +65,9 @@ export function plainWords(e: unknown): string {
     case "AccountsError": {
       if (typeof x.code === "string" && CONFLICTS[x.code] && x.kind === "conflict") return CONFLICTS[x.code]!;
       if (typeof x.code === "string" && CODES[x.code]) return CODES[x.code]!;
-      if (x.kind === "rate-limited") return typeof x.retryAfter === "number" ? `Too many requests just now. Wait ${wait(x.retryAfter)} and try again.` : "Too many requests just now. Wait a minute and try again.";
+      if (x.kind === "rate-limited" && typeof x.code === "string" && LIMITS[x.code]) return LIMITS[x.code]!(typeof x.retryAfter === "number" ? until(x.retryAfter) : "tomorrow");
+      // A wait of more than an hour is a limit of the day, not a busy moment: it says when it is over.
+      if (x.kind === "rate-limited") return typeof x.retryAfter === "number" ? x.retryAfter > 3600 ? `A limit for today has been reached. Try again ${until(x.retryAfter)}.` : `Too many requests just now. Wait ${wait(x.retryAfter)} and try again.` : "Too many requests just now. Wait a minute and try again.";
       return KINDS[String(x.kind)] ?? GENERIC;
     }
     case "UnexpectedTransaction": return "The bridge sent back a step that is not what was asked for, so nothing was signed. Try again.";

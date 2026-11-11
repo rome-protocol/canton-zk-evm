@@ -7,7 +7,7 @@ tokens that an Ostia vault holds, and the parts of lock ids. See README.md.
 It reads the Canton JSON Ledger API with a read token (the environment variable LEDGER_TOKEN, or --token-file) and Ostia's JSON-RPC.
 It holds no key of any party and writes nothing to Canton. What it serves is checked on the ledger by the choices that use it.
 """
-import argparse, hashlib, json, os, re, sys, threading, time, urllib.parse, urllib.request
+import argparse, collections, hashlib, ipaddress, json, os, re, sys, threading, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal, localcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +19,12 @@ APIS = {f"splice-api-token-{n}-v1": 1 for n in ("metadata", "holding", "transfer
 TWIN_DECIMALS = 10
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 PARTY = re.compile(r"[^\s:,]+::1220[0-9a-f]{64}\Z")   # name::namespace: a hash fingerprint is "1220" and 64 lowercase hex digits
-LOCK_PARTS_TTL = 2 * 24 * 3600   # seconds an announced lock stays; a payer can announce it again
+LOCK_PARTS_TTL = 6 * 3600   # seconds an announced lock stays when nobody announces it again: the Bridge page announces a lock again each time it works on one that is not settled
+PARTS_PER_RECEIVER = 20     # live announcements for one receiver (a Canton party)
+PARTS_PER_CLIENT = 100      # live announcements from one client network (an IPv4 address, an IPv6 /48)
+ANNOUNCE_PER_MINUTE = 20          # announcements a minute from one client network
+ANNOUNCE_PER_MINUTE_TOTAL = 300   # and from all clients together: a backstop over the per-client counts
+TRUSTED_ADDRESSES = (ipaddress.ip_network("127.0.0.1"), ipaddress.ip_network("::1"))
 HEX64 = re.compile(r"0x[0-9a-fA-F]{64}\Z")
 BALANCE_OF = "0x70a08231"
 MAX_BODY = 64 * 1024
@@ -28,9 +33,72 @@ CONTEXT = {"choiceContextData": {"values": {}}, "disclosedContracts": []}   # th
 
 
 class HttpError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, retry_after: int = None):
         super().__init__(message)
-        self.status, self.message = status, message
+        self.status, self.message, self.retry_after = status, message, retry_after
+
+
+def norm(address: str):
+    """An IP address; an IPv4 address inside an IPv6 one (::ffff:a.b.c.d) is the IPv4 address. ValueError when it is not an address."""
+    a = ipaddress.ip_address(address.strip())
+    return a.ipv4_mapped or a if a.version == 6 else a
+
+
+def client_net(address: str) -> str:
+    """What the limits count a client by: an IPv4 address as it is, an IPv6 address as its /48 (a subscriber holds a whole /64, and some hold a /48). Not an address: as it is."""
+    try:
+        a = norm(address)
+    except ValueError:
+        return address
+    return str(ipaddress.ip_network((a, 48), strict=False)) if a.version == 6 else str(a)
+
+
+def client_address(peer: str, header: str, n: int, trusted) -> str:
+    """The client's address: the n-th entry from the right of the proxy header, but only when the TCP peer is a trusted proxy; otherwise the peer itself."""
+    try:
+        if header and any(norm(peer) in net for net in trusted):
+            entries = [e.strip() for e in header.split(",")]
+            if 1 <= n <= len(entries):
+                return str(norm(entries[-n]))
+    except ValueError:
+        pass
+    return peer
+
+
+class Rate:
+    """At most `count` hits per key in `window` seconds (429 with the wait after that). `check` refuses as `hit` would and counts nothing."""
+    def __init__(self, count: int, window: float = 60, clock=time.monotonic):
+        self.count, self.window, self.clock, self.hits, self.lock = count, window, clock, {}, threading.Lock()
+
+    def _room(self, key: str, create: bool):
+        now = self.clock()
+        q = self.hits.setdefault(key, collections.deque()) if create else self.hits.get(key, collections.deque())
+        while q and q[0] <= now - self.window:
+            q.popleft()
+        if len(q) >= self.count:
+            raise HttpError(429, "too many lock announcements just now: try again in a minute", int(q[0] + self.window - now) + 1)
+        return q, now
+
+    def check(self, key: str) -> None:
+        with self.lock:
+            self._room(key, False)
+
+    def hit(self, key: str) -> None:
+        with self.lock:
+            q, now = self._room(key, True)
+            q.append(now)
+        if len(self.hits) > 10000:   # a flood of client networks must not grow this without end
+            self.prune()
+
+    def used(self, key: str) -> int:
+        with self.lock:
+            now = self.clock()
+            return sum(t > now - self.window for t in self.hits.get(key, ()))
+
+    def prune(self) -> None:
+        with self.lock:
+            now = self.clock()
+            self.hits = {k: q for k, q in self.hits.items() if q and q[-1] > now - self.window}
 
 
 def now_iso() -> str:
@@ -104,10 +172,15 @@ class Ostia:
 
 class LockParts:
     """The parts of the lock ids that payers announced: id -> (receiver, ref, announced at, the receiver's acceptance contract id). Kept in memory, and appended to `path` (one JSON line
-    each, flushed to disk) so that a restart does not lose a lock that is paid but not yet in a block. An entry lives `ttl` seconds from its
-    announcement; a payer announces it again to get it back, and gets the same id. The file is compacted when it loads and when entries expire."""
-    def __init__(self, path: str, limit: int, ttl: float = LOCK_PARTS_TTL, clock=time.time):
+    each, flushed to disk) so that a restart does not lose a lock that is paid but not yet in a block. An entry lives `ttl` seconds from its latest announcement: a payer announces the same
+    parts again to keep them (the Bridge page does at every step of a lock that is not settled), and gets the same id. The file is compacted when it loads and when entries expire.
+    The store has three caps on live entries: `limit` in all, `per_receiver` for one receiver and `per_client` for one client network (the announcer's IPv4 address or IPv6 /48), so that one
+    party cannot fill what everyone needs (503 for the first, 429 for the other two)."""
+    def __init__(self, path: str, limit: int, ttl: float = LOCK_PARTS_TTL, clock=time.time, per_receiver: int = PARTS_PER_RECEIVER, per_client: int = PARTS_PER_CLIENT):
         self.path, self.limit, self.ttl, self.clock, self.parts, self.lock = path, limit, ttl, clock, {}, threading.Lock()
+        self.per_receiver, self.per_client = per_receiver, per_client
+        self.clients = {}   # id -> (client network that announced it, the time of its latest line in the file); entries from before the clients were kept have none
+        self.by_receiver, self.by_client = collections.Counter(), collections.Counter()
         self.swept = clock()
         if os.path.exists(path):
             dropped = 0
@@ -116,55 +189,102 @@ class LockParts:
                     try:
                         e = json.loads(line)
                         receiver, ref, at, acceptance = e["receiver"], e["ref"], float(e.get("at", self.swept)), e.get("acceptance")
-                        if e["lockId"] != lock_id(receiver, ref):
+                        client = e.get("client") or ""
+                        if e["lockId"] != lock_id(receiver, ref) or not isinstance(client, str):
                             raise ValueError("the id is not the one of the parts")
                     except (ValueError, KeyError, TypeError, AttributeError, UnicodeEncodeError) as err:
                         dropped += 1
                         print(f"state file {path}: a line is dropped ({type(err).__name__}: {err})", file=sys.stderr)
                         continue
-                    self.parts[e["lockId"]] = (receiver, ref, max(at, self.parts.get(e["lockId"], (0, 0, 0))[2]), acceptance)
+                    at = max(at, self.parts.get(e["lockId"], (0, 0, 0))[2])
+                    self.parts[e["lockId"]] = (receiver, ref, at, acceptance)
+                    self.clients[e["lockId"]] = (client, at)
             self.sweep(force=bool(dropped))
 
     def _alive(self, entry) -> bool:
         return self.clock() - entry[2] < self.ttl
+
+    def _count(self):
+        """The live counts per receiver and per client network, worked out from the entries (the caller holds the lock, or is the constructor)."""
+        self.by_receiver, self.by_client = collections.Counter(), collections.Counter()
+        for lid, (receiver, _, _, _) in self.parts.items():
+            self.by_receiver[receiver] += 1
+            if self.clients.get(lid, ("",))[0]:
+                self.by_client[self.clients[lid][0]] += 1
 
     def sweep(self, force: bool = False):
         """Drop what expired and rewrite the file when anything went (or `force`). The caller holds the lock, or is the constructor."""
         expired = [k for k, v in self.parts.items() if not self._alive(v)]
         for k in expired:
             del self.parts[k]
+            self.clients.pop(k, None)
         self.swept = self.clock()
+        self._count()
         if (expired or force or self._lines != len(self.parts)) and self.path:
             tmp = self.path + ".tmp"
             with open(tmp, "w") as f:
                 for k, (receiver, ref, at, acceptance) in self.parts.items():
-                    f.write(json.dumps({"lockId": k, "receiver": receiver, "ref": ref, "at": at, "acceptance": acceptance}) + "\n")
+                    f.write(json.dumps({"lockId": k, "receiver": receiver, "ref": ref, "at": at, "acceptance": acceptance, "client": self.clients.get(k, ("",))[0]}) + "\n")
                 f.flush(); os.fsync(f.fileno())
             os.replace(tmp, self.path)
         self._lines = len(self.parts)
 
     _lines = 0
 
-    def _append(self, lid: str, entry):
+    def _append(self, lid: str, entry, client: str):
         if self.path:
             with open(self.path, "a") as f:
-                f.write(json.dumps({"lockId": lid, "receiver": entry[0], "ref": entry[1], "at": entry[2], "acceptance": entry[3]}) + "\n")
+                f.write(json.dumps({"lockId": lid, "receiver": entry[0], "ref": entry[1], "at": entry[2], "acceptance": entry[3], "client": client}) + "\n")
                 f.flush(); os.fsync(f.fileno())
             self._lines += 1
 
-    def add(self, receiver: str, ref: str, acceptance: str) -> str:
+    def _full(self, receiver: str, client: str):
+        """The refusal for an announcement of new parts that the caps do not allow, or None."""
+        if len(self.parts) >= self.limit:
+            return HttpError(503, "the registry holds as many lock ids as it keeps")
+        if self.by_receiver[receiver] >= self.per_receiver:
+            return HttpError(429, f"this receiver has {self.per_receiver} lock announcements waiting already: they expire after {self.ttl / 3600:g} hours without a new announcement", int(self.ttl))
+        if client and self.by_client[client] >= self.per_client:
+            return HttpError(429, f"this network has {self.per_client} lock announcements waiting already: they expire after {self.ttl / 3600:g} hours without a new announcement", int(self.ttl))
+        return None
+
+    def _forget(self, lid: str) -> None:
+        """Remove an entry and its counts (the caller holds the lock)."""
+        entry, owner = self.parts.pop(lid, None), self.clients.pop(lid, ("", 0))[0]
+        if entry is not None and self.by_receiver[entry[0]] > 0:
+            self.by_receiver[entry[0]] -= 1
+        if owner and self.by_client[owner] > 0:
+            self.by_client[owner] -= 1
+
+    def add(self, receiver: str, ref: str, acceptance: str, client: str = "") -> str:
         lid = lock_id(receiver, ref)
         with self.lock:
             now = self.clock()
             if now - self.swept > (60 if len(self.parts) >= self.limit else 3600):   # a full store is swept at most once a minute
                 self.sweep()
             known = self.parts.get(lid)
-            if known is None and len(self.parts) >= self.limit:
-                raise HttpError(503, "the registry holds as many lock ids as it keeps")
-            if known is None or known[3] != acceptance or now - known[2] > self.ttl / 2:   # a new one, one whose acceptance changed, or an old one that is brought back
-                entry = (receiver, ref, now, acceptance)
-                self.parts[lid] = entry
-                self._append(lid, entry)
+            if known is not None and not self._alive(known):
+                self._forget(lid)
+                known = None
+            if known is None:
+                refused = self._full(receiver, client)
+                if refused and refused.status == 429 and now - self.swept > 10:   # entries that have expired still count until a sweep: look again with them gone, at most every ten seconds
+                    self.sweep()
+                    refused = self._full(receiver, client)
+                if refused:
+                    raise refused
+                self.by_receiver[receiver] += 1
+                if client:
+                    self.by_client[client] += 1
+                self.clients[lid] = (client, 0)
+            # Announcing again keeps the entry: it lives `ttl` from now, whoever announces it (the client that first announced it keeps the count). The file is written when the entry is new,
+            # when its acceptance changed, or when its latest line is older than half a life: a restart then reads a time at most that far back.
+            owner, logged = self.clients.get(lid, (client, 0))
+            entry = (receiver, ref, now, acceptance)
+            self.parts[lid] = entry
+            if known is None or known[3] != acceptance or now - logged > self.ttl / 2:
+                self.clients[lid] = (owner, now)
+                self._append(lid, entry, owner)
         return lid
 
     def get(self, lid: str):
@@ -172,12 +292,19 @@ class LockParts:
             found = self.parts.get(lid)
             return found if found and self._alive(found) else None
 
+    def live(self) -> int:
+        """The entries held (some may have expired and not been swept yet)."""
+        with self.lock:
+            return len(self.parts)
+
 
 class Registry:
-    def __init__(self, ledger: Ledger, ostia: Ostia, admin: str, parts: LockParts, chain_id, ttl: float = 5.0, supply_ttl: float = 10.0, page_size: int = 100):
+    def __init__(self, ledger: Ledger, ostia: Ostia, admin: str, parts: LockParts, chain_id, ttl: float = 5.0, supply_ttl: float = 10.0, page_size: int = 100,
+                 announce_rate: Rate = None, announce_total: Rate = None):
         self.ledger, self.ostia, self.admin, self.parts, self.chain_id, self.ttl, self.supply_ttl = ledger, ostia, admin, parts, str(chain_id), ttl, supply_ttl
         self.lock, self.cache, self.supply_cache = threading.Lock(), None, {}
         self.page_size = page_size
+        self.announce_rate, self.announce_total = announce_rate or Rate(ANNOUNCE_PER_MINUTE), announce_total or Rate(ANNOUNCE_PER_MINUTE_TOTAL)   # per client network; and over everyone
         self.acceptances, self.acceptances_error = None, "not read yet"   # party -> the contract id of its active TwinAcceptance of the admin; None until the first read
 
     def _read(self):
@@ -287,7 +414,7 @@ class Registry:
 
     # ---- the routes
 
-    def handle(self, method: str, path: str, query: dict, body):
+    def handle(self, method: str, path: str, query: dict, body, client: str = ""):
         segments = [urllib.parse.unquote(s) for s in path.strip("/").split("/")]
         if method == "GET":
             if path == "/healthz":
@@ -296,7 +423,9 @@ class Registry:
                 except HttpError as e:
                     return {"ok": False, "error": e.message}
                 return {"ok": not problems["pinnedWithoutRules"] and self.acceptances is not None, "twins": len(rules), **problems, "vaults": vaults,
-                        "acceptances": len(self.acceptances or {}), "acceptancesError": self.acceptances_error}
+                        "acceptances": len(self.acceptances or {}), "acceptancesError": self.acceptances_error,
+                        "lockParts": {"held": self.parts.live(), "limit": self.parts.limit, "perReceiver": self.parts.per_receiver, "perClient": self.parts.per_client,
+                                      "announcementsLastMinute": self.announce_total.used("all"), "announcementsPerMinute": self.announce_total.count}}
             if path == "/registry/metadata/v1/info":
                 return {"adminId": self.admin, "supportedApis": APIS}
             if path == "/registry/metadata/v1/instruments":
@@ -331,7 +460,7 @@ class Registry:
                     and segments[5] in ("execute-transfer", "withdraw", "cancel"):
                 return CONTEXT   # the allocation's choices read nothing from a registry
             if path == "/twin/v1/lock-parts":
-                return self.announce(body)
+                return self.announce(body, client_net(client) if client else "")
         raise HttpError(404, "no such route")
 
     @staticmethod
@@ -357,10 +486,15 @@ class Registry:
             out["nextPageToken"] = str(start + size)
         return out
 
-    def announce(self, body) -> dict:
+    def announce(self, body, client: str = "") -> dict:
         """A payer hands the receiver and the ref of a lock it is about to pay; it gets the id to pay against and the vaults that take the lock. A receiver that has not
         accepted twins (no active TwinAcceptance in the index) is refused with 409: a lock for it would be refused by Canton. The answer carries the contract id of
         the receiver's acceptance, and the parts keep it: the builder reads that one contract and believes nothing else."""
+        # The rate counts every announcement, a refused one too: junk costs the service something, so it is limited as the rest is. One count per client network, and one over all of them.
+        self.announce_rate.check(client)
+        self.announce_total.check("all")
+        self.announce_rate.hit(client)
+        self.announce_total.hit("all")
         receiver, ref = (body.get("receiver"), body.get("ref")) if isinstance(body, dict) else (None, None)
         for name, value in (("receiver", receiver), ("ref", ref)):
             try:
@@ -383,14 +517,15 @@ class Registry:
         if acceptance is None:
             raise HttpError(409, "the receiver has not accepted twins: its party must sign a TwinAcceptance first")
         vaults = self.vaults()
-        return {"lockId": self.parts.add(receiver, ref, acceptance), "receiver": receiver, "ref": ref, "acceptance": acceptance, "vaults": vaults}
+        return {"lockId": self.parts.add(receiver, ref, acceptance, client), "receiver": receiver, "ref": ref, "acceptance": acceptance, "vaults": vaults}
 
 
-def make_server(registry: Registry, host: str, port: int) -> ThreadingHTTPServer:
+def make_server(registry: Registry, host: str, port: int, ip_header: str = None, proxies: int = 1, trusted=TRUSTED_ADDRESSES) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         timeout = 20
 
         def serve(self, method: str):
+            headers = {}
             try:
                 url = urllib.parse.urlsplit(self.path)
                 body = None
@@ -405,9 +540,13 @@ def make_server(registry: Registry, host: str, port: int) -> ThreadingHTTPServer
                         body = json.loads(self.rfile.read(length) or b"null")
                     except ValueError:
                         raise HttpError(400, "the body is not JSON")
-                status, out = 200, registry.handle(method, url.path, urllib.parse.parse_qs(url.query), body)
+                # Behind a reverse proxy the client is the entry that the nearest trusted proxy wrote: the `proxies`-th from the right, and only from a trusted peer.
+                client = client_address(self.client_address[0], ",".join(self.headers.get_all(ip_header, [])) if ip_header else "", proxies, trusted)
+                status, out = 200, registry.handle(method, url.path, urllib.parse.parse_qs(url.query), body, client)
             except HttpError as e:
                 status, out = e.status, {"error": e.message}
+                if e.retry_after is not None:
+                    headers["retry-after"] = str(e.retry_after)
             except Exception as e:   # the ledger or Ostia did not answer, or answered something else than expected
                 print(f"{method} {self.path}: {type(e).__name__}: {e}", file=sys.stderr)
                 status, out = 500, {"error": "the registry could not read what it needs"}
@@ -415,6 +554,8 @@ def make_server(registry: Registry, host: str, port: int) -> ThreadingHTTPServer
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(data)))
+            for k, v in headers.items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(data)
 
@@ -434,16 +575,32 @@ def main(argv=None):
     p.add_argument("--token-file", help="a file with the read token; the environment variable LEDGER_TOKEN is used when it is not given")
     p.add_argument("--chain-id", required=True, help="the chain whose chain record (ZkChain) and vaults are served; exactly one active record must exist")
     p.add_argument("--state-file", required=True, help="where the lock id parts are kept across restarts")
-    p.add_argument("--max-lock-parts", type=int, default=200000)
-    p.add_argument("--lock-parts-ttl-days", type=float, default=LOCK_PARTS_TTL / 86400, help="how long an announced lock is kept; a payer announces it again")
+    p.add_argument("--max-lock-parts", type=int, default=200000, help="live lock announcements in all")
+    p.add_argument("--max-lock-parts-per-receiver", type=int, default=PARTS_PER_RECEIVER, help="live lock announcements for one receiver (a Canton party)")
+    p.add_argument("--max-lock-parts-per-client", type=int, default=PARTS_PER_CLIENT, help="live lock announcements from one client network (an IPv4 address or an IPv6 /48)")
+    p.add_argument("--lock-parts-ttl-hours", type=float, default=LOCK_PARTS_TTL / 3600, help="how long an announced lock is kept without a new announcement; a payer announces it again to keep it")
+    p.add_argument("--announcements-per-minute", type=int, default=ANNOUNCE_PER_MINUTE, help="lock announcements per client network (an IPv4 address or an IPv6 /48) in a minute")
+    p.add_argument("--announcements-per-minute-total", type=int, default=ANNOUNCE_PER_MINUTE_TOTAL, help="lock announcements from all clients together in a minute")
+    p.add_argument("--client-ip-header", help="the header in which the reverse proxy puts the client's address, such as X-Real-IP: the announcement limits count clients by it (without it every client is the proxy)")
+    p.add_argument("--trusted-proxies", type=int, default=1, help="proxies in front of the service: the client's address is this many entries from the right of --client-ip-header")
+    p.add_argument("--trusted-proxy-addresses", default="127.0.0.1,::1", help="comma-separated addresses or networks of the proxies; the header is read only from a peer among them")
     a = p.parse_args(argv)
     token = open(a.token_file).read().strip() if a.token_file else os.environ.get("LEDGER_TOKEN", "")
     if not token:
         sys.exit("a read token is required: LEDGER_TOKEN or --token-file")
     host, _, port = a.listen.rpartition(":")
-    registry = Registry(Ledger(a.ledger_url, token), Ostia(a.ostia_rpc), a.admin, LockParts(a.state_file, a.max_lock_parts, a.lock_parts_ttl_days * 86400), a.chain_id)
+    try:
+        trusted = [ipaddress.ip_network(x.strip(), strict=False) for x in a.trusted_proxy_addresses.split(",") if x.strip()]
+    except ValueError as e:
+        sys.exit(f"--trusted-proxy-addresses: {e}")
+    if a.trusted_proxies < 1:
+        sys.exit("--trusted-proxies is at least 1")
+    if min(a.max_lock_parts, a.max_lock_parts_per_receiver, a.max_lock_parts_per_client, a.announcements_per_minute, a.announcements_per_minute_total) < 1 or a.lock_parts_ttl_hours <= 0:
+        sys.exit("the lock part limits are at least 1, and the lock parts' life is more than 0 hours")
+    parts = LockParts(a.state_file, a.max_lock_parts, a.lock_parts_ttl_hours * 3600, per_receiver=a.max_lock_parts_per_receiver, per_client=a.max_lock_parts_per_client)
+    registry = Registry(Ledger(a.ledger_url, token), Ostia(a.ostia_rpc), a.admin, parts, a.chain_id, announce_rate=Rate(a.announcements_per_minute), announce_total=Rate(a.announcements_per_minute_total))
     registry.keep_acceptances_fresh()
-    make_server(registry, host or "127.0.0.1", int(port)).serve_forever()
+    make_server(registry, host or "127.0.0.1", int(port), a.client_ip_header, a.trusted_proxies, trusted).serve_forever()
 
 
 if __name__ == "__main__":

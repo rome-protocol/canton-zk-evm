@@ -49,6 +49,8 @@ export interface Config {
   networkName: string | null;
   /** The public address of the twin registry service, when this deployment has one (TWIN_REGISTRY_URL); null when not set, and then the twins page names no such service. */
   twinRegistryUrl: string | null;
+  /** The account service's `/healthz` on this machine (ACCOUNTS_HEALTH_URL, such as http://127.0.0.1:8081/healthz), read into the health row `accounts`; null when not set, and then there is no such row. */
+  accountsHealthUrl: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -94,6 +96,8 @@ export interface Config {
     perAddressSeconds: number;
     /** One request per client address in this many seconds. */
     perIpSeconds: number;
+    /** At most this many requests from one IPv6 /48 in `perIpSeconds`, on top of one per /64. */
+    perNetMax: number;
     /** The most requests accepted in any hour, from everyone. */
     maxPerHour: number;
     /** The most transfers sent to reth in one batch. */
@@ -311,6 +315,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     chainName: env.CHAIN_NAME || "Ostia",
     networkName: env.NETWORK_NAME?.trim() || null,
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
+    accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),
@@ -340,6 +345,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       amountWei,
       perAddressSeconds: whole(env, "FAUCET_PER_ADDRESS_SECONDS", 86400, 1),
       perIpSeconds: whole(env, "FAUCET_PER_IP_SECONDS", 600, 1),
+      perNetMax: whole(env, "FAUCET_PER_NET_MAX", 10, 1),
       maxPerHour: whole(env, "FAUCET_MAX_PER_HOUR", 5000, 1),
       batch: whole(env, "FAUCET_BATCH", 100, 1),
       queueMax: whole(env, "FAUCET_QUEUE_MAX", 5000, 1),
