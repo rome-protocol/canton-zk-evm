@@ -12,8 +12,8 @@ import { AddressCell } from "./AddressCell.tsx";
 import { Amount, TokenChip } from "./Amount.tsx";
 import { ICON_NAMES } from "./Icon.tsx";
 
-const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
-const pass: Label = { address: addr(0xe3), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true };
+const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true, warning: null };
+const pass: Label = { address: addr(0xe3), name: "Ostia Pass", symbol: "OPASS", kind: "token", standard: "ERC-721", decimals: null, verified: true, warning: null };
 const move = (over: Partial<TokenMove> = {}): TokenMove => ({ token: usd.address, amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6, ...over });
 const cell = (a: string, label?: Label, to?: string) => render(<MemoryRouter><AddressCell address={a} label={label} to={to} /></MemoryRouter>);
 
@@ -26,8 +26,17 @@ describe("an address cell", () => {
     expect(screen.getByRole("link")).toHaveAttribute("title", usd.address);
   });
 
+  it("shows a warning beside a token's name, and none for a token without one", () => {
+    const { unmount } = cell(usd.address, usd);
+    expect(screen.queryByRole("note")).toBeNull();
+    unmount();
+    cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    expect(screen.getByRole("note")).toHaveTextContent("Not Rome's WtROME twin");
+    expect(screen.getByRole("link", { name: "Test USD (tUSD)" })).toHaveAttribute("href", `/token/${usd.address}`);
+  });
+
   it("shows a contract by its name and links to the contract", () => {
-    cell(addr(0xd1), { address: addr(0xd1), name: "Disperse", symbol: null, kind: "contract", standard: null, decimals: null, verified: true });
+    cell(addr(0xd1), { address: addr(0xd1), name: "Disperse", symbol: null, kind: "contract", standard: null, decimals: null, verified: true, warning: null });
     expect(screen.getByRole("link", { name: "Disperse" })).toHaveAttribute("href", `/contract/${addr(0xd1)}`);
   });
 
@@ -77,6 +86,28 @@ describe("a token amount chip", () => {
     render(<TokenChip move={move()} label={usd} />);
     const chip = screen.getByText("100 tUSD");
     expect(chip.closest(".tchip")).toHaveAttribute("title", "100 tUSD");
+  });
+
+  it("puts the warning of a lookalike token in the tooltip and draws a small triangle in the chip, for a token with none it draws the coin only", () => {
+    const { container, unmount } = render(<TokenChip move={move()} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
+    expect(screen.getByText("100 tUSD").closest(".tchip")).toHaveAttribute("title", "100 tUSD. Not Rome's WtROME twin.");
+    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(container.querySelectorAll("svg")).toHaveLength(1);
+    unmount();
+    render(<TokenChip move={move()} label={usd} />);
+    expect(screen.queryByRole("img", { name: "Warning" })).toBeNull();
+  });
+
+  it("ends each part of the tooltip with a full stop, the warning and the amount note too", () => {
+    render(<TokenChip move={move({ amount: null })} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
+    expect(screen.getByText("tUSD").closest(".tchip")).toHaveAttribute("title", "Not Rome's WtROME twin. The amount is not in the logs.");
+  });
+
+  it("does the same for a token that moves by id", () => {
+    const warnedNft: Label = { ...pass, warning: "Not Rome's WtROME twin" };
+    render(<TokenChip move={move({ token: addr(0xe3), amount: null, tokenId: "3", standard: "ERC-721", decimals: null })} label={warnedNft} />);
+    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(screen.getByText(/OPASS/).closest(".tchip")).toHaveAttribute("title", expect.stringContaining("Not Rome's WtROME twin"));
   });
 
   it("groups thousands", () => {
@@ -147,6 +178,34 @@ describe("the cells' styles", () => {
       expect(r, sel).toMatch(/text-overflow:\s*ellipsis/);
       expect(r, sel).toMatch(/unicode-bidi:\s*isolate/);
     }
+  });
+});
+
+describe("the warning on a narrow screen", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "styles.css"), "utf8");
+  const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+  it("lets only a cell that carries a warning wrap, and keeps that cell, its link and its name inside their card", () => {
+    expect(rule(".acell")).not.toMatch(/flex-wrap/);
+    expect(rule(".acell-warn")).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule(".acell-warn")).toMatch(/max-width:\s*100%/);
+    expect(rule(".acell-warn .hx")).toMatch(/min-width:\s*0/);
+    expect(rule(".acell-warn .aname")).toMatch(/min-width:\s*0/);
+  });
+  it("marks a cell as wrapping only when it has a warning", () => {
+    const { container, unmount } = cell(usd.address, usd);
+    expect(container.querySelector(".acell")).not.toHaveClass("acell-warn");
+    unmount();
+    const warned = cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    expect(warned.container.querySelector(".acell")).toHaveClass("acell-warn");
+  });
+  it("lets the warning's own words wrap, with no percentage width that would let a table cell shrink below it", () => {
+    expect(rule(".chip-warn")).toMatch(/white-space:\s*normal/);
+    expect(rule(".chip-warn")).not.toMatch(/max-width:\s*100%/);
+  });
+  it("shows the check before the warning, so that the warning is what wraps", () => {
+    cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    const check = screen.getByRole("img", { name: "Verified" });
+    expect(check.compareDocumentPosition(screen.getByRole("note")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

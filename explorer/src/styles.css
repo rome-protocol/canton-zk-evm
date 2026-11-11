@@ -145,6 +145,10 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .acell .ic { color: var(--muted); flex: none; }
 .acell .aname { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
 .acell .verified { display: inline-flex; color: var(--ok); }
+/* only a cell that carries a warning may wrap: the warning drops under the name instead of widening the cell past its card, and every other cell stays on one line */
+.acell-warn { flex-wrap: wrap; gap: 2px 5px; max-width: 100%; min-width: 0; vertical-align: bottom; }
+.acell-warn .hx { min-width: 0; max-width: 100%; }
+.acell-warn .aname { min-width: 0; }
 .tchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; border-radius: 999px; padding: 1px 9px; border: 1px solid; white-space: nowrap; }
 .tchip-ft { color: var(--evm); background: var(--evm-tint); border-color: var(--evm-line); }
 .tchip-nft { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-line); }
@@ -162,6 +166,9 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .chip-replaced { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
 .chip-dropped { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-line); }
 .chip-genesis { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
+.chip-warn { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); gap: 5px; padding-left: 8px; white-space: normal; text-align: left; line-height: 1.35; } /* no percentage max-width: in a table cell it lets the cell shrink below the chip, which then paints over the next column */
+.acell .chip-warn .ic, .chip-warn .ic { color: inherit; flex: none; }
+.tchip-warn { display: inline-flex; color: var(--amber); }
 
 /* home: the status strip */
 .sd { display: inline-flex; align-items: center; gap: 7px; }

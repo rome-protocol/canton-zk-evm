@@ -184,7 +184,7 @@ export async function getHealth(): Promise<ApiHealth> {
 }
 
 /** A token or verified contract whose name starts with what was typed. */
-export interface SearchMatch { kind: "token" | "contract"; name: string; symbol: string | null; address: string; path: string }
+export interface SearchMatch { kind: "token" | "contract"; name: string; symbol: string | null; address: string; warning?: string | null; path: string }
 /** What the search found: the page to open (the first match, for a name), and every match when a name matched more than one. */
 export type SearchResult = { found: true; path: string; matches: SearchMatch[] } | { found: false; message: string };
 
@@ -210,7 +210,9 @@ export type BlockFilter = "all" | "transactions" | "empty";
 export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null; decimals: number | null }
 export interface TokenMoves { count: number; more: boolean; first: TokenMove | null }
 /** What is known of an address for showing it by name (GET /api/labels): `kind` is null for an address the index holds nothing of; `amount`s of a token are in base units, shown with its `decimals`. */
-export interface Label { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
+export interface Label { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean;
+  /** A warning to show beside the name (a token that carries the symbol of one of Rome's own and is not it); null for any other address. */
+  warning?: string | null }
 /** The newest transactions: a page with how many the chain holds (null where the rollups cannot say, and for a filtered list) and when that was counted to. */
 export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOfBlock: number | null; totalAsOf: string | null }
 export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null;
@@ -445,6 +447,8 @@ export interface TokenListItem extends TokenInfo {
   totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number; gatewayWrapped: boolean; metadataStatus: "read" | "pending" | "failed";
   /** Who made the token's contract, in which block and when (ISO time): all null for a contract of the genesis state, which no creation made. `verified` is whether its source is. */
   creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
+  /** A warning to show beside the token (it carries the symbol of one of Rome's own and is not it); null for any other token. */
+  warning?: string | null;
 }
 export type TokenSort = "holders" | "transfers" | "newest";
 /** One token: `balanceMode` says whether its balances are summed from the Transfer logs ("derived") or read with balanceOf. */

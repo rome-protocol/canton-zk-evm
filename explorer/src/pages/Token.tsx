@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, getContract, getToken, getTokenHolders, getTokenTransfers, tokenTransfersCsvPath, type AddressTransferItem, type TokenDetail, type TokenHolder } from "../api.ts";
 import { CardHead, DownloadLink, ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
+import { Warn } from "../components/Warn.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
@@ -253,6 +254,7 @@ export function Token() {
         <h1>{t.name ?? <span className="muted">{noName(t)}</span>}{t.symbol && <> <small className="muted">{t.symbol}</small></>}</h1>
         <span className="chip chip-kind">{t.standard}</span>
         {contract && <span className={`chip ${contract.verified ? "chip-final" : "chip-kind"}`}>{contract.verified && <Icon name="check" size={12} />}{contract.verified ? "Source code verified" : "Source code not verified"}</span>}
+        {t.warning && <Warn text={t.warning} />}
         {t.gatewayWrapped && <span className="chip chip-kind" title="The gateway made this wrapped token for a Canton token">From Canton</span>}
       </div>
       {t.metadataStatus !== "read" && (

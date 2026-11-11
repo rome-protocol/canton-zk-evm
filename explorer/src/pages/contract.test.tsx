@@ -50,6 +50,19 @@ describe("the contract page: the head and the cards", () => {
     expect(await within(card("Overview")).findByRole("link", { name: /Test USD/ })).toHaveAttribute("href", `/token/${A}`);
   });
 
+  it("warns beside the title and the token tracker when the token has a warning", async () => {
+    await open({ account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }, token: tokenDetail(0xcb, { warning: "Not Rome's WtROME twin" }) });
+    await waitFor(() => expect(within(card("Overview")).getByRole("note")).toHaveTextContent("Not Rome's WtROME twin"));
+    expect(screen.getByRole("heading", { name: "Contract" }).parentElement).toHaveTextContent("Not Rome's WtROME twin");
+  });
+
+  it("shows no warning for an ordinary token", async () => {
+    await open({ account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }, token: tokenDetail(0xcb) });
+    expect(await within(card("Overview")).findByRole("link", { name: /Test USD/ })).toBeInTheDocument();
+    await waitFor(() => expect(within(card("Overview")).getByText(/holder/)).toBeInTheDocument());
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("shows who made the contract, in which transaction and block", async () => {
     await open();
     const c = card("Creation");

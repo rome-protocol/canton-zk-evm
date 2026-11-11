@@ -3,6 +3,7 @@ import type { Label } from "../api.ts";
 import { short } from "../format.ts";
 import { labelName } from "../labels.ts";
 import { Icon } from "./Icon.tsx";
+import { Warn } from "./Warn.tsx";
 
 /** Where an address leads: a token to its page, a contract to its, anything else to the address. */
 export const addressPath = (address: string, label?: Label | null) =>
@@ -17,9 +18,10 @@ export function AddressCell({ address, label, to }: { address: string; label?: L
   const href = to ?? addressPath(address, label);
   if (!name) return <Link className="hx" to={href} title={address}><span className="mono">{short(address, 8, 4)}</span></Link>;
   return (
-    <span className="acell">
+    <span className={label?.warning ? "acell acell-warn" : "acell"}>
       <Link className="hx" to={href} title={address}><Icon name="doc" size={13} /><span className="aname" title={name}><bdi>{name}</bdi></span></Link>
       {label?.verified && <span className="verified" role="img" aria-label="Verified" title="Its source code is verified"><Icon name="check" size={13} /></span>}
+      {label?.warning && <Warn text={label.warning} />}
     </span>
   );
 }

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { search, type SearchMatch } from "../api.ts";
 import { ErrorCard, LoadingCard, NotFound } from "../components/Cards.tsx";
+import { Warn } from "../components/Warn.tsx";
 import { short } from "../format.ts";
 
 const NOTHING_TYPED = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
@@ -16,6 +17,7 @@ function Matches({ matches, q }: { matches: SearchMatch[]; q: string }) {
           <li key={m.path}>
             <Link to={m.path}>{m.name}{m.symbol ? ` (${m.symbol})` : ""}</Link>
             <span className="chip chip-kind">{m.kind === "token" ? "Token" : "Contract"}</span>
+            {m.warning && <Warn text={m.warning} />}
             <span className="mono muted small">{short(m.address, 10, 6)}</span>
           </li>
         ))}

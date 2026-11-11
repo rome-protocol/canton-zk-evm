@@ -119,6 +119,16 @@ describe("the token page: the overview", () => {
     expect(screen.getAllByText("From Canton").length).toBeGreaterThan(0);
   });
 
+  it("shows the warning beside the name of a token that has one, and none for another", async () => {
+    await open(tokenDetail(0xcb, { warning: "Not Rome's WtROME twin" }));
+    expect(screen.getByRole("heading", { level: 1 }).parentElement).toHaveTextContent("Not Rome's WtROME twin");
+  });
+
+  it("has no warning on an ordinary token", async () => {
+    await open(tokenDetail(0xcb));
+    expect(document.querySelector(".chip-warn")).toBeNull();
+  });
+
   describe("backed on Canton", () => {
     const WRAPPED = { gatewayWrapped: true, totalSupplyBlock: 21 };
     const check = () => screen.getByRole("region", { name: "Backed on Canton" });
