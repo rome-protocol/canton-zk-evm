@@ -84,6 +84,8 @@ export interface Config {
     heavyQueue: number;
     /** The request header that carries the client's address, set only behind a proxy that is trusted to write it. Lower case; null means the socket's address. */
     trustedIpHeader: string | null;
+    /** The block builder's leg check, on the builder's machine (LEG_CHECK_URL, for example http://127.0.0.1:7790). With it, a send that would record a Canton leg with no Canton side is refused. Null: no check. */
+    legCheckUrl: string | null;
   };
   /** The explorer's database, or null when none is set. With one, the tracker and the faucet keep their state in it, and TRACKER_FILE and FAUCET_STATE_FILE are only read once, to be imported. */
   database: PoolConfig | null;
@@ -339,6 +341,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       heavyConcurrency,
       heavyQueue,
       trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),
+      legCheckUrl: env.LEG_CHECK_URL?.trim() ? url(env, "LEG_CHECK_URL", "") : null,
     },
     database: databaseSettings(env, readFile),
     tracker: {
