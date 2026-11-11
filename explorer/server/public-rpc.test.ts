@@ -3,9 +3,10 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { keccak256, type Hex } from "viem";
-import { clientKey, createPublicRpc, MAX_BATCH, PUBLIC_METHODS, type PublicRpc } from "./public-rpc.ts";
+import { clientKey, createPublicRpc, MAX_BATCH, MAX_NONCE_AHEAD, PUBLIC_METHODS, type PublicRpc } from "./public-rpc.ts";
 import { createHttpServer } from "./http.ts";
 import { createTracker } from "./tracker.ts";
+import type { LegCheck } from "./leg-check.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
 const CHAIN = 770101, FINAL = 5, HEAD = 6;
@@ -25,7 +26,7 @@ type Seen = Record<string, unknown[][]>;
 
 interface Setup { rpc: PublicRpc; seen: Seen; tracked: unknown[][]; clock: { now: number }; call: (method: string, ...params: unknown[]) => Promise<{ result?: unknown; error?: { code: number; message: string } }> }
 
-async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
+async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; pub?: { maxNonceAhead?: number; maxQueued?: number; maxQueuedBytes?: number; maxQueuedPerClient?: number; sweepSendersPerTick?: number; queueTtlMs?: number; legCheck?: LegCheck }; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
   const seen: Seen = {};
   const rec = (m: string, f: unknown) => (p: unknown[]) => { (seen[m] ??= []).push(p); opts.order?.push(m); return typeof f === "function" ? (f as (p: unknown[]) => unknown)(p) : f; };
   const handlers: Record<string, unknown> = {
@@ -35,7 +36,7 @@ async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; t
     eth_getBlockByHash: (p: unknown[]) => { const n = [0, 1, 2, 3, 4, 5, 6].find((i) => hashOf(i) === p[0]); return n === undefined ? null : block(n); },
     eth_getTransactionByHash: (p: unknown[]) => (p[0] === TX_FINAL ? txIn(TX_FINAL, 4) : p[0] === TX_PROVING ? txIn(TX_PROVING, HEAD) : p[0] === TX_POOL ? txIn(TX_POOL, null) : null),
     eth_getTransactionReceipt: (p: unknown[]) => (p[0] === TX_FINAL ? receiptIn(TX_FINAL, 4) : p[0] === TX_PROVING ? receiptIn(TX_PROVING, HEAD) : null),
-    eth_getBalance: "0x64",
+    eth_getBalance: (p: unknown[]) => (p[1] === "pending" ? "0xde0b6b3a7640000" : "0x64"), // the pending balance (asked before a transaction is held) is 1 ether; the finalized one is 100 wei
     eth_getCode: "0x",
     eth_getStorageAt: "0x" + "0".repeat(64),
     eth_getTransactionCount: "0x3", // the default signed() transaction has nonce 3: the next one the chain expects
@@ -53,7 +54,7 @@ async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; t
   const tracked: unknown[][] = [];
   const clock = { now: 1_000_000 };
   const rpc = createPublicRpc({ rethUrl: reth.url, timeoutMs: opts.timeoutMs ?? 1000, chainId: CHAIN, ratePerMinute: opts.rate ?? 100000, maxInFlight: opts.maxInFlight,
-    tracker: opts.tracker ?? { admit: () => opts.admit?.() ?? null, track: (...a) => { if (opts.trackThrows) throw new Error("disk"); tracked.push(a); } }, now: () => clock.now, finalizedTtlMs: opts.ttl ?? 0 });
+    tracker: opts.tracker ?? { admit: () => opts.admit?.() ?? null, track: (...a) => { if (opts.trackThrows) throw new Error("disk"); tracked.push(a); } }, now: () => clock.now, finalizedTtlMs: opts.ttl ?? 0, ...(opts.pub ?? {}) });
   let n = 0;
   const call = async (method: string, ...params: unknown[]) => {
     const answer = await rpc(JSON.stringify({ jsonrpc: "2.0", id: ++n, method, params }), "1.2.3.4");
@@ -329,13 +330,21 @@ describe("a send that pays less than the base fee", () => {
 });
 
 describe("a send ahead of the sender's next nonce", () => {
-  it("refuses a nonce gap before the tracker or reth see it, and says what to do", async () => {
+  it("holds it, as a node queues it: the answer is its hash, and neither the tracker nor reth sees it yet", async () => {
     const { call, seen, tracked } = await boot({ eth_getTransactionCount: "0x1" });
-    const answer = await call("eth_sendRawTransaction", await signed()); // nonce 3, the chain expects 1
-    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringMatching(/nonce gap: send the missing transactions first.*nonce 3.*expects 1/) });
+    const raw = await signed(); // nonce 3, the chain expects 1
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
     expect(seen.eth_sendRawTransaction).toBeUndefined();
     expect(tracked).toEqual([]);
     expect(seen.eth_getTransactionCount).toEqual([[ACCOUNT.address.toLowerCase(), "pending"]]); // the pool's count, not the finalized one
+  });
+
+  it("refuses one that is more nonces ahead than a transaction may wait for, and says what to do", async () => {
+    const { call, seen } = await boot({ eth_getTransactionCount: "0x1" });
+    const near = await signed({ nonce: 1 + MAX_NONCE_AHEAD }), far = await signed({ nonce: 2 + MAX_NONCE_AHEAD });
+    expect((await call("eth_sendRawTransaction", near)).result).toBe(keccak256(near));
+    expect((await call("eth_sendRawTransaction", far)).error).toMatchObject({ code: -32000, message: expect.stringMatching(/nonce too far ahead.*nonce 18.*expects 1.*at most 16 missing nonces.*send the missing transactions first/) });
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
   });
 
   it("takes the next nonce, and passes a nonce that is already used to reth, which says what is wrong", async () => {
@@ -352,20 +361,34 @@ describe("a send ahead of the sender's next nonce", () => {
     expect(seen.eth_sendRawTransaction).toBeUndefined();
   });
 
-  it("does not let one sender with gapped transactions from many addresses fill the list and block everyone else", async () => {
+  it("does not let senders with gapped transactions from many addresses fill the tracker, reth or the held list, and an honest send still goes through", async () => {
     const tracker = createTracker({ reth: {} as never, index: {} as never, max: 3, maxPerSender: 2 });
-    const { call } = await boot({ eth_getTransactionCount: "0x3" }, { tracker });
+    const { call, seen } = await boot({ eth_getTransactionCount: "0x3" }, { tracker, pub: { maxQueued: 10 } });
+    let held = 0, refused = 0;
     for (let i = 0; i < 6; i++) {
       const griefer = privateKeyToAccount(generatePrivateKey());
       for (const nonce of [4, 5, 9]) {
         const raw = await griefer.signTransaction({ type: "eip1559", chainId: CHAIN, nonce, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
-        expect((await call("eth_sendRawTransaction", raw)).error?.message).toMatch(/nonce gap/);
+        const answer = await call("eth_sendRawTransaction", raw);
+        if (answer.result) held++;
+        else { refused++; expect(answer.error).toMatchObject({ code: -32005, message: expect.stringMatching(/holding as many transactions as it can for a missing nonce/) }); }
       }
     }
+    expect([held, refused]).toEqual([10, 8]); // ten are held, the rest are told to come back
     expect(tracker.size()).toBe(0);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
     const raw = await signed();
     expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw)); // an honest send still goes through
     expect(tracker.size()).toBe(1);
+  });
+
+  it("holds no more hex than its byte limit", async () => {
+    const { call } = await boot({ eth_getTransactionCount: "0x1" }, { pub: { maxQueuedBytes: 500 } });
+    const a = await signed({ nonce: 3 }), b = await signed({ nonce: 4 }), c = await signed({ nonce: 5 });
+    expect(a.length).toBeGreaterThan(150);
+    expect((await call("eth_sendRawTransaction", a)).result).toBeDefined();
+    expect((await call("eth_sendRawTransaction", b)).result).toBeDefined();
+    expect((await call("eth_sendRawTransaction", c)).error?.code).toBe(-32005);
   });
 
   it("says plainly that the list is full when it really is, with the limit", async () => {
@@ -408,13 +431,13 @@ describe("sends from one sender that arrive together", () => {
     expect(pool()).toBe(7);
   });
 
-  it("still refuses a real gap inside a batch, and goes on with the sends after it", async () => {
+  it("still refuses a send that is too far ahead inside a batch, and goes on with the sends after it", async () => {
     const { rpc, pool } = await pooled();
-    const [a, gap, ok] = (await raws(3, 6, 4)) as [Hex, Hex, Hex];
+    const [a, gap, ok] = (await raws(3, 30, 4)) as [Hex, Hex, Hex];
     const body = JSON.stringify([a, gap, ok].map((raw, i) => ({ jsonrpc: "2.0", id: i + 1, method: "eth_sendRawTransaction", params: [raw] })));
     const answer = (await rpc(body, "1.2.3.4")).body as { result?: string; error?: { message: string } }[];
     expect(answer[0]!.result).toBe(keccak256(a));
-    expect(answer[1]!.error?.message).toMatch(/nonce gap.*nonce 6.*expects 4/);
+    expect(answer[1]!.error?.message).toMatch(/nonce too far ahead.*nonce 30.*expects 4/);
     expect(answer[2]!.result).toBe(keccak256(ok));
     expect(pool()).toBe(5);
   });
@@ -664,4 +687,304 @@ describe("the HTTP door", () => {
     expect(body).toMatchObject({ jsonrpc: "2.0", error: { code: -32603 } });
     expect(body.error.message).not.toContain("boom");
   });
+});
+
+describe("sends from one sender that arrive out of order", () => {
+  /** A reth whose pending count follows its pool, and which says in what order it was sent the transactions. */
+  async function pooled(start = 3, opts: Parameters<typeof boot>[1] = {}) {
+    let pool = start;
+    const order: number[] = [], fail = new Set<number>();
+    const setup = await boot({
+      eth_getTransactionCount: () => hx(pool),
+      eth_sendRawTransaction: async (p: unknown[]) => {
+        const t = await import("viem").then((v) => v.parseTransaction(p[0] as Hex));
+        if (fail.delete(t.nonce ?? -1)) throw "insufficient funds"; // refused once
+        order.push(t.nonce ?? -1);
+        pool = Math.max(pool, (t.nonce ?? 0) + 1);
+        return keccak256(p[0] as Hex);
+      },
+    }, opts);
+    return { ...setup, pool: () => pool, setPool: (n: number) => { pool = n; }, order, fail };
+  }
+  const raws = (...nonces: number[]) => Promise.all(nonces.map((nonce) => signed({ nonce })));
+
+  it("sends a held transaction on, in nonce order, when the one before it arrives", async () => {
+    const { call, order, tracked } = await pooled();
+    const [later, first] = (await raws(4, 3)) as [Hex, Hex];
+    expect((await call("eth_sendRawTransaction", later)).result).toBe(keccak256(later));
+    expect(order).toEqual([]);
+    expect((await call("eth_sendRawTransaction", first)).result).toBe(keccak256(first));
+    expect(order).toEqual([3, 4]);
+    expect(tracked.map((t) => t[3])).toEqual([3, 4]); // the tracker follows each once reth has it
+  });
+
+  it("takes a batch that arrives in reverse, as a forge script's parallel sends can, and sends it in order", async () => {
+    const { rpc, order, pool, tracked } = await pooled();
+    const list = (await raws(8, 7, 6, 5, 4, 3)) as Hex[];
+    const body = JSON.stringify(list.map((raw, i) => ({ jsonrpc: "2.0", id: i + 1, method: "eth_sendRawTransaction", params: [raw] })));
+    const answer = (await rpc(body, "1.2.3.4")).body as { result?: string; error?: unknown }[];
+    expect(answer.map((r) => r.result)).toEqual(list.map((raw) => keccak256(raw)));
+    expect(order).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(pool()).toBe(9);
+    expect(tracked).toHaveLength(6);
+  });
+
+  it("takes two overlapping requests that arrive reversed", async () => {
+    const { call, order } = await pooled(5);
+    const [a, b] = (await raws(5, 6)) as [Hex, Hex];
+    const answers = await Promise.all([call("eth_sendRawTransaction", b), call("eth_sendRawTransaction", a)]);
+    expect(answers.map((r) => r.result)).toEqual([keccak256(b), keccak256(a)]);
+    expect(order).toEqual([5, 6]);
+  });
+
+  it("keeps what comes after a missing nonce held until that nonce comes", async () => {
+    const { call, order } = await pooled();
+    const [n3, n5, n6] = (await raws(3, 5, 6)) as [Hex, Hex, Hex];
+    await call("eth_sendRawTransaction", n5);
+    await call("eth_sendRawTransaction", n6);
+    await call("eth_sendRawTransaction", n3);
+    expect(order).toEqual([3]); // 4 is still missing
+    await call("eth_sendRawTransaction", (await signed({ nonce: 4 })) as Hex);
+    expect(order).toEqual([3, 4, 5, 6]);
+  });
+
+  it("lets a new transaction with the same nonce take the place of a held one", async () => {
+    const { call, order } = await pooled();
+    const a = await signed({ nonce: 4 }), b = await signed({ nonce: 4, value: 2n }), first = await signed({ nonce: 3 });
+    await call("eth_sendRawTransaction", a);
+    expect((await call("eth_sendRawTransaction", a)).result).toBe(keccak256(a)); // sent twice: held once
+    expect((await call("eth_sendRawTransaction", b)).result).toBe(keccak256(b));
+    await call("eth_sendRawTransaction", first);
+    expect(order).toEqual([3, 4]);
+  });
+
+  it("forgets a held transaction that has waited too long", async () => {
+    const { call, order, clock } = await pooled(3, { pub: { queueTtlMs: 60_000 } });
+    const later = await signed({ nonce: 4 }), first = await signed({ nonce: 3 });
+    await call("eth_sendRawTransaction", later);
+    clock.now += 61_000;
+    await call("eth_sendRawTransaction", first);
+    expect(order).toEqual([3]);
+  });
+
+  it("does not send a held transaction whose nonce was used some other way", async () => {
+    const { call, order, setPool } = await pooled();
+    const later = await signed({ nonce: 4 });
+    await call("eth_sendRawTransaction", later);
+    // another route took nonces 3 and 4: the next send is nonce 5, and the held 4 is dropped, not sent
+    setPool(5);
+    await call("eth_sendRawTransaction", (await signed({ nonce: 5 })) as Hex);
+    expect(order).toEqual([5]);
+  });
+
+  it("sends a held transaction on by itself when the nonce before it was taken through another instance", async () => {
+    const { call, order, pool, setPool } = await pooled();
+    const later = await signed({ nonce: 4 });
+    await call("eth_sendRawTransaction", later);
+    expect(order).toEqual([]);
+    setPool(4); // nonce 3 is in the pool now, sent through another instance
+    await new Promise((ok) => setTimeout(ok, 1300)); // the held list is looked at every second
+    expect(order).toEqual([4]);
+    expect(pool()).toBe(5);
+  });
+
+  it("drops a held transaction that reth then refuses, and goes on with the sender's others in the next send", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { call, order, fail } = await pooled(3, {});
+    fail.add(4);
+    const n4 = await signed({ nonce: 4 });
+    await call("eth_sendRawTransaction", n4);
+    await call("eth_sendRawTransaction", (await signed({ nonce: 3 })) as Hex);
+    expect(order).toEqual([3]); // 4 was refused and dropped
+  });
+});
+
+describe("the leg check before a send", () => {
+  const WHY = "its deposit leg has no Canton side: no deposit request of this chain for this id and recipient";
+
+  it("refuses a call whose leg has no Canton side, with the reason, before it takes a nonce or reaches reth or the tracker", async () => {
+    const asked: unknown[] = [];
+    const { call, seen, tracked } = await boot({}, { pub: { legCheck: async (c) => { asked.push(c); return WHY; } } });
+    const answer = await call("eth_sendRawTransaction", await signed({ data: "0xabcd", value: 5n, gas: 90000n }));
+    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringContaining("no block would take it") });
+    expect(answer.error!.message).toContain(WHY);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    expect(seen.eth_getTransactionCount).toHaveLength(1); // the check runs once the sender's next nonce is known, and nothing is sent
+    expect(tracked).toEqual([]);
+    expect(asked).toEqual([{ from: ACCOUNT.address.toLowerCase(), to: "0x" + "ab".repeat(20), data: "0xabcd", value: "0x5", gas: "0x15f90" }]);
+  });
+
+  it("lets the send go on when the check has no objection or no answer", async () => {
+    const { call, seen } = await boot({}, { pub: { legCheck: async () => null } });
+    const raw = await signed();
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+    expect(seen.eth_sendRawTransaction).toHaveLength(1);
+  });
+
+  it("does not ask about a contract creation, which records no leg, and asks for no other method", async () => {
+    const asked: unknown[] = [];
+    const { call } = await boot({}, { pub: { legCheck: async (c) => { asked.push(c); return null; } } });
+    const creation = await ACCOUNT.signTransaction({ type: "eip1559", chainId: CHAIN, nonce: 3, value: 0n, data: "0x6000", gas: 90000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+    expect((await call("eth_sendRawTransaction", creation)).result).toBeDefined();
+    await call("eth_call", { to: "0x" + "11".repeat(20) }, "latest");
+    await call("eth_estimateGas", { to: "0x" + "11".repeat(20) });
+    expect(asked).toEqual([]);
+  });
+
+  it("checks a send that has to wait for a nonce too", async () => {
+    const asked: unknown[] = [];
+    const { call } = await boot({ eth_getTransactionCount: "0x1" }, { pub: { legCheck: async (c) => { asked.push(c); return WHY; } } });
+    expect((await call("eth_sendRawTransaction", await signed())).error?.message).toContain(WHY);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("does not check a transaction whose nonce is used already: reth answers it (already known, nonce too low), not the check", async () => {
+    const asked: unknown[] = [];
+    const { call } = await boot({ eth_getTransactionCount: "0x9", eth_sendRawTransaction: () => { throw "nonce too low"; } }, { pub: { legCheck: async (c) => { asked.push(c); return WHY; } } });
+    expect((await call("eth_sendRawTransaction", await signed())).error?.message).toContain("nonce too low");
+    expect(asked).toEqual([]);
+  });
+
+  it("runs one sender's checks one after another, in the sender's lane", async () => {
+    let running = 0, most = 0;
+    const { rpc } = await boot({ eth_getTransactionCount: "0x3" }, { pub: { legCheck: async () => { running++; most = Math.max(most, running); await new Promise((ok) => setTimeout(ok, 30)); running--; return null; } } });
+    const batch = await Promise.all([3, 3, 3].map((nonce) => signed({ nonce, value: BigInt(nonce + Math.floor(Math.random() * 1000)) })));
+    await rpc(JSON.stringify(batch.map((raw, i) => ({ jsonrpc: "2.0", id: i, method: "eth_sendRawTransaction", params: [raw] }))), "1.2.3.4");
+    expect(most).toBe(1);
+  });
+});
+
+describe("a send that is held needs an account that can pay for it", () => {
+  const balance = (wei: string) => ({ eth_getTransactionCount: "0x1", eth_getBalance: (p: unknown[]) => (p[1] === "pending" ? wei : "0x64") });
+  const send = (rpc: PublicRpc, ip: string, raw: Hex) => rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [raw] }), ip).then((a) => a.body as { result?: unknown; error?: { code: number; message: string } });
+
+  it("refuses an account with no balance, as reth does, and holds nothing for it", async () => {
+    const { rpc, seen, tracked } = await boot(balance("0x0"), { pub: { maxQueuedPerClient: 1 } });
+    const answer = await send(rpc, "9.9.9.9", await signed({ nonce: 5 }));
+    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringContaining("insufficient funds") });
+    expect(seen.eth_getBalance).toEqual([[ACCOUNT.address.toLowerCase(), "pending"]]);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    expect(tracked).toEqual([]);
+    // the client's allowance is untouched: a funded account's transaction is held at once
+    const funded = await boot(balance("0xde0b6b3a7640000"), { pub: { maxQueuedPerClient: 1 } });
+    expect((await send(funded.rpc, "9.9.9.9", await signed({ nonce: 5 }))).result).toBeDefined();
+  });
+
+  it("refuses an account whose balance does not cover the value and the gas at the fee cap, and holds one that does", async () => {
+    const need = 1n + 21000n * 10n ** 9n;
+    const poor = await boot(balance("0x" + (need - 1n).toString(16)));
+    expect((await send(poor.rpc, "9.9.9.9", await signed({ nonce: 5 }))).error?.message).toMatch(/insufficient funds.*needs 21000000000001/);
+    const exact = await boot(balance("0x" + need.toString(16)));
+    expect((await send(exact.rpc, "9.9.9.9", await signed({ nonce: 5 }))).result).toBeDefined();
+  });
+
+  it("refuses a transaction that pays no fee from an empty account, and prices a legacy one by its gas price", async () => {
+    const free = await boot(balance("0x0"));
+    expect((await send(free.rpc, "9.9.9.9", await signed({ nonce: 5, value: 0n, maxFeePerGas: 0n, maxPriorityFeePerGas: 0n }))).error?.message).toMatch(/insufficient funds/);
+    const legacy = await ACCOUNT.signTransaction({ type: "legacy", chainId: CHAIN, nonce: 5, to: "0x" + "ab".repeat(20), value: 0n, gas: 21000n, gasPrice: 5n } as never);
+    const low = await boot(balance("0x" + (21000n * 5n - 1n).toString(16)));
+    expect((await send(low.rpc, "9.9.9.9", legacy)).error?.message).toMatch(/insufficient funds.*needs 105000/);
+    const ok = await boot(balance("0x" + (21000n * 5n).toString(16)));
+    expect((await send(ok.rpc, "9.9.9.9", legacy)).result).toBeDefined();
+  });
+
+  it("does not ask about the balance for a send at the next nonce or a nonce too far ahead: reth, or the bound, answers those", async () => {
+    const next = await boot({ ...balance("0x0"), eth_getTransactionCount: "0x3" });
+    expect((await send(next.rpc, "9.9.9.9", await signed({ nonce: 3 }))).result).toBeDefined();
+    const far = await boot(balance("0x0"));
+    expect((await send(far.rpc, "9.9.9.9", await signed({ nonce: 100 }))).error?.message).toMatch(/too far ahead/);
+    expect(next.seen.eth_getBalance).toBeUndefined();
+    expect(far.seen.eth_getBalance).toBeUndefined();
+  });
+
+  it("holds at most the nonces ahead for one account, and only so many for one client, whatever the accounts' number", async () => {
+    const { rpc } = await boot(balance("0xde0b6b3a7640000"), { pub: { maxNonceAhead: 3, maxQueuedPerClient: 4, maxQueued: 100 } });
+    const mine = privateKeyToAccount(generatePrivateKey());
+    const sign = (nonce: number) => mine.signTransaction({ type: "eip1559", chainId: CHAIN, nonce, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+    expect((await send(rpc, "9.9.9.9", await sign(2))).result).toBeDefined(); // 1 ahead
+    expect((await send(rpc, "9.9.9.9", await sign(4))).result).toBeDefined(); // 3 ahead
+    expect((await send(rpc, "9.9.9.9", await sign(5))).error?.message).toMatch(/too far ahead/);
+    expect((await send(rpc, "9.9.9.9", await signed({ nonce: 2 }))).result).toBeDefined();
+    expect((await send(rpc, "9.9.9.9", await signed({ nonce: 3 }))).result).toBeDefined();
+    expect((await send(rpc, "9.9.9.9", await signed({ nonce: 4 }))).error?.code).toBe(-32005); // the client's fifth
+  });
+});
+
+describe("a held transaction that cannot be sent on yet", () => {
+  async function flaky(opts: Parameters<typeof boot>[1]) {
+    let pool = 3, hang = false;
+    const order: number[] = [];
+    const setup = await boot({
+      eth_getTransactionCount: () => hx(pool),
+      eth_sendRawTransaction: async (p: unknown[]) => {
+        const t = await import("viem").then((v) => v.parseTransaction(p[0] as Hex));
+        if (hang && t.nonce === 4) { hang = false; await new Promise((ok) => setTimeout(ok, 400)); throw "late"; } // the answer comes after the explorer stopped waiting
+        order.push(t.nonce ?? -1);
+        pool = Math.max(pool, (t.nonce ?? 0) + 1);
+        return keccak256(p[0] as Hex);
+      },
+    }, opts);
+    return { ...setup, order, hangNext: () => { hang = true; } };
+  }
+
+  it("is kept when reth cannot be reached while it is sent on, and goes on the next look", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { call, order, hangNext } = await flaky({ timeoutMs: 100 });
+    await call("eth_sendRawTransaction", await signed({ nonce: 4 }));
+    hangNext();
+    await call("eth_sendRawTransaction", await signed({ nonce: 3 }));
+    expect(order).toEqual([3]); // 4 was held, reth did not answer in time
+    await new Promise((ok) => setTimeout(ok, 1300));
+    expect(order).toEqual([3, 4]);
+  }, 10000);
+
+  it("is kept when the tracker is full while it is sent on, and goes on the next look", async () => {
+    let admits = 0;
+    const { call, order } = await flaky({ admit: () => (++admits === 2 ? "This RPC is following as many transactions as it can." : null) });
+    await call("eth_sendRawTransaction", await signed({ nonce: 4 }));
+    await call("eth_sendRawTransaction", await signed({ nonce: 3 }));
+    expect(order).toEqual([3]);
+    await new Promise((ok) => setTimeout(ok, 1300));
+    expect(order).toEqual([3, 4]);
+  }, 10000);
+});
+
+describe("what one client can hold back", () => {
+  const send = (rpc: PublicRpc, ip: string, raw: Hex) => rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [raw] }), ip).then((a) => a.body as { result?: unknown; error?: { code: number; message: string } });
+  const gapped = async (nonce = 5) => privateKeyToAccount(generatePrivateKey()).signTransaction({ type: "eip1559", chainId: CHAIN, nonce, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+
+  it("holds only so many for one client, however many senders it signs with, and leaves room for the others", async () => {
+    const { rpc } = await boot({ eth_getTransactionCount: "0x1" }, { pub: { maxQueuedPerClient: 3, maxQueued: 100 } });
+    const answers = [];
+    for (let i = 0; i < 6; i++) answers.push(await send(rpc, "9.9.9.9", await gapped()));
+    expect(answers.filter((a) => a.result).length).toBe(3);
+    for (const a of answers.filter((x) => x.error)) expect(a.error).toMatchObject({ code: -32005, message: expect.stringMatching(/already have 3 transactions held back/) });
+    // another client is not shut out by it, and nor is the same client's own replacement of a held transaction
+    expect((await send(rpc, "8.8.8.8", await gapped())).result).toBeDefined();
+    const mine = privateKeyToAccount(generatePrivateKey());
+    const sign = (nonce: number, value: bigint) => mine.signTransaction({ type: "eip1559", chainId: CHAIN, nonce, to: "0x" + "ab".repeat(20), value, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+    expect((await send(rpc, "7.7.7.7", await sign(5, 1n))).result).toBeDefined();
+    expect((await send(rpc, "7.7.7.7", await sign(5, 2n))).result).toBeDefined(); // the same nonce: a replacement
+  });
+
+  it("counts a client's held transactions down again when they expire", async () => {
+    const { rpc, clock } = await boot({ eth_getTransactionCount: "0x1" }, { pub: { maxQueuedPerClient: 2, maxQueued: 100, queueTtlMs: 60_000 } });
+    expect((await send(rpc, "9.9.9.9", await gapped())).result).toBeDefined();
+    expect((await send(rpc, "9.9.9.9", await gapped())).result).toBeDefined();
+    expect((await send(rpc, "9.9.9.9", await gapped())).error?.code).toBe(-32005);
+    clock.now += 61_000;
+    expect((await send(rpc, "9.9.9.9", await gapped())).result).toBeDefined();
+  });
+
+  it("asks reth about only so many held senders a second, in turn, so that reth is not kept busy by them", async () => {
+    const asked: string[] = [];
+    const { rpc } = await boot({ eth_getTransactionCount: (p: unknown[]) => { asked.push(p[0] as string); return "0x1"; } }, { pub: { sweepSendersPerTick: 4, maxQueuedPerClient: 100, maxQueued: 100 } });
+    for (let i = 0; i < 12; i++) expect((await send(rpc, `10.0.0.${i}`, await gapped())).result).toBeDefined();
+    expect(asked).toHaveLength(12); // one read for each send
+    await new Promise((ok) => setTimeout(ok, 2400)); // two sweeps
+    expect(asked.length - 12).toBe(8); // not 24: four senders for each sweep
+    await new Promise((ok) => setTimeout(ok, 1000)); // a third
+    expect(asked.length - 12).toBe(12);
+    expect(new Set(asked.slice(12)).size).toBe(12); // every sender was asked about, in turn
+  }, 15000);
 });

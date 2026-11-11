@@ -779,6 +779,12 @@
    "committed": true,
    "completionOffset": 43,
    "leftOut": [],
+   "legParties": {
+    "0x4f4ba860ef4bf54924ea5b96605e0ba20e501325024fe70e2ad29a05d1a7db44": [
+     "u::1",
+     "v::1"
+    ]
+   },
    "legTransactions": [
     "0x4f4ba860ef4bf54924ea5b96605e0ba20e501325024fe70e2ad29a05d1a7db44"
    ],
