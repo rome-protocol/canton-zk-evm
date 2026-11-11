@@ -113,7 +113,7 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
           : { kind: "problem", message: UNREADABLE };
       }
       if (status === 429) {
-        const which = body.reason === "address" || body.reason === "ip" || body.reason === "checks" ? body.reason : "hour";
+        const which = body.reason === "net" ? "ip" : body.reason === "address" || body.reason === "ip" || body.reason === "checks" ? body.reason : "hour";   // a network's limit is a per-client one, as the page words it
         return { kind: "limit", which, waitSeconds: wait, message: message(body, "Try again later.") };
       }
       if (status === 503 && body.reason === "queue") return { kind: "full", waitSeconds: wait, message: message(body, "The line is full. Try again in a little while.") };

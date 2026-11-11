@@ -15,6 +15,7 @@ import ed25519
 # What the service lets an account sign: a create of a template ("#package:Module:Entity") or an exercise of one choice ("#package:Module:Entity#Choice").
 ALLOCATION_WITHDRAW = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation#Allocation_Withdraw"   # the two ways an account takes back a deposit that cannot settle (see `check_take_back`)
 TRANSFER_WITHDRAW = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Withdraw"   # an account takes back a transfer it sent that nobody accepted (see `check_take_back`)
+TRANSFER_ACCEPT = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept"
 DEPOSIT_ARCHIVE = "#canton-zk-evm:Zk.Chain:DepositRequest#Archive"
 REDEEM_ARCHIVE = "#canton-zk-evm:Zk.Chain:RedeemRequest#Archive"   # an account removes its own open redeem request (see `check_take_back`)
 DEFAULT_ALLOW = (
@@ -22,12 +23,15 @@ DEFAULT_ALLOW = (
     "#canton-zk-evm:Zk.Chain:DepositRequest",
     "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory#AllocationFactory_Allocate",
     "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory#TransferFactory_Transfer",
-    "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction#TransferInstruction_Accept",
+    TRANSFER_ACCEPT,
     TRANSFER_WITHDRAW,
     ALLOCATION_WITHDRAW,
     DEPOSIT_ARCHIVE,
     REDEEM_ARCHIVE,
 )
+# These free state or finish a move that is under way: a person who has them refused cannot get a deposit back or take a transfer in. They are counted against a ceiling of their own, not the
+# shared executes and traffic ceilings that anyone's creates can fill (`Accounts.spend`); the per-account, per-client and per-network budgets still count them.
+SHARED_EXEMPT = (ALLOCATION_WITHDRAW, TRANSFER_WITHDRAW, DEPOSIT_ARCHIVE, REDEEM_ARCHIVE, TRANSFER_ACCEPT)
 CHAIN_CREATES = DEFAULT_ALLOW[:2]   # these creates name the chain's parties as observers: they are checked against the configured ones
 CHAIN_FIELDS = ("operator", "confirmer", "gateway", "builder")
 ACCEPTANCE, DEPOSIT = CHAIN_CREATES
@@ -62,6 +66,12 @@ RELAY_PATH = re.compile(r"/accounts/v1/registry/" + RELAY_SUFFIX)
 PUBLIC_RELAY_PATH = re.compile(r"/accounts/v1/public-registry/" + RELAY_SUFFIX)   # the same registry calls, for wallets this service did not make: no account signature
 PUBLIC_RELAY_RATE = 30   # public registry relay requests per client in a minute
 PUBLIC_RELAY_TOTAL = 600   # and in a minute from all clients together
+PUBLIC_RELAY_NETWORK = 120   # and in a minute from one client network (an IPv4 address, an IPv6 /48)
+NEW_ACCOUNTS_PER_NETWORK = 6   # new accounts a day for one client network (an IPv4 address, an IPv6 /48)
+EXECUTES_PER_NETWORK = 400     # executes and allocations a day for one client network
+TAKE_BACKS_PER_DAY = 5000      # take-backs and accepts a day, all clients together (their own ceiling)
+TAKE_BACK_TRAFFIC_PER_DAY = 50_000_000   # and the traffic of those, as the participant estimates it (bytes): a share of their own, apart from the traffic of creates
+ACCOUNT_CAP = 1000             # the accounts the participant allows this service's user: its `max-self-allocated-parties` (the service cannot read it; the operator says it)
 TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
@@ -297,7 +307,9 @@ class Faucet:
     not be made): that cannot have made a transfer, so it is given back. A failure after the request was written, a timeout, or any answer at all is not: the transfer may exist."""
     def __init__(self, amount: str, url: str, bearer_file: str, per_day: int = 200):
         self.amount, self.url, self.bearer_file, self.lock = amount, url, bearer_file, threading.Lock()
-        self.per_account, self.per_client, self.total = Limiter(1, DAY), Limiter(1, DAY), Limiter(per_day, DAY)
+        self.per_account = day_limit(1, ("faucet_account_full", "This account has had its Canton Coin from the faucet today; try again after {time}."))
+        self.per_client = day_limit(1, ("faucet_network_full", "This network has had Canton Coin from the faucet today; try again after {time} or from another network."))
+        self.total = day_limit(per_day, ("faucet_all_full", "The faucet has given out all of today's Canton Coin; try again after {time}."))
 
     def limiters(self) -> tuple:
         return self.per_account, self.per_client, self.total
@@ -339,6 +351,26 @@ def faucet_from(amount, url, bearer_file, per_day: int):
         sys.exit("--faucet-amount needs --faucet-url (the validator's API root) and --faucet-token-file")
     private_file(bearer_file, "--faucet-token-file", "the validator's admin token")
     return Faucet(amount if "." in amount else amount + ".0", outside_url(url, "--faucet-url"), bearer_file, per_day)
+
+
+class HumanCheck:
+    """An optional human check on a new account's `topology` request (off unless the service is started with it). The page sends the token its widget gave in `captcha`; the service posts
+    `{"secret", "response", "remoteip"}` as JSON to the check's verify URL and wants `{"success": true}` back, which is how Cloudflare Turnstile answers (a check that wants a form post instead of JSON, such as reCAPTCHA, does not work with it).
+    The secret is read from a file for each check and never logged. A check that cannot be reached refuses the request (fail closed), and a failed check counts as a failed signature does
+    (`Accounts.failures`): a client network that fails FAILED_VERIFIES times in a minute is refused before another call is made. `allocate` needs the topology's blob, which only a checked
+    `topology` request makes, so the pair is covered. A token works once, which is why one check covers the pair and not each of them."""
+    def __init__(self, verify_url: str, secret_file: str):
+        self.verify_url, self.secret_file = outside_url(verify_url, "--human-check-url"), secret_file
+        private_file(secret_file, "--human-check-secret-file", "the human check's secret")
+        parts = urllib.parse.urlsplit(self.verify_url)
+        self.base, self.path = f"{parts.scheme}://{parts.netloc}", parts.path or "/"
+
+    def verify(self, token, ip: str) -> bool:
+        """Whether the token is a person's. HttpError 502 when the check cannot be used."""
+        if not isinstance(token, str) or not 0 < len(token) <= 2048:
+            return False
+        request = {"secret": read_token(self.secret_file), "response": token, **({"remoteip": ip} if ip else {})}
+        return outside_post(self.base, self.path, request, None, "the human check").get("success") is True
 
 
 class Ledger:
@@ -396,6 +428,12 @@ class Pending:
             self._room(now, key, owner, group)
             self.items[key] = (now + self.ttl, value, owner, group)
 
+    def count(self) -> int:
+        """How many entries wait now."""
+        with self.lock:
+            now = self.clock()
+            return sum(v[0] > now for v in self.items.values())
+
     def values(self, group: str) -> list:
         """What waits for one group (an account)."""
         with self.lock:
@@ -423,10 +461,21 @@ class Pending:
             self.items.pop(key, None)
 
 
+def utc_time(at: float) -> str:
+    """A moment as the words of a message: 14:32 UTC."""
+    return time.strftime("%H:%M UTC", time.gmtime(at))
+
+
 class Limiter:
-    """At most `count` in total weight per key in `window` seconds."""
-    def __init__(self, count: int, window: float, clock=time.monotonic):
+    """At most `count` in total weight per key in `window` seconds. A refusal is a 429 with `retryAfter`; when the limiter has a `code`, the answer carries it as `code`, and a `message`
+    (with `{time}` where the moment the key can try again goes, as 14:32 UTC) says in plain words which limit was reached: a limit that a network or everyone shares says so."""
+    def __init__(self, count: int, window: float, clock=time.monotonic, code: str = None, message: str = None, wall=time.time):
         self.count, self.window, self.clock, self.hits, self.lock = count, window, clock, {}, threading.Lock()
+        self.code, self.message, self.wall = code, message, wall
+
+    def refusal(self, wait: int) -> HttpError:
+        extra = {"retryAfter": wait, **({"code": self.code} if self.code else {})}
+        return HttpError(429, self.message.format(time=utc_time(self.wall() + wait)) if self.message else "too many requests: try again later", **extra)
 
     def _room(self, key: str, weight: int, create: bool):
         now = self.clock()
@@ -434,7 +483,7 @@ class Limiter:
         while q and q[0][0] <= now - self.window:
             q.popleft()
         if sum(w for _, w in q) + weight > self.count:
-            raise HttpError(429, "too many requests: try again later", retryAfter=int(q[0][0] + self.window - now) + 1 if q else int(self.window))
+            raise self.refusal(int(q[0][0] + self.window - now) + 1 if q else int(self.window))
         return q, now
 
     def check(self, key: str, weight: int = 1) -> None:
@@ -446,6 +495,12 @@ class Limiter:
         with self.lock:
             q, now = self._room(key, weight, True)
             q.append((now, weight))
+
+    def used(self, key: str) -> int:
+        """The weight counted for this key inside the window now."""
+        with self.lock:
+            now = self.clock()
+            return sum(w for t, w in self.hits.get(key, ()) if t > now - self.window)
 
     def refund(self, key: str, weight: int = 1) -> None:
         """Take back the latest `hit` of this weight on this key (the hit of a request that is known to have done nothing)."""
@@ -460,6 +515,20 @@ class Limiter:
         with self.lock:
             now = self.clock()
             self.hits = {k: q for k, q in self.hits.items() if q and q[-1][0] > now - self.window}
+
+
+# What a person is told when a daily budget is spent: the code (a client acts on it) and the words. `{time}` is when the key may try again. A budget that a network or everyone shares says so.
+NETWORK_ACCOUNTS = ("accounts_network_full", "This network has opened today's share of new accounts; try again after {time} or from another network.")
+ALL_ACCOUNTS = ("accounts_all_full", "Today's new accounts are all taken; try again after {time}.")
+NETWORK_SENDS = ("send_network_full", "This network has used today's share of Bridge transactions; try again after {time} or from another network.")
+ACCOUNT_SENDS = ("send_account_full", "This account has used today's Bridge transactions; try again after {time}.")
+ALL_SENDS = ("send_all_full", "The Bridge has used all of today's transactions for everyone; try again after {time}. Taking back a deposit and accepting a transfer still work.")
+TAKE_BACKS_ALL = ("take_backs_all_full", "Today's take-backs and accepts are all used for everyone; try again after {time}.")
+
+
+def day_limit(count: int, words: tuple) -> Limiter:
+    """A daily budget whose refusal carries `words` (a code and a sentence)."""
+    return Limiter(count, DAY, code=words[0], message=words[1])
 
 
 class InFlight:
@@ -546,20 +615,28 @@ class Accounts:
                  creates: Limiter = None, rate: Limiter = None, topologies: Pending = None, prepared: Pending = None, chain: dict = None,
                  open_limits: dict = None, per_account: Limiter = None, per_client: Limiter = None, overall: Limiter = None, traffic: Limiter = None,
                  max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0, failures: Limiter = None, account_rate: Limiter = None,
-                 network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None, public_relay_rate: Limiter = None, public_relay_total: Limiter = None):
+                 network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None, public_relay_rate: Limiter = None, public_relay_total: Limiter = None,
+                 creates_net: Limiter = None, per_net: Limiter = None, take_backs: Limiter = None, public_relay_net: Limiter = None, account_cap: int = ACCOUNT_CAP,
+                 human_check: "HumanCheck" = None, take_back_traffic: Limiter = None):
         self.ledger, self.user, self.parties, self.allow, self.hint = ledger, user, parties, set(allow), hint
         self.synchronizer, self.topology_version = synchronizer, topology_version
-        self.creates, self.rate = creates or Limiter(3, DAY), rate or Limiter(60, 60)
+        self.creates, self.rate = creates or day_limit(3, NETWORK_ACCOUNTS), rate or Limiter(60, 60)
+        self.creates_net = creates_net or day_limit(NEW_ACCOUNTS_PER_NETWORK, NETWORK_ACCOUNTS)   # new accounts a day for a client network (an IPv4 address, an IPv6 /48): a /48 holds 65,536 /64s, each with a count of its own
         self.account_rate, self.network_rate = account_rate or Limiter(ACCOUNT_RATE, 60), network_rate or Limiter(NETWORK_RATE, 60)
         self.public_relay_rate = public_relay_rate or Limiter(PUBLIC_RELAY_RATE, 60)
         self.public_relay_total = public_relay_total or Limiter(PUBLIC_RELAY_TOTAL, 60)   # one key, "all": a ceiling over every client
+        self.public_relay_net = public_relay_net or Limiter(PUBLIC_RELAY_NETWORK, 60)
         self.topologies, self.prepared = topologies or Pending(limit=2000), prepared or Pending(per_group=PENDING_PER_ACCOUNT)   # the caps of the two are apart
         self.chain = chain or {}   # the chain's parties by field name: what a create's observers must be
         self.open_limits = {ACCEPTANCE: 1, DEPOSIT: 3} if open_limits is None else open_limits   # most open contracts of a template an account may have
         # What executes and allocations may spend in a day: per account, per client, overall, and the overall traffic that the participant estimates.
-        self.per_account, self.per_client, self.overall = per_account or Limiter(50, DAY), per_client or Limiter(200, DAY), overall or Limiter(2000, DAY)
-        self.traffic, self.max_traffic = traffic or Limiter(50_000_000, DAY), max_traffic
-        self.new_total = new_total or Limiter(200, DAY)   # new accounts a day, all clients: the participant's party and rights quotas are finite
+        self.per_account, self.per_client, self.overall = per_account or day_limit(50, ACCOUNT_SENDS), per_client or day_limit(200, NETWORK_SENDS), overall or day_limit(2000, ALL_SENDS)
+        self.per_net = per_net or day_limit(EXECUTES_PER_NETWORK, NETWORK_SENDS)   # the same, for a client network (an IPv6 /48 holds many /64s)
+        self.traffic, self.max_traffic = traffic or day_limit(50_000_000, ALL_SENDS), max_traffic
+        self.take_backs = take_backs or day_limit(TAKE_BACKS_PER_DAY, TAKE_BACKS_ALL)   # the take-backs and accepts of `SHARED_EXEMPT`: a ceiling of their own, which creates cannot fill
+        self.take_back_traffic = take_back_traffic or day_limit(TAKE_BACK_TRAFFIC_PER_DAY, TAKE_BACKS_ALL)   # and a traffic share of their own, so they are bounded too
+        self.new_total = new_total or day_limit(200, ALL_ACCOUNTS)   # new accounts a day, all clients: the participant's party and rights quotas are finite
+        self.account_cap, self.human_check = account_cap, human_check
         self.budget_lock = threading.Lock()   # the budgets are checked and charged as one step
         self.failures = failures or Limiter(FAILED_VERIFIES, 60)   # signatures that failed, per client
         self.registries, self.faucet = registries or {}, faucet   # token registries by instrument admin: (URL, token file); the DevNet faucet, or None
@@ -583,11 +660,13 @@ class Accounts:
     def signature(raw_b64: str, fingerprint: str) -> dict:
         return {"format": SIGNATURE_FORMAT, "signature": raw_b64, "signedBy": fingerprint, "signingAlgorithmSpec": "SIGNING_ALGORITHM_SPEC_ED25519"}
 
-    def spend(self, ip: str, party: str = None, traffic: int = 0, extra=(), take=None):
-        """Count one execute or allocation against the day's budgets. Every budget is checked first and they are charged together, so a refusal (429) charges
-        none of them. `take`, when given, runs between the check and the charge and is what removes the prepared entry: it survives a refusal."""
-        items = [*extra, *([(self.per_account, party, 1)] if party else []), (self.per_client, ip, 1), (self.overall, "all", 1),
-                 *([(self.traffic, "all", traffic)] if traffic else [])]
+    def spend(self, ip: str, party: str = None, traffic: int = 0, extra=(), take=None, exempt: bool = False):
+        """Count one execute or allocation against the day's budgets: the account's, the client's (an IPv4 address or an IPv6 /64), the client network's (an IPv6 /48), and the two
+        that everyone shares, the executes and the traffic. An `exempt` one (a take-back or an accept, `SHARED_EXEMPT`) counts against a shared ceiling of its own, and a traffic share of its own, in their place, so
+        creates cannot use up what people need to get a deposit back, and take-backs cannot use up the traffic that creates need. Every budget is checked first and they are charged together, so a refusal (429) charges none of them.
+        `take`, when given, runs between the check and the charge and is what removes the prepared entry: it survives a refusal."""
+        shared = [(self.take_backs, "all", 1), *([(self.take_back_traffic, "all", traffic)] if traffic else [])] if exempt else [(self.overall, "all", 1), *([(self.traffic, "all", traffic)] if traffic else [])]
+        items = [*extra, *([(self.per_account, party, 1)] if party else []), (self.per_client, ip, 1), (self.per_net, pending_owner(ip), 1), *shared]
         with self.budget_lock:
             for limiter, key, weight in items:
                 limiter.check(key, weight)
@@ -687,11 +766,29 @@ class Accounts:
                     self.health_error, self.health_at, self.health_busy = error, self.clock(), False
         elif not asked:
             error = "not checked yet"
-        return {"ok": True, "accounts": len(self.parties.parties)} if error is None else {"ok": False, "error": error}
+        return {"ok": True, **self.usage()} if error is None else {"ok": False, "error": error, **self.usage()}
+
+    def usage(self) -> dict:
+        """How full each limit that many clients share is, for the explorer's health check and the operator: the accounts held against the participant's cap (`--account-cap`), and, for each shared
+        ceiling, what is counted now and what it allows. A ceiling is a whole-service one: a per-client or per-account budget is not listed. Counts only; no address, no account."""
+        held = len(set(self.parties.parties) | self.rights)   # the participant counts the user's rights; the state file may miss a line
+        ceilings = {
+            "newAccountsDay": (self.new_total.used("all"), self.new_total.count),
+            "executesDay": (self.overall.used("all"), self.overall.count),
+            "trafficDay": (self.traffic.used("all"), self.traffic.count),
+            "takeBacksDay": (self.take_backs.used("all"), self.take_backs.count),
+            "takeBackTrafficDay": (self.take_back_traffic.used("all"), self.take_back_traffic.count),
+            "publicRelayMinute": (self.public_relay_total.used("all"), self.public_relay_total.count),
+            "waitingTopologies": (self.topologies.count(), self.topologies.limit),
+            "waitingTransactions": (self.prepared.count(), self.prepared.limit),
+            **({"faucetDay": (self.faucet.total.used("all"), self.faucet.total.count)} if self.faucet else {}),
+        }
+        return {"accounts": held, "accountCap": self.account_cap, "ceilings": {k: {"used": used, "limit": limit} for k, (used, limit) in ceilings.items()}}
 
     def sweep(self) -> None:
         """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
-        for part in (self.creates, self.rate, self.per_account, self.per_client, self.overall, self.traffic, self.new_total, self.failures, self.account_rate, self.network_rate, self.public_relay_rate, self.public_relay_total, self.in_flight, self.topologies, self.prepared, self.replays,
+        for part in (self.creates, self.creates_net, self.rate, self.per_account, self.per_client, self.per_net, self.overall, self.traffic, self.take_backs, self.take_back_traffic, self.new_total, self.failures, self.account_rate, self.network_rate,
+                     self.public_relay_rate, self.public_relay_net, self.public_relay_total, self.in_flight, self.topologies, self.prepared, self.replays,
                      *(self.faucet.limiters() if self.faucet else ())):
             part.prune()
 
@@ -721,9 +818,12 @@ class Accounts:
                 body = {}   # no body at all is an empty request
             if not isinstance(body, dict):
                 raise HttpError(400, "the body must be a JSON object")
+            net = pending_owner(ip)
             self.public_relay_rate.check(ip)
+            self.public_relay_net.check(net)
             self.public_relay_total.check("all")
             self.public_relay_rate.hit(ip)
+            self.public_relay_net.hit(net)
             self.public_relay_total.hit("all")
             return self.relay_public(urllib.parse.unquote(public[1]), public[3], body, public[5], public[2] == "transfer-factory", public[4])
         if method == "POST":
@@ -788,8 +888,10 @@ class Accounts:
         blob = hmac.new(self.secret, raw, hashlib.sha256).hexdigest()[:48]
         again = self.topologies.get(blob)
         if again:
+            self.new_account_room(ip)   # the caps may have filled since it was handed out: say so now, before the person signs
             return {"party": again[0], "exists": False, "multiHash": again[3], "topologyTransactions": again[2], "blob": blob}
         self.topologies.room(pending_owner(ip))   # a client at its cap costs the participant nothing
+        self.check_human(body, ip)
         if not ed25519.usable_key(raw):
             raise HttpError(400, "publicKey is not a usable Ed25519 key")
         key = {"format": "CRYPTO_KEY_FORMAT_DER_X509_SUBJECT_PUBLIC_KEY_INFO", "keySpec": "SIGNING_KEY_SPEC_EC_CURVE25519",
@@ -801,8 +903,27 @@ class Accounts:
         party = made["partyId"]
         if party in self.parties:
             return {"party": party, "exists": True}
+        if party not in self.rights:   # a party the participant lists and the state file lost is not a new account (the rights are as last read: no ledger call is made for this)
+            self.new_account_room(ip)
         self.topologies.put(blob, (party, made["publicKeyFingerprint"], made["topologyTransactions"], made["multiHash"], raw), pending_owner(ip))
         return {"party": party, "exists": False, "multiHash": made["multiHash"], "topologyTransactions": made["topologyTransactions"], "blob": blob}
+
+    def new_account_room(self, ip: str) -> None:
+        """Refuse (429, in words that say which limit) when a new account could not be made now: the client's, its network's or everyone's budget of the day is spent. Nothing is counted: the
+        count is `allocate`'s. Asked at `topology`, so a person hears it before the second, confirming wallet signature and not after."""
+        self.creates.check(ip)
+        self.creates_net.check(pending_owner(ip))
+        self.new_total.check("all")
+
+    def check_human(self, body: dict, ip: str) -> None:
+        """The human check of `topology`, when the service has one: 403 `human_check_needed` without a token that passes. A client network with FAILED_VERIFIES failures in a minute is refused first."""
+        if self.human_check is None:
+            return
+        name = pending_owner(ip)
+        self.failures.check(name)
+        if not self.human_check.verify(body.get("captcha"), "" if "/" in ip else ip):   # an IPv6 client is only its /64 here: the check is told no address for it
+            self.failures.hit(name)
+            raise HttpError(403, "complete the human check first", "human_check_needed")
 
     def allocate(self, body: dict, ip: str) -> dict:
         blob = text(body, "blob", 100)
@@ -820,7 +941,7 @@ class Accounts:
             self.parties.add(party, raw)
             self.topologies.drop(blob)
             return {"party": party, "created": False, "restored": True}
-        self.spend(ip, extra=[(self.creates, ip, 1), (self.new_total, "all", 1)])
+        self.spend(ip, extra=[(self.creates, ip, 1), (self.creates_net, pending_owner(ip), 1), (self.new_total, "all", 1)])
         # The user gets the right to act as the new party in the same call, so the service's user needs no admin right of its own.
         self.ledger.call("POST", "/v2/parties/external/allocate", {
             "synchronizer": self.sync_id(), "onboardingTransactions": [{"transaction": t} for t in transactions],
@@ -951,6 +1072,8 @@ class Accounts:
         if not isinstance(request["disclosedContracts"], list):
             raise HttpError(400, "disclosedContracts is a list")
         template = commands[0]["CreateCommand"]["templateId"] if "CreateCommand" in commands[0] else None
+        exercise = commands[0].get("ExerciseCommand")
+        exempt = exercise is not None and exercise["templateId"] + "#" + exercise["choice"] in SHARED_EXEMPT   # a take-back or an accept: see `spend`
         limited = template is not None and self.open_limits.get(template) is not None
         # For a limited template the check, the prepare and the entry are one step per account: two prepares do not both see "none open".
         with self.account_lock(party) if limited else contextlib.nullcontext():
@@ -966,7 +1089,7 @@ class Accounts:
             if cost > self.max_traffic:
                 raise HttpError(403, f"this transaction would cost more than the {self.max_traffic} that this service allows one")
             self.prepared.put(hashlib.sha256(tx.encode()).hexdigest(), {"party": party, "version": version, "hash": base64.b64decode(made["preparedTransactionHash"]),
-                                                                       "cost": cost, "template": template, "record_by": record_by}, pending_owner(ip), party)
+                                                                       "cost": cost, "template": template, "record_by": record_by, "exempt": exempt}, pending_owner(ip), party)
         return {"party": party, "preparedTransaction": tx, "preparedTransactionHash": made["preparedTransactionHash"], "hashingSchemeVersion": version, "maxRecordTime": request["maxRecordTime"]}
 
     def execute(self, body: dict, ip: str) -> dict:
@@ -994,7 +1117,7 @@ class Accounts:
         with self.account_lock(party) if limited else contextlib.nullcontext():
             if limited:
                 self.open_contracts(party, found["template"])
-            found = self.spend(ip, party, found["cost"], take=take)   # an over-budget execute leaves the entry in place and charges nothing
+            found = self.spend(ip, party, found["cost"], take=take, exempt=found.get("exempt", False))   # an over-budget execute leaves the entry in place and charges nothing
             try:
                 done = self.ledger.call("POST", "/v2/interactive-submission/executeAndWait", {
                     "preparedTransaction": tx, "submissionId": str(uuid.uuid4()), "userId": self.user, "hashingSchemeVersion": found["version"],
@@ -1132,18 +1255,23 @@ def main(argv=None):
     p.add_argument("--allow", action="append", help="an allowed command: #package:Module:Entity (a create) or #package:Module:Entity#Choice (an exercise); repeat; replaces the built-in list")
     p.add_argument("--open-limit", action="append", metavar="TEMPLATE=N", help="open contracts one account may have of an allowed create (#package:Module:Entity=N, or =none for one "
                    "that names no other party); every allowed create needs one; repeat")
-    p.add_argument("--accounts-per-day", type=int, default=3, help="accounts made per client address in 24 hours")
+    p.add_argument("--accounts-per-day", type=int, default=3, help="accounts made per client address (an IPv4 address or an IPv6 /64) in 24 hours")
+    p.add_argument("--accounts-per-network-day", type=int, default=NEW_ACCOUNTS_PER_NETWORK, help="accounts made per client network (an IPv4 address or an IPv6 /48) in 24 hours")
     p.add_argument("--requests-per-minute", type=int, default=60, help="requests per client address in a minute")
     p.add_argument("--requests-per-account-minute", type=int, default=ACCOUNT_RATE, help="prepare, execute, holdings, allocations, transfers and open requests per account in a minute")
     p.add_argument("--public-registry-requests-per-minute", type=int, default=PUBLIC_RELAY_RATE, help="public registry relay requests (for wallets this service did not make) per client in a minute")
     p.add_argument("--public-registry-requests-per-minute-total", type=int, default=PUBLIC_RELAY_TOTAL, help="public registry relay requests from all clients together in a minute")
+    p.add_argument("--public-registry-requests-per-minute-network", type=int, default=PUBLIC_RELAY_NETWORK, help="public registry relay requests per client network (an IPv4 address or an IPv6 /48) in a minute")
     p.add_argument("--requests-per-network-minute", type=int, default=NETWORK_RATE, help="requests per client network (an IPv4 address, an IPv6 /48) in a minute")
     p.add_argument("--chain-parties", help="a JSON file {\"operator\": ..., \"confirmer\": ..., \"gateway\": ..., \"builder\": ...}: the chain's parties, the only observers a create may name")
     for field in CHAIN_FIELDS:
         p.add_argument(f"--chain-{field}", help=f"the chain's {field} party (overrides the file)")
     p.add_argument("--open-deposit-requests", type=int, default=3, help="open DepositRequests one account may have (it may have one WithdrawalAcceptance)")
     p.add_argument("--executes-per-account-day", type=int, default=50, help="executes per account in 24 hours")
-    p.add_argument("--executes-per-client-day", type=int, default=200, help="executes and allocations per client address in 24 hours")
+    p.add_argument("--executes-per-client-day", type=int, default=200, help="executes and allocations per client address (an IPv4 address or an IPv6 /64) in 24 hours")
+    p.add_argument("--executes-per-network-day", type=int, default=EXECUTES_PER_NETWORK, help="executes and allocations per client network (an IPv4 address or an IPv6 /48) in 24 hours")
+    p.add_argument("--take-backs-per-day", type=int, default=TAKE_BACKS_PER_DAY, help="take-backs and accepts (they are not counted in --executes-per-day or --traffic-per-day) in 24 hours, all clients together")
+    p.add_argument("--take-back-traffic-per-day", type=int, default=TAKE_BACK_TRAFFIC_PER_DAY, help="the traffic of the take-backs and accepts in 24 hours, all clients together (bytes, as estimated; apart from --traffic-per-day)")
     p.add_argument("--executes-per-day", type=int, default=2000, help="executes and allocations in 24 hours, all clients together")
     p.add_argument("--max-transaction-traffic", type=int, default=200000, help="the most traffic the participant may estimate for one transaction (bytes)")
     p.add_argument("--traffic-per-day", type=int, default=50_000_000, help="the traffic of the executes in 24 hours, all clients together (bytes, as estimated)")
@@ -1151,7 +1279,10 @@ def main(argv=None):
     p.add_argument("--max-pending-prepared", type=int, default=5000, help="prepared transactions waiting for a signature")
     p.add_argument("--max-pending-per-client", type=int, default=10, help="topologies, and prepared transactions, waiting for a signature for one client address (an IPv6 /48) (each)")
     p.add_argument("--max-pending-per-account", type=int, default=PENDING_PER_ACCOUNT, help="prepared transactions waiting for a signature for one account")
-    p.add_argument("--accounts-per-day-total", type=int, default=200, help="new accounts in 24 hours, all clients together")
+    p.add_argument("--accounts-per-day-total", type=int, default=200, help="new accounts in 24 hours, all clients together (set it to what real use needs: the participant's cap on accounts is finite)")
+    p.add_argument("--account-cap", type=int, default=ACCOUNT_CAP, help="the participant's cap on the accounts of this service's user (its max-self-allocated-parties): /healthz reports the accounts held against it")
+    p.add_argument("--human-check-url", help="the verify URL of a human check (Cloudflare Turnstile: https://challenges.cloudflare.com/turnstile/v0/siteverify); with --human-check-secret-file it turns on the check of `topology`; off when not given")
+    p.add_argument("--human-check-secret-file", help="the human check's secret: a file with mode 0600, read again for each check")
     p.add_argument("--registry", action="append", metavar="ADMIN=URL", help="the token registry of an instrument admin (https, or a server on this machine): its allocation factory and accept choice contexts "
                    "are relayed to the accounts; the root of its token standard API, for Canton Coin the validator's scan proxy; repeat")
     p.add_argument("--registry-token-file", action="append", metavar="ADMIN=FILE", help="the file with the bearer token that registry wants, read again for each request; repeat")
@@ -1186,13 +1317,20 @@ def main(argv=None):
         sys.exit("--trusted-proxies is at least 1")
     registries = parse_registries(a.registry, a.registry_token_file)
     faucet = faucet_from(a.faucet_amount, a.faucet_url, a.faucet_token_file, a.faucet_per_day)
+    if bool(a.human_check_url) != bool(a.human_check_secret_file):
+        sys.exit("--human-check-url and --human-check-secret-file go together")
+    if a.account_cap < 1:
+        sys.exit("--account-cap is at least 1")
+    human_check = HumanCheck(a.human_check_url, a.human_check_secret_file) if a.human_check_url else None
     host, _, port = a.listen.rpartition(":")
     service = Accounts(Ledger(a.ledger_url, a.token_file, token), a.user_id, Parties(a.state_file), allow, a.party_hint, a.synchronizer_id, a.topology_protocol_version,
-                       Limiter(a.accounts_per_day, DAY), Limiter(a.requests_per_minute, 60), Pending(limit=a.max_pending_topologies, per_owner=a.max_pending_per_client),
+                       day_limit(a.accounts_per_day, NETWORK_ACCOUNTS), Limiter(a.requests_per_minute, 60), Pending(limit=a.max_pending_topologies, per_owner=a.max_pending_per_client),
                        Pending(limit=a.max_pending_prepared, per_owner=a.max_pending_per_client, per_group=a.max_pending_per_account), chain, open_limits,
-                       Limiter(a.executes_per_account_day, DAY), Limiter(a.executes_per_client_day, DAY), Limiter(a.executes_per_day, DAY),
-                       Limiter(a.traffic_per_day, DAY), a.max_transaction_traffic, Limiter(a.accounts_per_day_total, DAY),
-                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), public_relay_rate=Limiter(a.public_registry_requests_per_minute, 60), public_relay_total=Limiter(a.public_registry_requests_per_minute_total, 60), registries=registries, faucet=faucet)
+                       day_limit(a.executes_per_account_day, ACCOUNT_SENDS), day_limit(a.executes_per_client_day, NETWORK_SENDS), day_limit(a.executes_per_day, ALL_SENDS),
+                       day_limit(a.traffic_per_day, ALL_SENDS), a.max_transaction_traffic, day_limit(a.accounts_per_day_total, ALL_ACCOUNTS),
+                       account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), public_relay_rate=Limiter(a.public_registry_requests_per_minute, 60), public_relay_total=Limiter(a.public_registry_requests_per_minute_total, 60), registries=registries, faucet=faucet,
+                       creates_net=day_limit(a.accounts_per_network_day, NETWORK_ACCOUNTS), per_net=day_limit(a.executes_per_network_day, NETWORK_SENDS), take_backs=day_limit(a.take_backs_per_day, TAKE_BACKS_ALL), take_back_traffic=day_limit(a.take_back_traffic_per_day, TAKE_BACKS_ALL),
+                       public_relay_net=Limiter(a.public_registry_requests_per_minute_network, 60), account_cap=a.account_cap, human_check=human_check)
     try:
         service.load_rights(force=True)
     except HttpError as e:

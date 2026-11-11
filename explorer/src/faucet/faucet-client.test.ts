@@ -55,6 +55,7 @@ describe("request", () => {
   it("copes with a 429 that has no usable wait or no reason", async () => {
     expect(await client(() => json(429, { error: "x", reason: "address" }, { "Retry-After": "soon" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", waitSeconds: null });
     expect(await client(() => json(429, { error: "x" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", which: "hour" });
+    expect(await client(() => json(429, { error: "x", reason: "net" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", which: "ip" });
   });
   it("tells a full line from other 503s, and a failed human check from other 403s", async () => {
     expect(await client(() => json(503, { error: "full", reason: "queue" }, { "Retry-After": "30" })).faucet.request(ADDRESS)).toEqual({ kind: "full", waitSeconds: 30, message: "full" });

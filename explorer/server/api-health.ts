@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { accountsRow, readUsage } from "./accounts-health.ts";
 import type { Faucet } from "./faucet.ts";
 import { API_INTERVAL_SECONDS, apiRowId } from "./health.ts";
 import { setHealth, type HealthRow } from "./indexer/health.ts";
@@ -20,6 +21,8 @@ export interface ApiHealthDeps {
   pool: Pool; instance: string;
   reth: Pick<Reth, "block">; ledger: Pick<Ledger, "ledgerEnd">;
   faucet?: Pick<Faucet, "on" | "isLeading" | "info" | "oldestQueued">; tracker?: Pick<Tracker, "isLeading" | "stats">;
+  /** The account service's `/healthz` (on this machine): its shared ceilings are read into the `accounts` row. Absent: no such row. */
+  accounts?: { url: string; fetch?: typeof fetch };
   now?: () => number; probeTimeoutMs?: number;
 }
 
@@ -29,7 +32,7 @@ export interface ApiHealthDeps {
  * every few seconds from a timer, in the background; `/api/health` only reads them, so it answers at once even when reth or Canton hang, and a timer that has
  * stopped shows as stale rows. The probes run side by side, each with its own short timeout.
  */
-export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker, now = Date.now, probeTimeoutMs = PROBE_TIMEOUT_MS }: ApiHealthDeps) {
+export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker, accounts, now = Date.now, probeTimeoutMs = PROBE_TIMEOUT_MS }: ApiHealthDeps) {
   let last = -Infinity;
   let running: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -69,6 +72,10 @@ export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker,
         detail: why.join("; ") || null,
       });
     }
+    if (accounts) {
+      // The row is shared by the instances: each writes what it read, and the last write stands. A service that cannot be read is a degraded row, never a failed probe of this instance.
+      out.push(accountsRow(await probe(readUsage(accounts.url, accounts.fetch, probeTimeoutMs)).then((r) => r, (e) => ({ error: reason(e) }))));
+    }
     if (tracker?.isLeading()) {
       const s = tracker.stats();
       out.push({
@@ -89,6 +96,8 @@ export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker,
         await pool.query("delete from health_checks where check_id like 'api/%' and checked_at < now() - make_interval(mins => $1)", [GONE_AFTER_MINUTES]);
         // A faucet that has been turned off must not leave its row to go stale for ever.
         if (faucet && !faucet.on) await pool.query("delete from health_checks where check_id = 'faucet'");
+        // And one for the account service that is no longer named.
+        if (!accounts) await pool.query("delete from health_checks where check_id = 'accounts'");
         last = now();
       } catch (e) {
         console.error(`health: cannot write this instance's checks: ${reason(e)}`);

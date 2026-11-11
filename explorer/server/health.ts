@@ -23,6 +23,11 @@ export interface CheckSpec {
   intervalSeconds?: number;
   /** What a row that is not refreshed counts as. */
   stale?: Status;
+  /**
+   * The row may say `down` (a failure to act on), and keeps that word, but the overall word and the HTTP status count it as `degraded` at most: the problem is a limit about to be reached
+   * somewhere else (the account service's shared ceilings), and this instance still serves everything it serves.
+   */
+  advisory?: boolean;
 }
 
 /** How many of its own intervals a row may go without a refresh. */
@@ -60,6 +65,8 @@ const SPECS: Record<string, CheckSpec> = {
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
   faucet: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
+  // How full the account service's shared ceilings and the participant's account cap are (written by every instance that is given the service's address): degraded from 60%, down from 90%.
+  accounts: { role: "api", worst: "down", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded", advisory: true },
 };
 const API_INSTANCE: CheckSpec = { role: "api", worst: "down", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" };
 const VERIFIER: CheckSpec = { role: "verifier", worst: "degraded", intervalSeconds: 15, stale: "degraded" };
@@ -133,7 +140,7 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     const held = RANK[written] > RANK[spec.worst] ? spec.worst : written;
     const capped = stale ? worse(held, spec.stale ?? spec.worst) : held;
     const owner = instanceOf(r.id);
-    const elsewhere = spec.role === "api" && (owner === null || owner !== instance) && capped === "down";
+    const elsewhere = !spec.advisory && spec.role === "api" && (owner === null || owner !== instance) && capped === "down";
     const status: Status = elsewhere ? "degraded" : capped;
     const who = spec.role === "indexer" ? "the indexer" : spec.role === "verifier" ? "the verifier" : "the API";
     const detail = stale
@@ -159,7 +166,8 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
   // The names of what is wrong follow the order of the rows, then the checks that have no row; the list of checks is then put in order by id.
   const problems = checks.filter((c) => c.status !== "ok").map((c) => `${c.id}: ${c.detail ?? c.status}`);
   checks.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const status = checks.reduce<Status>((w, c) => worse(w, c.status), "ok");
+  // An advisory row that says `down` counts as `degraded` here: it is listed and named in `problems`, and it does not take the instance out of service.
+  const status = checks.reduce<Status>((w, c) => worse(w, specOf(c.id).advisory && c.status === "down" ? "degraded" : c.status), "ok");
   return { status, checks, problems, down: status === "down" };
 }
 

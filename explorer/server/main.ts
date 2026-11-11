@@ -41,7 +41,7 @@ try {
   // with the faucet's key when there is one and otherwise a key made for this run.
   const verify = storage.pool ? createVerifyApi({ pool: storage.pool, queue: new JobQueue(storage.pool), clientHash: clientHasher(config.faucet.clientKeyFile ? loadClientKey(config.faucet.clientKeyFile) : randomBytes(32)), probe: { storageAt: reth.storageAt, call: reth.callAt, code: reth.codeAt } }) : undefined;
   // Each API instance writes its own health rows (design 6.5). The name is EXPLORER_INSTANCE, or the host's name.
-  const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker }) : undefined;
+  const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker, ...(config.accountsHealthUrl ? { accounts: { url: config.accountsHealthUrl } } : {}) }) : undefined;
   const api = createApi({ config, ...(rpc ? { rpc: rpc.handler } : {}), ...(verify ? { verify } : {}), reth, ledger, chain, faucet, tracker, ...(health ? { health } : {}), ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), ...(storage.etherscanRest ? { etherscanRest: storage.etherscanRest } : {}), ...(storage.statsRest ? { stats: storage.statsRest } : {}), live: Boolean(storage.pool && config.database) });
   // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
   const hub = createStreamHub();

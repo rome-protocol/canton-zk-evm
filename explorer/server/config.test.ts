@@ -42,7 +42,7 @@ describe("settings", () => {
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", ledgerTokenFile: null, pollMs: 2000,
     });
     expect(c.database).toBeNull();
-    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
+    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, perNetMax: 10, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
     expect(c.captcha).toBeNull();
   });
 
@@ -50,6 +50,13 @@ describe("settings", () => {
     expect(load().networkName).toBeNull();
     expect(load({ NETWORK_NAME: "DevNet" }).networkName).toBe("DevNet");
     expect(load({ NETWORK_NAME: "  " }).networkName).toBeNull();
+  });
+
+  it("reads the account service's limits only when ACCOUNTS_HEALTH_URL gives its address", () => {
+    expect(load().accountsHealthUrl).toBeNull();
+    expect(load({ ACCOUNTS_HEALTH_URL: "  " }).accountsHealthUrl).toBeNull();
+    expect(load({ ACCOUNTS_HEALTH_URL: "http://127.0.0.1:8081/healthz" }).accountsHealthUrl).toBe("http://127.0.0.1:8081/healthz");
+    expect(() => load({ ACCOUNTS_HEALTH_URL: "127.0.0.1:8081" })).toThrow(/ACCOUNTS_HEALTH_URL must be an http or https address/);
   });
 
   it("names no twin registry service until TWIN_REGISTRY_URL gives its address", () => {
@@ -97,9 +104,10 @@ describe("settings", () => {
   });
 
   it("takes the faucet's limits, batch, line and state file from the environment", () => {
-    const c = load({ FAUCET_PER_IP_SECONDS: "60", FAUCET_MAX_PER_HOUR: "100", FAUCET_BATCH: "10", FAUCET_QUEUE_MAX: "20", FAUCET_STATE_FILE: "/data/faucet.json" });
-    expect(c.faucet).toMatchObject({ perIpSeconds: 60, maxPerHour: 100, batch: 10, queueMax: 20, stateFile: "/data/faucet.json" });
-    for (const name of ["FAUCET_PER_IP_SECONDS", "FAUCET_MAX_PER_HOUR", "FAUCET_BATCH", "FAUCET_QUEUE_MAX"]) {
+    expect(load().faucet.perNetMax).toBe(10);
+    const c = load({ FAUCET_PER_IP_SECONDS: "60", FAUCET_PER_NET_MAX: "4", FAUCET_MAX_PER_HOUR: "100", FAUCET_BATCH: "10", FAUCET_QUEUE_MAX: "20", FAUCET_STATE_FILE: "/data/faucet.json" });
+    expect(c.faucet).toMatchObject({ perIpSeconds: 60, perNetMax: 4, maxPerHour: 100, batch: 10, queueMax: 20, stateFile: "/data/faucet.json" });
+    for (const name of ["FAUCET_PER_IP_SECONDS", "FAUCET_PER_NET_MAX", "FAUCET_MAX_PER_HOUR", "FAUCET_BATCH", "FAUCET_QUEUE_MAX"]) {
       expect(() => load({ [name]: "0" })).toThrow(name);
       expect(() => load({ [name]: "many" })).toThrow(name);
     }

@@ -1162,13 +1162,12 @@ class Quota(Case):
 
     def test_new_accounts_have_a_global_cap_a_day(self):
         self.assertEqual(A.Accounts(None, "svc", None, []).new_total.count, 200)
-        self.start(new_total=A.Limiter(1, DAY), creates=A.Limiter(5, DAY))
+        self.start(new_total=A.day_limit(1, A.ALL_ACCOUNTS), creates=A.Limiter(5, DAY))
         self.assertEqual(self.make_account()[0], 200)
         self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "rome::1220" + "ef" * 32, "publicKeyFingerprint": "1220" + "ef" * 32,
                                                                            "topologyTransactions": ["t"], "multiHash": "bQ=="})
-        _, t2, _ = self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})
-        status, _, headers = self.req("POST", "/accounts/v1/allocate", {"blob": t2["blob"], "signature": self.sig(t2["multiHash"], OTHER_SEED)})
-        self.assertEqual(status, 429)
+        status, out, headers = self.req("POST", "/accounts/v1/topology", {"publicKey": OTHER_KEY})   # said now, before the person signs
+        self.assertEqual((status, out["code"]), (429, "accounts_all_full"))
         self.assertTrue(int(headers["retry-after"]) > 0)
         self.assertEqual(len(self.calls_to("/external/allocate")), 1)
 
@@ -1287,7 +1286,8 @@ class Upkeep(Case):
         self.assertTrue(started.wait(10))
         self.assertTrue(self.service.health()["ok"])   # at once: the last answer, not a wait for the refresh
         release.set(); refresh.join(10)
-        self.assertEqual(self.service.health(), {"ok": False, "error": "down"})
+        h = self.service.health()
+        self.assertEqual((h["ok"], h["error"]), (False, "down"))
 
     def test_expired_entries_wait_for_the_sweep(self):
         now = [0.0]
@@ -1308,7 +1308,8 @@ class Limits(Case):
         self.start(rate=A.Limiter(2, 60))
         statuses = [self.req("GET", "/accounts/v1/holdings/x")[0] for _ in range(3)]
         self.assertEqual(statuses, [404, 404, 429])
-        self.assertEqual(self.req("GET", "/healthz")[1], {"ok": True, "accounts": 0})
+        health = self.req("GET", "/healthz")[1]
+        self.assertEqual((health["ok"], health["accounts"]), (True, 0))
 
     def test_the_client_is_the_address_the_proxy_wrote(self):
         self.http.shutdown()
@@ -1992,6 +1993,355 @@ class Config(unittest.TestCase):
 
     def test_the_built_in_list_is_well_formed(self):
         self.assertTrue(all(A.ALLOW_ENTRY.match(e) for e in A.DEFAULT_ALLOW))
+
+
+SEEDS = [bytes(range(i, i + 32)) for i in range(12)]
+
+
+class Behind(Case):
+    """Clients behind a reverse proxy, each with an address of its own (X-Real-IP): the limits that count a client by its network (an IPv4 address, an IPv6 /64, an IPv6 /48), and what a refusal says."""
+    def proxied(self, **kw):
+        self.start(**kw)
+        self.http.shutdown()
+        self.http = A.make_server(self.service, "127.0.0.1", 0, "X-Real-IP", 1, A.TRUSTED_ADDRESSES)
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+
+    def at(self, ip, method, path, body=None, **kw):
+        return self.req(method, path, body, headers={"X-Real-IP": ip}, **kw)
+
+    def open_account(self, ip, i):
+        """A new account from the key of SEEDS[i], made by a client at `ip`; the topology's answer when it is refused, else the allocate's."""
+        seed = SEEDS[i]
+        party = "rome::1220" + ("%02x" % (i + 16)) * 32
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": party, "publicKeyFingerprint": party.split("::")[1], "topologyTransactions": ["t"], "multiHash": "bQ=="})
+        status, t, headers = self.at(ip, "POST", "/accounts/v1/topology", {"publicKey": base64.b64encode(public_key(seed)).decode()})
+        if status != 200:
+            return status, t, headers
+        return self.at(ip, "POST", "/accounts/v1/allocate", {"blob": t["blob"], "signature": self.sig(t["multiHash"], seed)})
+
+    def create(self):
+        return {"party": PARTY, "commands": [{"CreateCommand": {"templateId": ACCEPT, "createArguments": {"party": PARTY, **CHAIN}}}]}
+
+    def send_from(self, ip, body=None):
+        """Prepare and execute from a client at `ip`: the execute's answer."""
+        _, p, _ = self.at(ip, "POST", "/accounts/v1/prepare", body or self.create())
+        return self.at(ip, "POST", "/accounts/v1/execute", self.execute_body(p))
+
+
+class NewAccountLimits(Behind):
+    def test_new_accounts_are_counted_per_ipv6_48_as_well_as_per_64(self):
+        self.proxied(creates=A.day_limit(5, A.NETWORK_ACCOUNTS), creates_net=A.day_limit(2, A.NETWORK_ACCOUNTS))
+        self.assertEqual([self.open_account(f"2001:db8:1:{n}::1", n)[0] for n in (1, 2)], [200, 200])   # two /64s of one /48
+        status, out, headers = self.open_account("2001:db8:1:3::1", 3)   # a third /64 of it
+        self.assertEqual((status, out["code"]), (429, "accounts_network_full"))
+        self.assertGreater(int(headers["retry-after"]), 0)
+        self.assertEqual(self.open_account("2001:db8:2:1::1", 4)[0], 200)   # another /48 is not held back
+        self.assertEqual(len(self.calls_to("/external/allocate")), 3)
+
+    def test_allocate_counts_per_48_too_for_a_topology_handed_out_before(self):
+        self.proxied(creates=A.day_limit(5, A.NETWORK_ACCOUNTS), creates_net=A.day_limit(1, A.NETWORK_ACCOUNTS))
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": "rome::1220" + "11" * 32, "publicKeyFingerprint": "1220" + "11" * 32, "topologyTransactions": ["t"], "multiHash": "bQ=="})
+        _, t, _ = self.at("2001:db8:7:9::1", "POST", "/accounts/v1/topology", {"publicKey": base64.b64encode(public_key(SEEDS[5])).decode()})
+        self.assertEqual(self.open_account("2001:db8:7:1::1", 6)[0], 200)
+        status, out, _ = self.at("2001:db8:7:2::1", "POST", "/accounts/v1/allocate", {"blob": t["blob"], "signature": self.sig(t["multiHash"], SEEDS[5])})
+        self.assertEqual((status, out["code"]), (429, "accounts_network_full"))
+        self.assertEqual(len(self.calls_to("/external/allocate")), 1)
+
+    def topology_of(self, ip, i):
+        """The topology step alone, for the key of SEEDS[i], from a client at `ip`: no second signature is made and no allocate follows."""
+        party = "rome::1220" + ("%02x" % (i + 16)) * 32
+        self.ledger.fail["/v2/parties/external/generate-topology"] = (200, {"partyId": party, "publicKeyFingerprint": party.split("::")[1], "topologyTransactions": ["t"], "multiHash": "bQ=="})
+        return self.at(ip, "POST", "/accounts/v1/topology", {"publicKey": base64.b64encode(public_key(SEEDS[i])).decode()})
+
+    def refused_at_topology(self, limits, first, second, code):
+        """One budget is spent by an account made from `first`; the topology step, asked from `second` (held back by that budget only) for a new key, says no itself: no blob, and no second signature is asked for."""
+        self.proxied(**limits)
+        self.assertEqual(self.open_account(first, 1)[0], 200)
+        status, out, headers = self.topology_of(second, 2)
+        self.assertEqual((status, out["code"]), (429, code))
+        self.assertNotIn("blob", out)
+        self.assertGreater(int(headers["retry-after"]), 0)
+        self.assertEqual(len(self.calls_to("/external/allocate")), 1)
+
+    def test_topology_refuses_a_spent_64_budget_itself(self):
+        self.refused_at_topology(dict(creates=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:1:1::1", "2001:db8:1:1::2", "accounts_network_full")
+
+    def test_topology_refuses_a_spent_48_budget_itself(self):
+        self.refused_at_topology(dict(creates_net=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:2:1::1", "2001:db8:2:2::1", "accounts_network_full")
+
+    def test_topology_refuses_a_spent_budget_for_everyone_itself(self):
+        self.refused_at_topology(dict(new_total=A.day_limit(1, A.ALL_ACCOUNTS)), "203.0.113.1", "198.51.100.1", "accounts_all_full")
+
+    def refused_again_when_cached(self, limits, ip, code):
+        """A topology handed out while the budget had room is not handed out again once the budget is full."""
+        self.proxied(**limits)
+        status, handed, _ = self.topology_of(ip, 3)
+        self.assertEqual((status, handed["exists"]), (200, False))
+        self.assertEqual(self.open_account(ip, 4)[0], 200)   # another account of the same client uses the budget up
+        status, out, _ = self.topology_of(ip, 3)   # the same key asks again: the cached blob
+        self.assertEqual((status, out["code"]), (429, code))
+        self.assertNotIn("blob", out)
+
+    def test_a_cached_topology_is_refused_again_once_the_64_budget_is_full(self):
+        self.refused_again_when_cached(dict(creates=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:3:1::1", "accounts_network_full")
+
+    def test_a_cached_topology_is_refused_again_once_the_48_budget_is_full(self):
+        self.refused_again_when_cached(dict(creates_net=A.day_limit(1, A.NETWORK_ACCOUNTS)), "2001:db8:4:1::1", "accounts_network_full")
+
+    def test_a_cached_topology_is_refused_again_once_everyones_budget_is_full(self):
+        self.refused_again_when_cached(dict(new_total=A.day_limit(1, A.ALL_ACCOUNTS)), "203.0.113.9", "accounts_all_full")
+
+    def test_the_refusal_says_which_limit_is_shared_and_when_to_come_back(self):
+        self.proxied(creates=A.day_limit(1, A.NETWORK_ACCOUNTS), new_total=A.day_limit(2, A.ALL_ACCOUNTS))
+        self.assertEqual(self.open_account("203.0.113.5", 1)[0], 200)
+        status, out, headers = self.open_account("203.0.113.5", 2)
+        self.assertEqual(status, 429)
+        self.assertRegex(out["error"], r"^This network has opened today's share of new accounts; try again after \d\d:\d\d UTC or from another network\.$")
+        self.assertEqual(out["code"], "accounts_network_full")
+        self.assertNotIn("retryAfter", out)
+        self.assertGreater(int(headers["retry-after"]), 0)
+        self.assertEqual(self.open_account("203.0.113.6", 3)[0], 200)
+        status, out, _ = self.open_account("203.0.113.7", 4)   # everyone's share of the day is used
+        self.assertRegex(out["error"], r"^Today's new accounts are all taken; try again after \d\d:\d\d UTC\.$")
+        self.assertEqual((status, out["code"]), (429, "accounts_all_full"))
+
+    def test_the_time_in_the_words_is_when_the_key_may_try_again(self):
+        limit = A.Limiter(1, 3600, clock=lambda: 0, wall=lambda: 1_800_000_000, code="c", message="after {time}")   # 2027-01-15T08:00:00Z
+        limit.hit("k")
+        with self.assertRaises(A.HttpError) as e:
+            limit.hit("k")
+        self.assertEqual((e.exception.status, e.exception.message, e.exception.extra["retryAfter"], e.exception.extra["code"]), (429, "after 09:00 UTC", 3601, "c"))
+        with self.assertRaises(A.HttpError) as e:
+            A.Limiter(0, 60).check("k")
+        self.assertEqual((e.exception.message, "code" in e.exception.extra), ("too many requests: try again later", False))
+
+    def test_a_person_who_has_an_account_is_not_told_the_new_account_limits(self):
+        self.proxied(new_total=A.day_limit(1, A.ALL_ACCOUNTS))
+        self.assertEqual(self.open_account("1.1.1.1", 1)[0], 200)
+        key = base64.b64encode(public_key(SEEDS[1])).decode()
+        status, out, _ = self.at("2.2.2.2", "POST", "/accounts/v1/topology", {"publicKey": key})   # the same key, from another device, with the day's accounts all made
+        self.assertEqual((status, out["exists"]), (200, True))
+        self.assertEqual(self.open_account("2.2.2.2", 2)[1]["code"], "accounts_all_full")
+
+    def test_a_lost_state_line_is_restored_whatever_the_new_account_limits_say(self):
+        self.proxied(new_total=A.day_limit(1, A.ALL_ACCOUNTS))
+        self.service.new_total.hit("all")   # the day's accounts are all made
+        self.ledger.rights.append("rome::1220" + "10" * 32)   # the participant lists the party of key 0, the state file has no line for it
+        self.service.load_rights(force=True)   # (the service reads the rights at start)
+        status, out, _ = self.open_account("1.1.1.1", 0)
+        self.assertEqual((status, out.get("restored")), (200, True))
+        self.assertEqual(self.calls_to("/external/allocate"), [])
+
+    def test_the_take_back_ceilings_are_worded_as_take_backs_by_default_and_in_main(self):
+        service = A.Accounts(None, "svc", None, [])
+        self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
+        self.assertEqual((service.overall.code, service.traffic.code), ("send_all_full", "send_all_full"))
+        built = {}
+
+        def stop(service, *args, **kw):   # main() builds the service and hands it to the server: take it there
+            built["service"] = service
+            raise SystemExit(0)
+        argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--take-backs-per-day", "123", "--take-back-traffic-per-day", "456"]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", stop), self.assertRaises(SystemExit):
+            A.main(argv)
+        service = built["service"]
+        self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
+        self.assertEqual((service.take_backs.count, service.take_back_traffic.count), (123, 456))
+        self.assertEqual((service.overall.code, service.traffic.code), ("send_all_full", "send_all_full"))
+
+    def test_the_default_limits_are_per_64_per_48_and_everyone(self):
+        service = A.Accounts(None, "svc", None, [])
+        self.assertEqual((service.creates.count, service.creates_net.count, service.new_total.count), (3, A.NEW_ACCOUNTS_PER_NETWORK, 200))
+
+
+class ShareLimits(Behind):
+    def test_every_per_client_budget_has_a_48_bucket(self):
+        self.proxied(per_net=A.day_limit(2, A.NETWORK_SENDS))
+        self.assertEqual(self.make_account()[0], 200)
+        self.assertEqual([self.send_from(f"2001:db8:5:{n}::1")[0] for n in (1, 2)], [200, 200])
+        status, out, _ = self.send_from("2001:db8:5:3::1")   # a third /64 of the same /48
+        self.assertEqual((status, out["code"]), (429, "send_network_full"))
+        self.assertIn("This network has used today's share of Bridge transactions; try again after ", out["error"])
+        self.service.prepared.items.clear()   # the refused one kept its entry
+        self.assertEqual(self.send_from("2001:db8:6:1::1")[0], 200)   # another /48
+        self.assertEqual(self.send_from("198.51.100.4")[0], 200)
+
+    def test_the_public_relay_has_a_48_bucket(self):
+        outside = FakeOutside()
+        try:
+            self.proxied(registries={ADMIN: (outside.url, None)}, public_relay_net=A.Limiter(2, 60))
+            path = f"/accounts/v1/public-registry/{ADMIN}/allocation-factory"
+            statuses = [self.at(f"2001:db8:8:{n}::1", "POST", path, {"x": 1})[0] for n in (1, 2, 3)]   # three /64s of one /48
+            self.assertEqual(statuses, [200, 200, 429])
+            self.assertEqual(self.at("2001:db8:9:1::1", "POST", path, {"x": 1})[0], 200)
+        finally:
+            outside.server.shutdown()
+
+    def transfer_offer(self, cid):
+        self.ledger.transfers.append((cid, {"transfer": {"sender": PARTY, "receiver": "other::1220" + "99" * 32, "amount": "3.0", "instrumentId": {"admin": "reg::1", "id": "TKB"},
+                                                         "requestedAt": "2026-11-09T10:00:00Z", "executeBefore": "2099-01-01T00:00:00Z"}}))
+
+    def exercise(self, ip, choice, cid):
+        return self.send_from(ip, {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": A.TRANSFER_INSTRUCTION, "contractId": cid, "choice": choice, "choiceArgument": {}}}]})
+
+    def test_take_backs_and_accepts_are_not_stopped_by_the_ceilings_that_creates_fill(self):
+        self.proxied(overall=A.day_limit(4, A.ALL_SENDS), traffic=A.day_limit(3500, A.ALL_SENDS), take_backs=A.day_limit(3, A.TAKE_BACKS_ALL))
+        self.assertEqual(self.make_account()[0], 200)   # an allocation counts: 1 of 4
+        offers = ["00" + "a%d" % i * 40 for i in range(3)]
+        for cid in offers:
+            self.transfer_offer(cid)
+        self.assertEqual([self.send_from("1.1.1.%d" % n)[0] for n in (1, 2, 3)], [200, 200, 200])   # with the allocation they fill the executes ceiling
+        status, out, _ = self.send_from("1.1.1.9")
+        self.assertEqual((status, out["code"]), (429, "send_all_full"))
+        # the take-backs and the accept go through all the same, and each counts against the take-backs' own ceiling
+        self.assertEqual(self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[0])[0], 200)
+        self.assertEqual(self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[1])[0], 200)
+        self.assertEqual(self.exercise("1.1.1.9", "TransferInstruction_Accept", offers[2])[0], 200)
+        self.assertEqual((self.service.overall.used("all"), self.service.take_backs.used("all")), (4, 3))
+        status, out, headers = self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[0])   # their own ceiling is a ceiling, and it says so in its own words
+        self.assertEqual((status, out["code"]), (429, "take_backs_all_full"))
+        self.assertNotIn("still work", out["error"])
+        self.assertIn("take-backs and accepts are all used for everyone", out["error"])
+
+    def test_take_backs_have_a_traffic_share_of_their_own(self):
+        self.proxied(traffic=A.day_limit(1, A.ALL_SENDS), take_back_traffic=A.day_limit(2500, A.TAKE_BACKS_ALL))   # the creates' traffic share is spent already: take-backs use their own
+        self.assertEqual(self.make_account()[0], 200)
+        offers = ["00" + "d%d" % i * 40 for i in range(3)]
+        for cid in offers:
+            self.transfer_offer(cid)
+        self.assertEqual([self.exercise("1.1.1.9", "TransferInstruction_Withdraw", cid)[0] for cid in offers[:2]], [200, 200])   # 1000 bytes each
+        status, out, _ = self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[2])   # a third would pass their 2500
+        self.assertEqual((status, out["code"]), (429, "take_backs_all_full"))
+        self.assertEqual((self.service.traffic.used("all"), self.service.take_back_traffic.used("all")), (0, 2000))
+        status, out, _ = self.send_from("1.1.1.8")   # a create is still held to the creates' traffic share
+        self.assertEqual((status, out["code"]), (429, "send_all_full"))
+
+    def test_a_take_back_still_counts_against_the_account_and_the_client(self):
+        self.proxied(per_account=A.day_limit(2, A.ACCOUNT_SENDS))
+        self.assertEqual(self.make_account()[0], 200)
+        self.transfer_offer("00" + "b1" * 40)
+        self.assertEqual([self.exercise("1.1.1.1", "TransferInstruction_Withdraw", "00" + "b1" * 40)[0] for _ in range(2)], [200, 200])
+        status, out, _ = self.exercise("1.1.1.1", "TransferInstruction_Withdraw", "00" + "b1" * 40)
+        self.assertEqual((status, out["code"]), (429, "send_account_full"))
+
+    def test_the_exempt_choices_are_the_take_backs_and_the_accept(self):
+        self.assertEqual(set(A.SHARED_EXEMPT), {A.ALLOCATION_WITHDRAW, A.TRANSFER_WITHDRAW, A.DEPOSIT_ARCHIVE, A.REDEEM_ARCHIVE, A.TRANSFER_ACCEPT})
+        self.assertTrue(set(A.SHARED_EXEMPT) <= set(A.DEFAULT_ALLOW))
+        self.assertNotIn(A.TRANSFER_ACCEPT.replace("Accept", "Reject"), A.SHARED_EXEMPT)
+
+    def test_health_says_how_full_each_shared_ceiling_is(self):
+        self.proxied(account_cap=5, faucet=A.Faucet("20.0", "http://127.0.0.1:9", os.path.join(self.dir.name, "none"), per_day=7))
+        self.assertEqual(self.make_account()[0], 200)
+        _, out, _ = self.req("GET", "/healthz")
+        self.assertEqual((out["ok"], out["accounts"], out["accountCap"]), (True, 1, 5))
+        self.assertEqual(out["ceilings"]["newAccountsDay"], {"used": 1, "limit": 200})
+        self.assertEqual(out["ceilings"]["executesDay"], {"used": 1, "limit": 2000})   # the allocation
+        self.assertEqual(out["ceilings"]["faucetDay"], {"used": 0, "limit": 7})
+        self.assertEqual(set(out["ceilings"]), {"newAccountsDay", "executesDay", "trafficDay", "takeBacksDay", "takeBackTrafficDay", "publicRelayMinute", "waitingTopologies", "waitingTransactions", "faucetDay"})
+        self.assertNotIn(PARTY, json.dumps(out))   # counts only
+        self.ledger.fail["/v2/version"] = (503, {})
+        self.service.health_at = None
+        self.assertEqual(self.req("GET", "/healthz")[1]["ok"], False)
+        self.assertEqual(self.req("GET", "/healthz")[1]["ceilings"]["newAccountsDay"]["used"], 1)   # still said when the participant is down
+
+    def test_health_counts_the_rights_the_state_file_missed(self):
+        self.assertEqual(self.make_account()[0], 200)
+        self.ledger.rights.append("lost::1220" + "77" * 32)
+        self.service.load_rights(force=True)
+        self.assertEqual(self.req("GET", "/healthz")[1]["accounts"], 2)
+
+    def test_the_faucets_refusals_say_which_limit(self):
+        with unittest.mock.patch.object(A, "outside_post", return_value=COMPLETED):
+            f = A.Faucet("20.0", "https://wallet.example", "unused")
+            f.grant("p1", "1.1.1.1")
+            for party, client, code in (("p1", "2.2.2.2", "faucet_account_full"), ("p2", "1.1.1.1", "faucet_network_full")):
+                with self.assertRaises(A.HttpError) as e:
+                    f.grant(party, client)
+                self.assertEqual(e.exception.extra["code"], code)
+            self.assertIn("or from another network", e.exception.message)
+
+
+class HumanChecks(OutsideCase):
+    PATH = "/turnstile/v0/siteverify"
+
+    def with_check(self, **kw):
+        check = A.HumanCheck(self.outside.url + self.PATH, self.bearer_file)
+        self.start(human_check=check, **kw)
+        return check
+
+    def topology(self, **body):
+        return self.req("POST", "/accounts/v1/topology", {"publicKey": KEY, **body})
+
+    def test_topology_needs_a_token_that_passes_when_a_check_is_set(self):
+        self.outside.answer = {"success": True}
+        self.with_check()
+        status, out, _ = self.topology()
+        self.assertEqual((status, out["error"]), (403, "human_check_needed"))
+        self.assertEqual((self.calls_to("/generate-topology"), self.outside.calls), ([], []))   # nothing was asked of the participant or of the check
+        status, out, _ = self.topology(captcha="token-1")
+        self.assertEqual((status, out["party"]), (200, PARTY))
+        [(path, body, auth, agent)] = self.outside.calls
+        self.assertEqual((path, auth, agent), (self.PATH, None, A.USER_AGENT))
+        self.assertEqual(sorted(body), ["remoteip", "response", "secret"])
+        self.assertEqual((body["response"], body["remoteip"], body["secret"] == HANDLE), ("token-1", "127.0.0.1", True))   # the secret is the file's, read for this check
+
+    def test_a_token_that_does_not_pass_is_refused_and_nothing_reaches_the_participant(self):
+        self.outside.answer = {"success": False, "error-codes": ["invalid-input-response"]}
+        self.with_check()
+        for body in ({"captcha": "bad"}, {"captcha": 5}, {"captcha": ""}, {"captcha": "x" * 3000}):
+            status, out, _ = self.topology(**body)
+            self.assertEqual((status, out["error"]), (403, "human_check_needed"), body)
+        self.assertEqual(self.calls_to("/generate-topology"), [])
+        self.outside.answer = {"success": "true"}   # not the boolean
+        self.assertEqual(self.topology(captcha="t")[0], 403)
+
+    def test_a_check_that_cannot_be_reached_lets_nobody_in(self):
+        self.outside.status = 500
+        self.with_check()
+        self.assertEqual(self.topology(captcha="t")[0], 502)
+        self.assertEqual(self.calls_to("/generate-topology"), [])
+
+    def test_allocate_needs_the_topologys_blob_which_only_a_checked_topology_makes(self):
+        self.outside.answer = {"success": True}
+        self.with_check()
+        _, t, _ = self.topology(captcha="t")
+        self.assertEqual(self.req("POST", "/accounts/v1/allocate", {"blob": t["blob"], "signature": self.sig(t["multiHash"])})[0], 200)
+        self.assertEqual(self.req("POST", "/accounts/v1/allocate", {"blob": "0" * 48, "signature": SIG})[0], 404)
+        self.assertEqual(len(self.outside.calls), 1)   # one check covers the pair
+
+    def test_the_blob_that_was_checked_is_handed_out_again_without_a_second_check(self):
+        self.outside.answer = {"success": True}
+        self.with_check()
+        first = self.topology(captcha="t")[1]
+        self.assertEqual(self.topology()[1]["blob"], first["blob"])
+        self.assertEqual(len(self.outside.calls), 1)
+
+    def test_failed_checks_are_counted_per_client_network_and_stop_the_calls(self):
+        self.outside.answer = {"success": False}
+        self.with_check(failures=A.Limiter(2, 60))
+        self.assertEqual([self.topology(captcha="t")[0] for _ in range(3)], [403, 403, 429])
+        self.assertEqual(len(self.outside.calls), 2)
+
+    def test_there_is_no_check_unless_it_is_set(self):
+        self.assertIsNone(A.Accounts(None, "svc", None, []).human_check)
+        self.assertEqual(self.topology()[0], 200)   # the default service: no token needed
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}):
+            argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(d, "s")]
+            for more in (["--human-check-url", "https://challenges.example/siteverify"], ["--human-check-secret-file", self.bearer_file]):
+                with self.assertRaises(SystemExit) as e:   # one without the other
+                    A.main(argv + more)
+                self.assertIn("go together", str(e.exception))
+            loose = os.path.join(d, "loose")
+            with open(loose, "w") as f:
+                f.write("s")
+            os.chmod(loose, 0o644)
+            with self.assertRaises(SystemExit) as e:
+                A.main(argv + ["--human-check-url", "https://challenges.example/siteverify", "--human-check-secret-file", loose])
+            self.assertIn("0600", str(e.exception))
+            with self.assertRaises(SystemExit) as e:   # http only on this machine
+                A.HumanCheck("http://challenges.example/siteverify", self.bearer_file)
+            self.assertIn("https", str(e.exception))
 
 
 if __name__ == "__main__":
