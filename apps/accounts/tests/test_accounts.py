@@ -2125,7 +2125,7 @@ class ShareLimits(Behind):
         return self.send_from(ip, {"party": PARTY, "commands": [{"ExerciseCommand": {"templateId": A.TRANSFER_INSTRUCTION, "contractId": cid, "choice": choice, "choiceArgument": {}}}]})
 
     def test_take_backs_and_accepts_are_not_stopped_by_the_ceilings_that_creates_fill(self):
-        self.proxied(overall=A.day_limit(4, A.ALL_SENDS), traffic=A.day_limit(3500, A.ALL_SENDS), take_backs=A.day_limit(3, A.ALL_SENDS))
+        self.proxied(overall=A.day_limit(4, A.ALL_SENDS), traffic=A.day_limit(3500, A.ALL_SENDS), take_backs=A.day_limit(3, A.TAKE_BACKS_ALL))
         self.assertEqual(self.make_account()[0], 200)   # an allocation counts: 1 of 4
         offers = ["00" + "a%d" % i * 40 for i in range(3)]
         for cid in offers:
@@ -2138,7 +2138,22 @@ class ShareLimits(Behind):
         self.assertEqual(self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[1])[0], 200)
         self.assertEqual(self.exercise("1.1.1.9", "TransferInstruction_Accept", offers[2])[0], 200)
         self.assertEqual((self.service.overall.used("all"), self.service.take_backs.used("all")), (4, 3))
-        status, out, _ = self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[0])   # their own ceiling is a ceiling
+        status, out, headers = self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[0])   # their own ceiling is a ceiling, and it says so in its own words
+        self.assertEqual((status, out["code"]), (429, "take_backs_all_full"))
+        self.assertNotIn("still work", out["error"])
+        self.assertIn("take-backs and accepts are all used for everyone", out["error"])
+
+    def test_take_backs_have_a_traffic_share_of_their_own(self):
+        self.proxied(traffic=A.day_limit(1, A.ALL_SENDS), take_back_traffic=A.day_limit(2500, A.TAKE_BACKS_ALL))   # the creates' traffic share is spent already: take-backs use their own
+        self.assertEqual(self.make_account()[0], 200)
+        offers = ["00" + "d%d" % i * 40 for i in range(3)]
+        for cid in offers:
+            self.transfer_offer(cid)
+        self.assertEqual([self.exercise("1.1.1.9", "TransferInstruction_Withdraw", cid)[0] for cid in offers[:2]], [200, 200])   # 1000 bytes each
+        status, out, _ = self.exercise("1.1.1.9", "TransferInstruction_Withdraw", offers[2])   # a third would pass their 2500
+        self.assertEqual((status, out["code"]), (429, "take_backs_all_full"))
+        self.assertEqual((self.service.traffic.used("all"), self.service.take_back_traffic.used("all")), (0, 2000))
+        status, out, _ = self.send_from("1.1.1.8")   # a create is still held to the creates' traffic share
         self.assertEqual((status, out["code"]), (429, "send_all_full"))
 
     def test_a_take_back_still_counts_against_the_account_and_the_client(self):
@@ -2162,7 +2177,7 @@ class ShareLimits(Behind):
         self.assertEqual(out["ceilings"]["newAccountsDay"], {"used": 1, "limit": 200})
         self.assertEqual(out["ceilings"]["executesDay"], {"used": 1, "limit": 2000})   # the allocation
         self.assertEqual(out["ceilings"]["faucetDay"], {"used": 0, "limit": 7})
-        self.assertEqual(set(out["ceilings"]), {"newAccountsDay", "executesDay", "trafficDay", "takeBacksDay", "publicRelayMinute", "waitingTopologies", "waitingTransactions", "faucetDay"})
+        self.assertEqual(set(out["ceilings"]), {"newAccountsDay", "executesDay", "trafficDay", "takeBacksDay", "takeBackTrafficDay", "publicRelayMinute", "waitingTopologies", "waitingTransactions", "faucetDay"})
         self.assertNotIn(PARTY, json.dumps(out))   # counts only
         self.ledger.fail["/v2/version"] = (503, {})
         self.service.health_at = None

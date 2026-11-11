@@ -25,9 +25,11 @@ describe("plain words for what the person can see", () => {
       expect(limit("send_network_full")).toMatch(/^This network has used today's share of Bridge transactions\. Try again after 17:02 UTC, or from another network\.$/);
       expect(limit("send_account_full")).toContain("This account has used today's Bridge transactions");
       expect(limit("send_all_full")).toContain("Taking back a deposit and accepting a transfer still work");
+      expect(limit("take_backs_all_full")).toBe("Today's take-backs and accepts are all used for everyone. Try again after 17:02 UTC.");
+      expect(limit("take_backs_all_full")).not.toContain("still work");
       expect(limit("faucet_network_full")).toContain("or from another network");
       expect(plainWords(new AccountsError("rate-limited", 429, "x", undefined, "accounts_all_full"))).toBe("Today's new Canton accounts are all taken. Try again tomorrow.");
-      for (const code of ["accounts_network_full", "accounts_all_full", "send_network_full", "send_account_full", "send_all_full", "faucet_account_full", "faucet_network_full", "faucet_all_full"]) {
+      for (const code of ["accounts_network_full", "accounts_all_full", "send_network_full", "send_account_full", "send_all_full", "take_backs_all_full", "faucet_account_full", "faucet_network_full", "faucet_all_full"]) {
         expect(limit(code), code).not.toMatch(TECHNICAL);
         expect(limit(code), code).not.toMatch(/Wait \d+ hours/);
       }

@@ -516,13 +516,25 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual([self.announce(str(i))[0] for i in range(3)], [200, 200, 200])
         status, out = self.announce("3")
         self.assertEqual(status, 429)
-        self.assertIn("this receiver has 3 lock announcements waiting", out["error"])
+        self.assertEqual(out["error"], "Too many moves to this Canton account are waiting. Try again in a few hours.")
         self.assertEqual(self.headers["Retry-After"], str(R.LOCK_PARTS_TTL))
         self.assertEqual(self.announce("0")[0], 200)   # one that is held is announced again at no cost
         self.assertEqual(self.announce("x", self.OTHER)[0], 200)   # another receiver has room of its own
         self.assertEqual(self.call("/twin/v1/lock-parts/" + R.lock_id(RECEIVER, "3"))[0], 404)   # nothing was kept
         self.now += R.LOCK_PARTS_TTL + 1   # they expire, and the room is back
         self.assertEqual(self.announce("3")[0], 200)
+
+    def test_one_network_cannot_fill_a_receivers_room_for_the_others(self):
+        self.start(header="X-Real-IP", parts={"per_receiver": 3, "per_client": 50})
+        for i in range(3):   # network A announces as many as a receiver may have from one network, for a receiver it does not own
+            self.assertEqual(self.announce(f"a{i}", ip="203.0.113.66")[0], 200)
+        self.assertEqual(self.announce("a3", ip="203.0.113.66")[0], 429)   # A has used its room for this receiver
+        self.assertEqual([self.announce(f"v{i}", ip="198.51.100.7")[0] for i in range(3)], [200, 200, 200])   # the receiver's own network still has all of its room
+        self.assertEqual(self.announce("v3", ip="198.51.100.7")[0], 429)
+        self.assertEqual(self.announce("a0", ip="198.51.100.7")[0], 200)   # an entry it holds, announced by another network, is no new one
+        self.now += R.LOCK_PARTS_TTL + 1   # all expire, and the rooms are back
+        self.assertEqual(self.announce("a3", ip="203.0.113.66")[0], 200)
+        self.assertEqual(self.registry.parts.by_receiver[(RECEIVER, "203.0.113.66")], 1)
 
     def test_a_client_network_holds_at_most_so_many_live_announcements_and_counts_by_its_48(self):
         self.accept_other()
@@ -531,7 +543,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.announce("b", self.OTHER, ip="2001:db8:1:2::7")[0], 200)   # another /64 of the same /48, another receiver
         status, out = self.announce("c", ip="2001:db8:1:3::9")   # a third /64
         self.assertEqual(status, 429)
-        self.assertIn("this network has 2 lock announcements waiting", out["error"])
+        self.assertEqual(out["error"], "This network has too many moves waiting. Try again in a few hours, or from another network.")
         self.assertEqual(self.announce("c", self.OTHER, ip="2001:db8:1:ffff::1")[0], 429)   # nor does another receiver help
         self.assertEqual(self.announce("a", ip="2001:db8:1:9::1")[0], 200)   # an entry it already holds is no new one
         self.assertEqual(self.announce("c", ip="2001:db8:2:1::1")[0], 200)   # another /48
@@ -549,15 +561,17 @@ class RegistryTest(unittest.TestCase):
         self.now += R.LOCK_PARTS_TTL + 1
         self.assertEqual(self.announce("c", ip="203.0.113.1")[0], 200)
         self.assertEqual(self.registry.parts.by_client["203.0.113.1"], 1)
-        self.assertEqual(self.registry.parts.by_receiver[RECEIVER], 1)
+        self.assertEqual(self.registry.parts.by_receiver[(RECEIVER, "203.0.113.1")], 1)
 
-    def test_an_entry_from_before_clients_were_kept_counts_for_its_receiver_only(self):
+    def test_an_entry_from_before_clients_were_kept_counts_for_no_network(self):
         lid = R.lock_id(RECEIVER, "old")
         with open(self.state, "w") as f:
             f.write(json.dumps({"lockId": lid, "receiver": RECEIVER, "ref": "old", "at": self.now, "acceptance": "acceptance-1"}) + "\n")
         self.start(header="X-Real-IP", parts={"per_client": 1, "per_receiver": 2})
+        self.assertEqual(self.registry.parts.by_client, {})   # it belongs to no network
         self.assertEqual(self.announce("a", ip="203.0.113.1")[0], 200)
-        self.assertEqual(self.announce("b", ip="203.0.113.2")[0], 429)   # the receiver has its two
+        self.assertEqual(self.announce("b", ip="203.0.113.2")[0], 200)
+        self.assertEqual(self.announce("c", ip="203.0.113.2")[0], 429)   # the network's own count is 1
         self.assertEqual(self.announce("old", ip="203.0.113.9")[0], 200)
 
     def test_the_ceiling_a_minute_per_client_network_and_over_all_of_them(self):
@@ -565,11 +579,20 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual([self.announce(str(i), ip="2001:db8:1:1::1")[0] for i in range(3)], [200, 200, 200])
         status, out = self.announce("x", ip="2001:db8:1:5::1")   # the same /48
         self.assertEqual(status, 429)
-        self.assertIn("too many lock announcements just now", out["error"])
+        self.assertEqual(out["error"], "Too many moves were started just now. Try again in a minute.")
         self.assertGreater(int(self.headers["Retry-After"]), 0)
         self.assertEqual([self.announce(str(i), ip="198.51.100.1")[0] for i in range(2)], [200, 200])   # 5 in all now
         self.assertEqual(self.announce("y", ip="198.51.100.77")[0], 429)   # the total's ceiling, for a client of its own
         self.assertEqual(self.announce("a", ip="2001:db8:1:1::1")[0], 429)
+
+    def test_junk_does_not_fill_the_ceiling_over_everyone(self):
+        self.start(header="X-Real-IP", announce_total=R.Rate(3))
+        for i in range(6):   # junk from six networks: refused for what it is, and not counted against what everyone shares
+            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": "x", "ref": "r"}, headers={"X-Real-IP": f"198.51.100.{i + 1}"})[0], 400)
+            self.assertEqual(self.call("/twin/v1/lock-parts", {"receiver": "stranger::1220" + "ab" * 32, "ref": "r"}, headers={"X-Real-IP": f"198.51.100.{i + 1}"})[0], 409)
+        self.assertEqual(self.registry.announce_total.used("all"), 0)
+        self.assertEqual([self.announce(str(i), ip="203.0.113.1")[0] for i in range(3)], [200, 200, 200])   # valid ones still count
+        self.assertEqual(self.announce("x", ip="203.0.113.2")[0], 429)
 
     def test_a_refused_announcement_counts_against_the_rate_too(self):
         self.start(header="X-Real-IP", announce_rate=R.Rate(3))

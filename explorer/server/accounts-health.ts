@@ -19,6 +19,7 @@ const WORDS: Record<string, string> = {
   executesDay: "transactions today",
   trafficDay: "traffic today",
   takeBacksDay: "take-backs and accepts today",
+  takeBackTrafficDay: "traffic of take-backs and accepts today",
   publicRelayMinute: "public registry requests this minute",
   waitingTopologies: "account set-ups waiting for a signature",
   waitingTransactions: "transactions waiting for a signature",
@@ -64,12 +65,13 @@ export function accountsRow(read: { ok: boolean; usage: AccountsUsage } | { erro
   const all: Record<string, Ceiling> = { accounts: { used: usage.accounts, limit: usage.accountCap }, ...usage.ceilings };
   const shares = Object.entries(all).map(([name, c]) => ({ name, ...c, share: c.used / c.limit }));
   const worst = Math.max(...shares.map((s) => s.share));
-  const status = worst >= ACCOUNTS_DOWN_AT ? "down" : worst >= ACCOUNTS_DEGRADED_AT ? "degraded" : "ok";
+  const full = worst >= ACCOUNTS_DOWN_AT ? "down" : worst >= ACCOUNTS_DEGRADED_AT ? "degraded" : "ok";
+  const status = full === "ok" && !read.ok ? "degraded" : full;   // a service that says it is not ok (it cannot reach its participant) is degraded at the least
   const over = shares.filter((s) => s.share >= ACCOUNTS_DEGRADED_AT).sort((a, b) => b.share - a.share);
   return {
     id: "accounts", status,
     value: { accounts: usage.accounts, accountCap: usage.accountCap, ceilings: Object.fromEntries(shares.map((s) => [s.name, { used: s.used, limit: s.limit, percent: pct(s.used, s.limit) }])) },
     threshold,
-    detail: over.length ? over.map((s) => `${WORDS[s.name] ?? s.name}: ${s.used} of ${s.limit} (${pct(s.used, s.limit)}%)`).join("; ") : null,
+    detail: [...(read.ok ? [] : ["the account service says it is not ok"]), ...over.map((s) => `${WORDS[s.name] ?? s.name}: ${s.used} of ${s.limit} (${pct(s.used, s.limit)}%)`)].join("; ") || null,
   };
 }

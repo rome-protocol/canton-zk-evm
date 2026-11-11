@@ -25,6 +25,13 @@ describe("the account service's limits as a health row", () => {
     expect(row.value).toMatchObject({ accounts: 700, accountCap: 1000, ceilings: { accounts: { percent: 70 }, takeBacksDay: { percent: 95 }, executesDay: { percent: 1 } } });
   });
 
+  it("is degraded when the service says it is not ok, and down when a ceiling is that full as well", () => {
+    const row = read(usage(10), false);
+    expect([row.status, row.detail]).toEqual(["degraded", "the account service says it is not ok"]);
+    expect(read(usage(900), false).status).toBe("down");
+    expect(read(usage(10), true).status).toBe("ok");
+  });
+
   it("is degraded when the service cannot be read, with the reason, and the reason is cut", () => {
     const row = accountsRow({ error: "x".repeat(500) });
     expect(row.status).toBe("degraded");

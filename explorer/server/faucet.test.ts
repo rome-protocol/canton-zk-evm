@@ -963,7 +963,7 @@ describe("a client network", () => {
     clock.now += 100_000;
     const turned = await f.request(addr(4), { ip: "2001:db8:1:9::1" }); // a fourth /64 of the same /48
     expect(turned).toMatchObject({ status: 429, headers: { "Retry-After": "500" }, body: { reason: "net" } });
-    expect((turned.body as { error: string }).error).toContain("This network");
+    expect((turned.body as { error: string }).error).toBe("This network has used the faucet 3 times in the last 10 minutes. Try again later, or from another network.");
     expect((await f.request(addr(5), { ip: "2001:db8:2:1::1" })).status).toBe(202); // another /48
     expect((await f.request(addr(6), { ip: "1.2.3.4" })).status).toBe(202); // an IPv4 address has no network but itself
     clock.now += 500_000;

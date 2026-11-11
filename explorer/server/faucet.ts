@@ -452,7 +452,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (limit === "day") return answer(429, `The builder grants for today are all given out (${o.builder?.maxPerDay ?? 0}). Try again tomorrow.`, header, "day");
     if (limit === "address") return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "address");
     if (limit === "ip") return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "ip");
-    if (limit === "net") return answer(429, `This network has asked for ${netMax} requests' worth of coins in the last ${period(o.perIpSeconds)}, which is the most it may. Try again later, or from another network.`, { "Retry-After": seconds(waitMs) }, "net");
+    if (limit === "net") return answer(429, `This network has used the faucet ${netMax} times in the last ${period(o.perIpSeconds)}. Try again later, or from another network.`, { "Retry-After": seconds(waitMs) }, "net");
     return answer(429, `The faucet has given out all it gives in an hour (${o.maxPerHour} requests). Try again later.`, { "Retry-After": seconds(waitMs) }, "hour");
   }
 

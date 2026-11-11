@@ -301,7 +301,7 @@ export function createMove(d: Deps): Move {
   async function adopt(tx: Hex, p: Plan) { save({ stage: "sent", tx }); await prove(tx, p); }
 
   /**
-   * Tells the registry the parts of a lock again, for a lock that is not settled yet: the registry keeps them for two days, and a payment whose parts are gone waits in the pool until they are announced again.
+   * Tells the registry the parts of a lock again, for a lock that is not settled yet: the registry keeps them for a few hours (6 by default), and a payment whose parts are gone waits in the pool until they are announced again.
    * Announcing is idempotent: the same receiver and ref give the same id. It asks nothing of the wallet and signs nothing.
    */
   async function announce(c: Checkpoint, p: Plan) {

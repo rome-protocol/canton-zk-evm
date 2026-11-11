@@ -47,6 +47,7 @@ const LIMITS: Record<string, (at: string) => string> = {
   send_network_full: (at) => `This network has used today's share of Bridge transactions. Try again ${at}, or from another network.`,
   send_account_full: (at) => `This account has used today's Bridge transactions. Try again ${at}.`,
   send_all_full: (at) => `The Bridge has used all of today's transactions for everyone. Taking back a deposit and accepting a transfer still work. Try again ${at}.`,
+  take_backs_all_full: (at) => `Today's take-backs and accepts are all used for everyone. Try again ${at}.`,
   faucet_account_full: (at) => `This account has had its Canton Coin from the faucet today. Try again ${at}.`,
   faucet_network_full: (at) => `This network has had Canton Coin from the faucet today. Try again ${at}, or from another network.`,
   faucet_all_full: (at) => `The faucet has given out all of today's Canton Coin. Try again ${at}.`,

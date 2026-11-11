@@ -76,7 +76,7 @@ class Rate:
         while q and q[0] <= now - self.window:
             q.popleft()
         if len(q) >= self.count:
-            raise HttpError(429, "too many lock announcements just now: try again in a minute", int(q[0] + self.window - now) + 1)
+            raise HttpError(429, "Too many moves were started just now. Try again in a minute.", int(q[0] + self.window - now) + 1)
         return q, now
 
     def check(self, key: str) -> None:
@@ -174,13 +174,14 @@ class LockParts:
     """The parts of the lock ids that payers announced: id -> (receiver, ref, announced at, the receiver's acceptance contract id). Kept in memory, and appended to `path` (one JSON line
     each, flushed to disk) so that a restart does not lose a lock that is paid but not yet in a block. An entry lives `ttl` seconds from its latest announcement: a payer announces the same
     parts again to keep them (the Bridge page does at every step of a lock that is not settled), and gets the same id. The file is compacted when it loads and when entries expire.
-    The store has three caps on live entries: `limit` in all, `per_receiver` for one receiver and `per_client` for one client network (the announcer's IPv4 address or IPv6 /48), so that one
-    party cannot fill what everyone needs (503 for the first, 429 for the other two)."""
+    The store has three caps on live entries: `limit` in all, `per_client` for one client network (the announcer's IPv4 address or IPv6 /48) and `per_receiver` for one receiver from one
+    client network (so that a network that fills a receiver's room leaves the receiver's own network its room), so that one party cannot fill what everyone needs (503 for the first,
+    429 for the other two)."""
     def __init__(self, path: str, limit: int, ttl: float = LOCK_PARTS_TTL, clock=time.time, per_receiver: int = PARTS_PER_RECEIVER, per_client: int = PARTS_PER_CLIENT):
         self.path, self.limit, self.ttl, self.clock, self.parts, self.lock = path, limit, ttl, clock, {}, threading.Lock()
         self.per_receiver, self.per_client = per_receiver, per_client
         self.clients = {}   # id -> (client network that announced it, the time of its latest line in the file); entries from before the clients were kept have none
-        self.by_receiver, self.by_client = collections.Counter(), collections.Counter()
+        self.by_receiver, self.by_client = collections.Counter(), collections.Counter()   # by_receiver is keyed (receiver, client network)
         self.swept = clock()
         if os.path.exists(path):
             dropped = 0
@@ -205,12 +206,13 @@ class LockParts:
         return self.clock() - entry[2] < self.ttl
 
     def _count(self):
-        """The live counts per receiver and per client network, worked out from the entries (the caller holds the lock, or is the constructor)."""
+        """The live counts per receiver and client network, and per client network, worked out from the entries (the caller holds the lock, or is the constructor)."""
         self.by_receiver, self.by_client = collections.Counter(), collections.Counter()
         for lid, (receiver, _, _, _) in self.parts.items():
-            self.by_receiver[receiver] += 1
-            if self.clients.get(lid, ("",))[0]:
-                self.by_client[self.clients[lid][0]] += 1
+            owner = self.clients.get(lid, ("",))[0]
+            self.by_receiver[(receiver, owner)] += 1
+            if owner:
+                self.by_client[owner] += 1
 
     def sweep(self, force: bool = False):
         """Drop what expired and rewrite the file when anything went (or `force`). The caller holds the lock, or is the constructor."""
@@ -241,18 +243,18 @@ class LockParts:
     def _full(self, receiver: str, client: str):
         """The refusal for an announcement of new parts that the caps do not allow, or None."""
         if len(self.parts) >= self.limit:
-            return HttpError(503, "the registry holds as many lock ids as it keeps")
-        if self.by_receiver[receiver] >= self.per_receiver:
-            return HttpError(429, f"this receiver has {self.per_receiver} lock announcements waiting already: they expire after {self.ttl / 3600:g} hours without a new announcement", int(self.ttl))
+            return HttpError(503, "Too many moves are waiting for everyone just now. Try again in a few hours.")
+        if self.by_receiver[(receiver, client)] >= self.per_receiver:
+            return HttpError(429, "Too many moves to this Canton account are waiting. Try again in a few hours.", int(self.ttl))
         if client and self.by_client[client] >= self.per_client:
-            return HttpError(429, f"this network has {self.per_client} lock announcements waiting already: they expire after {self.ttl / 3600:g} hours without a new announcement", int(self.ttl))
+            return HttpError(429, "This network has too many moves waiting. Try again in a few hours, or from another network.", int(self.ttl))
         return None
 
     def _forget(self, lid: str) -> None:
         """Remove an entry and its counts (the caller holds the lock)."""
         entry, owner = self.parts.pop(lid, None), self.clients.pop(lid, ("", 0))[0]
-        if entry is not None and self.by_receiver[entry[0]] > 0:
-            self.by_receiver[entry[0]] -= 1
+        if entry is not None and self.by_receiver[(entry[0], owner)] > 0:
+            self.by_receiver[(entry[0], owner)] -= 1
         if owner and self.by_client[owner] > 0:
             self.by_client[owner] -= 1
 
@@ -273,7 +275,7 @@ class LockParts:
                     refused = self._full(receiver, client)
                 if refused:
                     raise refused
-                self.by_receiver[receiver] += 1
+                self.by_receiver[(receiver, client)] += 1
                 if client:
                     self.by_client[client] += 1
                 self.clients[lid] = (client, 0)
@@ -490,11 +492,11 @@ class Registry:
         """A payer hands the receiver and the ref of a lock it is about to pay; it gets the id to pay against and the vaults that take the lock. A receiver that has not
         accepted twins (no active TwinAcceptance in the index) is refused with 409: a lock for it would be refused by Canton. The answer carries the contract id of
         the receiver's acceptance, and the parts keep it: the builder reads that one contract and believes nothing else."""
-        # The rate counts every announcement, a refused one too: junk costs the service something, so it is limited as the rest is. One count per client network, and one over all of them.
+        # The rate per client network counts every announcement, a refused one too: junk costs the service something, so each network is limited. The ceiling over everyone counts only
+        # the announcements that are well formed (it is checked first, but hit after the checks below): a flood of junk from many networks then cannot fill what everyone shares.
         self.announce_rate.check(client)
         self.announce_total.check("all")
         self.announce_rate.hit(client)
-        self.announce_total.hit("all")
         receiver, ref = (body.get("receiver"), body.get("ref")) if isinstance(body, dict) else (None, None)
         for name, value in (("receiver", receiver), ("ref", ref)):
             try:
@@ -516,6 +518,7 @@ class Registry:
         acceptance = self.acceptances.get(receiver)
         if acceptance is None:
             raise HttpError(409, "the receiver has not accepted twins: its party must sign a TwinAcceptance first")
+        self.announce_total.hit("all")   # a valid announcement for a receiver that accepted twins: the only kind that counts against the ceiling over everyone
         vaults = self.vaults()
         return {"lockId": self.parts.add(receiver, ref, acceptance, client), "receiver": receiver, "ref": ref, "acceptance": acceptance, "vaults": vaults}
 

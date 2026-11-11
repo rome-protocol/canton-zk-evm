@@ -70,6 +70,7 @@ PUBLIC_RELAY_NETWORK = 120   # and in a minute from one client network (an IPv4 
 NEW_ACCOUNTS_PER_NETWORK = 6   # new accounts a day for one client network (an IPv4 address, an IPv6 /48)
 EXECUTES_PER_NETWORK = 400     # executes and allocations a day for one client network
 TAKE_BACKS_PER_DAY = 5000      # take-backs and accepts a day, all clients together (their own ceiling)
+TAKE_BACK_TRAFFIC_PER_DAY = 50_000_000   # and the traffic of those, as the participant estimates it (bytes): a share of their own, apart from the traffic of creates
 ACCOUNT_CAP = 1000             # the accounts the participant allows this service's user: its `max-self-allocated-parties` (the service cannot read it; the operator says it)
 TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time before it may be taken back: Canton's default record-time tolerance (ledger time may differ from record time by up to this much); the builder stops using the allocation 5 minutes before the time (its SETTLE_MARGIN)
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
@@ -354,7 +355,7 @@ def faucet_from(amount, url, bearer_file, per_day: int):
 
 class HumanCheck:
     """An optional human check on a new account's `topology` request (off unless the service is started with it). The page sends the token its widget gave in `captcha`; the service posts
-    `{"secret", "response", "remoteip"}` as JSON to the check's verify URL and wants `{"success": true}` back, which is how Cloudflare Turnstile (and the other common checks) answer.
+    `{"secret", "response", "remoteip"}` as JSON to the check's verify URL and wants `{"success": true}` back, which is how Cloudflare Turnstile answers (a check that wants a form post instead of JSON, such as reCAPTCHA, does not work with it).
     The secret is read from a file for each check and never logged. A check that cannot be reached refuses the request (fail closed), and a failed check counts as a failed signature does
     (`Accounts.failures`): a client network that fails FAILED_VERIFIES times in a minute is refused before another call is made. `allocate` needs the topology's blob, which only a checked
     `topology` request makes, so the pair is covered. A token works once, which is why one check covers the pair and not each of them."""
@@ -522,6 +523,7 @@ ALL_ACCOUNTS = ("accounts_all_full", "Today's new accounts are all taken; try ag
 NETWORK_SENDS = ("send_network_full", "This network has used today's share of Bridge transactions; try again after {time} or from another network.")
 ACCOUNT_SENDS = ("send_account_full", "This account has used today's Bridge transactions; try again after {time}.")
 ALL_SENDS = ("send_all_full", "The Bridge has used all of today's transactions for everyone; try again after {time}. Taking back a deposit and accepting a transfer still work.")
+TAKE_BACKS_ALL = ("take_backs_all_full", "Today's take-backs and accepts are all used for everyone; try again after {time}.")
 
 
 def day_limit(count: int, words: tuple) -> Limiter:
@@ -615,7 +617,7 @@ class Accounts:
                  max_traffic: int = 200000, new_total: Limiter = None, rights_gap: float = 5.0, failures: Limiter = None, account_rate: Limiter = None,
                  network_rate: Limiter = None, registries: dict = None, faucet: Faucet = None, public_relay_rate: Limiter = None, public_relay_total: Limiter = None,
                  creates_net: Limiter = None, per_net: Limiter = None, take_backs: Limiter = None, public_relay_net: Limiter = None, account_cap: int = ACCOUNT_CAP,
-                 human_check: "HumanCheck" = None):
+                 human_check: "HumanCheck" = None, take_back_traffic: Limiter = None):
         self.ledger, self.user, self.parties, self.allow, self.hint = ledger, user, parties, set(allow), hint
         self.synchronizer, self.topology_version = synchronizer, topology_version
         self.creates, self.rate = creates or day_limit(3, NETWORK_ACCOUNTS), rate or Limiter(60, 60)
@@ -631,7 +633,8 @@ class Accounts:
         self.per_account, self.per_client, self.overall = per_account or day_limit(50, ACCOUNT_SENDS), per_client or day_limit(200, NETWORK_SENDS), overall or day_limit(2000, ALL_SENDS)
         self.per_net = per_net or day_limit(EXECUTES_PER_NETWORK, NETWORK_SENDS)   # the same, for a client network (an IPv6 /48 holds many /64s)
         self.traffic, self.max_traffic = traffic or day_limit(50_000_000, ALL_SENDS), max_traffic
-        self.take_backs = take_backs or day_limit(TAKE_BACKS_PER_DAY, ALL_SENDS)   # the take-backs and accepts of `SHARED_EXEMPT`: a ceiling of their own, which creates cannot fill
+        self.take_backs = take_backs or day_limit(TAKE_BACKS_PER_DAY, TAKE_BACKS_ALL)   # the take-backs and accepts of `SHARED_EXEMPT`: a ceiling of their own, which creates cannot fill
+        self.take_back_traffic = take_back_traffic or day_limit(TAKE_BACK_TRAFFIC_PER_DAY, TAKE_BACKS_ALL)   # and a traffic share of their own, so they are bounded too
         self.new_total = new_total or day_limit(200, ALL_ACCOUNTS)   # new accounts a day, all clients: the participant's party and rights quotas are finite
         self.account_cap, self.human_check = account_cap, human_check
         self.budget_lock = threading.Lock()   # the budgets are checked and charged as one step
@@ -659,10 +662,10 @@ class Accounts:
 
     def spend(self, ip: str, party: str = None, traffic: int = 0, extra=(), take=None, exempt: bool = False):
         """Count one execute or allocation against the day's budgets: the account's, the client's (an IPv4 address or an IPv6 /64), the client network's (an IPv6 /48), and the two
-        that everyone shares, the executes and the traffic. An `exempt` one (a take-back or an accept, `SHARED_EXEMPT`) counts against a shared ceiling of its own in their place, so
-        creates cannot use up what people need to get a deposit back. Every budget is checked first and they are charged together, so a refusal (429) charges none of them.
+        that everyone shares, the executes and the traffic. An `exempt` one (a take-back or an accept, `SHARED_EXEMPT`) counts against a shared ceiling of its own, and a traffic share of its own, in their place, so
+        creates cannot use up what people need to get a deposit back, and take-backs cannot use up the traffic that creates need. Every budget is checked first and they are charged together, so a refusal (429) charges none of them.
         `take`, when given, runs between the check and the charge and is what removes the prepared entry: it survives a refusal."""
-        shared = [(self.take_backs, "all", 1)] if exempt else [(self.overall, "all", 1), *([(self.traffic, "all", traffic)] if traffic else [])]
+        shared = [(self.take_backs, "all", 1), *([(self.take_back_traffic, "all", traffic)] if traffic else [])] if exempt else [(self.overall, "all", 1), *([(self.traffic, "all", traffic)] if traffic else [])]
         items = [*extra, *([(self.per_account, party, 1)] if party else []), (self.per_client, ip, 1), (self.per_net, pending_owner(ip), 1), *shared]
         with self.budget_lock:
             for limiter, key, weight in items:
@@ -774,6 +777,7 @@ class Accounts:
             "executesDay": (self.overall.used("all"), self.overall.count),
             "trafficDay": (self.traffic.used("all"), self.traffic.count),
             "takeBacksDay": (self.take_backs.used("all"), self.take_backs.count),
+            "takeBackTrafficDay": (self.take_back_traffic.used("all"), self.take_back_traffic.count),
             "publicRelayMinute": (self.public_relay_total.used("all"), self.public_relay_total.count),
             "waitingTopologies": (self.topologies.count(), self.topologies.limit),
             "waitingTransactions": (self.prepared.count(), self.prepared.limit),
@@ -783,7 +787,7 @@ class Accounts:
 
     def sweep(self) -> None:
         """Drop what has expired from the limiters, the pending maps and the replay memory (a timer thread calls this)."""
-        for part in (self.creates, self.creates_net, self.rate, self.per_account, self.per_client, self.per_net, self.overall, self.traffic, self.take_backs, self.new_total, self.failures, self.account_rate, self.network_rate,
+        for part in (self.creates, self.creates_net, self.rate, self.per_account, self.per_client, self.per_net, self.overall, self.traffic, self.take_backs, self.take_back_traffic, self.new_total, self.failures, self.account_rate, self.network_rate,
                      self.public_relay_rate, self.public_relay_net, self.public_relay_total, self.in_flight, self.topologies, self.prepared, self.replays,
                      *(self.faucet.limiters() if self.faucet else ())):
             part.prune()
@@ -906,7 +910,7 @@ class Accounts:
 
     def new_account_room(self, ip: str) -> None:
         """Refuse (429, in words that say which limit) when a new account could not be made now: the client's, its network's or everyone's budget of the day is spent. Nothing is counted: the
-        count is `allocate`'s. Asked at `topology`, so a person hears it before the two wallet signatures and not after."""
+        count is `allocate`'s. Asked at `topology`, so a person hears it before the second, confirming wallet signature and not after."""
         self.creates.check(ip)
         self.creates_net.check(pending_owner(ip))
         self.new_total.check("all")
@@ -1267,6 +1271,7 @@ def main(argv=None):
     p.add_argument("--executes-per-client-day", type=int, default=200, help="executes and allocations per client address (an IPv4 address or an IPv6 /64) in 24 hours")
     p.add_argument("--executes-per-network-day", type=int, default=EXECUTES_PER_NETWORK, help="executes and allocations per client network (an IPv4 address or an IPv6 /48) in 24 hours")
     p.add_argument("--take-backs-per-day", type=int, default=TAKE_BACKS_PER_DAY, help="take-backs and accepts (they are not counted in --executes-per-day or --traffic-per-day) in 24 hours, all clients together")
+    p.add_argument("--take-back-traffic-per-day", type=int, default=TAKE_BACK_TRAFFIC_PER_DAY, help="the traffic of the take-backs and accepts in 24 hours, all clients together (bytes, as estimated; apart from --traffic-per-day)")
     p.add_argument("--executes-per-day", type=int, default=2000, help="executes and allocations in 24 hours, all clients together")
     p.add_argument("--max-transaction-traffic", type=int, default=200000, help="the most traffic the participant may estimate for one transaction (bytes)")
     p.add_argument("--traffic-per-day", type=int, default=50_000_000, help="the traffic of the executes in 24 hours, all clients together (bytes, as estimated)")
@@ -1324,7 +1329,7 @@ def main(argv=None):
                        day_limit(a.executes_per_account_day, ACCOUNT_SENDS), day_limit(a.executes_per_client_day, NETWORK_SENDS), day_limit(a.executes_per_day, ALL_SENDS),
                        day_limit(a.traffic_per_day, ALL_SENDS), a.max_transaction_traffic, day_limit(a.accounts_per_day_total, ALL_ACCOUNTS),
                        account_rate=Limiter(a.requests_per_account_minute, 60), network_rate=Limiter(a.requests_per_network_minute, 60), public_relay_rate=Limiter(a.public_registry_requests_per_minute, 60), public_relay_total=Limiter(a.public_registry_requests_per_minute_total, 60), registries=registries, faucet=faucet,
-                       creates_net=day_limit(a.accounts_per_network_day, NETWORK_ACCOUNTS), per_net=day_limit(a.executes_per_network_day, NETWORK_SENDS), take_backs=day_limit(a.take_backs_per_day, ALL_SENDS),
+                       creates_net=day_limit(a.accounts_per_network_day, NETWORK_ACCOUNTS), per_net=day_limit(a.executes_per_network_day, NETWORK_SENDS), take_backs=day_limit(a.take_backs_per_day, TAKE_BACKS_ALL), take_back_traffic=day_limit(a.take_back_traffic_per_day, TAKE_BACKS_ALL),
                        public_relay_net=Limiter(a.public_registry_requests_per_minute_network, 60), account_cap=a.account_cap, human_check=human_check)
     try:
         service.load_rights(force=True)
