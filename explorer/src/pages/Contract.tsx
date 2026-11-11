@@ -28,7 +28,7 @@ const Dash = () => <span className="muted">—</span>;
 function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<AddressDetail> }) {
   const coin = useStatus().data?.coin;
   const a = read.data;
-  // A token's own page holds its holder count and its warning, if it has one; a token that route does not know simply shows neither.
+  // A token's own page holds its holder count and its warning, if it has one; a token that route does not know simply shows neither. The warning comes after the count, so that a narrow screen wraps the warning and never leaves a dot of the count alone on a line.
   const tk = useQuery({ queryKey: ["token-detail", c.address], queryFn: () => getToken(c.address), enabled: !!a?.token, retry: false, staleTime: 30_000 }).data;
   const holders = tk?.holderCount;
   return (
@@ -40,7 +40,7 @@ function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<Address
             : !a || a.balance === null || !coin ? <span className="muted" title="Read from reth at the final block">Not known yet</span>
             : <span title={`${exact(a.balance, coin.decimals)} ${coin.symbol}, as of final block ${a.balanceBlock}, read from reth`}>{units(a.balance, coin.decimals)} {coin.symbol} <span className="muted small">as of final block {a.balanceBlock}</span></span>}
         </Item>
-        {a?.token && <Item label="Token tracker"><AddressCell address={c.address} to={`/token/${c.address}`} label={{ address: c.address, name: a.token.name ?? a.token.symbol ?? "Token", symbol: a.token.name ? a.token.symbol : null, kind: "token", standard: null, decimals: a.token.decimals, verified: c.verified, warning: tk?.warning ?? null }} />{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}</Item>}
+        {a?.token && <Item label="Token tracker"><AddressCell address={c.address} to={`/token/${c.address}`} label={{ address: c.address, name: a.token.name ?? a.token.symbol ?? "Token", symbol: a.token.name ? a.token.symbol : null, kind: "token", standard: null, decimals: a.token.decimals, verified: c.verified, warning: null }} />{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}{tk?.warning && <> <Warn text={tk.warning} /></>}</Item>}
         {a && <Item label="Transactions"><span className="num">{count(a.sentCount + a.receivedCount)}</span></Item>}
         {a && <Item label="Internal calls"><span className="num">{count(a.internalCount)}</span></Item>}
         <Item label="Interactions"><span className="num">{count(c.interactionCount)}</span>{c.lastInteractionBlock !== null && <span className="muted small"> · last in block {c.lastInteractionBlock}</span>}</Item>

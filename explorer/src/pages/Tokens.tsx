@@ -41,7 +41,7 @@ function Row({ t, n, now }: { t: TokenListItem; n: number; now: number }) {
         <div className="tok-cell">
           <Avatar t={t} />
           <div className="tok-id">
-            <div>
+            <div className="tok-name">
               {t.name ? <Link to={to}>{t.name}</Link> : <span className="muted">{noName(t)}</span>}
               {t.symbol && <span className="muted tok-sym">{t.symbol}</span>}
               {t.verified && <span className="verified" role="img" aria-label="Verified" title="Its source code is verified"><Icon name="check" size={13} /></span>}

@@ -90,12 +90,17 @@ describe("a token amount chip", () => {
 
   it("puts the warning of a lookalike token in the tooltip and draws a small triangle in the chip, for a token with none it draws the coin only", () => {
     const { container, unmount } = render(<TokenChip move={move()} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
-    expect(screen.getByText("100 tUSD").closest(".tchip")).toHaveAttribute("title", "100 tUSD Not Rome's WtROME twin");
+    expect(screen.getByText("100 tUSD").closest(".tchip")).toHaveAttribute("title", "100 tUSD. Not Rome's WtROME twin.");
     expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
     expect(container.querySelectorAll("svg")).toHaveLength(1);
     unmount();
     render(<TokenChip move={move()} label={usd} />);
     expect(screen.queryByRole("img", { name: "Warning" })).toBeNull();
+  });
+
+  it("ends each part of the tooltip with a full stop, the warning and the amount note too", () => {
+    render(<TokenChip move={move({ amount: null })} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
+    expect(screen.getByText("tUSD").closest(".tchip")).toHaveAttribute("title", "Not Rome's WtROME twin. The amount is not in the logs.");
   });
 
   it("does the same for a token that moves by id", () => {
@@ -179,15 +184,23 @@ describe("the cells' styles", () => {
 describe("the warning on a narrow screen", () => {
   const css = readFileSync(join(import.meta.dirname, "..", "styles.css"), "utf8");
   const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
-  it("lets the cell wrap its warning under the name, and keeps the cell, its link and its name inside their card", () => {
-    expect(rule(".acell")).toMatch(/flex-wrap:\s*wrap/);
-    expect(rule(".acell")).toMatch(/max-width:\s*100%/);
-    expect(rule(".acell .hx")).toMatch(/min-width:\s*0/);
-    expect(rule(".acell .aname")).toMatch(/min-width:\s*0/);
+  it("lets only a cell that carries a warning wrap, and keeps that cell, its link and its name inside their card", () => {
+    expect(rule(".acell")).not.toMatch(/flex-wrap/);
+    expect(rule(".acell-warn")).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule(".acell-warn")).toMatch(/max-width:\s*100%/);
+    expect(rule(".acell-warn .hx")).toMatch(/min-width:\s*0/);
+    expect(rule(".acell-warn .aname")).toMatch(/min-width:\s*0/);
   });
-  it("lets the warning's own words wrap, within its cell", () => {
+  it("marks a cell as wrapping only when it has a warning", () => {
+    const { container, unmount } = cell(usd.address, usd);
+    expect(container.querySelector(".acell")).not.toHaveClass("acell-warn");
+    unmount();
+    const warned = cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    expect(warned.container.querySelector(".acell")).toHaveClass("acell-warn");
+  });
+  it("lets the warning's own words wrap, with no percentage width that would let a table cell shrink below it", () => {
     expect(rule(".chip-warn")).toMatch(/white-space:\s*normal/);
-    expect(rule(".chip-warn")).toMatch(/max-width:\s*100%/);
+    expect(rule(".chip-warn")).not.toMatch(/max-width:\s*100%/);
   });
   it("shows the check before the warning, so that the warning is what wraps", () => {
     cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });

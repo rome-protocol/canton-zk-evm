@@ -11,6 +11,8 @@
 .tok-av { flex: none; width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
 .tok-id { min-width: 0; }
 .tok-id .hl { font-size: 12.5px; }
+.tok-name { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; } /* a warning drops under the name instead of running past the cell */
+.tok-id .tok-name > * { margin-left: 0; }
 .tok-sym { margin-left: 6px; }
 .tok-id .verified { display: inline-flex; vertical-align: middle; margin-left: 5px; color: var(--ok); }
 .tok-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: -13px; } /* main is a column with an 18px gap, and the panel above adds 14px below itself: 32px. -13px leaves 19px, as on screen 09 */
