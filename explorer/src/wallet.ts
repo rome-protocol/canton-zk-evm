@@ -9,6 +9,15 @@ export interface Eip1193 {
 }
 export const injected = (): Eip1193 | null => (window as unknown as { ethereum?: Eip1193 }).ethereum ?? null;
 
+/** Said where no wallet is found in the browser. */
+export const NO_WALLET = "No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again.";
+/** The same on a phone: the page reads only a wallet that is inside the browser it runs in, and no phone wallet has been tested with it. */
+export const NO_WALLET_PHONE = "No wallet was found in this browser. On a phone, open this page in your wallet app's own browser. No phone wallet has been tested with this page yet: desktop MetaMask, Rabby and OKX have been.";
+/** Whether a browser says it runs on a phone or a tablet. */
+export const onPhone = (userAgent: string = typeof navigator === "undefined" ? "" : navigator.userAgent): boolean => /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+/** What to say when no wallet is found: the phone's words on a phone. */
+export const noWalletWords = (userAgent?: string): string => (onPhone(userAgent) ? NO_WALLET_PHONE : NO_WALLET);
+
 /** A wallet's refusal or failure in plain words. 4001 is the person saying no. */
 export const walletWords = (e: unknown): string => {
   const x = e as { code?: number; message?: string } | null;
@@ -28,7 +37,7 @@ export function useWallet(chain: Chain | undefined) {
   }, []);
   const connect = useCallback(async () => {
     const w = injected();
-    if (!w) return setError("No wallet was found in this browser. Install MetaMask, then open this page again.");
+    if (!w) return setError(noWalletWords());
     try {
       const accounts = (await w.request({ method: "eth_requestAccounts" })) as string[];
       setAccount(accounts[0]?.toLowerCase() ?? null);

@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useHealth, useNow, useStatus } from "../useStatus.ts";
-import { FOOTER_LINE, SOURCE_URL } from "../copy.ts";
+import { DOCS_URL, FOOTER_LINE, ISSUES_URL, SOURCE_URL } from "../copy.ts";
 import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
 import { Icon } from "./Icon.tsx";
@@ -30,6 +30,17 @@ export function parentPath(pathname: string): string {
   const list = `/${first}`;
   if (rest.length === 0 && NAV.some(([to]) => to === list)) return list;
   return PARENT[first] ?? "";
+}
+
+/** Pages outside the header that still have a name of their own in the tab. */
+const OTHER_PAGES = ["about", "twins", "swaps", "swap", "legs", "leg", "search", "address", "addresses"];
+/** The tab's title: "Bridge · Ostia DevNet". On the signing page it also says which site is asking. A page of one item ("/block/12") is named in the singular. */
+export function pageTitle(pathname: string, name: string, network: string | null): string {
+  const site = network ? `${name} ${network}` : name;
+  const [, first = "", ...rest] = pathname.split("/");
+  const listed = NAV.find(([to]) => to === parentPath(pathname))?.[1];
+  const label = listed && listed !== "Home" ? (rest.length > 0 && first !== "docs" ? listed.replace(/s$/, "") : listed) : OTHER_PAGES.includes(first) ? first[0]!.toUpperCase() + first.slice(1) : null;
+  return label ? `${label} · ${site}` : site;
 }
 
 /**
@@ -134,6 +145,8 @@ function ShellBody({ children }: { children: ReactNode }) {
     return () => { stop(); clearTimeout(timer); for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"]) window.removeEventListener(ev, stop); };
   }, [pathname, hash]);
   const name = status?.chainName ?? DEFAULT_NAME;
+  const title = pageTitle(pathname, name, status?.networkName ?? null);
+  useEffect(() => { document.title = title; }, [title]);
   return (
     <div className="page">
       {status && <TopBar status={status} />}
@@ -158,6 +171,8 @@ function ShellBody({ children }: { children: ReactNode }) {
           <Link to="/docs/api">API</Link>
           <a href="/api/health">Health</a>
           {status?.publicRpc && <Link to="/docs/api#rpc-h">Add {name} to your wallet</Link>}
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">Docs</a>
+          <a href={ISSUES_URL} target="_blank" rel="noopener noreferrer">Get help</a>
           <a href={SOURCE_URL}>Source code</a>
         </nav>
       </footer>

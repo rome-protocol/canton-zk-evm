@@ -15,7 +15,7 @@ import { inWallet } from "../bridge/wallet/wallets.ts";
 import { arrivesAs, inputOf, moveOf, pairsOf, type Pair, type Side, type Token } from "../bridge/tokens.ts";
 import { moveWords } from "../bridge/words.ts";
 import { TokenPicker } from "./TokenPicker.tsx";
-
+import { StillStuck } from "../components/Help.tsx";
 export interface MoveCardProps {
   config: BridgeConfig | null;
   configState: "loading" | "ready" | "failed";
@@ -276,15 +276,15 @@ export function MoveCard(p: MoveCardProps) {
             </div>
           )}
           {note && <p className={`small ${note.bad ? "bad" : "muted"}`} role={note.bad ? "alert" : "status"}>{note.text}</p>}
-          {problem && <p className="small bad" role="alert">{problem}</p>}
+          {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck /></>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {extra}
           {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${config?.chain.coin.symbol ?? "Test coin"} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}
           {p.faucet && bal.gas === 0n && p.faucet.extra}
           <details className="move-steps">
-            <summary><span>{waitFor(pops)} · {pops} MetaMask pop-up{pops === 1 ? "" : "s"}</span></summary>
-            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "MetaMask pop-up" : s.by === "page" ? (p.cantonWallet ? `Approve in ${inWallet(p.cantonWallet)}` : "Signed by this page") : "Automatic"}</span></li>)}</ol>
-            <p className="small muted">{pops} in MetaMask{signs > 0 ? (p.cantonWallet ? `, ${signs} in ${inWallet(p.cantonWallet)}` : `, ${signs} by your Canton account`) : ""}.</p>
+            <summary><span>{waitFor(pops)} · {pops} wallet pop-up{pops === 1 ? "" : "s"}</span></summary>
+            <ol>{steps.map((s, i) => <li key={i}><span>{s.text}</span> <span className={`muted small by-${s.by}`}>{s.by === "wallet" ? "wallet pop-up" : s.by === "page" ? (p.cantonWallet ? `Approve in ${inWallet(p.cantonWallet)}` : "Signed by this page") : "Automatic"}</span></li>)}</ol>
+            <p className="small muted">{pops} in your wallet{signs > 0 ? (p.cantonWallet ? `, ${signs} in ${inWallet(p.cantonWallet)}` : `, ${signs} by your Canton account`) : ""}.</p>
           </details>
         </>
       )}

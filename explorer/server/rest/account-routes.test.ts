@@ -583,6 +583,13 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     }
   });
 
+  it("names Rome's own test and load addresses as accounts, and leaves a token's or a contract's own name alone", async () => {
+    const fresh = h(0x7a);
+    const rest = createAccountRest(pool, { [B]: "Rome test loop", [fresh]: "Rome load test", [T1]: "Not this name" });
+    const items = await rest.labels([B, fresh, T1, h(0x7b)]);
+    expect(items.map((l) => [l.address, l.name, l.kind])).toEqual([[B, "Rome test loop", "account"], [fresh, "Rome load test", "account"], [T1, "Test Token", "token"], [h(0x7b), null, null]]);
+  });
+
   it("leaves the token moves out of an address's CSV, which does not write them", async () => {
     const reads = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter((c) => /token_transfers/.test(String(typeof c[0] === "string" ? c[0] : (c[0] as { text?: string }).text))).length;
     const spy = vi.spyOn(pool, "query");

@@ -55,7 +55,7 @@ const setUp = (wallets: string | null = "loop") => {
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); localStorage.clear(); Reflect.deleteProperty(window, "ethereum"); });
 const openSheet = async () => {
   renderApp("/bridge");
-  await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
   await userEvent.click(await screen.findByRole("button", { name: "Open my Canton account" }));
 };
 const sheet = () => screen.getByRole("region", { name: "Your Canton account" });
@@ -64,16 +64,16 @@ describe("the Bridge page without Canton wallets in the build", () => {
   it("is the Bridge as it was: the sign-in with MetaMask, no connect button, and none of the wallet code asked for", async () => {
     setUp(null);
     await openSheet();
-    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect your Canton wallet" })).toBeNull();
-    expect(screen.queryByText(/Use a Bridge account from MetaMask|Have a Canton wallet/)).toBeNull();
+    expect(screen.queryByText(/Use a Bridge account from your wallet|Have a Canton wallet/)).toBeNull();
     expect(mocks.choices).not.toHaveBeenCalled();
     expect(mocks.restoreWallet).not.toHaveBeenCalled();
   });
   it("is the same with the switch empty or naming only things that are not wallets", async () => {
     setUp("");
     await openSheet();
-    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect your Canton wallet" })).toBeNull();
   });
 });
@@ -84,17 +84,17 @@ describe("the Bridge page with Canton wallets in the build", () => {
     connectsTo();
     await openSheet();
     expect(await screen.findByRole("button", { name: "Connect your Canton wallet" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Sign in with MetaMask" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
-    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with your wallet" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from your wallet" }));
+    expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));   // back, and the connection starts
     await screen.findByText("Connected");
   });
 
   describe("the person's choice decides the sheet, in every state of the connection", () => {
     const toBridgeAccount = async () => {
-      await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
-      expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from your wallet" }));
+      expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
       expect(screen.queryByRole("alert")).toBeNull();
     };
     it("after no wallet was found: the Bridge account from MetaMask opens", async () => {
@@ -138,8 +138,8 @@ describe("the Bridge page with Canton wallets in the build", () => {
       connectsTo();
       mocks.openAccount.mockRejectedValueOnce(new Error("no"));
       await openSheet();
-      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
-      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from your wallet" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
       await screen.findByRole("alert");
       await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));
       expect(await screen.findByText("Connected")).toBeInTheDocument();
@@ -150,8 +150,8 @@ describe("the Bridge page with Canton wallets in the build", () => {
       connectsTo();
       mocks.openAccount.mockReturnValueOnce(new Promise(() => {}));
       await openSheet();
-      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
-      await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from your wallet" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
       await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
       expect(await screen.findByText("Connected")).toBeInTheDocument();
     });
@@ -163,8 +163,8 @@ describe("the Bridge page with Canton wallets in the build", () => {
     const BRIDGE_PARTY = "rome::1220" + "ab".repeat(32);
     mocks.openAccount.mockResolvedValue({ party: BRIDGE_PARTY, close: async () => {}, kept: false });
     await openSheet();
-    await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from MetaMask" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Sign in with MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Use a Bridge account from your wallet" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with your wallet" }));
     expect(await screen.findByText("Ready")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet" }));
     expect(await screen.findByText("Connected")).toBeInTheDocument();
@@ -186,10 +186,10 @@ describe("the Bridge page with Canton wallets in the build", () => {
     await openSheet();
     await userEvent.click(await screen.findByRole("button", { name: "Connect your Canton wallet" }));
     expect(await screen.findByRole("button", { name: "Approve the connection in your wallet." })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from MetaMask" }));
-    expect(await screen.findByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Use a Bridge account from your wallet" }));
+    expect(await screen.findByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     await act(async () => { approve(); await new Promise((r) => setTimeout(r, 30)); });   // the wallet's approval comes late
-    expect(screen.getByRole("button", { name: "Sign in with MetaMask" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in with your wallet" })).toBeInTheDocument();
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(wasConnected()).toBe(false);
@@ -219,7 +219,7 @@ describe("the Bridge page with Canton wallets in the build", () => {
     const steps = screen.getByRole("region", { name: "Move tokens" });
     expect(steps).toHaveTextContent("Approve the move back on Canton");
     expect(steps).toHaveTextContent("Approve in Loop");
-    expect(steps).toHaveTextContent("1 in MetaMask, 1 in Loop.");
+    expect(steps).toHaveTextContent("1 in your wallet, 1 in Loop.");
     expect(steps).not.toHaveTextContent("Signed by this page");
   });
 
@@ -318,7 +318,7 @@ describe("the Bridge page with Canton wallets in the build", () => {
     connectsTo();
     rememberWallet();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(mocks.restoreWallet).toHaveBeenCalledTimes(1);
     expect(mocks.connectWallet).not.toHaveBeenCalled();
@@ -330,7 +330,7 @@ describe("the Bridge page with Canton wallets in the build", () => {
     mocks.restoreWallet.mockResolvedValue(null);
     rememberWallet();
     renderApp("/bridge");
-    await userEvent.click(await screen.findByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
     await waitFor(() => expect(wasConnected()).toBe(false));
     await userEvent.click(await screen.findByRole("button", { name: "Open my Canton account" }));
     expect(await screen.findByRole("button", { name: "Connect your Canton wallet" })).toBeInTheDocument();

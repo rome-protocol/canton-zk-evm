@@ -433,8 +433,8 @@ describe("the numbers, from the stats routes", () => {
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch · 21 blocks");
-    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; runs marked as tests are counted. In 21 blocks, each one Canton transaction.");
+    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch, with Rome's own tests · 21 blocks");
+    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; Rome's own test and load runs are counted in it. In 21 blocks, each one Canton transaction.");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {

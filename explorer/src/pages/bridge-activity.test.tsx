@@ -97,7 +97,7 @@ describe("the Activity list", () => {
 
   it("asks to connect without a wallet, and says so when there are no moves", async () => {
     const props = show({ account: null });
-    await userEvent.click(screen.getByRole("button", { name: "Connect MetaMask" }));
+    await userEvent.click(screen.getByRole("button", { name: "Connect wallet" }));
     expect(props.onConnect).toHaveBeenCalled();
     cleanup();
     show();
@@ -426,8 +426,8 @@ describe("the Activity list", () => {
     expect(made.evm.calls).toEqual([]);
   });
   it("says why connecting did not work, under its button", () => {
-    show({ account: null, connectNote: "No wallet was found in this browser. Install MetaMask, then open this page again." });
-    expect(screen.getByRole("alert")).toHaveTextContent("Install MetaMask");
+    show({ account: null, connectNote: "No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again." });
+    expect(screen.getByRole("alert")).toHaveTextContent("wallet extension");
   });
   it("continues one move at a time: while one runs, no other row can be continued", async () => {
     const store = memoryStore();

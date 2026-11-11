@@ -33,7 +33,7 @@ export interface ButtonInput {
   coming?: boolean;
 }
 
-/** How long a move takes from Move to Final, as the card says it, by the MetaMask pop-ups it needs (live: moves with one pop-up took 46 to 58 s; the approve and pay of the tROME lock took about 1 min 40 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
+/** How long a move takes from Move to Final, as the card says it, by the wallet pop-ups it needs (live: moves with one pop-up took 46 to 58 s; the approve and pay of the tROME lock took about 1 min 40 s; the tROME lock, with three, took 2 min 13 s). The one place for these figures. */
 export const WAIT_WORDS = { short: "About 1 min", long: "About 2 min" } as const;
 export const waitFor = (popups: number): string => (popups >= 2 ? WAIT_WORDS.long : WAIT_WORDS.short);
 
@@ -66,7 +66,7 @@ export function buttonOf(i: ButtonInput): { label: string; action: ButtonAction;
   if (running !== null) return { label: running, action: "none", disabled: true };
   if (i.move.phase === "paused" || (i.move.phase === "failed" && i.move.kept)) return { label: i.continueLabel ?? "Continue", action: "continue", disabled: false };
   // The order is the wallet, then the chain's coin for fees, then the Canton account: none of them needs the bridge's tokens.
-  if (!i.connected) return { label: "Connect MetaMask", action: "connect", disabled: false };
+  if (!i.connected) return { label: "Connect wallet", action: "connect", disabled: false };
   if (i.needCoin) return { label: i.asking ? "Asking the faucet…" : i.coming ? `${i.needCoin} is on its way…` : `Get test ${i.needCoin}`, action: "faucet", disabled: !!(i.asking || i.coming) };
   if (!i.accountReady) return { label: i.openLabel ?? "Open my Canton account", action: "open", disabled: false };
   if (i.config === "loading") return { label: "Looking up the bridge…", action: "none", disabled: true };

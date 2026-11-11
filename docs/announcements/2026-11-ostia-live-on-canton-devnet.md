@@ -4,9 +4,11 @@
 
 *Published 2026-11-09 on X: https://x.com/RomeProtocol/status/2119877820411199959 (thread: https://x.com/RomeProtocol/status/2119879190577357272).*
 
+*Edited 2026-11-11: this copy now matches the trust model. The Bridge account depends on the wallet and has no recovery, Rome's role (the prover, the only confirming participant, the Canton Coin custody and the twin admin) is stated, twins are held only by accounts on Rome's participants for now, most of the settled legs are Rome's own test loop, and the tested wallets are named. The text on X was not changed by this edit.*
+
 Ostia is an EVM chain that settles on Canton. Every block is proven with zero-knowledge, and one Canton transaction carries the block, its proof and the Canton actions the block asked for. It is live on Canton DevNet today. It is open source under Apache-2.0, and anyone can use it.
 
-You can deploy Solidity contracts with the tools you already use. You can move Canton Coin and tokens between Ostia and Canton, and back. You can send them to other Canton addresses. And you can watch each block settle on Canton.
+You can deploy Solidity contracts with the tools you already use. You can move Canton Coin and tokens between Ostia and Canton, and back. You can send Canton Coin to any Canton address, and twins to accounts on Rome's participants. And you can watch each block settle on Canton.
 
 - Docs: https://docs.rome.builders/canton-zk-evm/
 - Code: https://github.com/rome-protocol/canton-zk-evm
@@ -40,7 +42,7 @@ Ostia has run on Canton DevNet since 22 October 2026.
 
 ## The Bridge
 
-The Bridge is the page where Ostia and Canton meet. You open it with a browser wallet such as MetaMask. You need no Canton software.
+The Bridge is the page where Ostia and Canton meet. You open it in a computer browser with a wallet extension such as MetaMask, Rabby or OKX, which are the ones tested. No phone wallet has been tested yet. You need no Canton software.
 
 Move tokens between Ostia and Canton. There are four moves:
 
@@ -51,9 +53,11 @@ Move tokens between Ostia and Canton. There are four moves:
 
 Each move shows Sent, Proven and Final, with links to its Ostia block and its Canton update. A move takes about 1 to 2 minutes. The chain itself is final in about 10 seconds, and the rest is the wallet and the page waiting for the proven block. A Canton Coin deposit that cannot settle in time can be taken back.
 
-Send on Canton. From the same page you can send Canton Coin or a twin to another Canton address. The page signs the send itself, so there is no wallet pop-up. Incoming transfers are listed with an Accept button, and you can take back a send that was not accepted. On DevNet, each of these took about 10 seconds or less.
+Send on Canton. From the same page you can send Canton Coin to any Canton address, and a twin to an account on Rome's participants: a twin can be held only where its package is installed, and today that is Rome's two DevNet participants. The page signs the send itself, so there is no wallet pop-up. Incoming transfers are listed with an Accept button, and you can take back a send that was not accepted. On DevNet, each of these took about 10 seconds or less.
 
-No Canton wallet yet? Sign one message in MetaMask and you have a Canton account. Signing costs no gas. The first time, the page asks you to sign the same message once more, to check that your wallet gives the same signature each time. The signature opens an account that only your own key controls. It is named rome:: followed by your key's fingerprint. Rome's validator hosts it but cannot sign for it. The wallet and the account stay open after a reload, and you can open the same account again from any browser with the same wallet. "Close my Canton account on this browser" removes it.
+No Canton wallet yet? Sign one message in your wallet and you have a Canton account. Signing costs no gas. The first time, the page asks you to sign the same message once more, to check that your wallet gives the same signature each time. The account's key is made from that signature. It is named rome:: followed by your key's fingerprint. Rome runs the node that hosts it and the twin admin, so on DevNet you trust Rome with what the account holds. The wallet and the account stay open after a reload. If your wallet gives the same signature again, the same account opens in another browser; not every wallet does, and MetaMask, Rabby and OKX on a computer are the ones tested. There is no recovery: use DevNet test tokens only. "Remove my Canton key from this browser" removes the key there; it does not close the account.
+
+Moves are public on Ostia. A move back to Canton shows your Canton account next to your Ostia address.
 
 One safety note. Your Canton key comes from that signature. Anyone who gets you to sign the same message gets your key. So sign it only at ostia.devnet.romeprotocol.xyz, and check that your wallet's pop-up names that site.
 
@@ -75,9 +79,9 @@ Deploy guide: https://docs.rome.builders/canton-zk-evm/build-on-ostia
 
 ## Compose with Canton
 
-ERC-20s as Canton twins. An ERC-20 on Ostia can stand on Canton as a twin. The twin is a CIP-0056 token whose instrument id is erc20:<token address>. You pay the ERC-20 into the vault, and the Canton party you name holds the same amount as a twin. Redeeming pays it back. The explorer's twins page shows each twin's supply beside what the vault holds. TKA and WtROME have twins today.
+ERC-20s as Canton twins. An ERC-20 on Ostia can stand on Canton as a twin. The twin is a CIP-0056 token whose instrument id is erc20:<token address>. You pay the ERC-20 into the vault, and the Canton account you name holds the same amount as a twin. Today that account must be on one of Rome's participants. Redeeming pays it back. The explorer's twins page shows each twin's supply beside what the vault holds. TKA and WtROME have twins today.
 
-Canton Coin on Ostia. CC is an ordinary ERC-20 with 10 decimals, at 0x4db3dea7c13116961fd3e438542ccfcca61a7547. Any contract can hold and transfer it. The gateway's Canton custody backs it one to one.
+Canton Coin on Ostia. CC is an ordinary ERC-20 with 10 decimals, at 0x4db3dea7c13116961fd3e438542ccfcca61a7547. Any contract can hold and transfer it. The Canton Coin custody that backs it one to one is held by Rome's participant.
 
 Payments and swaps with Canton parties. A payment through the gateway executes a Canton allocation. On 27 October, a Canton token was swapped for an ERC-20 this way: the payment and the seller's allocation settled in one Canton update (block 16816).
 
@@ -91,13 +95,13 @@ The explorer has an External calls page: https://ostia.devnet.romeprotocol.xyz/c
 
 It shows one Canton transaction for each block, where the confirming participant's external call checks the block's proof. Its header shows blocks committed, success rate, average and p95 settlement time, and retried and refused commits.
 
-Today it shows more than 53,600 blocks since 22 October and a 99.99% success rate. Over the last 24 hours, settlement took about 9 seconds on average and about 11 seconds at p95. The gateway has settled more than 6,200 legs: deposits, withdrawals and payments.
+Today it shows more than 53,600 blocks since 22 October and a 99.99% success rate. Over the last 24 hours, settlement took about 9 seconds on average and about 11 seconds at p95. The gateway has settled more than 6,200 legs: deposits, withdrawals and payments. Almost all of them come from Rome's own test parties, which run a deposit, a payment and a withdrawal every 10 minutes.
 
 ## Use cases
 
 - Solidity apps that commit on Canton, deployed with Foundry or Hardhat.
 - Contracts that hold and move Canton Coin.
-- Canton accounts that people open from an EVM wallet, and use to send and receive Canton Coin and twins.
+- Canton accounts that people open from an EVM wallet, and use to send and receive Canton Coin and twins (DevNet test tokens only; there is no recovery).
 - ERC-20s that stand on Canton as twins.
 - ERC-20 payments that execute a Canton allocation.
 - Swaps of a Canton token for an ERC-20.
@@ -124,12 +128,14 @@ Run your own: https://docs.rome.builders/canton-zk-evm/run-it-locally
 
 ## About trust
 
-This is DevNet: tROME has no value, and Rome runs the Ostia services today. What the proof covers, and what it does not: https://docs.rome.builders/canton-zk-evm/trust-model
+This is DevNet: tROME has no value.
+
+Today Rome runs the prover and the only confirming participant; Rome's participant holds the Canton Coin custody and the twin admin; the code and the ZisK prover (alpha) are unaudited; DevNet only. What the proof covers, and what it does not: https://docs.rome.builders/canton-zk-evm/trust-model
 
 ## Try it
 
 1. Open https://ostia.devnet.romeprotocol.xyz/bridge, connect your wallet and sign one message.
-2. Take the test tROME and Canton Coin, make one of the four moves, and send some to another Canton address.
+2. Take the test tROME and Canton Coin, make one of the four moves, and send some Canton Coin to another Canton address.
 3. Building something? Open https://ostia.devnet.romeprotocol.xyz/faucet, paste your address and sign in with GitHub for 100 tROME.
 4. Add Ostia DevNet to your wallet and deploy a contract.
 5. Tell us what you are building, and where it breaks, in a GitHub issue: https://github.com/rome-protocol/canton-zk-evm/issues

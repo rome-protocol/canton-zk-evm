@@ -6,12 +6,14 @@ import { checkAmount, checkReceiver, confirmLine, shortAddress, tidyAmount } fro
 import type { Incoming, SendResult, Sender, Sent } from "../bridge/send.ts";
 import type { Pair } from "../bridge/tokens.ts";
 import { GENERIC, moveWords, plainWords } from "../bridge/words.ts";
+import { StillStuck } from "../components/Help.tsx";
+import { TWINS_HOLDERS } from "../copy.ts";
 
 /** What went wrong with a send or an accept, in plain words. A refusal by Canton says what it most likely means for a person. */
 function problemWords(e: unknown, what: "send" | "accept" | "takeback"): string {
   const x = e as { name?: unknown; kind?: unknown; message?: unknown } | null;
   if (x?.name === "AccountsError" && x.kind === "refused") {
-    return what === "send" ? "Canton did not take this transfer. The receiver may not be set up for this token yet. Nothing was sent."
+    return what === "send" ? "Canton did not take this transfer. The receiver may not be set up for this token yet: today only accounts on Rome's participants can hold twins. Nothing was sent."
       : what === "takeback" ? "Canton did not take this back. The receiver may have accepted it just now. Nothing was changed. Check again in a moment."
       : "Canton did not take this transfer. It may have been taken back or have run out of time. Nothing was changed.";
   }
@@ -79,6 +81,7 @@ export function SendOnCanton({ sender, pairs, held, party, onChanged }: { sender
         <input type="text" autoComplete="off" spellCheck={false} placeholder="name::1220…" value={receiver} disabled={working} onChange={(e) => setReceiver(e.target.value.replace(/\s/g, ""))} />
       </label>
       {checked.receiverError && <p className="small bad" role="alert">{checked.receiverError}</p>}
+      <p className="small muted">{TWINS_HOLDERS}</p>
       {confirming && line ? (
         <>
           <p className="confirm" role="status">{line}</p>
@@ -91,7 +94,7 @@ export function SendOnCanton({ sender, pairs, held, party, onChanged }: { sender
         <button type="button" className="btn" disabled={!checked.ok || working} onClick={() => { setResult({ s: "idle" }); setConfirming(true); }}>Review</button>
       )}
       {result.s === "done" && <Done done={result} />}
-      {result.s === "failed" && <p className="small bad" role="alert">{result.message}</p>}
+      {result.s === "failed" && <><p className="small bad" role="alert">{result.message}</p><StillStuck /></>}
     </div>
   );
 }

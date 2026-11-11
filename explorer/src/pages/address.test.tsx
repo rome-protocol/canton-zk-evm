@@ -29,6 +29,10 @@ const kind = () => screen.getByRole("heading", { level: 1 }).parentElement!.quer
 const tab = (name: RegExp | string) => screen.getByRole("tab", { name });
 
 describe("the address page: the head and the overview", () => {
+  it("names an address that Rome says is its own test account, next to the Account chip, and says nothing for any other", async () => {
+    await open(addressDetail(), {}, `/address/${A}`, "Address", { labels: labelsOf([{ address: A, name: "Rome test loop", symbol: null, kind: "account", standard: null, decimals: null, verified: false }]) });
+    expect(await screen.findByText("Rome test loop")).toHaveAttribute("title", "An address Rome uses for its own tests");
+  });
   it("says it is an account, shows the address in full with a copy button, and links back to the list", async () => {
     const user = userEvent.setup();
     await open();

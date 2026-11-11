@@ -70,13 +70,13 @@ describe("plain words for what the person can see", () => {
     for (const odd of [new Error("TypeError: x is undefined at foo.ts:12"), "text", null, undefined, 42, { message: "{\"json\":1}" }]) expect(plainWords(odd)).toBe(GENERIC);
   });
   it("tells the person to get test tROME first when the wallet will not let the page sign (codes 4100, 4900, 4901), on the sign-in path", () => {
-    const said = "Your wallet did not let this page sign. Get test tROME first and make sure MetaMask is on the Ostia network, then sign in again.";
+    const said = "Your wallet did not let this page sign. Get test tROME first and make sure your wallet is on the Ostia network, then sign in again.";
     expect(walletWouldNotSign("tROME", "Ostia")).toBe(said);
-    expect(walletWouldNotSign("tFOO", "Bar")).toBe("Your wallet did not let this page sign. Get test tFOO first and make sure MetaMask is on the Bar network, then sign in again.");
+    expect(walletWouldNotSign("tFOO", "Bar")).toBe("Your wallet did not let this page sign. Get test tFOO first and make sure your wallet is on the Bar network, then sign in again.");
     for (const code of [4100, 4900, 4901]) expect(signInWords(Object.assign(new Error("Unauthorized"), { code }), "tROME", "Ostia")).toBe(said);
     expect(signInWords(Object.assign(new Error("User rejected the request."), { code: 4001 }), "tROME", "Ostia")).toBe("You declined it in your wallet.");
     // A wallet known to hold the coin is not told to get it.
-    const held = "Your wallet did not let this page sign. Make sure MetaMask is on the Ostia network, then sign in again.";
+    const held = "Your wallet did not let this page sign. Make sure your wallet is on the Ostia network, then sign in again.";
     expect(walletWouldNotSign("tROME", "Ostia", true)).toBe(held);
     for (const code of [4100, 4900, 4901]) {
       const e = Object.assign(new Error("Unauthorized"), { code });
@@ -102,7 +102,7 @@ describe("the page's sentences about wallets and moves", () => {
     expect(moveWords("The current chain of the wallet (id: 1) does not match the target chain for the transaction.")).toBe("Your wallet is not on Ostia. Switch it to Ostia, then continue.");
     expect(plainText("No wallet was found in this browser. Open this page in a browser with an EIP-1193 wallet.")).toBe(GENERIC);
     expect(plainText("This token follows ERC-20.")).toBe(GENERIC);
-    expect(plainText("No wallet was found in this browser. Install MetaMask, then open this page again.")).toBe("No wallet was found in this browser. Install MetaMask, then open this page again.");
+    expect(plainText("No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again.")).toBe("No wallet was found in this browser. Open this page in a browser with a wallet extension, such as MetaMask or Rabby, then try again.");
   });
   it("puts every sentence the moves library says in words with no part of the bridge named", () => {
     const said = [

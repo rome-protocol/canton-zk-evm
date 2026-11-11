@@ -211,6 +211,27 @@ describe("opening the account", () => {
     await expect(openAccount({} as never, "0x1", settings, () => {}, client, () => live)).rejects.toMatchObject({ code: "account_closed" });
     expect(client.openRequests).not.toHaveBeenCalled();
   });
+  const history = (account: string, party: string) => {
+    const kv = new Map<string, string>([["bridge-history", JSON.stringify([{ ref: "r1", kind: "deposit", asset: "0xa", amount: "1", account, party, at: 1, tx: null, block: null, done: true, stage: null }])]]);
+    return { getItem: (k: string) => kv.get(k) ?? null, setItem: (k: string, v: string) => void kv.set(k, v), removeItem: (k: string) => void kv.delete(k) };
+  };
+  /** A service that has no account for this key yet: it asks for the confirm signature before it makes one. */
+  const making = (reads: ReturnType<typeof open>[]) => {
+    const client = fake(reads) as any;
+    client.open = vi.fn(async (_k: unknown, _p: unknown, _h: unknown, confirm: () => Promise<void>) => { await confirm(); return PARTY; });
+    return client;
+  };
+  it("says what is about to happen before the confirm signature: no account yet for this wallet, and what to do if there was one", async () => {
+    const notes: string[] = [];
+    await openAccount({} as never, "0x1", settings, (n) => notes.push(n), making([open(true, true)]), () => true, undefined, history("0x2", "rome::1220other"));
+    expect(notes.find((n) => /has no Canton account on Ostia yet/.test(n))).toMatch(/If you opened one with this wallet before, reject the next pop-up.*second, empty account/);
+  });
+  it("refuses to make a second account when this browser's records show another account for this wallet address, and signs nothing more", async () => {
+    const client = making([open(true, true)]);
+    await expect(openAccount({} as never, "0x1", settings, () => {}, client, () => true, undefined, history("0X1", "rome::1220other"))).rejects.toMatchObject({ name: "PageError", code: "second_account" });
+    expect(client.openRequests).not.toHaveBeenCalled();
+  });
+
   it("lets an account go: close() stops every command of it", async () => {
     const client = fake([open(true, true)]) as any;
     const account = await openAccount({} as never, "0x1", settings, () => {}, client);

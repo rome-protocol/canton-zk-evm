@@ -6,6 +6,17 @@ import type { PoolConfig } from "pg";
 import { connectionConfig } from "./db/connect.ts";
 import { MAX_HEAVY_PLACES } from "./rpc-heavy.ts";
 
+/** OWN_ADDRESSES: pairs "0x<40 hex>=name" separated by commas. A pair that is not one stops the server at start, with a message that names the setting. */
+export function ownAddresses(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (env.OWN_ADDRESSES ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    const at = part.indexOf("="), address = part.slice(0, at).trim().toLowerCase(), name = part.slice(at + 1).trim();
+    if (at < 0 || !/^0x[0-9a-f]{40}$/.test(address) || name === "" || name.length > 60) throw new ConfigError(`OWN_ADDRESSES must be pairs of a 0x address and a name of at most 60 characters ("0x…=Rome test loop"), joined by ","; "${part.slice(0, 80)}" is not one`);
+    out[address] = name;
+  }
+  return out;
+}
+
 /** The settings are plain environment variables. A wrong one stops the server at start with a message that names it. */
 export class ConfigError extends Error {}
 
@@ -49,6 +60,8 @@ export interface Config {
   networkName: string | null;
   /** The public address of the twin registry service, when this deployment has one (TWIN_REGISTRY_URL); null when not set, and then the twins page names no such service. */
   twinRegistryUrl: string | null;
+  /** Rome's own test and load addresses, by lowercase address, each with the name the explorer shows for it (OWN_ADDRESSES: "0x…=Rome test loop,0x…=Rome load test"); empty when not set. */
+  ownAddresses: Readonly<Record<string, string>>;
   /** The account service's `/healthz` on this machine (ACCOUNTS_HEALTH_URL, such as http://127.0.0.1:8081/healthz), read into the health row `accounts`; null when not set, and then there is no such row. */
   accountsHealthUrl: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
@@ -314,6 +327,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     chainId: whole(env, "CHAIN_ID", 770101, 1),
     chainName: env.CHAIN_NAME || "Ostia",
     networkName: env.NETWORK_NAME?.trim() || null,
+    ownAddresses: ownAddresses(env),
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
     accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
