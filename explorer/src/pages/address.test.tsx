@@ -106,6 +106,14 @@ describe("the address page: token holdings", () => {
     expect(card.querySelector(".r[title='Last moved in block 22']")).not.toBeNull();
   });
 
+  it("shows the warning of a lookalike token in its holding row", async () => {
+    const warned = "Not Rome's WtROME twin";
+    await open(addressDetail(), withHoldings([holding({ name: "Wrapped Test ROME", symbol: "WtROME" })]), `/address/${A}`, "Address", { labels: labelsOf([{ address: addr(0xcb), name: "Wrapped Test ROME", symbol: "WtROME", kind: "token", standard: "ERC-20", decimals: 6, verified: false, warning: warned }]) });
+    const card = await screen.findByRole("region", { name: "Token holdings" });
+    expect(await within(card).findByRole("note")).toHaveTextContent(warned);
+    expect(card.querySelector(".hold-line .acell .chip-warn")).not.toBeNull();
+  });
+
   it("keeps the token count a lower bound on every page, as it only counts the page in view", async () => {
     const pageOf = (p: string) => (p.includes("after=") ? derived([holding({ token: addr(0xcc), name: "Other", symbol: "OTH" })]) : derived([holding()], "20:cb"));
     await open(addressDetail(), { tokens: pageOf });

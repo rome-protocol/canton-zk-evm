@@ -22,19 +22,22 @@ export function TokenChip({ move, label, compact = false }: { move: TokenMove; l
   const name = symbol ?? short(move.token, 8, 4);
   const notes: string[] = [];
   if (!symbol) notes.push("The name of this token is not known.");
+  // A token that carries the symbol of one of Rome's own and is not it: the warning is in the tooltip, and a small amber triangle stands in the chip.
+  if (label?.warning) notes.unshift(label.warning);
+  const warn = label?.warning ? <span className="tchip-warn" role="img" aria-label="Warning"><Icon name="warn" size={12} /></span> : null;
   // The words are the contract's own: set apart (bdi) so that they cannot reorder the text beside the chip, and cut short if very long.
   const text = (words: string) => <bdi className="tname">{words}</bdi>;
   if (move.tokenId !== null) {
     const copies = move.amount !== null && move.amount !== "1" ? `${count(move.amount)} × ` : "";
     // A token id can be 78 digits: the chip keeps its ends, and the tooltip the whole id.
     // The symbol alone is in a bdi: the copies and the id stand outside it, so a right-to-left symbol cannot reorder them.
-    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, `#${move.tokenId}`, ...notes].join(" ")}><span className="tname">{copies}<bdi>{name}</bdi>{` #${short(move.tokenId, 6, 4)}`}</span></span>;
+    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, `#${move.tokenId}`, ...notes].join(" ")}>{warn}<span className="tname">{copies}<bdi>{name}</bdi>{` #${short(move.tokenId, 6, 4)}`}</span></span>;
   }
-  if (move.amount === null) return <span className="tchip tchip-ft" title={[...notes, "The amount is not in the logs."].join(" ")}><Icon name="coin" size={12} />{text(name)}</span>;
+  if (move.amount === null) return <span className="tchip tchip-ft" title={[...notes, "The amount is not in the logs."].join(" ")}>{warn ?? <Icon name="coin" size={12} />}{text(name)}</span>;
   const decimals = move.decimals ?? label?.decimals ?? null;
   if (decimals === null) {
     notes.push("Its decimals are not known, so this is the raw count in the token's smallest unit.");
-    return <span className="tchip tchip-ft" title={[`${count(move.amount)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
+    return <span className="tchip tchip-ft" title={[`${count(move.amount)} ${name}`, ...notes].join(" ")}>{warn ?? <Icon name="coin" size={12} />}{text(`${count(move.amount)} ${name}`)}</span>;
   }
-  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${compact ? compactUnits(move.amount, decimals) : units(move.amount, decimals)} ${name}`)}</span>;
+  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}>{warn ?? <Icon name="coin" size={12} />}{text(`${compact ? compactUnits(move.amount, decimals) : units(move.amount, decimals)} ${name}`)}</span>;
 }

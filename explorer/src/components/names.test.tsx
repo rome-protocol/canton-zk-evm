@@ -88,6 +88,23 @@ describe("a token amount chip", () => {
     expect(chip.closest(".tchip")).toHaveAttribute("title", "100 tUSD");
   });
 
+  it("puts the warning of a lookalike token in the tooltip and draws a small triangle in the chip, for a token with none it draws the coin only", () => {
+    const { container, unmount } = render(<TokenChip move={move()} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
+    expect(screen.getByText("100 tUSD").closest(".tchip")).toHaveAttribute("title", "100 tUSD Not Rome's WtROME twin");
+    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(container.querySelectorAll("svg")).toHaveLength(1);
+    unmount();
+    render(<TokenChip move={move()} label={usd} />);
+    expect(screen.queryByRole("img", { name: "Warning" })).toBeNull();
+  });
+
+  it("does the same for a token that moves by id", () => {
+    const warnedNft: Label = { ...pass, warning: "Not Rome's WtROME twin" };
+    render(<TokenChip move={move({ token: addr(0xe3), amount: null, tokenId: "3", standard: "ERC-721", decimals: null })} label={warnedNft} />);
+    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(screen.getByText(/OPASS/).closest(".tchip")).toHaveAttribute("title", expect.stringContaining("Not Rome's WtROME twin"));
+  });
+
   it("groups thousands", () => {
     render(<TokenChip move={move({ amount: "5000000000" })} label={usd} />);
     expect(screen.getByText("5,000 tUSD")).toBeInTheDocument();
@@ -156,6 +173,26 @@ describe("the cells' styles", () => {
       expect(r, sel).toMatch(/text-overflow:\s*ellipsis/);
       expect(r, sel).toMatch(/unicode-bidi:\s*isolate/);
     }
+  });
+});
+
+describe("the warning on a narrow screen", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "styles.css"), "utf8");
+  const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+  it("lets the cell wrap its warning under the name, and keeps the cell, its link and its name inside their card", () => {
+    expect(rule(".acell")).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule(".acell")).toMatch(/max-width:\s*100%/);
+    expect(rule(".acell .hx")).toMatch(/min-width:\s*0/);
+    expect(rule(".acell .aname")).toMatch(/min-width:\s*0/);
+  });
+  it("lets the warning's own words wrap, within its cell", () => {
+    expect(rule(".chip-warn")).toMatch(/white-space:\s*normal/);
+    expect(rule(".chip-warn")).toMatch(/max-width:\s*100%/);
+  });
+  it("shows the check before the warning, so that the warning is what wraps", () => {
+    cell(usd.address, { ...usd, warning: "Not Rome's WtROME twin" });
+    const check = screen.getByRole("img", { name: "Verified" });
+    expect(check.compareDocumentPosition(screen.getByRole("note")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

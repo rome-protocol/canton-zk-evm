@@ -140,10 +140,10 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .copy:hover { color: var(--ink); }
 
 /* an address shown by its name, and a token amount */
-.acell { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.acell .hx { display: inline-flex; align-items: center; gap: 5px; }
+.acell { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; white-space: nowrap; max-width: 100%; min-width: 0; vertical-align: bottom; } /* a warning wraps under the name instead of widening the cell past its card */
+.acell .hx { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
 .acell .ic { color: var(--muted); flex: none; }
-.acell .aname { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
+.acell .aname { max-width: 28ch; min-width: 0; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
 .acell .verified { display: inline-flex; color: var(--ok); }
 .tchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; border-radius: 999px; padding: 1px 9px; border: 1px solid; white-space: nowrap; }
 .tchip-ft { color: var(--evm); background: var(--evm-tint); border-color: var(--evm-line); }
@@ -162,7 +162,9 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .chip-replaced { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
 .chip-dropped { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-line); }
 .chip-genesis { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
-.chip-warn { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); gap: 5px; padding-left: 8px; }
+.chip-warn { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); gap: 5px; padding-left: 8px; white-space: normal; max-width: 100%; min-width: 0; text-align: left; line-height: 1.35; }
+.acell .chip-warn .ic, .chip-warn .ic { color: inherit; flex: none; }
+.tchip-warn { display: inline-flex; color: var(--amber); }
 
 /* home: the status strip */
 .sd { display: inline-flex; align-items: center; gap: 7px; }

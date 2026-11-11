@@ -20,8 +20,8 @@ export function AddressCell({ address, label, to }: { address: string; label?: L
   return (
     <span className="acell">
       <Link className="hx" to={href} title={address}><Icon name="doc" size={13} /><span className="aname" title={name}><bdi>{name}</bdi></span></Link>
-      {label?.warning && <Warn text={label.warning} />}
       {label?.verified && <span className="verified" role="img" aria-label="Verified" title="Its source code is verified"><Icon name="check" size={13} /></span>}
+      {label?.warning && <Warn text={label.warning} />}
     </span>
   );
 }
