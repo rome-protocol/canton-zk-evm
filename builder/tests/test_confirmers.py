@@ -415,6 +415,40 @@ class Timeout(tp.Loop):
         self.assertEqual(self.reports[-1]["legParties"], {dep["hash"]: ["u::1"]})
         self.assertEqual((p.blame.suspects, p.blame.live), ({"v::1"}, {"v::1"}))   # u::1 is cleared, v::1 is the one left to try
 
+    def refused_block_of_a_party_on_trial(self, cause):
+        """u::1 is on trial and v::1 waits; the next block carries a deposit of u::1 only, and Canton refuses it with this cause."""
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout = "completion"
+        p = self.producer(s)
+        p.step()
+        s.ledger.confirm_timeout = None
+        dep_id = b.deposit_id_of("u::1", "dep-1")
+        s.ledger.requests = [("req-9", {**tb.REQUEST[1], "depositor": "u::1", "depositId": dep_id})]
+        dep = tx(CAROL, 0, price=7)
+        s.reth.tx_legs[dep["hash"]] = [tb.Leg(tb.DEPOSIT, dep_id, tb.WTKB, tb.PAYEE, 10 * tb.UNIT)]
+        s.reth.pool[CAROL] = [dep]
+        s.ledger.refuse = cause
+        self.now[0] += 2.0
+        p.step()
+        self.assertIs(self.reports[-1]["committed"], False, self.reports[-1])
+        self.assertEqual(self.reports[-1]["legParties"], {dep["hash"]: ["u::1"]})
+        return p
+
+    def test_a_refusal_before_any_confirmation_was_asked_for_does_not_clear_a_party_on_trial(self):
+        """CONTRACT_NOT_FOUND is the submitting participant's own reading: a party that archives its own contract could otherwise clear itself."""
+        p = self.refused_block_of_a_party_on_trial("CONTRACT_NOT_FOUND(11,ab): the contract was archived")
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))   # still on trial
+
+    def test_a_refusal_of_the_confirmation_phase_clears_a_party_on_trial(self):
+        p = self.refused_block_of_a_party_on_trial("LOCAL_VERDICT_INACTIVE_CONTRACTS(5,ab): a contract is not active")
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"v::1"}, {"v::1"}))
+
+    def test_the_words_of_a_refusal_of_the_confirmation_phase(self):
+        self.assertTrue(b.confirmation_refusal("LOCAL_VERDICT_LOCKED_CONTRACTS(5,x): locked"))
+        for text in (None, "", "CONTRACT_NOT_FOUND", "LOCAL_VERDICT_TIMEOUT(5,x): late", "MEDIATOR_SAYS_TX_TIMED_OUT"):
+            with self.subTest(text):
+                self.assertFalse(b.confirmation_refusal(text))
+
     def test_an_unknown_outcome_that_ends_as_a_confirmation_timeout_blames_the_parties_too(self):
         s, pay, plain = self.leg_pool()
         s.ledger.confirm_timeout = "none"   # 408 and no completion: not known

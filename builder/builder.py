@@ -1415,6 +1415,16 @@ BLAME_CAP = 86400.0         # the longest a party is held back for one convictio
 CONFIRMATION_TIMEOUT = re.compile(r"\b(?:MEDIATOR_SAYS_TX_TIMED_OUT|LOCAL_VERDICT_TIMEOUT)\b")
 
 
+# What a refusal says when the confirmation phase ran and a participant answered "no": Canton's own LOCAL_VERDICT_ codes (not the timeout). A refusal without
+# one (CONTRACT_NOT_FOUND from the submitting participant's own reading, say) came before any confirmation was asked for and says nothing of them.
+CONFIRMATION_REFUSAL = re.compile(r"\bLOCAL_VERDICT_(?!TIMEOUT\b)[A-Z_]+\b")
+
+
+def confirmation_refusal(text) -> bool:
+    """Whether the words of a refused command say that the confirmation phase ran and the confirmations came (as refusals)."""
+    return bool(CONFIRMATION_REFUSAL.search(str(text or "")))
+
+
 def confirmation_timeout(text) -> bool:
     """Whether the words of a failed command say that the confirmations did not come in time."""
     return bool(CONFIRMATION_TIMEOUT.search(str(text or "")))
@@ -2317,8 +2327,9 @@ class TimedReth(Reth):
 
 
 def trace_logs(frame) -> list:
-    """The logs of a call tracer's frame and of the calls under it."""
-    if not isinstance(frame, dict):
+    """The logs of a call tracer's frame and of the calls under it. A frame that failed (it has an "error": an inner call that reverted) and the frames under
+    it are skipped: a node may keep the logs of a reverted frame, which the transaction does not record."""
+    if not isinstance(frame, dict) or frame.get("error"):
         return []
     return [*(x for x in (frame.get("logs") or []) if isinstance(x, dict)), *(x for call in (frame.get("calls") or []) for x in trace_logs(call))]
 
@@ -3295,8 +3306,9 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
             close(attempt_refs(kept, skip=(u.get("attempt_run") or u.get("run"), u.get("attempt"))))   # closed before the file that names them goes
         clear_saved(cfg)
         clear_unresolved(cfg)
-        # A command that failed on a confirmation timeout, or that no one answered for its whole window, did not get its confirmations: `timedOut` lets the loop
-        # blame the parties of its legs (Producer.settle_unknown). The record names them (`legParties`); a command that failed for another reason names none.
+        # Only a failed completion with MEDIATOR_SAYS_TX_TIMED_OUT or LOCAL_VERDICT_TIMEOUT sets `timedOut`, which lets the loop blame the parties of the command's
+        # legs (Producer.settle_unknown). No completion for the whole window is a plain failure that nobody is blamed for. The record always carries `legParties`;
+        # settle_unknown ignores them without `timedOut`.
         timed = found is not None and confirmation_timeout(found.get("reason"))
         return False, lost, how, {"timedOut": True} if timed else {}
 
@@ -3920,8 +3932,10 @@ class Producer:
             self.advance_total += result.get("advanceSeconds", 0)
         self.hunt_passed([h.lower() for h in result.get("transactions", result.get("keptTransactions", []))])
         carried = {p for ps in (result.get("legParties") or {}).values() for p in ps}
-        if carried and (result["committed"] or (result["committed"] is False and not result.get("timedOut"))):
-            self.blame.answered(carried)   # Canton answered, so the confirmations came: the parties of its legs that were on trial are cleared
+        if carried and (result["committed"] or (result["committed"] is False and not result.get("timedOut") and confirmation_refusal(result.get("reason")))):
+            # The confirmations came: the block committed, or Canton's own words say a participant refused in the confirmation phase. A refusal that came before
+            # any confirmation was asked for (the submitting participant's own reading) clears nobody; a trial that learns nothing ends by itself.
+            self.blame.answered(carried)   # the parties of its legs that were on trial are cleared
         if result["committed"]:
             self.committed += 1
             self.refusals_in_row = 0

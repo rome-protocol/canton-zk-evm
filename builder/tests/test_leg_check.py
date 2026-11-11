@@ -96,6 +96,15 @@ class Check(tb.LegCase):
         s.reth.trace_top_error = None
         self.assertIs(b.leg_check(s.cfg, CALL)["ok"], False)   # the same call that runs is refused
 
+    def test_a_gateway_call_that_reverted_inside_the_call_records_no_leg(self):
+        """A call that catches the revert of an inner call: reth may keep that frame's logs, but the transaction records none of them."""
+        s = self.setup_check(tb.DEP)
+        s.reth.trace_inner_error = "execution reverted"
+        self.assertEqual(b.leg_check(s.cfg, CALL), {"ok": True})
+        self.assertEqual(s.ledger.queries, [])
+        s.reth.trace_inner_error = None
+        self.assertIs(b.leg_check(s.cfg, CALL)["ok"], False)
+
     def test_a_hosting_lookup_that_fails_says_nothing_about_the_leg_but_a_party_that_is_not_hosted_does(self):
         s = self.setup_check(tb.PAY)
         s.ledger.terms = [tb.TERMS]
@@ -214,6 +223,10 @@ class Request(unittest.TestCase):
         frame = {"logs": [{"n": 1}], "calls": [{"logs": [{"n": 2}], "calls": [{"logs": [{"n": 3}]}]}, {"calls": [{"logs": [{"n": 4}, "x"]}]}, "bad"]}
         self.assertEqual([x["n"] for x in b.trace_logs(frame)], [1, 2, 3, 4])
         self.assertEqual(b.trace_logs(None), [])
+
+    def test_the_logs_of_a_frame_that_failed_and_of_the_frames_under_it_are_left_out(self):
+        frame = {"logs": [{"n": 1}], "calls": [{"error": "execution reverted", "logs": [{"n": 2}], "calls": [{"logs": [{"n": 3}]}]}, {"logs": [{"n": 4}]}]}
+        self.assertEqual([x["n"] for x in b.trace_logs(frame)], [1, 4])
 
 
 class Service(unittest.TestCase):

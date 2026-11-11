@@ -131,6 +131,7 @@ class FakeReth:
         self.jwt_failures = 0
         self.trace_legs: dict = {}   # the `to` of a call (as the caller wrote it) -> the Leg events a debug_traceCall of a call to it shows, under the gateway
         self.trace_error = None      # a debug_traceCall fails with this
+        self.trace_inner_error = None  # the gateway's frame is a call that reverted inside the call (a try/catch): it has this "error" and still carries its logs
         self.trace_top_error = None  # a debug_traceCall answers, as reth does for a call that reverts at the top level: a frame with this "error" that still carries the logs the frame made
         self.traced: list = []       # the params of each debug_traceCall
         self.tx_legs: dict = {}   # transaction hash -> the Leg events that transaction makes, in order, when it is in a block (or a function from the block's transaction hashes to them)
@@ -235,7 +236,8 @@ class FakeReth:
             logs = [{"address": "0x" + GATEWAY, "topics": [LEG_TOPIC], "data": "0x" + leg.data().hex()} for leg in self.trace_legs.get(call.get("to"), [])]
             frame = {"error": self.trace_top_error} if self.trace_top_error else {}
             return {"type": "CALL", "from": call["from"], "to": call.get("to"), "logs": [], **frame,
-                    "calls": [{"type": "CALL", "from": call.get("to"), "to": "0x" + GATEWAY, "logs": logs, "calls": []}] if logs else []}
+                    "calls": [{"type": "CALL", "from": call.get("to"), "to": "0x" + GATEWAY, "logs": logs, "calls": [],
+                                                  **({"error": self.trace_inner_error} if self.trace_inner_error else {})}] if logs else []}
         if method == "txpool_status":
             return {"pending": hex(sum(len(ts) for ts in self.pool.values())), "queued": "0x0"}
         if method == "eth_getRawTransactionByHash":
