@@ -619,11 +619,11 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
   /** The tokens (by name or symbol) and verified contracts (by name) that start with the text, tokens first, at most `limit`. The text is matched as it is, never as a pattern. */
   async function byName(text: string, limit: number): Promise<NameMatch[]> {
     const like = text.replace(/[\\%_]/g, "\\$&") + "%";
-    // Where two tokens share a symbol, the one the gateway wrapped (Rome's own) comes before the one it did not, and a token with a warning comes after the others.
+    // A twin the chain record pins (Rome's own) comes first, then the others by the rule below: where two tokens share a symbol, the one the gateway wrapped comes before the one it did not, and a token with a warning comes after the others.
     const flagged = Object.keys(lookalikes).map(bytes);
     const found = await query(
       `select tk.address, tk.name, tk.symbol from tokens tk where tk.name ilike $1 or tk.symbol ilike $1
-       order by (tk.address = any($3::bytea[]) or (not tk.gateway_wrapped and tk.symbol is not null and exists (select 1 from tokens o where o.gateway_wrapped and lower(o.symbol) = lower(tk.symbol)))) asc, tk.holder_count desc, tk.address limit $2`,
+       order by exists (select 1 from canton_twins tw where tk.address = tw.token) desc, (tk.address = any($3::bytea[]) or (not tk.gateway_wrapped and tk.symbol is not null and exists (select 1 from tokens o where o.gateway_wrapped and lower(o.symbol) = lower(tk.symbol)))) asc, tk.holder_count desc, tk.address limit $2`,
       [like, limit, flagged],
     );
     const matches: NameMatch[] = found.map((r) => ({ kind: "token", name: r.name, symbol: r.symbol, address: hex(r.address), warning: warningOf(hex(r.address)) }));

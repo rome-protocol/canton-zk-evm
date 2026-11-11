@@ -590,39 +590,52 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(items.map((l) => [l.address, l.name, l.kind])).toEqual([[B, "Rome test loop", "account"], [fresh, "Rome load test", "account"], [T1, "Test Token", "token"], [h(0x7b), null, null]]);
   });
 
-  it("warns of a token that carries a symbol of Rome's own, and lists Rome's own token first where two share a symbol", async () => {
-    const own = h(0xd1), other = h(0xd2), third = h(0xd3);
-    await sql("insert into addresses (address, first_seen_block, last_active_block, is_contract) values ($1, 1, 3, true), ($2, 1, 3, true), ($3, 1, 3, true)", [who(0xd1), who(0xd2), who(0xd3)]);
+  it("warns of a token that carries a symbol of Rome's own, and lists a pinned twin first where tokens share a symbol", async () => {
+    // own: the pinned twin (not gateway-wrapped, few holders); other: the flagged lookalike; rival: another unflagged token of the symbol with more holders than the twin; third: an unrelated symbol with the most holders.
+    // wrapped and plain share a symbol that no twin has: the gateway's token comes before the plain one.
+    const own = h(0xd1), other = h(0xd2), third = h(0xd3), rival = h(0xd4), wrapped = h(0xd5), plain = h(0xd6);
+    const all = [0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6].map(who);
+    const marks = "$1, $2, $3, $4, $5, $6";
+    await sql(`insert into addresses (address, first_seen_block, last_active_block, is_contract) select a, 1, 3, true from unnest(array[${marks}]::bytea[]) a`, all);
     await sql(
-      `insert into contracts (address, origin, creator, creation_block, creation_tx_index, runtime_code_hash, name, interaction_count, last_interaction_block) values
-        ($1, 'create', $4, 2, 5, $5, 'Wrapped ROME', 1, 3), ($2, 'create', $4, 2, 6, $5, 'Wrapped ROME', 1, 3), ($3, 'create', $4, 2, 7, $5, 'Wrapped Other', 1, 3)`,
-      [who(0xd1), who(0xd2), who(0xd3), who(0xa1), Buffer.alloc(32, 1)],
+      `insert into contracts (address, origin, creator, creation_block, creation_tx_index, runtime_code_hash, name, interaction_count, last_interaction_block)
+       select a, 'create', $7, 2, (row_number() over ())::int, $8, 'Token', 1, 3 from unnest(array[${marks}]::bytea[]) a`,
+      [...all, who(0xa1), Buffer.alloc(32, 1)],
     );
     await sql(
       `insert into tokens (address, standard, name, symbol, decimals, total_supply, total_supply_block, holder_count, transfer_count, first_transfer_block, metadata_status, gateway_wrapped) values
-        ($1, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 1, 1, 2, 'read', true), ($2, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 500, 1, 2, 'read', false), ($3, 'ERC-20', 'Wrapped Other', 'WtOTHER', 18, 1, 3, 900, 1, 2, 'read', false)`,
-      [who(0xd1), who(0xd2), who(0xd3)],
+        ($1, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 1, 1, 2, 'read', false), ($2, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 500, 1, 2, 'read', false),
+        ($3, 'ERC-20', 'Wrapped Other', 'WtOTHER', 18, 1, 3, 900, 1, 2, 'read', false), ($4, 'ERC-20', 'Wrapped ROME', 'WtROME', 18, 1, 3, 800, 1, 2, 'read', false),
+        ($5, 'ERC-20', 'Gateway Coin', 'GWC', 18, 1, 3, 1, 1, 2, 'read', true), ($6, 'ERC-20', 'Gateway Coin', 'GWC', 18, 1, 3, 50, 1, 2, 'read', false)`,
+      all,
     );
+    await sql("insert into canton_twins (token, decimals, ledger_offset) values ($1, 18, 5)", [who(0xd1)]);
     try {
-      const rest = createAccountRest(pool, {}, { [other]: "Not Rome's WtROME twin" });
-      // The label, the token's own row and the search match carry the warning; Rome's own token and an unrelated one carry none.
+      const list = { [other]: "Not Rome's WtROME twin" };
+      const rest = createAccountRest(pool, {}, list);
+      // The label, the token's own row and the search match carry the warning; the twin and an unrelated token carry none.
       expect((await rest.labels([own, other, third])).map((l) => [l.address, l.warning])).toEqual([[own, null], [other, "Not Rome's WtROME twin"], [third, null]]);
       expect((await rest.token(other))?.warning).toBe("Not Rome's WtROME twin");
       expect((await rest.token(own))?.warning).toBeNull();
       expect((await rest.tokens("holders", null, 100)).filter((t) => t.address === other || t.address === own).map((t) => [t.address, t.warning])).toEqual(expect.arrayContaining([[own, null], [other, "Not Rome's WtROME twin"]]));
-      // Both share the symbol and the lookalike has more holders, yet Rome's own is first; the unrelated token is not moved by it.
-      expect((await rest.byName("wtrome", 10)).map((m) => [m.address, m.warning])).toEqual([[own, null], [other, "Not Rome's WtROME twin"]]);
-      expect((await rest.byName("wt", 10)).map((m) => m.address)).toEqual([third, own, other]);
-      // Without the list, a token the gateway did not wrap that shares the symbol of one it did is still placed after it.
-      expect((await createAccountRest(pool).byName("wtrome", 10)).map((m) => [m.address, m.warning])).toEqual([[own, null], [other, null]]);
-      // The route (which has no list of its own here) answers in the fields the allowlists name, and puts the wrapped token first by the same rule.
+      // The pinned twin is first although two tokens of its symbol have more holders; the flagged one is last of them; the unrelated token is not moved by it.
+      expect((await rest.byName("wtrome", 10)).map((m) => [m.address, m.warning])).toEqual([[own, null], [rival, null], [other, "Not Rome's WtROME twin"]]);
+      expect((await rest.byName("wt", 10)).map((m) => m.address)).toEqual([own, third, rival, other]);
+      // Without the list the lookalike is placed by its holders only.
+      expect((await createAccountRest(pool).byName("wtrome", 10)).map((m) => m.address)).toEqual([own, rival, other]);
+      // The list alone moves a flagged token behind the others, though it has no same-symbol token the gateway wrapped and the most holders of them.
+      expect((await createAccountRest(pool, {}, { [third]: "Not the token you know" }).byName("wt", 10)).map((m) => m.address)).toEqual([own, rival, other, third]);
+      // A token the gateway wrapped is before an unwrapped one of the same symbol that has more holders.
+      expect((await rest.byName("gwc", 10)).map((m) => m.address)).toEqual([wrapped, plain]);
+      // The route (which has no list of its own here) answers in the fields the allowlists name, and puts the pinned twin first by the same rule.
       const found = body(await get(`/api/search?q=wtrome`));
       for (const m of found.matches) same(m, F.searchMatch);
-      expect(found.matches.map((m: { address: string }) => m.address)).toEqual([own, other]);
+      expect(found.matches.map((m: { address: string }) => m.address)).toEqual([own, rival, other]);
     } finally {
-      await sql("delete from tokens where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
-      await sql("delete from contracts where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
-      await sql("delete from addresses where address in ($1, $2, $3)", [who(0xd1), who(0xd2), who(0xd3)]);
+      await sql("delete from canton_twins where token = $1", [who(0xd1)]);
+      await sql(`delete from tokens where address = any(array[${marks}]::bytea[])`, all);
+      await sql(`delete from contracts where address = any(array[${marks}]::bytea[])`, all);
+      await sql(`delete from addresses where address = any(array[${marks}]::bytea[])`, all);
     }
   });
 
