@@ -296,8 +296,9 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
 
   /**
    * Sends on `from`'s waiting transactions, from nonce `next` (reth's pending count for the sender, read when it is not given) as long as the next nonce is there.
-   * Inside the sender's lane. One that is refused is dropped, and the ones after it wait for it for ever until they expire: its sender has its hash and
-   * finds it missing, as on a node that dropped it from its queue.
+   * Inside the sender's lane. One that reth refuses is dropped, and the ones after it wait for it for ever until they expire: its sender has its hash and
+   * finds it missing, as on a node that dropped it from its queue. One that could not be sent because reth cannot be reached or the tracker is full is kept
+   * and sent on the next look.
    */
   async function release(from: string, known: number | undefined): Promise<void> {
     expire();
@@ -312,8 +313,17 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     }
     for (const nonce of [...q.keys()]) if (nonce < next) forget(from, nonce); // that nonce was used some other way
     for (let w = q.get(next); w; w = q.get(next)) {
-      forget(from, next);
-      const sent = await forward(w.raw, w.hash, from, next).catch((e) => ({ error: { code: -32603, message: (e as Error).message } }) as Up);
+      // The transaction stays held until reth, or the tracker, has given a definite answer: a reth that cannot be reached, or a tracker that is full, is tried again
+      // on the next look (and the transaction expires as any other held one does).
+      let sent: Up;
+      try {
+        sent = await forward(w.raw, w.hash, from, next);
+      } catch (e) {
+        if (!(e instanceof Unreachable)) console.error(`rpc: a waiting transaction ${w.hash} from ${from} (nonce ${next}) could not be sent on: ${(e as Error).message}`);
+        return;
+      }
+      if ("error" in sent && sent.error.code === -32005) return;
+      if (waiting.get(from)?.get(next) === w) forget(from, next);
       if (!("result" in sent) && !("error" in sent && REFUSED_ANSWER.test(sent.error.message))) {
         console.error(`rpc: a waiting transaction ${w.hash} from ${from} (nonce ${next}) was not accepted: ${"error" in sent ? sent.error.message : "no answer"}`);
         return;
@@ -362,11 +372,35 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       const reason = await o.legCheck({ from, to: tx.to, data: tx.data ?? "0x", value: "0x" + (tx.value ?? 0n).toString(16), gas: "0x" + (tx.gas ?? 0n).toString(16) });
       if (reason) return err(-32000, `This transaction would ask Canton for a leg that has no Canton side now, so no block would take it and it would hold up your later transactions. Make its Canton side first, then send it again. ${reason}`);
     }
-    if (nonce > next) return hold(lower, hash, from, nonce, next, client);
+    if (nonce > next) {
+      // Only an account that can pay for the transaction has it held: a key with no funds is refused here, as reth refuses it, so that keys made for the purpose cannot fill the list.
+      if (nonce - next <= maxNonceAhead) {
+        const poor = await unfunded(tx, from);
+        if (poor) return poor;
+      }
+      return hold(lower, hash, from, nonce, next, client);
+    }
     const sent = await forward(lower, hash, from, nonce, raw);
     // The nonce it took may be the one the waiting transactions of the sender wait for.
     if ("result" in sent || ("error" in sent && REFUSED_ANSWER.test(sent.error.message))) await release(from, nonce + 1).catch((e) => console.error(`rpc: cannot send on the waiting transactions of ${from}: ${(e as Error).message}`));
     return sent;
+  }
+
+  /**
+   * An error when the sender's balance (reth's pending state) is empty or cannot pay for the transaction's value and its gas at its fee cap, as reth's own check says it;
+   * null when it can. A transaction that is not held is checked by reth itself.
+   */
+  async function unfunded(tx: ReturnType<typeof parseTransaction>, from: string): Promise<Up | null> {
+    const got = await up("eth_getBalance", [from, "pending"]);
+    if ("error" in got) return got;
+    if (typeof got.result !== "string" || !QUANTITY.test(got.result)) throw new Unreachable("eth_getBalance: not a quantity");
+    const have = BigInt(got.result);
+    const fee = "maxFeePerGas" in tx && tx.maxFeePerGas !== undefined ? tx.maxFeePerGas : "gasPrice" in tx ? (tx.gasPrice ?? 0n) : 0n;
+    const need = (tx.value ?? 0n) + (tx.gas ?? 0n) * fee;
+    if (have === 0n || have < need) {
+      return err(-32000, `insufficient funds for gas * price + value: the account ${from} has ${have} and this transaction needs ${need}. A transaction ahead of the account's next nonce waits only when the account can pay for it.`);
+    }
+    return null;
   }
 
   /** Keeps a transaction that is ahead of the sender's next nonce until the ones before it arrive, and answers with its hash, as a node that queues it does. */

@@ -321,6 +321,22 @@ class Timeout(tp.Loop):
         result = b.build_block(s.cfg)
         self.assertEqual((result["committed"], result["rejected"], result.get("timedOut")), (False, True, True))
 
+    def test_a_definite_rejection_that_names_the_timeout_in_a_block_with_no_outside_leg_blames_nobody(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.refuse = "MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): the mediator did not receive sufficient confirmations"
+        result = b.build_block(s.cfg)
+        self.assertEqual((result["committed"], result["rejected"], result.get("timedOut")), (False, False, True))
+        self.assertNotIn("legParties", result)
+
+    def test_the_loop_counts_such_a_rejection_as_a_failure_and_holds_nothing_back(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.refuse = "MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): the mediator did not receive sufficient confirmations"
+        p = self.producer(s)
+        for _ in range(3):
+            p.step()
+        self.assertEqual((p.excluded, p.suspects, p.blame.suspects, p.blame.held()), ({}, [], set(), {}))
+        self.assertEqual((p.failures, p.refused), (3, 0))
+
     def test_no_completion_for_the_whole_window_is_not_a_confirmation_timeout(self):
         """A mediator's timeout always gives the submitting participant a failed completion: no completion at all points at the operator's own side (a command
         never taken, a restart, a synchronizer upgrade), so nobody's party is blamed for it."""
@@ -575,6 +591,81 @@ class Blame(unittest.TestCase):
     def test_an_empty_block_blames_nobody(self):
         self.assertEqual(self.blame.timed_out(set()), [])
         self.assertEqual(self.blame.held(), {})
+
+
+class HostingRights(tb.Case):
+    """The lookup needs a right the builder's own user may not hold: it says which, and stops the start when it is missing."""
+    BEARER = "hosting-lookup-token"
+    run_main = tb.CommandLine.run_main
+
+    def hosted(self, s, **k):
+        s.cfg.hosted_on = (ROME,)
+        s.cfg.hosting = b.Hosting(s.cfg, s.cfg.hosted_on)
+        for name, value in k.items():
+            setattr(s.cfg, name, value)
+        return s.cfg.hosting
+
+    def test_a_lookup_refused_for_want_of_the_right_leaves_the_leg_out_and_says_which_right(self):
+        s = self.setup({ALICE: []})
+        s.ledger.hosting, s.ledger.hosting_bearer = everyone_on_rome("d::1"), self.BEARER
+        state, reason = self.hosted(s).check("d::1")
+        self.assertEqual(state, "unknown")
+        self.assertIn("HTTP 403", reason)
+        self.assertIn("CanReadAsAnyParty", reason)
+        self.assertIn("--hosting-token-file", reason)
+
+    def test_the_probe_stops_the_start_with_the_right_that_is_missing(self):
+        for code in (401, 403):
+            with self.subTest(code):
+                s = self.setup({ALICE: []})
+                s.ledger.hosting_failure = code
+                with self.assertRaises(b.BuilderError) as e:
+                    self.hosted(s).probe()
+                self.assertIn("--hosted-on", str(e.exception))
+                self.assertIn("CanReadAsAnyParty", str(e.exception))
+                self.assertIn("participant admin", str(e.exception))
+
+    def test_the_probe_passes_when_the_token_may_ask_and_asks_about_no_party_of_the_chain(self):
+        s = self.setup({ALICE: []})
+        self.hosted(s).probe()
+        (party, participant), = s.ledger.hosting_asked
+        self.assertEqual((party, participant), (b.HOSTING_PROBE_PARTY, ROME))
+        self.assertTrue(party.startswith("hosting-probe::1220"))
+
+    def test_the_probe_leaves_other_answers_to_the_lookups(self):
+        for code in (400, 404, 500, 503):
+            with self.subTest(code):
+                s = self.setup({ALICE: []})
+                s.ledger.hosting_failure = code
+                self.hosted(s).probe()
+        s = self.setup({ALICE: []})
+        s.cfg.ledger_url = "http://127.0.0.1:9"   # nothing listens
+        self.hosted(s).probe()
+
+    def test_the_hosting_token_file_is_used_for_the_lookups_and_read_each_time(self):
+        s = self.setup({ALICE: []})
+        s.ledger.hosting, s.ledger.hosting_bearer = everyone_on_rome("d::1", "e::1"), self.BEARER
+        auth = Path(s.dir) / "hosting.token"
+        auth.write_text("wrong\n")
+        hosting = self.hosted(s, hosting_auth_file=str(auth))
+        self.assertEqual(hosting.check("d::1")[0], "unknown")
+        auth.write_text(self.BEARER + "\n")
+        hosting.probe()
+        self.assertEqual(hosting.check("e::1"), ("hosted", None))
+
+    def test_the_command_line_stops_with_the_reason_and_takes_the_token_file(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.hosting, s.ledger.hosting_bearer = everyone_on_rome("d::1"), self.BEARER
+        code, out = self.run_main(s, "--hosted-on", ROME)
+        self.assertEqual(code, 1)
+        self.assertIn("CanReadAsAnyParty", out["error"])
+        auth = Path(s.dir) / "hosting.token"
+        auth.write_text(self.BEARER)
+        code, out = self.run_main(s, "--hosted-on", ROME, "--hosting-token-file", str(auth))
+        self.assertEqual((code, out["committed"]), (0, True))
+        code, out = self.run_main(s, "--hosting-token-file", str(auth))
+        self.assertEqual(code, 1)
+        self.assertIn("--hosting-token-file is for --hosted-on", out["error"])
 
 
 class Options(unittest.TestCase):

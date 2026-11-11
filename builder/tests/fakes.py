@@ -459,6 +459,7 @@ class FakeLedger:
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
         self.hosting: dict = {}   # party -> {participant id: the permission that participant holds for it}, what GET /v2/state/connected-synchronizers says
         self.hosting_failure = None   # an HTTP status that every hosting lookup answers
+        self.hosting_bearer = None     # a bearer token: a lookup about a party that does not carry it is answered 403, as a participant does for a user with no right to read as the party
         self.connected = True   # the participant is connected to a synchronizer (when not, it answers an empty list for every party)
         self.confirm_timeout = None   # "completion": Advance is answered 408 and its completion says the mediator did not get the confirmations in time; "none": 408 and no completion at all
         self.hosting_asked: list = []   # (party, participant id) of each lookup
@@ -618,6 +619,8 @@ class FakeLedger:
                     asked = urllib.parse.parse_qs(self.path.partition("?")[2])
                     if "party" not in asked:
                         return self._reply(200, {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "sync::1", "permission": "PARTICIPANT_PERMISSION_SUBMISSION"}] if ledger.connected else []})
+                    if ledger.hosting_bearer and self.headers.get("authorization") != f"Bearer {ledger.hosting_bearer}":
+                        return self._reply(403, {"code": "PERMISSION_DENIED"})
                     party, participant = asked["party"][0], asked["participantId"][0]
                     ledger.hosting_asked.append((party, participant))
                     permission = ledger.hosting.get(party, {}).get(participant)

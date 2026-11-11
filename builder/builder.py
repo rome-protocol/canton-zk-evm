@@ -120,6 +120,7 @@ class Config:
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     hosted_on: tuple = ()             # --hosted-on (CZE_HOSTED_ON): the participant ids the operator lists; a leg whose party is not hosted with confirmation rights on one of them is left out. Empty: no hosting check
     hosting: object = None            # the Hosting check made from hosted_on by main(); None: no check
+    hosting_auth_file: str = ""       # --hosting-token-file (CZE_HOSTING_TOKEN_FILE): a file with the bearer token the hosting lookup is made with, read again for each lookup; empty: the ledger token
     blame: object = None              # the producer's PartyBlame (the parties held back after a confirmation timeout); None outside a producer
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -1407,6 +1408,7 @@ HOSTING_TTL = 300           # seconds an answer of a lookup is kept
 HOSTING_FAILED_TTL = 30     # seconds a lookup that could not be made is kept: a slow participant is not asked again for every leg
 HOSTING_CACHE = 10000       # the most parties remembered
 HOSTING_PERMISSIONS = ("PARTICIPANT_PERMISSION_SUBMISSION", "PARTICIPANT_PERMISSION_CONFIRMATION")   # the rights with which a participant confirms for a party; observation does not
+HOSTING_PROBE_PARTY = "hosting-probe::1220" + "0" * 64   # a well-formed party id that nobody holds: the start's one lookup that is none of the builder's own
 BLAME_CAP = 86400.0         # the longest a party is held back for one conviction, whatever the number of them
 # What a failed completion says when the mediator did not get the confirmations in time: Canton's own codes MEDIATOR_SAYS_TX_TIMED_OUT and LOCAL_VERDICT_TIMEOUT,
 # and nothing else. Other timeouts are not one: a command that was not sequenced in time (NOT_SEQUENCED_TIMEOUT) is the synchronizer's, the JSON API's own
@@ -1441,10 +1443,39 @@ class Hosting:
         self.cfg, self.participants, self.clock = cfg, tuple(participants), clock
         self.cache: dict = {}   # party -> (valid until, state, reason)
 
+    def headers(self) -> dict:
+        """The bearer header of a lookup: the hosting token file when there is one (read for each lookup), else the ledger's token."""
+        if not self.cfg.hosting_auth_file:
+            return Ledger(self.cfg).auth
+        bearer = Path(self.cfg.hosting_auth_file).read_text().strip()
+        return {"authorization": "Bearer " + bearer} if bearer else {}
+
     def get(self, path: str):
-        request = urllib.request.Request(self.cfg.ledger_url + path, headers=Ledger(self.cfg).auth)
+        request = urllib.request.Request(self.cfg.ledger_url + path, headers=self.headers())
         with urllib.request.urlopen(request, timeout=HOSTING_TIMEOUT) as r:
             return json.load(r)
+
+    def probe(self) -> None:
+        """Asks once, at start, about a party that is none of the builder's own, to learn whether the lookup's token may ask at all. The lookup of a party that the
+        token does not act or read as needs the right to read as any party (or participant admin or identity-provider admin): without it the participant answers 401
+        or 403 for every outside party, and every leg of one would be left out with "cannot be read". That is a setting to fix, so it stops the start with the
+        words that say which right. Any other answer (an unknown party, an unreachable participant) says nothing about the right and is left to the lookups."""
+        query = urllib.parse.urlencode({"party": HOSTING_PROBE_PARTY, "participantId": self.participants[0]})
+        try:
+            self.get("/v2/state/connected-synchronizers?" + query)
+        except urllib.error.HTTPError as e:
+            e.close()
+            if e.code in (401, 403):
+                raise BuilderError(f"--hosted-on is set, but {self.needs(e.code)}") from None
+        except (OSError, ValueError, http.client.HTTPException, UnicodeError):
+            pass
+
+    @staticmethod
+    def needs(code: int) -> str:
+        """What a refused lookup says the token lacks."""
+        return (f"the participant answered HTTP {code} to the lookup of where a party is hosted. The lookup of a party the token does not act or read as needs the right to "
+                f"read as any party (CanReadAsAnyParty), or participant admin or identity-provider admin, on the ledger user of the token; give that right to the user, or "
+                f"pass the token of a user that has it with --hosting-token-file")
 
     def ask(self, party: str) -> tuple:
         """(state, reason): "hosted", "foreign" (asked, and not hosted on a listed participant) or "unknown" (could not be asked)."""
@@ -1464,7 +1495,8 @@ class Hosting:
                 raise ValueError("the participant is connected to no synchronizer")
         except urllib.error.HTTPError as e:
             e.close()
-            return "unknown", f"where the party {party} is hosted cannot be read: the participant answered HTTP {e.code}"
+            more = f": {self.needs(e.code)}" if e.code in (401, 403) else ""
+            return "unknown", f"where the party {party} is hosted cannot be read: the participant answered HTTP {e.code}{more}"
         except (OSError, ValueError, http.client.HTTPException) as e:
             return "unknown", f"where the party {party} is hosted cannot be read: {bounded_text(e)}"
         return "foreign", (f"the party {party} is not hosted with the right to confirm on a participant this builder's operator lists ({listed}), so that its confirmation "
@@ -3094,7 +3126,9 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             report["rewindError"] = rewind_error
         # A failure on a confirmation timeout is a refusal when the block carried a leg of a party outside the chain's own: that party's participant did not
         # confirm, and it is blamed (Producer.timeout). With no such leg the timeout is the operator's own participant's and stays a failure that nobody is blamed for.
-        rejected = rejected or (timed_out and bool(report.get("legParties")))
+        # A definite rejection that names the timeout is the same: with no such leg it is not a refusal (the step counts a failure and nobody is held back).
+        if timed_out:
+            rejected = bool(report.get("legParties"))
         answered("refused" if rejected else "not_taken", reason=reason[:600])
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
                 **({"timedOut": True} if timed_out else {}),
@@ -3307,8 +3341,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         clear_saved(cfg)
         clear_unresolved(cfg)
         # Only a failed completion with MEDIATOR_SAYS_TX_TIMED_OUT or LOCAL_VERDICT_TIMEOUT sets `timedOut`, which lets the loop blame the parties of the command's
-        # legs (Producer.settle_unknown). No completion for the whole window is a plain failure that nobody is blamed for. The record always carries `legParties`;
-        # settle_unknown ignores them without `timedOut`.
+        # legs (Producer.settle_unknown). No completion for the whole window is a plain failure that nobody is blamed for. The record carries `legParties` whenever the block had a leg of a party
+        # outside the chain's own; settle_unknown ignores them without `timedOut`.
         timed = found is not None and confirmation_timeout(found.get("reason"))
         return False, lost, how, {"timedOut": True} if timed else {}
 
@@ -4772,6 +4806,9 @@ def parser() -> argparse.ArgumentParser:
                     help="a participant the operator lists (repeatable, also CZE_HOSTED_ON, comma separated; the id as the participant names itself, PAR::name::1220...): a leg is taken only when every party whose confirmation it needs "
                          "(the depositor, the withdrawal's receiver, the parties of payment terms and of a venue trade, a lock's receiver, a redeemer) is hosted with the right to confirm on one of them, so that an outside party's "
                          "participant that does not answer cannot hold a block up. Empty (the default): where parties are hosted is not checked")
+    ap.add_argument("--hosting-token-file", dest="hosting_auth_file", metavar="FILE", default=os.environ.get("CZE_HOSTING_TOKEN_FILE", ""),
+                    help="a file with the bearer token the --hosted-on lookup is made with (also CZE_HOSTING_TOKEN_FILE), read again for each lookup. Empty (the default): the ledger user's token. The lookup of a party the token does not "
+                         "act or read as needs the right to read as any party, or participant admin or identity-provider admin: a user that has it can be used for this lookup alone")
     ap.add_argument("--leg-check-port", type=int, default=int(os.environ.get("CZE_LEG_CHECK_PORT", 0)), metavar="PORT",
                     help="run: serve the leg check on 127.0.0.1:PORT (also CZE_LEG_CHECK_PORT; 0, the default: not served): the public RPC asks it, before it sends a transaction to reth's pool, whether a leg the transaction would record has "
                          "no Canton side, and refuses the transaction with the reason when it has none, so that it is not accepted and then never mined")
@@ -4884,7 +4921,12 @@ def main() -> int:
         check_port(urllib.parse.urlsplit(args.twin_registry_url), args.twin_registry_url)
         cfg.twin_registry_url = args.twin_registry_url
         cfg.hosted_on = parse_participants(args.hosted_on)
+        if args.hosting_auth_file and not cfg.hosted_on:
+            raise BuilderError("bad arguments: --hosting-token-file is for --hosted-on")
+        cfg.hosting_auth_file = args.hosting_auth_file
         cfg.hosting = Hosting(cfg, cfg.hosted_on) if cfg.hosted_on else None
+        if cfg.hosting is not None:
+            cfg.hosting.probe()
         cfg.registries = parse_registries(x.strip() for x in args.registry)
         if cfg.registries and args.unlabelled_deposits:
             raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
