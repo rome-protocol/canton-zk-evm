@@ -6,6 +6,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 |---|---|
 | `genesis.json`, `make-state.sh` | The chain's genesis, and the per-run state (the Engine secret, and the genesis that reth reads: the chain's genesis, or the one `CZE_GENESIS_FILE` names, plus the gateway contract from `gateway/` at `GATEWAY_ADDRESS`) |
 | `reth/` | `launch.sh` is the only way reth is started. Peer discovery is always off. `check.sh` proves it is off, `stop.sh` stops it |
+| `standard-contracts/` | `deploy.py` puts the standard contracts (the CREATE2 deployer, Multicall3, CreateX and Permit2) at their canonical addresses on a chain, and does nothing for one that is in place already (see its [README](standard-contracts/README.md)) |
 | `canton/canton.conf` | One synchronizer and three participants, all in memory, all on localhost |
 | `explorer-db.sh` | The explorer's own PostgreSQL, beside Canton's (see [The explorer's database](#the-explorers-database)) |
 | `canton/canton-persistent.conf`, `postgres.sh` | The persistent mode: the same nodes in PostgreSQL, and the database that holds them (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |

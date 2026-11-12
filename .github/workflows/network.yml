@@ -70,3 +70,22 @@ jobs:
           java-version: "21"
       - name: The chain survives a crash of Canton and a stop of the database
         run: tests/canton_persist.sh
+
+  # The standard contracts script: against a stand-in node, and against a real reth started only through network/reth/launch.sh (peer discovery off):
+  # the first run deploys the CREATE2 deployer, Multicall3, CreateX and Permit2 with the canonical code, the second sends nothing.
+  standard-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - name: Install the packages, by hash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r demo/requirements.txt
+      - name: The script against a stand-in node
+        run: '"$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p ''test_standard_contracts.py'' -v'
+      - name: The script against a real reth
+        run: PYTHON="$RUNNER_TEMP/venv/bin/python" tests/standard_contracts.sh
