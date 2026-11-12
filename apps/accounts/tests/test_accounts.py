@@ -1990,13 +1990,21 @@ class OutsideConfig(unittest.TestCase):
         os.chmod(faucet_file, 0o600)
         args = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--registry", f"{ADMIN}=https://v.example",
                 "--faucet-amount", "20", "--faucet-url", "https://v.example/api/validator", "--faucet-token-file", faucet_file]
-        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), self.assertRaises(SystemExit) as e:
+        # the refusal comes before anything is started: without the check, the mocked start raises RuntimeError at once and the test fails, it does not run a server
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", side_effect=RuntimeError("started")), \
+                unittest.mock.patch.object(A.Accounts, "load_rights", side_effect=A.HttpError(502, "no ledger")), unittest.mock.patch.object(A.Accounts, "start_sweeper"), self.assertRaises(SystemExit) as e:
             A.main([*args, "--registry-token-file", f"{ADMIN}={faucet_file}"])
         self.assertIn("holds the faucet's token", str(e.exception))
         # a token of its own starts it (it stops at the ledger, which is not there, after the check)
         with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", side_effect=RuntimeError("started")), \
                 unittest.mock.patch.object(A.Accounts, "load_rights", side_effect=A.HttpError(502, "no ledger")), unittest.mock.patch.object(A.Accounts, "start_sweeper"), self.assertRaises(RuntimeError):
             A.main([*args, "--registry-token-file", f"{ADMIN}={self.bearer_file}"])
+        # no faucet asked for: the faucet's token file is not read, so a missing one does not stop the service
+        plain = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--registry", f"{ADMIN}=https://v.example",
+                 "--faucet-token-file", os.path.join(self.dir.name, "missing")]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", side_effect=RuntimeError("started")), \
+                unittest.mock.patch.object(A.Accounts, "load_rights", side_effect=A.HttpError(502, "no ledger")), unittest.mock.patch.object(A.Accounts, "start_sweeper"), self.assertRaises(RuntimeError):
+            A.main([*plain, "--registry-token-file", f"{ADMIN}={self.bearer_file}"])
 
     def test_the_faucet_needs_its_options_and_a_token_file_for_its_owner_only(self):
         ok = A.faucet_from("20", "https://validator.example/api/validator/", self.bearer_file, 200)

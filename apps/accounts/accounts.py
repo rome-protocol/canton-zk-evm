@@ -344,12 +344,12 @@ class Faucet:
 
 def keep_relay_token_apart(registries: dict, faucet_token_file) -> None:
     """SystemExit when a registry's token is the faucet's. The registry relay answers any client with its token (the public relay needs no account), so that token must be a
-    user's own that the registry accepts and that can do no more, never the faucet's admin-level one: the same file, or another file with the same token, is refused."""
+    user's own that the registry accepts and that can do no more, never the faucet's admin-level one: a file with the faucet's token, the same file or another, is refused."""
     if not faucet_token_file:
         return
     faucet_token = read_token(faucet_token_file).encode()
     for admin, (_, path) in registries.items():
-        if path and (os.path.samefile(path, faucet_token_file) or hmac.compare_digest(read_token(path).encode(), faucet_token)):
+        if path and hmac.compare_digest(read_token(path).encode(), faucet_token):
             sys.exit(f"--registry-token-file for {admin!r} holds the faucet's token ({faucet_token_file}): the registry relay is open to anyone, so give it a token of its own, of a user with no admin right")
 
 
@@ -1336,7 +1336,7 @@ def main(argv=None):
         sys.exit("--trusted-proxies is at least 1")
     registries = parse_registries(a.registry, a.registry_token_file)
     faucet = faucet_from(a.faucet_amount, a.faucet_url, a.faucet_token_file, a.faucet_per_day)
-    keep_relay_token_apart(registries, a.faucet_token_file)
+    keep_relay_token_apart(registries, faucet.bearer_file if faucet else None)
     if bool(a.human_check_url) != bool(a.human_check_secret_file):
         sys.exit("--human-check-url and --human-check-secret-file go together")
     if a.account_cap < 1:
