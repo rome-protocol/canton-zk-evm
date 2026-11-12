@@ -1964,6 +1964,40 @@ class OutsideConfig(unittest.TestCase):
                     "--registry-token-file", f"{ADMIN}={self.bearer_file}"])
         self.assertIn("mode 0600", str(e.exception))
 
+    def test_the_relay_token_is_never_the_faucets(self):
+        faucet_file = os.path.join(self.dir.name, "faucet")
+        copy_file = os.path.join(self.dir.name, "copy")
+        for path, text in ((faucet_file, "admin-token\n"), (copy_file, "admin-token")):
+            with open(path, "w") as f:
+                f.write(text)
+            os.chmod(path, 0o600)
+        own_file = self.bearer_file   # holds "tok": a token of its own
+        registry = [f"{ADMIN}=https://v.example"]
+        A.keep_relay_token_apart({}, faucet_file)   # no registry
+        A.keep_relay_token_apart(A.parse_registries(registry, None), faucet_file)   # a registry with no token file holds nothing of the faucet's
+        A.keep_relay_token_apart(A.parse_registries(registry, [f"{ADMIN}={own_file}"]), faucet_file)
+        A.keep_relay_token_apart(A.parse_registries(registry, [f"{ADMIN}={faucet_file}"]), None)   # no faucet token to hold
+        for same in (faucet_file, copy_file, os.path.join(self.dir.name, ".", "faucet")):   # the same file, a copy of the token, the same file by another path
+            with self.assertRaises(SystemExit, msg=same) as e:
+                A.keep_relay_token_apart(A.parse_registries(registry, [f"{ADMIN}={same}"]), faucet_file)
+            self.assertIn("holds the faucet's token", str(e.exception))
+            self.assertNotIn("admin-token", str(e.exception))   # the token itself is never printed
+
+    def test_the_service_does_not_start_with_the_faucets_token_on_a_registry(self):
+        faucet_file = os.path.join(self.dir.name, "faucet")
+        with open(faucet_file, "w") as f:
+            f.write("admin-token\n")
+        os.chmod(faucet_file, 0o600)
+        args = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"), "--registry", f"{ADMIN}=https://v.example",
+                "--faucet-amount", "20", "--faucet-url", "https://v.example/api/validator", "--faucet-token-file", faucet_file]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), self.assertRaises(SystemExit) as e:
+            A.main([*args, "--registry-token-file", f"{ADMIN}={faucet_file}"])
+        self.assertIn("holds the faucet's token", str(e.exception))
+        # a token of its own starts it (it stops at the ledger, which is not there, after the check)
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", side_effect=RuntimeError("started")), \
+                unittest.mock.patch.object(A.Accounts, "load_rights", side_effect=A.HttpError(502, "no ledger")), unittest.mock.patch.object(A.Accounts, "start_sweeper"), self.assertRaises(RuntimeError):
+            A.main([*args, "--registry-token-file", f"{ADMIN}={self.bearer_file}"])
+
     def test_the_faucet_needs_its_options_and_a_token_file_for_its_owner_only(self):
         ok = A.faucet_from("20", "https://validator.example/api/validator/", self.bearer_file, 200)
         self.assertEqual((ok.amount, ok.url, ok.total.count), ("20.0", "https://validator.example/api/validator", 200))
