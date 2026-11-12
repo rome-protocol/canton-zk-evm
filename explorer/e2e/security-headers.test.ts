@@ -5,8 +5,8 @@ import { createHttpServer } from "../server/http.ts";
 import type { Api } from "../server/api.ts";
 
 /**
- * The security headers in a real browser: the built pages (BRIDGE_E2E_DIST) served by the explorer's own HTTP server, so the policy and the headers are the ones it sends. Every page route
- * opens and draws under them with no refusal by the policy, the search form (the page's only form besides the faucet's) still takes the person to the result, and a page of another site that
+ * The security headers in a real browser: the built pages (BRIDGE_E2E_DIST) served by the explorer's own HTTP server, so the policy and the headers are the ones it sends. Every top-level page route and a 404
+ * open and draw under them with no refusal by the policy, the search form (the page's only form besides the faucet's) still takes the person to the result, and a page of another site that
  * frames the explorer gets no explorer in its frame. The faucet's GitHub sign-in, which is a link, is held by faucet-builder.test.ts on the same server. Runs when BRIDGE_E2E_DIST is set (the
  * `bridge-page` job of .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
  */
@@ -38,7 +38,7 @@ describe.skipIf(!dist)("the security headers, in a browser", () => {
 
   const policyRefusal = (m: any) => /content security policy|refused to (frame|display|send form data)/i.test(m.text());
 
-  it("opens and draws every page route under them, with the headers on the answer and no refusal by the policy", async () => {
+  it("opens and draws every top-level page route and a 404 under them, with the headers on the answer and no refusal by the policy", async () => {
     for (const path of PAGES) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
       const refused: string[] = [];
