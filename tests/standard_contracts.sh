@@ -2,6 +2,7 @@
 # network/standard-contracts/deploy.py against a real reth: reth is started only through network/reth/launch.sh (peer discovery off, no peers) on the chain's
 # genesis plus a funded account, and checked with network/reth/check.sh. A helper mines a block whenever the pool holds transactions.
 #   1. a dry run sends nothing (no block);
+#   1b. a presigned transaction of an unfunded signer is answered "insufficient funds" and kept nowhere (the probe the script sends before funding);
 #   2. the first run deploys the CREATE2 deployer, Multicall3, CreateX and Permit2, and each one's code hash is the canonical one for this chain;
 #      the three presigned transactions (not tied to a chain, 100 gwei) were taken by reth with its launch.sh flags and nothing else;
 #   3. the second run sends nothing (no new block);
@@ -63,6 +64,17 @@ echo "$out"
 grep -q 'dry run: nothing was sent' <<<"$out" || fail "the dry run did not say it sent nothing"
 sleep 2
 [ "$(block_number)" = 0 ] || fail "a dry run made a block"
+
+echo "--- 1b. the probe: a presigned transaction of an unfunded signer"
+# Real reth answers "insufficient funds" and keeps nothing: the run's probe, sent before any signer is funded, has no side effect.
+probe=$(jq -r '.contracts[] | select(.name == "multicall3") | .presignedTx' "$ROOT/network/standard-contracts/contracts.json")
+signer=$(jq -r '.contracts[] | select(.name == "multicall3") | .signer' "$ROOT/network/standard-contracts/contracts.json")
+reply=$(curl -s -H 'content-type: application/json' \
+  --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendRawTransaction\",\"params\":[\"$probe\"]}" "http://127.0.0.1:$RETH_HTTP_PORT")
+grep -qi 'insufficient funds' <<<"$reply" || fail "reth did not answer 'insufficient funds' to a presigned transaction of an unfunded signer: $reply"
+[ "$(rpc eth_getTransactionCount "\"$signer\",\"pending\"")" = 0x0 ] || fail "the probe left a transaction of the signer in the pool"
+sleep 2
+[ "$(block_number)" = 0 ] || fail "the probe made a block"
 
 echo "--- 2. first run"
 deploy "$STATE" | tee "$STATE/first.txt"

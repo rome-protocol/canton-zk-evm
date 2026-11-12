@@ -20,7 +20,8 @@ The data (the presigned transactions, the Permit2 init code, the runtime code ha
 file. Before it touches the chain, this checks the data against itself: each presigned transaction's signer, its nonce, its gas, the address its
 creation gives, and the Permit2 address that its init code and salt give from the deployer. A mismatch stops it.
 
---funding-key-file holds the funding account's key as hex (with or without 0x), mode 0600 (a file that others can read is refused). The key
+--funding-key-file holds the funding account's key as hex (with or without 0x); a file that the group or others have any permission on is
+refused (mode 0600 or 0400 work). The key
 is read here, used to sign, and never printed. The funding account pays for the funding transfers and for Permit2's deployment.
 
 The presigned transactions are not tied to a chain (they are signed before EIP-155). A node that refuses those (Ostia's public RPC does) cannot
@@ -220,7 +221,16 @@ class Node:
             if r:
                 return r
             time.sleep(1)
-        raise Stop(f"transaction {tx_hash} is not in a block after {seconds} seconds; run this again when it is (a run that finds the contract in place sends nothing)")
+        raise Stop(f"transaction {tx_hash} is not in a block after {seconds} seconds; run this again once it is (until then a run refuses to send, so nothing is funded twice)")
+
+
+def refuses_unprotected(err: Exception) -> bool:
+    """True when a node's refusal of a transaction says it wants the transaction tied to a chain."""
+    text = str(err)
+    return "not tied to a chain" in text or "EIP-155" in text or "replay" in text.lower()
+
+
+UNPROTECTED_HINT = "This node refuses transactions that are not tied to a chain. Send the presigned ones to the chain's own reth RPC."
 
 
 def read_key(path: str):
@@ -230,7 +240,7 @@ def read_key(path: str):
     except OSError as e:
         raise Stop(f"cannot read the funding key file: {e.strerror}")
     if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-        raise Stop(f"the funding key file {path} can be read by others: chmod 600 it")
+        raise Stop(f"the funding key file {path} has permissions for the group or others: chmod 600 it (0600 or 0400 work)")
     text = p.read_text().strip().removeprefix("0x")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", text):
         raise Stop(f"the funding key file {path} does not hold one key as 64 hex digits")
@@ -319,6 +329,13 @@ def run(args) -> int:
         return 1
 
     todo = [s for s in states if s["entry"]["name"] in wanted and s["have"] is None]
+    if todo:
+        latest, pending = (node.number("eth_getTransactionCount", [account.address, tag]) for tag in ("latest", "pending"))
+        if pending > latest:
+            print(f"REFUSED the funding account {account.address} has {pending - latest} transaction(s) waiting in the node's pool: a transfer of an earlier run "
+                  f"may be among them, and a new run would fund a signer twice. Let them be mined, then run this again", file=sys.stderr)
+            print("nothing was sent", file=sys.stderr)
+            return 1
     max_fee, _ = fees(node)
     shortfalls = {s["entry"]["name"]: max(0, s["need"] - s["signerBalance"]) for s in todo if s["entry"]["how"] == "presigned"}
     create2_gas = CREATE2_FALLBACK_GAS
@@ -356,27 +373,50 @@ def run(args) -> int:
         print("dry run: nothing was sent")
         return 0
 
+    # Before any signer is funded, send the first presigned transaction that needs funding as a probe. A signer that holds too little makes the node
+    # answer "insufficient funds" and keep nothing, so the probe costs nothing; a node that wants a transaction tied to a chain says so, and the run stops
+    # before it has funded anyone. (A probe that is taken, because the signer was funded in the meantime, is that transaction: it is waited for below.)
+    probed = {}
+    first = next((s["entry"] for s in todo if s["entry"]["how"] == "presigned" and shortfalls[s["entry"]["name"]]), None)
+    if first is not None:
+        try:
+            probed[first["name"]] = node.call("eth_sendRawTransaction", [first["presignedTx"]])
+        except Stop as err:
+            if refuses_unprotected(err):
+                raise Stop(f"{err}\n  {UNPROTECTED_HINT} Nothing was funded.")
+
     for s in states:
         e = s["entry"]
         if e["name"] not in wanted or s["have"] is not None:
             continue
         if e["how"] == "presigned":
             short = shortfalls[e["name"]]
-            if short:
+            h = probed.pop(e["name"], None)
+            if short and h is None:
                 receipt = send_from_funding(node, account, chain_id, e["signer"], short, b"", FUNDING_TX_GAS, args.wait_seconds)
                 print(f"{e['name']}: funded {e['signer']} with {short} wei in block {int(receipt['blockNumber'], 16)}")
             if node.code_hash(e["address"]) is None and node.number("eth_getTransactionCount", [e["signer"], "latest"]) > 0:
                 raise Stop(f"{e['name']}: the signer {e['signer']} sent a transaction before this run's: its nonce is used and {e['address']} has no code from this run")
+            receipt = None
             try:
-                h = node.call("eth_sendRawTransaction", [e["presignedTx"]])
+                if h is None:
+                    h = node.call("eth_sendRawTransaction", [e["presignedTx"]])
+                receipt = node.wait_receipt(h, args.wait_seconds)
             except Stop as err:
-                if "not tied to a chain" in str(err) or "EIP-155" in str(err) or "replay" in str(err).lower():
-                    raise Stop(f"{err}\n  This node refuses transactions that are not tied to a chain. Send the presigned ones to the chain's own reth RPC.")
-                raise
-            receipt = node.wait_receipt(h, args.wait_seconds)
-            print(f"{e['name']}: presigned transaction {h} in block {int(receipt['blockNumber'], 16)}, status {receipt.get('status')}, gas used {int(receipt['gasUsed'], 16)}")
-            if receipt.get("status") != "0x1":
-                raise Stop(f"{e['name']}: the presigned transaction failed: its signer's nonce is used now, so {e['address']} cannot be deployed on this chain")
+                if refuses_unprotected(err):
+                    raise Stop(f"{err}\n  {UNPROTECTED_HINT}")
+                # The node did not take the transaction (or it is not mined): say what is at the address now, which is the cause when someone got there first.
+                have = node.code_hash(e["address"])
+                if have is not None and have != s["expected"]:
+                    raise Stop(f"{err}\n  {e['name']}: {e['address']} now has code with hash {have}, not the canonical {s['expected']}: other code was deployed there "
+                               f"first (the signer's key is not secret), so this address cannot be used on this chain. The signer {e['signer']} was funded in this run")
+                if have is None:
+                    raise
+                print(f"{e['name']}: the node did not take the presigned transaction ({err}), but the canonical code is at {e['address']} now")
+            if receipt is not None:
+                print(f"{e['name']}: presigned transaction {h} in block {int(receipt['blockNumber'], 16)}, status {receipt.get('status')}, gas used {int(receipt['gasUsed'], 16)}")
+                if receipt.get("status") != "0x1":
+                    raise Stop(f"{e['name']}: the presigned transaction failed: its signer's nonce is used now, so {e['address']} cannot be deployed on this chain")
         else:
             via = by_name[e["via"]]
             receipt = send_from_funding(node, account, chain_id, via["address"], 0, hexbytes(e["salt"]) + hexbytes(e["initCode"]), create2_gas, args.wait_seconds)
@@ -392,7 +432,7 @@ def run(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Deploys the standard contracts at their canonical addresses (see the top of this file).")
     ap.add_argument("--rpc", required=True, help="JSON-RPC URL of the chain; the presigned transactions are sent here")
-    ap.add_argument("--funding-key-file", required=True, help="file with the funding account's key as hex, mode 0600")
+    ap.add_argument("--funding-key-file", required=True, help="file with the funding account's key as hex; any group or other permission on it is refused (0600 or 0400 work)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and send nothing")
     ap.add_argument("--only", help="comma-separated names to deploy (default: all): create2-deployer, multicall3, createx, permit2")
     ap.add_argument("--wait-seconds", type=int, default=300, help="how long to wait for each transaction to be in a block (default 300)")

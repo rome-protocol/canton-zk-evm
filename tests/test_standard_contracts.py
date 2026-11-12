@@ -25,7 +25,7 @@ class FakeChain(http.server.ThreadingHTTPServer):
     and leaves the canonical runtime code; a call to the CREATE2 deployer with the salt and Permit2's init code leaves Permit2's."""
     daemon_threads = True
 
-    def __init__(self, refuse_unprotected=False):
+    def __init__(self, refuse_unprotected=False, frontrun=None):
         super().__init__(("127.0.0.1", 0), Handler)
         self.balance = {FUNDING.lower(): 10**19}
         self.nonce = {}
@@ -33,6 +33,8 @@ class FakeChain(http.server.ThreadingHTTPServer):
         self.sent = []
         self.block = 0
         self.refuse_unprotected = refuse_unprotected
+        self.frontrun = frontrun   # a name: its presigned transaction is refused with "nonce too low" and other code is at its address
+        self.pending = {}          # address -> transactions waiting in the pool
         self.receipts = {}
 
     def put_code(self, name):
@@ -49,7 +51,7 @@ class FakeChain(http.server.ThreadingHTTPServer):
         if method == "eth_getBalance":
             return hex(s.balance.get(params[0].lower(), 0))
         if method == "eth_getTransactionCount":
-            return hex(s.nonce.get(params[0].lower(), 0))
+            return hex(s.nonce.get(params[0].lower(), 0) + (s.pending.get(params[0].lower(), 0) if params[1] == "pending" else 0))
         if method == "eth_getBlockByNumber":
             return {"number": hex(s.block), "baseFeePerGas": hex(7)}
         if method == "eth_maxPriorityFeePerGas":
@@ -67,6 +69,9 @@ class FakeChain(http.server.ThreadingHTTPServer):
             if self.refuse_unprotected:
                 raise RuntimeError("This transaction is not tied to a chain. Sign it for chain 770101.")
             e = PRESIGNED[raw]
+            if e["name"] == self.frontrun:
+                self.code[e["address"].lower()] = b"\x60\x00"
+                raise RuntimeError("nonce too low")
             if self.balance.get(e["signer"].lower(), 0) < e["gasLimit"] * e["gasPrice"]:
                 raise RuntimeError("insufficient funds for gas * price + value")
             self.nonce[e["signer"].lower()] = 1
@@ -252,6 +257,56 @@ class Deploy(unittest.TestCase):
             chain.server_close()
         self.assertEqual(code, 1)
         self.assertIn("chain's own reth RPC", err)
+        self.assertEqual(chain.sent, [])   # the probe stopped the run before any signer was funded
+        self.assertEqual(chain.balance, {FUNDING.lower(): 10**19})
+
+    def test_a_node_that_refuses_them_stops_before_funding_multicall3_too(self):
+        chain = FakeChain(refuse_unprotected=True)
+        chain.put_code("create2-deployer")
+        threading.Thread(target=chain.serve_forever, daemon=True).start()
+        try:
+            code, out, err = self.run_it("--only", "multicall3", chain=chain)
+        finally:
+            chain.shutdown()
+            chain.server_close()
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was funded", err)
+        self.assertEqual(chain.sent, [])
+        self.assertEqual(chain.balance.get(ENTRIES["multicall3"]["signer"].lower(), 0), 0)
+
+    def test_a_key_file_only_its_owner_can_read_is_taken_whatever_the_owner_bits(self):
+        for mode in (0o400, 0o600):
+            os.chmod(self.key_file, mode)
+            code, out, err = self.run_it("--dry-run")
+            self.assertEqual(code, 0, err)
+        for mode in (0o640, 0o604, 0o660, 0o601):
+            os.chmod(self.key_file, mode)
+            code, out, err = self.run_it("--dry-run")
+            self.assertEqual(code, 1, oct(mode))
+            self.assertIn("chmod 600", err)
+
+    def test_a_funding_account_with_a_transaction_in_the_pool_is_refused(self):
+        self.chain.pending[FUNDING.lower()] = 1
+        code, out, err = self.run_it()
+        self.assertEqual(code, 1)
+        self.assertIn("waiting in the node's pool", err)
+        self.assertEqual(self.chain.sent, [])
+        self.chain.pending.clear()
+        code, out, err = self.run_it()
+        self.assertEqual(code, 0, err + out)
+
+    def test_other_code_that_got_to_the_address_first_is_reported_as_such(self):
+        chain = FakeChain(frontrun="multicall3")
+        chain.put_code("create2-deployer")
+        threading.Thread(target=chain.serve_forever, daemon=True).start()
+        try:
+            code, out, err = self.run_it("--only", "multicall3", chain=chain)
+        finally:
+            chain.shutdown()
+            chain.server_close()
+        self.assertEqual(code, 1)
+        self.assertIn("now has code with hash", err)
+        self.assertIn("other code was deployed there first", err)
 
 
 if __name__ == "__main__":
