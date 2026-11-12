@@ -1,0 +1,41 @@
+module Probe where
+
+-- `a` proposes, `b` accepts: the accept is submitted by b's participant and needs a's participant to confirm, as an Advance needs a leg's party's.
+template Proposal
+  with
+    a : Party
+    b : Party
+  where
+    signatory a
+    observer b
+    choice Accept : ContractId Agreement
+      controller b
+      do create Agreement with a, b
+
+template Agreement
+  with
+    a : Party
+    b : Party
+  where
+    signatory a, b
+
+-- The same with two proposing parties, both on one participant.
+template Proposal2
+  with
+    a : Party
+    c : Party
+    b : Party
+  where
+    signatory a, c
+    observer b
+    choice Accept2 : ContractId Agreement2
+      controller b
+      do create Agreement2 with a, c, b
+
+template Agreement2
+  with
+    a : Party
+    c : Party
+    b : Party
+  where
+    signatory a, c, b

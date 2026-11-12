@@ -1,0 +1,8 @@
+# A probe package for tests/canton_timeout.sh: two parties that must both confirm, nothing of Ostia's.
+sdk-version: __SDK__
+name: timeout-probe
+version: 0.0.1
+source: src
+dependencies:
+  - daml-prim
+  - daml-stdlib

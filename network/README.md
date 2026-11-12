@@ -396,6 +396,7 @@ python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'   # rebuil
 python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights, and the registry's --contract-step with a fake reth for the code hash
 tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
+tests/canton_timeout.sh      # the pinned Canton with a participant that stops answering: the mediator's timeout names the unresponsive parties, and the builder reads them
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
 ```
 
