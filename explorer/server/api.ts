@@ -129,7 +129,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
-        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on,
+        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, ownTraffic: Object.keys(config.ownAddresses).length > 0,
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };

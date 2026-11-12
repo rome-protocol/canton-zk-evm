@@ -149,6 +149,7 @@ describe("the public registry route", () => {
     expect(await ask(400)).toMatchObject({ kind: "bad-request" });
     expect(await ask(429, { "Retry-After": "30" })).toMatchObject({ kind: "rate-limited", retryAfter: 30 });
     expect(await ask(503)).toMatchObject({ kind: "unavailable" });
+    expect(await ask(424)).toMatchObject({ kind: "unavailable", status: 424 });   // the registry behind the service could not be used
     expect((await ask(404)).message).not.toMatch(/registry|account service/i);
   });
   it("is a network error when the site cannot be reached", async () => {

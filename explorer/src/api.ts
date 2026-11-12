@@ -25,6 +25,8 @@ export interface ApiStatus {
   faucet: { on: boolean };
   /** True when this explorer serves the public RPC at /rpc. */
   publicRpc: boolean;
+  /** True when this deployment names its own test and load addresses (OWN_ADDRESSES). Absent from a server older than this page: read as false. */
+  ownTraffic?: boolean;
   /** The newest block the index holds, how many blocks it is behind Canton's finalized head (null while unknown), where stage 2 is, and the chain instance. */
   indexHead: number | null;
   indexLag: number | null;

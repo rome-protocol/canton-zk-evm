@@ -140,12 +140,12 @@ function makesCall(t: ApiTx, c: Checkpoint): boolean {
 
 const PARTY = /^[^:\s]+::1220[0-9a-f]{64}$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-/** A refusal that waiting does not clear: the account service answered 403 (not on its list), 404 (no such route or contract) or 422 (the ledger refused), the token registry refused (a 502 that carries its own 4xx), or the page's own check refused the prepared transaction. */
+/** A refusal that waiting does not clear: the account service answered 403 (not on its list), 404 (no such route or contract) or 422 (the ledger refused), the token registry refused (a 424, or a 502 from an older service, that carries its own 4xx), or the page's own check refused the prepared transaction. */
 export const permanent = (e: unknown): boolean => {
   if (e instanceof UnexpectedTransaction) return true;   // the page's own check refused what the service prepared: preparing it again gives the same
   const { status, registryStatus } = (e ?? {}) as { status?: unknown; registryStatus?: unknown };
   if (typeof status === "number" && [403, 404, 422].includes(status)) return true;
-  return status === 502 && typeof registryStatus === "number" && registryStatus >= 400 && registryStatus < 500;   // the token registry refused the context
+  return (status === 424 || status === 502) && typeof registryStatus === "number" && registryStatus >= 400 && registryStatus < 500;   // the token registry refused the context
 };
 /** The steps whose transaction is the move's own, and shows its leg. */
 const LAST: Step[] = ["pay", "release", "claim", "withdraw"];

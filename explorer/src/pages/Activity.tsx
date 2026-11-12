@@ -11,10 +11,11 @@ import type { Session } from "../bridge/session.ts";
 import type { Pair } from "../bridge/tokens.ts";
 import { moveWords } from "../bridge/words.ts";
 import { dateTime } from "../format.ts";
+import { StillStuck } from "../components/Help.tsx";
 import { MoveMarks } from "./MoveMarks.tsx";
 import { useMarks, useMoveState } from "./moveWatch.ts";
 
-import { StillStuck } from "../components/Help.tsx";export interface ActivityProps {
+export interface ActivityProps {
   /** The wallet's account, or null while the wallet is not connected. */
   account: string | null;
   /** The move's machinery, once the Canton account is open. Without it the list is shown, and a move cannot be continued. */
@@ -139,7 +140,7 @@ export function Activity(props: ActivityProps) {
           {rows.map((e) => <Row key={e.ref} e={e} props={props} state={state} live={e.ref === liveRef} onCanton={open !== null && openOnCanton(e, open)} busy={busy || (going && e.ref !== liveRef)} onContinue={onContinue} />)}
         </ul>
       )}
-      {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck /></>}
+      {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck error={problem} /></>}
     </section>
   );
 }

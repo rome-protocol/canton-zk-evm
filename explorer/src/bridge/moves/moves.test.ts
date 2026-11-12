@@ -580,12 +580,14 @@ describe("a deposit that cannot settle is taken back", () => {
     keep(store, { input, stage: "canton" });
     const t = setup({ store });
     t.canton.setDeadline(Date.now() - 2 * MIN);
-    for (const refusal of [Object.assign(new Error("registry"), { status: 502, registryStatus: 404 }), new UnexpectedTransaction("it exercises Other")]) {
+    for (const refusal of [Object.assign(new Error("registry"), { status: 424, registryStatus: 404 }), Object.assign(new Error("registry"), { status: 502, registryStatus: 404 }), new UnexpectedTransaction("it exercises Other")]) {
       t.canton.failRecovery(refusal);
       await expect(t.move.abandon("ref-1")).rejects.toBeInstanceOf(CannotTakeBack);
     }
-    t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502, registryStatus: 500 }));
-    await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    for (const status of [424, 502]) {
+      t.canton.failRecovery(Object.assign(new Error("registry"), { status, registryStatus: 500 }));
+      await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
+    }
     t.canton.failRecovery(Object.assign(new Error("registry"), { status: 502 }));
     await expect(t.move.abandon("ref-1")).rejects.not.toBeInstanceOf(CannotTakeBack);
     t.canton.failRecovery(new UnexpectedTransaction("it exercises Other"));

@@ -97,7 +97,7 @@ export class WalletLedger {
   }
 }
 
-const KINDS: Record<number, AccountsError["kind"]> = { 400: "bad-request", 404: "not-found", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
+const KINDS: Record<number, AccountsError["kind"]> = { 400: "bad-request", 404: "not-found", 424: "unavailable", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
 const WORDS: Record<string, string> = {
   "bad-request": "The bridge could not read this request. Try again.",
   "not-found": "The bridge does not have this. Try again.",

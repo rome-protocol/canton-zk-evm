@@ -1466,21 +1466,21 @@ class RegistryRelay(OutsideCase):
         self.assertEqual(self.transfer_factory({"party": PARTY, "pad": "x" * A.RELAY_MAX_BODY})[0], 400)
         self.assertEqual(self.outside.calls, [])
         self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER + 10)}
-        self.assertEqual(self.transfer_factory()[0], 502)
+        self.assertEqual(self.transfer_factory()[0], 424)
         self.outside.raw = b"[1]"
-        self.assertEqual(self.transfer_factory()[0], 502)   # not a JSON object
+        self.assertEqual(self.transfer_factory()[0], 424)   # not a JSON object
         self.outside.raw = None
         self.outside.status, self.outside.raw = 302, b"{}"
         status, out, _ = self.transfer_factory()
-        self.assertEqual((status, out["registryStatus"]), (502, 302))   # a redirect is not followed
+        self.assertEqual((status, out["registryStatus"]), (424, 302))   # a redirect is not followed
 
     def test_the_transfer_factory_peer_is_checked_and_the_deadline_holds(self):
         self.with_registry()
         with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
-            self.assertEqual(self.transfer_factory()[0], 502)
+            self.assertEqual(self.transfer_factory()[0], 424)
         self.assertEqual(self.outside.calls, [])
         with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.2), self.on_connect(before=lambda: time.sleep(0.3)):
-            self.assertEqual(self.transfer_factory()[0], 502)
+            self.assertEqual(self.transfer_factory()[0], 424)
         self.assertEqual(self.outside.calls, [])
 
     def test_the_accept_context_of_an_instruction(self):
@@ -1539,7 +1539,7 @@ class RegistryRelay(OutsideCase):
         self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER + 10)}
         self.with_registry()
         status, out, _ = self.factory()
-        self.assertEqual((status, out), (502, {"error": "the token registry could not be used"}))
+        self.assertEqual((status, out), (424, {"error": "the token registry could not be used"}))
         self.outside.answer = {"pad": "x" * (A.RELAY_MAX_ANSWER - 100)}   # under the cap: passes
         self.assertEqual(self.factory()[0], 200)
 
@@ -1553,7 +1553,7 @@ class RegistryRelay(OutsideCase):
         self.outside.status, self.outside.headers, self.outside.raw = 302, {"location": other.url + "/stolen"}, b"{}"
         self.with_registry()
         status, out, _ = self.factory()
-        self.assertEqual((status, out["error"], out["registryStatus"]), (502, "the token registry answered HTTP 302", 302))
+        self.assertEqual((status, out["error"], out["registryStatus"]), (424, "the token registry answered HTTP 302", 302))
         self.assertEqual(other.calls, [])
         other.server.shutdown()
 
@@ -1563,7 +1563,7 @@ class RegistryRelay(OutsideCase):
         started = time.monotonic()
         with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 1.0), self.on_connect(before=lambda: time.sleep(0.6)):
             status, out, _ = self.factory()
-        self.assertEqual((status, out), (502, {"error": "the token registry could not be used"}))
+        self.assertEqual((status, out), (424, {"error": "the token registry could not be used"}))
         self.assertLess(time.monotonic() - started, 1.5)
         self.outside.delay = 0.1   # in time: it passes
         with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 1.0), self.on_connect(before=lambda: time.sleep(0.6)):
@@ -1572,25 +1572,25 @@ class RegistryRelay(OutsideCase):
     def test_a_connect_that_used_the_whole_deadline_sends_nothing(self):
         self.with_registry()
         with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.2), self.on_connect(before=lambda: time.sleep(0.3)):
-            self.assertEqual(self.factory()[0], 502)
+            self.assertEqual(self.factory()[0], 424)
         self.assertEqual(self.outside.calls, [])
 
     def test_an_answer_that_is_not_a_json_object_is_refused(self):
         self.with_registry()
         for raw in (b"not json", b"[1]", b"NaN", b'{"a": NaN}', b"\xff", b""):
             self.outside.raw = raw
-            self.assertEqual(self.factory()[0], 502, raw)
+            self.assertEqual(self.factory()[0], 424, raw)
 
-    def test_a_registry_that_refuses_is_a_502_with_its_status_and_none_of_its_text(self):
+    def test_a_registry_that_refuses_is_a_424_with_its_status_and_none_of_its_text(self):
         self.outside.status, self.outside.raw = 404, json.dumps({"error": HANDLE + " secret"}).encode()
         self.with_registry()
         status, out, _ = self.factory()
-        self.assertEqual((status, out), (502, {"error": "the token registry answered HTTP 404", "registryStatus": 404}))
+        self.assertEqual((status, out), (424, {"error": "the token registry answered HTTP 404", "registryStatus": 404}))
 
     def test_the_peer_is_checked_before_anything_is_sent(self):
         self.with_registry()
         with unittest.mock.patch.object(A, "is_loopback_address", return_value=False):
-            self.assertEqual(self.factory()[0], 502)
+            self.assertEqual(self.factory()[0], 424)
         self.assertEqual(self.outside.calls, [])
 
     def test_a_slow_registry_is_cut_off(self):
@@ -1598,13 +1598,13 @@ class RegistryRelay(OutsideCase):
         self.with_registry()
         started = time.monotonic()
         with unittest.mock.patch.object(A, "OUTSIDE_DEADLINE", 0.5):
-            self.assertEqual(self.factory()[0], 502)
+            self.assertEqual(self.factory()[0], 424)
         self.assertLess(time.monotonic() - started, 2.5)
 
-    def test_a_registry_that_is_not_there_is_a_502(self):
+    def test_a_registry_that_is_not_there_is_a_424(self):
         self.start(registries={ADMIN: ("http://127.0.0.1:1", None)})
         self.make_account()
-        self.assertEqual(self.factory()[0], 502)
+        self.assertEqual(self.factory()[0], 424)
 
     def test_the_token_is_read_from_its_file_for_each_request(self):
         self.with_registry()
@@ -1615,7 +1615,7 @@ class RegistryRelay(OutsideCase):
         self.assertEqual([c[2] for c in self.outside.calls], ["Bearer " + HANDLE, "Bearer rotated"])
         with open(self.bearer_file, "w") as f:
             f.write("two tokens\n")
-        self.assertEqual(self.factory()[0], 502)   # a file with two in it: nothing is sent
+        self.assertEqual(self.factory()[0], 424)   # a file with two in it: nothing is sent
         self.assertEqual(len(self.outside.calls), 2)
 
 
@@ -1641,6 +1641,16 @@ class PublicRegistryRelay(OutsideCase):
                 status, out, _ = self.public(suffix)
                 self.assertEqual((status, out), (200, self.outside.answer))
                 self.assertEqual(self.outside.calls, [("/scan-proxy" + path, self.BODY, "Bearer " + HANDLE, A.USER_AGENT)])
+
+    def test_a_registry_that_cannot_be_used_is_a_424_with_its_status_and_never_a_5xx(self):
+        self.outside.status, self.outside.raw = 502, b"{}"
+        status, out, _ = self.public("allocation-factory")
+        self.assertEqual((status, out), (424, {"error": "the token registry answered HTTP 502", "registryStatus": 502}))
+        self.outside.raw = b"[1]"
+        self.outside.status = 200
+        self.assertEqual(self.public("allocation-factory")[0], 424)
+        self.start(registries={ADMIN: ("http://127.0.0.1:1", None)})
+        self.assertEqual(self.public("allocation-factory")[0], 424)
 
     def test_the_body_goes_on_unchanged(self):
         body = {"party": "someone::1220" + "11" * 32, "meta": {"k": "v"}, "choiceArguments": {"a": [1, {"b": None}]}}
@@ -2133,6 +2143,15 @@ class NewAccountLimits(Behind):
         self.assertEqual((status, out.get("restored")), (200, True))
         self.assertEqual(self.calls_to("/external/allocate"), [])
 
+    def test_a_restored_key_that_asks_for_its_topology_again_is_not_refused_for_a_full_new_account_budget(self):
+        self.proxied(new_total=A.day_limit(1, A.ALL_ACCOUNTS))
+        self.service.new_total.hit("all")   # the day's accounts are all made
+        self.ledger.rights.append("rome::1220" + "10" * 32)   # the participant lists the party of key 0, the state file has no line for it
+        self.service.load_rights(force=True)
+        self.assertEqual([self.topology_of("1.1.1.1", 0)[0] for _ in range(2)], [200, 200])   # the second is read from the 10-minute memory
+        self.assertEqual(self.topology_of("1.1.1.1", 1)[0], 429)   # a key the participant does not list is still refused
+        self.assertEqual(self.topology_of("1.1.1.1", 1)[0], 429)   # nothing was handed out for it, so it is refused again
+
     def test_the_take_back_ceilings_are_worded_as_take_backs_by_default_and_in_main(self):
         service = A.Accounts(None, "svc", None, [])
         self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
@@ -2149,6 +2168,21 @@ class NewAccountLimits(Behind):
         self.assertEqual((service.take_backs.code, service.take_back_traffic.code), ("take_backs_all_full", "take_backs_all_full"))
         self.assertEqual((service.take_backs.count, service.take_back_traffic.count), (123, 456))
         self.assertEqual((service.overall.code, service.traffic.code), ("send_all_full", "send_all_full"))
+
+    def test_main_passes_the_network_ceilings_and_the_account_cap_on_and_their_defaults_are_the_documented_ones(self):
+        service = A.Accounts(None, "svc", None, [])
+        self.assertEqual((service.creates_net.count, service.per_net.count, service.public_relay_net.count, service.account_cap), (6, 400, 120, 1000))
+        built = {}
+
+        def stop(service, *args, **kw):
+            built["service"] = service
+            raise SystemExit(0)
+        argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s"),
+                "--accounts-per-network-day", "7", "--executes-per-network-day", "401", "--public-registry-requests-per-minute-network", "121", "--account-cap", "1001"]
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t"}), unittest.mock.patch.object(A, "make_server", stop), self.assertRaises(SystemExit):
+            A.main(argv)
+        service = built["service"]
+        self.assertEqual((service.creates_net.count, service.per_net.count, service.public_relay_net.count, service.account_cap), (7, 401, 121, 1001))
 
     def test_the_default_limits_are_per_64_per_48_and_everyone(self):
         service = A.Accounts(None, "svc", None, [])

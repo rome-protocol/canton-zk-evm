@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HelpLine, reportTime, StillStuck } from "./components/Help.tsx";
 import { pageTitle } from "./components/Shell.tsx";
 import { ACCOUNT_KEY_WORDS, SIGN_IN_NO_RECOVERY, SIGN_IN_SAME_ACCOUNT, TWINS_HOLDERS } from "./copy.ts";
@@ -48,6 +48,19 @@ describe("help", () => {
     expect(reportTime(new Date("2026-11-11T14:05:59Z"))).toBe("2026-11-11 14:05 UTC");
     render(<StillStuck />);
     expect(screen.getByText(/Still stuck\?/)).toHaveTextContent(/quote \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+  });
+  it("keeps the time of the first error while the error is the same, and takes a new time for a different one", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-11T14:05:00Z"));
+      const { rerender, container } = render(<StillStuck error="first" />);
+      expect(container).toHaveTextContent("quote 2026-11-11 14:05 UTC");
+      vi.setSystemTime(new Date("2026-11-11T14:09:00Z"));
+      rerender(<StillStuck error="first" />);
+      expect(container).toHaveTextContent("quote 2026-11-11 14:05 UTC");
+      rerender(<StillStuck error="second" />);
+      expect(container).toHaveTextContent("quote 2026-11-11 14:09 UTC");
+    } finally { vi.useRealTimers(); }
   });
 });
 

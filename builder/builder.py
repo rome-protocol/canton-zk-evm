@@ -1459,7 +1459,14 @@ class Hosting:
         """Asks once, at start, about a party that is none of the builder's own, to learn whether the lookup's token may ask at all. The lookup of a party that the
         token does not act or read as needs the right to read as any party (or participant admin or identity-provider admin): without it the participant answers 401
         or 403 for every outside party, and every leg of one would be left out with "cannot be read". That is a setting to fix, so it stops the start with the
-        words that say which right. Any other answer (an unknown party, an unreachable participant) says nothing about the right and is left to the lookups."""
+        words that say which right. A --hosting-token-file that cannot be read or is empty stops it too. Any other answer (an unknown party, an unreachable participant) says nothing about the right and is left to the lookups."""
+        if self.cfg.hosting_auth_file:   # read here, outside the try below: a file that is missing, unreadable or empty is a setting to fix, not a participant that did not answer
+            try:
+                token = Path(self.cfg.hosting_auth_file).read_text().strip()
+            except (OSError, UnicodeError) as e:
+                raise BuilderError(f"--hosting-token-file cannot be read: {bounded_text(e)}") from None
+            if not token:
+                raise BuilderError("--hosting-token-file is empty")
         query = urllib.parse.urlencode({"party": HOSTING_PROBE_PARTY, "participantId": self.participants[0]})
         try:
             self.get("/v2/state/connected-synchronizers?" + query)
@@ -3937,6 +3944,9 @@ class Producer:
             self.limit_kept = set()
             self.limit_legs = set()
             self.last_committed = {"number": u["number"], "hash": u["hash"], "time": iso(now)}
+            carried = {p for ps in (u.get("legParties") or {}).values() if isinstance(ps, list) for p in ps if isinstance(p, str)}
+            if carried:
+                self.blame.answered(carried)   # Canton answered it: the parties of its legs that were on trial are cleared, as for a block whose answer came at once
         extra = {"attempt_run": u["attempt_run"]} if u.get("attempt_run") else {}
         if not committed and info.get("timedOut"):   # the command did not get its confirmations: the parties of its legs are blamed as after an answered timeout
             carried = {p for ps in (u.get("legParties") or {}).values() if isinstance(ps, list) for p in ps if isinstance(p, str)}

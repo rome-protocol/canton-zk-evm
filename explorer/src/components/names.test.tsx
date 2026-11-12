@@ -91,11 +91,11 @@ describe("a token amount chip", () => {
   it("puts the warning of a lookalike token in the tooltip and draws a small triangle in the chip, for a token with none it draws the coin only", () => {
     const { container, unmount } = render(<TokenChip move={move()} label={{ ...usd, warning: "Not Rome's WtROME twin" }} />);
     expect(screen.getByText("100 tUSD").closest(".tchip")).toHaveAttribute("title", "100 tUSD. Not Rome's WtROME twin.");
-    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Warning: Not Rome's WtROME twin" })).toBeInTheDocument();
     expect(container.querySelectorAll("svg")).toHaveLength(1);
     unmount();
     render(<TokenChip move={move()} label={usd} />);
-    expect(screen.queryByRole("img", { name: "Warning" })).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Warning/ })).toBeNull();
   });
 
   it("ends each part of the tooltip with a full stop, the warning and the amount note too", () => {
@@ -106,7 +106,7 @@ describe("a token amount chip", () => {
   it("does the same for a token that moves by id", () => {
     const warnedNft: Label = { ...pass, warning: "Not Rome's WtROME twin" };
     render(<TokenChip move={move({ token: addr(0xe3), amount: null, tokenId: "3", standard: "ERC-721", decimals: null })} label={warnedNft} />);
-    expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Warning: Not Rome's WtROME twin" })).toBeInTheDocument();
     expect(screen.getByText(/OPASS/).closest(".tchip")).toHaveAttribute("title", expect.stringContaining("Not Rome's WtROME twin"));
   });
 

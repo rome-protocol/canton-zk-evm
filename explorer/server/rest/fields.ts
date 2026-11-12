@@ -7,7 +7,7 @@ export const pick = <T extends object, K extends keyof T>(o: T, fields: readonly
 
 /** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
 export const FIELDS = {
-  status: ["chainId", "chainName", "networkName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
+  status: ["chainId", "chainName", "networkName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "ownTraffic", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
   coin: ["symbol", "decimals"],
   /** The answer of /api/health, and one check in it. */
   health: ["status", "instance", "starting", "problems", "checks"],

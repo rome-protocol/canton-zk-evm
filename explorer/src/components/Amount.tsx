@@ -22,12 +22,12 @@ export function TokenChip({ move, label, compact = false }: { move: TokenMove; l
   const name = symbol ?? short(move.token, 8, 4);
   const notes: string[] = [];
   if (!symbol) notes.push("The name of this token is not known.");
-  // A token that carries the symbol of one of Rome's own and is not it: the warning is in the tooltip, and a small amber triangle stands in the chip.
+  // A token that carries the symbol of one of Rome's own and is not it: the warning is in the tooltip, and a small amber triangle stands in the chip, and its label carries the sentence for a screen reader (a phone shows no tooltip).
   // Its sentence and the words before it each end in a full stop, so that the tooltip reads as sentences.
   const stop = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
   if (label?.warning) notes.unshift(stop(label.warning));
   const first = (s: string) => (label?.warning ? stop(s) : s);
-  const warn = label?.warning ? <span className="tchip-warn" role="img" aria-label="Warning"><Icon name="warn" size={12} /></span> : null;
+  const warn = label?.warning ? <span className="tchip-warn" role="img" aria-label={`Warning: ${label.warning}`}><Icon name="warn" size={12} /></span> : null;
   // The words are the contract's own: set apart (bdi) so that they cannot reorder the text beside the chip, and cut short if very long.
   const text = (words: string) => <bdi className="tname">{words}</bdi>;
   if (move.tokenId !== null) {

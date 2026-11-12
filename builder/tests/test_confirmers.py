@@ -431,6 +431,29 @@ class Timeout(tp.Loop):
         self.assertEqual(self.reports[-1]["legParties"], {dep["hash"]: ["u::1"]})
         self.assertEqual((p.blame.suspects, p.blame.live), ({"v::1"}, {"v::1"}))   # u::1 is cleared, v::1 is the one left to try
 
+    def test_a_block_whose_reply_was_lost_and_that_later_committed_clears_a_party_on_trial(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout = "completion"
+        p = self.producer(s)
+        p.step()
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))
+        s.ledger.confirm_timeout = "none"   # 408 and no completion: not known
+        dep_id = b.deposit_id_of("u::1", "dep-1")
+        s.ledger.requests = [("req-9", {**tb.REQUEST[1], "depositor": "u::1", "depositId": dep_id})]
+        dep = tx(CAROL, 0, price=7)
+        s.reth.tx_legs[dep["hash"]] = [tb.Leg(tb.DEPOSIT, dep_id, tb.WTKB, tb.PAYEE, 10 * tb.UNIT)]
+        s.reth.pool[CAROL] = [dep]
+        self.now[0] += 2.0
+        p.step()
+        self.assertIsNone(self.reports[-1]["committed"])
+        self.assertEqual(p.unresolved["legParties"], {dep["hash"]: ["u::1"]})
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))   # still on trial: nothing is known yet
+        command = p.unresolved["commandId"]
+        s.ledger.outcomes[command] = {"commandId": command, "offset": 44, "updateId": "u2", "status": {}}
+        p.step()   # settled by the completion: committed
+        self.assertEqual(self.reports[-1]["resolved"], "committed")
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"v::1"}, {"v::1"}))   # u::1 is cleared
+
     def refused_block_of_a_party_on_trial(self, cause):
         """u::1 is on trial and v::1 waits; the next block carries a deposit of u::1 only, and Canton refuses it with this cause."""
         s, pay, plain = self.leg_pool()
@@ -652,6 +675,22 @@ class HostingRights(tb.Case):
         auth.write_text(self.BEARER + "\n")
         hosting.probe()
         self.assertEqual(hosting.check("e::1"), ("hosted", None))
+
+    def test_a_hosting_token_file_that_is_missing_or_empty_stops_the_start(self):
+        s = self.setup({ALICE: []})
+        missing = Path(s.dir) / "no-such.token"
+        with self.assertRaises(b.BuilderError) as e:
+            self.hosted(s, hosting_auth_file=str(missing)).probe()
+        self.assertIn("--hosting-token-file cannot be read", str(e.exception))
+        self.assertEqual(s.ledger.hosting_asked, [])
+        empty = Path(s.dir) / "empty.token"
+        empty.write_text("\n")
+        with self.assertRaises(b.BuilderError) as e:
+            self.hosted(s, hosting_auth_file=str(empty)).probe()
+        self.assertIn("--hosting-token-file is empty", str(e.exception))
+        code, out = self.run_main(s, "--hosted-on", ROME, "--hosting-token-file", str(missing))
+        self.assertEqual(code, 1)
+        self.assertIn("--hosting-token-file cannot be read", out["error"])
 
     def test_the_command_line_stops_with_the_reason_and_takes_the_token_file(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

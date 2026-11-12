@@ -87,7 +87,7 @@ async function keep(account: Account, wallet: string, store: KeyStore): Promise<
 /** One wallet signature makes the key; the account is opened (made, on the first visit, after a second signature that proves the wallet signs the same way twice) and opted in. It is Ready only
  * when both acceptances are read back. `current` says whether the wallet's account is still the one being opened: when it is not, nothing more is asked or signed. Once Ready, the key is kept in
  * this browser (keystore.ts) where the browser can, so that a reload opens the account again without a signature (`reopenAccount`). */
-export async function openAccount(wallet: Eip1193, address: string, s: Settings, progress: (note: string) => void = () => {}, client = new AccountsClient(s.accountsBase), current: () => boolean = () => true, store: KeyStore = browserKeyStore(), moves: StoreLike | null = moveStore()): Promise<Account> {
+export async function openAccount(wallet: Eip1193, address: string, s: Settings, progress: (note: string, warning?: string) => void = () => {}, client = new AccountsClient(s.accountsBase), current: () => boolean = () => true, store: KeyStore = browserKeyStore(), moves: StoreLike | null = moveStore()): Promise<Account> {
   const still = () => { if (!current()) throw closedError(); };
   progress("Sign the message in your wallet.");
   const key = await openKey(wallet, address);
@@ -97,8 +97,8 @@ export async function openAccount(wallet: Eip1193, address: string, s: Settings,
     still();
     // No account of this key exists yet. If this browser's records show an account made with this wallet address before, the wallet now signs another way: stop before a second, empty account is made.
     const next = await partyOf(key.publicKey, s.partyHint);
-    if (otherAccountOf(moves, address, next)) throw new PageError("second_account", "This wallet signs differently from before.");
-    progress(`This wallet has no Canton account on Ostia yet (${short(next, 16, 6)}). If you opened one with this wallet before, reject the next pop-up: your wallet now signs differently, and continuing makes a second, empty account. Otherwise sign once more to confirm.`);
+    if (otherAccountOf(moves, address, next, s.partyHint)) throw new PageError("second_account", "This wallet signs differently from before.");
+    progress("Sign once more to confirm.", `This wallet has no Canton account on Ostia yet (${short(next, 16, 6)}). If you opened one with this wallet before, reject the next pop-up: your wallet now signs differently, and continuing makes a second, empty account. Otherwise sign once more to confirm.`);
     await confirmKey(wallet, address, key);
   });
   still();
@@ -160,7 +160,7 @@ export async function getTestCoin(a: Pick<Account, "key" | "party" | "client" | 
     open();
     await a.submit(acceptTransfer(a.party, offer, registry));
   } catch (e) {
-    // An offer the registry or the ledger no longer knows (gone, taken, or past its time) is let go, so the next call asks for a new one. The service relays a registry 404 as a 502 that
+    // An offer the registry or the ledger no longer knows (gone, taken, or past its time) is let go, so the next call asks for a new one. The service relays a registry 404 as a 424 that
     // carries the registry's status. Any other failure keeps the offer.
     if (e instanceof AccountsError && (e.kind === "not-found" || e.kind === "refused" || (e.kind === "unavailable" && e.registryStatus === 404))) a.offer = undefined;
     throw e;

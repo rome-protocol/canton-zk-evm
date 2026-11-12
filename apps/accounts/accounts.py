@@ -76,6 +76,7 @@ TAKE_BACK_MARGIN = 60    # seconds past an allocation's settle-before time befor
 TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z\Z")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,252}\Z")
 RELAY_MAX_ANSWER = 1024 * 1024   # bytes of a registry's or the wallet's answer that are read
+RELAY_FAILED = 424              # the status of a relayed call the registry could not answer (not a 5xx, which a proxy may replace with a page of its own)
 RELAY_MAX_BODY = 64 * 1024       # bytes of a relayed request, as JSON
 OUTSIDE_DEADLINE = 15            # seconds a call to a registry or the wallet may take in all
 USER_AGENT = "Rome Protocol rome@romeprotocol.com"
@@ -872,7 +873,13 @@ class Accounts:
         url, bearer_file = self.registries[admin]
         path = (f"/registry/transfer-instruction/v1/{instruction}/choice-contexts/{choice}" if instruction else f"/registry/allocations/v1/{allocation}/choice-contexts/withdraw" if allocation
                 else "/registry/transfer-instruction/v1/transfer-factory" if transfer_factory else "/registry/allocation-instruction/v1/allocation-factory")
-        return outside_post(url, path, payload, bearer_file, "the token registry")
+        try:
+            return outside_post(url, path, payload, bearer_file, "the token registry")
+        except HttpError as e:
+            if e.status != 502:
+                raise
+            # Not a 5xx: a proxy in front may replace an origin's 502 with a page of its own, and the page could not read the answer (which carries the registry's own status).
+            raise HttpError(RELAY_FAILED, e.message, e.stable, **e.extra) from None
 
     def grant(self, body: dict, ip: str) -> dict:
         return self.faucet.grant(self.known(body.get("party")), pending_owner(ip))
@@ -888,7 +895,8 @@ class Accounts:
         blob = hmac.new(self.secret, raw, hashlib.sha256).hexdigest()[:48]
         again = self.topologies.get(blob)
         if again:
-            self.new_account_room(ip)   # the caps may have filled since it was handed out: say so now, before the person signs
+            if again[0] not in self.rights:   # a party the participant lists is restored by `allocate` with no budget spent, so it is not refused for one
+                self.new_account_room(ip)   # the caps may have filled since it was handed out: say so now, before the person signs
             return {"party": again[0], "exists": False, "multiHash": again[3], "topologyTransactions": again[2], "blob": blob}
         self.topologies.room(pending_owner(ip))   # a client at its cap costs the participant nothing
         self.check_human(body, ip)

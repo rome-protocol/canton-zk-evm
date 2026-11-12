@@ -471,7 +471,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
         return <Alert tone="wait" icon="note" role="alert" id={id}><b>{r.message}</b> {retry(r.waitSeconds)}</Alert>;
       case "captcha":
       case "problem":
-        return <><Alert tone="bad" icon="bad" role="alert" id={id}>{r.message}</Alert><StillStuck /></>;
+        return <><Alert tone="bad" icon="bad" role="alert" id={id}>{r.message}</Alert><StillStuck error={r.message} /></>;
       case "invalid":
         return <Alert tone="bad" icon="bad" role="alert" id={id}>{NOT_AN_ADDRESS}</Alert>;
       case "queued":

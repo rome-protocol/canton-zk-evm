@@ -536,6 +536,27 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.announce("a3", ip="203.0.113.66")[0], 200)
         self.assertEqual(self.registry.parts.by_receiver[(RECEIVER, "203.0.113.66")], 1)
 
+    def test_a_cap_that_expired_entries_still_fill_is_looked_at_again_with_them_gone_before_it_refuses(self):
+        for name, parts, ip in (("receiver", {"ttl": 100, "per_receiver": 3, "per_client": 50}, "203.0.113.5"), ("client", {"ttl": 100, "per_receiver": 50, "per_client": 3}, "203.0.113.6")):
+            with self.subTest(name):   # each case has refs and a network of its own: the state file keeps the first case's entries
+                self.start(header="X-Real-IP", parts=parts)
+                self.assertEqual([self.announce(f"{name}{i}", ip=ip)[0] for i in range(3)], [200, 200, 200])
+                self.assertEqual(self.announce(f"{name}3", ip=ip)[0], 429)   # all three are alive
+                self.now += 101   # they expired, an hour has not passed since the last sweep, and nothing forces one
+                self.assertEqual(self.announce(f"{name}3", ip=ip)[0], 200)
+
+    def test_an_entry_that_expired_and_was_not_swept_yet_is_new_when_announced_again_and_belongs_to_the_new_network(self):
+        self.start(header="X-Real-IP", parts={"ttl": 100, "per_receiver": 50, "per_client": 2})
+        self.assertEqual(self.announce("a", ip="203.0.113.1")[0], 200)
+        self.now += 101   # expired, not swept
+        self.assertEqual(self.announce("x", ip="198.51.100.2")[0], 200)
+        self.assertEqual(self.announce("a", ip="198.51.100.2")[0], 200)   # announced again from another network: a new entry for it
+        parts = self.registry.parts
+        self.assertEqual((parts.by_client["203.0.113.1"], parts.by_client["198.51.100.2"]), (0, 2))   # the first network's count went with the expired entry
+        self.assertEqual(parts.clients[R.lock_id(RECEIVER, "a")][0], "198.51.100.2")
+        self.assertEqual(self.announce("y", ip="198.51.100.2")[0], 429)   # it counts against the new network's cap
+        self.assertEqual(self.announce("y", ip="203.0.113.1")[0], 200)   # and the first network has its room back
+
     def test_a_client_network_holds_at_most_so_many_live_announcements_and_counts_by_its_48(self):
         self.accept_other()
         self.start(header="X-Real-IP", parts={"per_client": 2})

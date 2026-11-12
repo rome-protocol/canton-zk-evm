@@ -37,7 +37,7 @@ from keccak import keccak256
 USER_AGENT = "ostia-standard-contracts/1 Rome Protocol rome@romeprotocol.com"
 DATA_FILE = HERE / "contracts.json"
 FUNDING_TX_GAS = 21_000
-CREATE2_FALLBACK_GAS = 4_000_000   # the gas limit shown in a dry run before the deployer exists (a real run asks the node)
+CREATE2_FALLBACK_GAS = 4_000_000   # the gas limit of a deployment through the CREATE2 deployer when the node cannot be asked yet: a dry run before the deployer exists, and a real run that deploys the deployer itself first (the gas that is not used is refunded)
 GWEI = 10**9
 TYPE_HASH = keccak256(b"EIP712Domain(string name,uint256 chainId,address verifyingContract)")   # Permit2's EIP-712 domain
 NAME_HASH = keccak256(b"Permit2")
