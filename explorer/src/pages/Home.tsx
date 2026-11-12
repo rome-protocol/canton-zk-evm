@@ -50,10 +50,10 @@ export function Home() {
   const flight = useInFlight(live, painted);
   const homeStats = useHomeStats(painted);
   const flightRead = readOf(flight);
-  // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
+  // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once. One that the explorer answers with not found is not asked for again on a window focus or a return to the page (the journal can list a transaction that neither reth nor the tracker holds).
   const faucet = useFaucetAddress(painted);
   const pending = flight.data?.transactions ?? [];
-  const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false })) });
+  const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false, retryOnMount: false, refetchOnWindowFocus: false })) });
   const details: Record<string, Details> = Object.fromEntries(pending.map((p, i) => [p.hash, detail[i]!.data ?? (detail[i]!.isError ? "error" : "reading")]));
   const newest = blocks.data?.items[0], first = txs.data?.items[0];
   // The token with the most holders, for a last thing to try; the list is read once the first frame is drawn, and without one there is no chip.

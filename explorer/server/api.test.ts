@@ -127,6 +127,7 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
   if (kind === "status") {
     same(b.coin, FIELDS.coin); same(b.pins, FIELDS.pins); for (const k of (b.pins as { keys: Obj[] }).keys) same(k, FIELDS.pinsKey); same(b.faucet, FIELDS.faucet);
     expect(typeof b.publicRpc).toBe("boolean");
+    expect(typeof b.ownTraffic).toBe("boolean");
     if (b.final) same(b.final, FIELDS.final);
     if (b.proving) same(b.proving, FIELDS.proving);
     if (b.signers) same(b.signers, FIELDS.signers);

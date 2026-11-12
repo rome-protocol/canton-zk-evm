@@ -94,7 +94,7 @@ export function SendOnCanton({ sender, pairs, held, party, onChanged }: { sender
         <button type="button" className="btn" disabled={!checked.ok || working} onClick={() => { setResult({ s: "idle" }); setConfirming(true); }}>Review</button>
       )}
       {result.s === "done" && <Done done={result} />}
-      {result.s === "failed" && <><p className="small bad" role="alert">{result.message}</p><StillStuck /></>}
+      {result.s === "failed" && <><p className="small bad" role="alert">{result.message}</p><StillStuck error={result.message} /></>}
     </div>
   );
 }

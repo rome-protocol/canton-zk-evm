@@ -110,6 +110,18 @@ describe("the Bridge page", () => {
     expect(await screen.findByText("Ready")).toBeInTheDocument();
   });
 
+  it("shows the warning before the second signature in a paragraph of its own, not only on the button", async () => {
+    setUp();
+    mocks.openAccount.mockImplementation(async (_wallet: unknown, _address: unknown, _settings: unknown, progress: (note: string, warning?: string) => void) => {
+      progress("Sign once more to confirm.", "This wallet has no Canton account on Ostia yet (rome::1220ab…cdef). If you opened one with this wallet before, reject the next pop-up.");
+      return new Promise(() => {});
+    });
+    await signIn();
+    const warning = await screen.findByText(/This wallet has no Canton account on Ostia yet/);
+    expect(warning).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "Sign once more to confirm." })).toBeDisabled();
+  });
+
   it("says in plain words when the browser has no wallet, without naming a standard", async () => {
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
     fakeApi(route({ faucet: () => reply(faucet), twins: () => reply(twins) }));

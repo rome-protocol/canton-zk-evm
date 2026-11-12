@@ -16,6 +16,7 @@ import { arrivesAs, inputOf, moveOf, pairsOf, type Pair, type Side, type Token }
 import { moveWords } from "../bridge/words.ts";
 import { TokenPicker } from "./TokenPicker.tsx";
 import { StillStuck } from "../components/Help.tsx";
+
 export interface MoveCardProps {
   config: BridgeConfig | null;
   configState: "loading" | "ready" | "failed";
@@ -276,7 +277,7 @@ export function MoveCard(p: MoveCardProps) {
             </div>
           )}
           {note && <p className={`small ${note.bad ? "bad" : "muted"}`} role={note.bad ? "alert" : "status"}>{note.text}</p>}
-          {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck /></>}
+          {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck error={problem} /></>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {extra}
           {p.faucet && bal.gas === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${config?.chain.coin.symbol ?? "Test coin"} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees.</span></p>}

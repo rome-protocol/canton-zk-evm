@@ -169,11 +169,11 @@ export function whatMoved(e: Entry, pairs: Pair[], chainName: string): string {
 export const seedOf = (e: Entry): Marks => ({ sent: e.tx !== null, proven: e.done, final: e.done, block: e.block, updateId: e.updateId ?? null });
 
 /**
- * A Canton account that this browser's records name for this wallet address and that is not `party`: the moves kept here and the moves that finished carry the account they were made for.
- * Null when the records name no other. A wallet that now signs another way would make a second, empty account, and these records are how the page can tell.
+ * A Bridge account (a party named `${partyHint}::...`) that this browser's records name for this wallet address and that is not `party`: the moves kept here and the moves that finished carry the account they were made for.
+ * Null when the records name no other. A move made with a connected Canton wallet carries that wallet's party, which is not a Bridge account, so it is left out. A wallet that now signs another way would make a second, empty account, and these records are how the page can tell.
  */
-export function otherAccountOf(store: StoreLike | null, wallet: string, party: string): string | null {
-  const mine = (e: { account: string; party: string }) => same(e.account, wallet) && e.party !== "" && e.party !== party;
+export function otherAccountOf(store: StoreLike | null, wallet: string, party: string, partyHint: string): string | null {
+  const mine = (e: { account: string; party: string }) => same(e.account, wallet) && e.party.startsWith(`${partyHint}::`) && e.party !== party;
   const entry = [...keptMoves(store).map((c) => ({ account: c.account, party: c.party })), ...finished(store)].find(mine);
   return entry?.party ?? null;
 }

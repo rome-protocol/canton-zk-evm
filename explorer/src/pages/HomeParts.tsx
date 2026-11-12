@@ -12,7 +12,7 @@ import { SearchBox } from "../components/SearchBox.tsx";
 import { compactCount, count, duration, nb, pct, peakCount, plural, rateShort, sec, span, trim } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import type { Fetched, Read, Summary } from "../stats.ts";
-import { useNow } from "../useStatus.ts";
+import { useNow, useStatus } from "../useStatus.ts";
 
 /** What the home page says it is, with a search box of its own and a few things to try, which are the newest the explorer holds. */
 /** `words`: the label is the contract's own text (a token symbol), so it is set apart, cut short by the style, and whole in the tooltip. */
@@ -29,12 +29,16 @@ export function Hero({ tries }: { tries: Array<{ label: string; q: string; words
   );
 }
 
-/** The final transactions since launch in short, with the blocks of the day; "total not counted yet" when the server cannot say, never 0. */
-export const SinceLaunch = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) =>
-  t ? <>{compactCount(t.total)} since launch, with Rome's own tests · {plural(blocks, "block")}</> : <>total not counted yet · {plural(blocks, "block")}</>;
+/** The final transactions since launch in short, with the blocks of the day; "total not counted yet" when the server cannot say, never 0. Where the deployment names its own addresses, it says most are Rome's own tests and load runs. */
+export const SinceLaunch = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) => {
+  const own = useStatus().data?.ownTraffic === true;
+  return t ? <>{compactCount(t.total)} since launch{own ? ", mostly Rome's own tests and load runs" : ", test and load runs included"} · {plural(blocks, "block")}</> : <>total not counted yet · {plural(blocks, "block")}</>;
+};
 /** What the "i" of the day's transactions says: the count of all time and the block it stands at, the test runs in it, and that each block is one Canton transaction. */
-export const SinceLaunchNote = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) =>
-  <>{t ? `${count(t.total)} final in all, as of block ${t.asOfBlock}; Rome's own test and load runs are counted in it. ` : ""}{`In ${plural(blocks, "block")}, each one Canton transaction.`}</>;
+export const SinceLaunchNote = ({ t, blocks }: { t: StatsSummary["txs"]["allTime"]; blocks: number }) => {
+  const own = useStatus().data?.ownTraffic === true;
+  return <>{t ? `${count(t.total)} final in all, as of block ${t.asOfBlock}; ${own ? "most of them are Rome's own test and load runs" : "test and load runs are counted in it"}. ` : ""}{`In ${plural(blocks, "block")}, each one Canton transaction.`}</>;
+};
 
 type IconName = Parameters<typeof Icon>[0]["name"];
 /** The picture before each card's label, as screen 01 has it. It is decoration: the label says what the card is. */

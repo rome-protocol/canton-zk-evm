@@ -10,8 +10,8 @@ export const HelpLine = () => <p className="small muted help">Need help? <OutLin
 /** The time to quote in a report, to the minute, in UTC: "2026-11-11 14:05 UTC". */
 export const reportTime = (at: Date = new Date()): string => `${at.toISOString().slice(0, 10)} ${at.toISOString().slice(11, 16)} UTC`;
 
-/** Under an error: where to go next, with the time of the error to put in a report. The time is taken when the error first shows. */
-export function StillStuck() {
-  const at = useMemo(() => reportTime(), []);
+/** Under an error: where to go next, with the time of the error to put in a report. The time is taken when the error first shows, and again when `error` (the words above it) changes. */
+export function StillStuck({ error }: { error?: string }) {
+  const at = useMemo(() => reportTime(), [error]);
   return <p className="small muted help">Still stuck? <OutLink href={ISSUES_URL}>Open an issue</OutLink> and quote {at}, or <OutLink href={DOCS_URL}>read the docs</OutLink>.</p>;
 }

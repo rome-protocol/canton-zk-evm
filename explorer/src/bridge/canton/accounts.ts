@@ -48,7 +48,7 @@ export const withdrawChoice = (answer: unknown): Choice => choiceOf(answer);
 /** The factory's choice context, which the token standard nests under `choiceContext`. */
 export const factoryChoice = (answer: { choiceContext?: unknown }): Choice => choiceOf(answer?.choiceContext);
 
-const KINDS: Record<number, AccountsErrorKind> = { 400: "bad-request", 401: "unauthorized", 403: "forbidden", 404: "not-found", 409: "conflict", 422: "refused", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
+const KINDS: Record<number, AccountsErrorKind> = { 400: "bad-request", 401: "unauthorized", 403: "forbidden", 404: "not-found", 409: "conflict", 422: "refused", 424: "unavailable", 429: "rate-limited", 502: "unavailable", 503: "unavailable" };
 export type AccountsErrorKind = "bad-request" | "unauthorized" | "forbidden" | "not-found" | "conflict" | "refused" | "rate-limited" | "unavailable" | "server" | "network";
 
 /** An answer that is not a success. `retryAfter` (seconds) is set on a 429 and on a 503 that says it; `code` and `detail` carry the participant's refusal (422). */
@@ -58,7 +58,7 @@ export class AccountsError extends Error {
   readonly retryAfter?: number;
   readonly code?: string;
   readonly detail?: unknown;
-  /** On a 502 the service relayed from the token registry: the status the registry itself answered. */
+  /** On a 424 (or, from an older service, a 502) the service relayed from the token registry: the status the registry itself answered. */
   readonly registryStatus?: number;
   constructor(kind: AccountsErrorKind, status: number, message: string, retryAfter?: number, code?: string, detail?: unknown, registryStatus?: number) {
     super(message);

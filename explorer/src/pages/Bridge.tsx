@@ -35,7 +35,7 @@ import "./bridge.css";
 type Config = { s: "loading" } | { s: "failed" } | { s: "ready"; config: BridgeConfig };
 
 const faucet = createFaucetClient();
-type Phase = { s: "idle" } | { s: "working"; note: string } | { s: "failed"; message: string } | { s: "ready"; account: Account };
+type Phase = { s: "idle" } | { s: "working"; note: string; warning?: string } | { s: "failed"; message: string } | { s: "ready"; account: Account };
 type Coin = { s: "idle" } | { s: "working" } | { s: "done"; message: string } | { s: "off" } | { s: "failed"; message: string };
 
 /** What the explorer's faucet said of a request, in words. */
@@ -195,7 +195,7 @@ export function Bridge() {
       if (!same()) return;
       if (!on.ok) return setPhase({ s: "failed", message: plainText(on.message) ?? "Your wallet is not on " + chain.chainName + " yet." });
       const { openAccount } = await import("../bridge/account.ts");
-      const account = await openAccount(w, wallet.account, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same);
+      const account = await openAccount(w, wallet.account, settings, (note, warning) => { if (same()) setPhase({ s: "working", note, warning }); }, undefined, same);
       if (!same()) return account.close();
       holding.current = account;
       setPhase({ s: "ready", account });
@@ -305,9 +305,10 @@ export function Bridge() {
               ) : (
                 <button type="button" className="btn" disabled={phase.s === "working" || wrongSite || !connected} onClick={signIn}>{phase.s === "working" ? phase.note : "Sign in with your wallet"}</button>
               )}
+              {phase.s === "working" && phase.warning && <p className="small" role="status">{phase.warning}</p>}
               <p className="small muted">You are on <b className="mono">{here}</b>. Sign in only if that is the address you meant to open.</p>
               {wrongSite && <p className="small bad" role="alert">This page is open at {here}, but this bridge is set up for {settings.origin}. Signing is turned off here. Open the bridge from its own address.</p>}
-              {phase.s === "failed" && <><p className="small bad" role="alert">{phase.message}</p><StillStuck /></>}
+              {phase.s === "failed" && <><p className="small bad" role="alert">{phase.message}</p><StillStuck error={phase.message} /></>}
               {canton.on && <p className="small muted">Have a Canton wallet? <button type="button" className="link-b" onClick={toWallet}>Connect your Canton wallet</button></p>}
             </>
           )}

@@ -166,12 +166,14 @@ describe("test Canton Coin", () => {
     await expect(getTestCoin(a, "DSO::1220cc")).rejects.toMatchObject({ kind: "not-found" });
     expect(a.offer).toBeUndefined();
   });
-  it("lets an offer go when the service relays a registry 404 (a 502 with the registry's status), but keeps it on any other 502 or 503", async () => {
+  it("lets an offer go when the service relays a registry 404 (a 424, or a 502 from an older service, with the registry's status), but keeps it on any other 424, 502 or 503", async () => {
     const relayed = (status: number, body: unknown) => async () => { const c = new AccountsClient("", (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch); return c.acceptContext(await keyFromSignature("0x" + "11".repeat(32) + "22".repeat(32) + "1b"), "DSO::1220cc", "00ab", PARTY); };
-    const gone = account(async () => ({ transferInstructionCid: "00ab" }), relayed(502, { error: "the token registry answered HTTP 404", registryStatus: 404 }));
-    await expect(getTestCoin(gone.a, "DSO::1220cc")).rejects.toMatchObject({ kind: "unavailable", registryStatus: 404 });
-    expect(gone.a.offer).toBeUndefined();
-    for (const [status, body] of [[502, { error: "the token registry answered HTTP 500", registryStatus: 500 }], [502, { error: "unreachable" }], [503, { error: "busy" }]] as const) {
+    for (const status of [424, 502]) {
+      const gone = account(async () => ({ transferInstructionCid: "00ab" }), relayed(status, { error: "the token registry answered HTTP 404", registryStatus: 404 }));
+      await expect(getTestCoin(gone.a, "DSO::1220cc")).rejects.toMatchObject({ kind: "unavailable", registryStatus: 404 });
+      expect(gone.a.offer).toBeUndefined();
+    }
+    for (const [status, body] of [[424, { error: "the token registry answered HTTP 500", registryStatus: 500 }], [424, { error: "the token registry could not be used" }], [502, { error: "the token registry answered HTTP 500", registryStatus: 500 }], [502, { error: "unreachable" }], [503, { error: "busy" }]] as const) {
       const kept = account(async () => ({ transferInstructionCid: "00ab" }), relayed(status, body));
       await expect(getTestCoin(kept.a, "DSO::1220cc")).rejects.toMatchObject({ kind: "unavailable" });
       expect(kept.a.offer, String(status)).toBe("00ab");
@@ -222,14 +224,20 @@ describe("opening the account", () => {
     return client;
   };
   it("says what is about to happen before the confirm signature: no account yet for this wallet, and what to do if there was one", async () => {
-    const notes: string[] = [];
-    await openAccount({} as never, "0x1", settings, (n) => notes.push(n), making([open(true, true)]), () => true, undefined, history("0x2", "rome::1220other"));
-    expect(notes.find((n) => /has no Canton account on Ostia yet/.test(n))).toMatch(/If you opened one with this wallet before, reject the next pop-up.*second, empty account/);
+    const warnings: (string | undefined)[] = [];
+    await openAccount({} as never, "0x1", settings, (_n, w) => warnings.push(w), making([open(true, true)]), () => true, undefined, history("0x2", "rome::1220other"));
+    expect(warnings.find((w) => /has no Canton account on Ostia yet/.test(w ?? ""))).toMatch(/If you opened one with this wallet before, reject the next pop-up.*second, empty account/);
   });
   it("refuses to make a second account when this browser's records show another account for this wallet address, and signs nothing more", async () => {
     const client = making([open(true, true)]);
     await expect(openAccount({} as never, "0x1", settings, () => {}, client, () => true, undefined, history("0X1", "rome::1220other"))).rejects.toMatchObject({ name: "PageError", code: "second_account" });
     expect(client.openRequests).not.toHaveBeenCalled();
+  });
+  it("does not count a move made with a connected Canton wallet as another Bridge account: the first sign-in goes on to the confirm signature", async () => {
+    const warnings: (string | undefined)[] = [];
+    const client = making([open(true, true)]);
+    await openAccount({} as never, "0x1", settings, (_n, w) => warnings.push(w), client, () => true, undefined, history("0x1", "alice::1220" + "cc".repeat(32)));
+    expect(warnings.some((w) => /has no Canton account on Ostia yet/.test(w ?? ""))).toBe(true);
   });
 
   it("lets an account go: close() stops every command of it", async () => {

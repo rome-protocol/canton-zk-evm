@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
 import { series, summary } from "./stats-fixtures.ts";
@@ -334,6 +335,17 @@ describe("the list of latest transactions, with those not final yet", () => {
     expect(row).not.toHaveTextContent("tROME");
   });
 
+  it("does not ask again for a transaction the explorer answered not found, when the window gets focus again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const calls = fakeApi(route({ inFlight: () => reply(inFlight({ transactions: [{ hash: hash(0xb1), stage: "waiting", at }] })), tx: () => reply({ error: "Not found." }, 404) }));
+    renderApp("/");
+    await screen.findByText("Latest transactions");
+    await vi.waitFor(() => expect(calls.filter((c) => c.startsWith("/api/tx/")).length).toBe(1));
+    await act(async () => { focusManager.setFocused(false); focusManager.setFocused(true); await new Promise((r) => setTimeout(r, 30)); });
+    expect(calls.filter((c) => c.startsWith("/api/tx/"))).toHaveLength(1);
+  });
+
   it("says that those not final yet cannot be read, and still lists the final ones, when the in-flight route fails", async () => {
     const region = await open({ inFlight: () => reply({ error: "no" }, 500) });
     expect(region.getByText("Transactions not final yet cannot be read right now.")).toBeInTheDocument();
@@ -376,10 +388,10 @@ const statsRoute = (h: { hour?: Partial<StatsSummary>; day?: Partial<StatsSummar
 /** What a card shows: its text without the "i" and the note behind it, which the tests read with `noteOf`. */
 const shown = (el: HTMLElement) => { const c = el.cloneNode(true) as HTMLElement; c.querySelectorAll(".info").forEach((n) => n.remove()); return c.textContent; };
 const noteOf = (el: HTMLElement) => within(el).getByRole("tooltip").textContent;
-const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => ReturnType<typeof reply>) => async () => {
+const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => ReturnType<typeof reply>, over: Partial<ApiStatus> = {}) => async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
-  const calls = fakeApi(route({ status: () => reply(status()), stats: statsRoute(h), ...(flight && { inFlight: flight }) }));
+  const calls = fakeApi(route({ status: () => reply(status(over)), stats: statsRoute(h), ...(flight && { inFlight: flight }) }));
   renderApp("/");
   await screen.findByRole("region", { name: "Chain status" });
   // The day and the series are read once the first frame is drawn.
@@ -433,8 +445,14 @@ describe("the numbers, from the stats routes", () => {
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch, with Rome's own tests · 21 blocks");
-    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; Rome's own test and load runs are counted in it. In 21 blocks, each one Canton transaction.");
+    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch, test and load runs included · 21 blocks");
+    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; test and load runs are counted in it. In 21 blocks, each one Canton transaction.");
+  });
+
+  it("says most of the all-time total is Rome's own tests and load runs only where the deployment names its own addresses", async () => {
+    await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } }, undefined, { ownTraffic: true })();
+    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch, mostly Rome's own tests and load runs · 21 blocks");
+    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; most of them are Rome's own test and load runs. In 21 blocks, each one Canton transaction.");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {
