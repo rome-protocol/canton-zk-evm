@@ -5,8 +5,12 @@ bytes, then public values that commit to this block's hash, as a real proof's do
 call, `legs` in particular, is passed to the REAL sidecar, which checks the gateway's storage proofs against the block's state root.
 So the rehearsal runs everything but the zero-knowledge proof check.
 
+With DEMO_SIDECAR_HOLD_FILE set, a call that Canton makes while it validates a block (X-Daml-External-Mode: validation) waits, before it is answered, the
+number of seconds written in that file, for as long as the file is there; the call is noted as "<port> <function> held <seconds>" in "$FAKE_LOG.held".
+tests/canton_lsu.sh uses it to keep a block's confirmation going across a synchronizer upgrade. Without the setting nothing waits.
+
 Usage: demo_sidecar.py <port> <real sidecar port> <program-vk hex> <root-c hex> <the fixed first 832 bytes of the stand-in proof, hex>"""
-import hashlib, http.server, os, re, sys, urllib.request
+import hashlib, http.server, os, re, sys, time, urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "builder"))
@@ -115,6 +119,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         function = self.headers.get("X-Daml-External-Function-Id")
         with open(os.environ["FAKE_LOG"], "a") as log:
             log.write(f"{port} {function} {self.headers.get('X-Daml-External-Mode')}\n")
+        hold = os.environ.get("DEMO_SIDECAR_HOLD_FILE")
+        if hold and self.headers.get("X-Daml-External-Mode") == "validation":
+            try:
+                seconds = float(Path(hold).read_text().strip() or 0)
+            except (OSError, ValueError):
+                seconds = 0.0
+            if seconds > 0:
+                with open(os.environ["FAKE_LOG"] + ".held", "a") as held:
+                    held.write(f"{port} {function} held {seconds:g}\n")
+                time.sleep(seconds)
         if function == "verify":
             answer = verify(bytes.fromhex(body.decode()).decode()).encode().hex().encode()
         elif function == "verify2":

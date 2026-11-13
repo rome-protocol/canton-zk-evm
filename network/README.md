@@ -12,7 +12,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `canton/canton-persistent.conf`, `postgres.sh` | The persistent mode: the same nodes in PostgreSQL, and the database that holds them (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |
 | `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
 | `canton/run.sh`, `canton/resume.canton` | Start Canton and wait until it is ready: `run.sh bootstrap` runs `bootstrap.canton`, and `run.sh resume` (persistent mode only) starts the nodes on the databases they kept and runs `resume.canton`, which creates nothing |
-| `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
+| `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM. `propose.py anchor` creates the chain on a new network at an existing EVM head (see [Continuing the chain on a new Canton network](#continuing-the-chain-on-a-new-canton-network)) |
 | `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `external/setup.py`, `external/sidecar.sh`, `external/participant-config.sh`, `external/check-env.sh` | Ostia on a participant that exists already (see [Running on an existing participant](#running-on-an-existing-participant-the-canton-network)): the setup, the lone sidecar, the participant's configuration line, and the check of the settings |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
@@ -319,6 +319,36 @@ The confirmer cannot see the rules (the gateway is their admin), and the accept 
 
 The builder reads the pins from the chain record at each block, and the pinned `TwinRules` (it must read as the gateway, or have them in `--disclosed`) to see that they are active: archiving them stops the token. It needs `--twin-registry-url` (builder/README.md) for the locks, whose id parts the registry service holds, and sees the holdings a release burns only when it reads as the gateway.
 
+## Continuing the chain on a new Canton network
+
+The EVM chain (reth's data, its chain id, its blocks) can go on when the Canton side is new: a reset of the Canton network (all parties, packages and contracts are gone, reth's data is not), or a move of the chain to another network. `propose.py chain` cannot do it, because the chain proposal always starts at block 0. `propose.py anchor` creates the chain contract at the head the old chain had reached, in one submission signed by the operator, the confirmer and the gateway together, so the first block on the new network is the head's number plus one. No Daml change is needed (Daml 0.5.0: the chain contract has no `ensure`, and `Advance` only checks the head).
+
+```sh
+# the new network's participant has the package, the parties and the users (setup.py without chain arguments), the builder is stopped, and reth runs on its data
+python3 network/canton/propose.py anchor --head-number <N> --head-hash <hash of block N> --program-vk <hex> --root-c <hex> --rules-hash <hex> \
+  --gas-cap <the old chain's cap, required> [--gateway-address <hex>] [--chain-id <id>] --dry-run     # every check, nothing submitted
+python3 network/canton/propose.py anchor ... --grant                                         # the same, for real
+```
+
+The head is the last block the old chain committed, from the old builder's record (or the old network's last `ZkChain`). The state root is read from reth. The chain id, program key, ZisK root, rules hash, gas cap and gateway address are the old chain's: the program key, root and rules hash must be the ones the new network's sidecar is pinned to, and the gas cap is the old chain's (it may have been raised above `PINS`: DevNet's chain runs at 60,000,000, `PINS` says 30,000,000). `--gas-cap` has no default and the anchor will not run without it: a lower cap than the old chain had would stay until a proposal raised it.
+
+It stops, before it submits anything, if
+- reth's finalized block is not the head given (number and hash): the message says whether the given block is above reth's finalized block (not final), below it, or not reth's at all. A block that reth holds above its finalized block was never committed by the old chain and is no place to anchor;
+- reth is another chain, or its block at the head does not hold the reviewed gateway code (`gateway/Gateway.bin-runtime`) at the gateway address, or the head block's gas limit is over the gas cap given, or the state root given (optional) is not reth's;
+- a chain or a chain proposal is on the network already (one ledger per chain: the old network's chain is left as it is, and a second ledger for the same chain must never be started);
+- the Ledger API user `<prefix>operator` cannot act for all three parties. The chain is signed by the operator, the confirmer and the gateway, so the participant must host all three (a validator's participant does, as on DevNet and TestNet), and the operator's user needs the confirmer's right for this one submission. `--grant` gives it with the ADMIN token and takes it away again, whatever the outcome; without it the right has to be there. The local three-participant network of `up.sh` has the confirmer on a participant of its own, so it cannot be anchored.
+
+With `--dry-run` it makes every check and submits nothing. It prints one JSON line (the chain's contract id and head, `rethLatest`, `actingRightsRevoked` and `next`, the list below), and the list on stderr. `actingRightsRevoked` is `false` if the right that `--grant` gave could not be taken away again: the chain is created, the JSON is still printed, the exit status is 1 and the right has to be taken away by hand.
+
+**What to register again on the new network**, because none of the old network's records are there:
+1. Canton-backed tokens. The old wrapped tokens (Canton Coin, test tokens) stood for the old network's custody, and must never be registered on the new one: holders withdraw them on the old network first. A new wrapped token for each instrument the new network has (`Gateway.register` on the EVM, then `propose.py token`).
+2. The registered contracts, the vault above all: `setup.py --contract-step add --contract-address <address> --contract-kind vault` (and `gateway` for a second gateway). Their code is in reth's data already.
+3. The twins: new `TwinRules` on the new network (`demo/twin.py rules <token>`), then `setup.py --twin-step add`.
+
+Then start the builder. If reth's latest block is above its finalized block (`rethLatest` says so; a block that was imported and never committed), run `network/sync_reth.py` (what `restart.sh` runs) before the builder: it moves reth back to the chain's head and sends its transactions again (the list says so when it applies). The old network's builder must stay stopped for good: one ledger per chain. Never anchor below what an AggLayer or any other reader has taken as final: the anchor is reth's finalized block, and a chain that has been attached to AggLayer must not be started again from block 0.
+
+`tests/demo_chain_anchor.sh` (the CI job `chain-anchor` in `.github/workflows/demo.yml`) runs it on the local Canton with real reth: Ostia to block 3 on one network, Canton stopped and started again (new parties), the refused anchors (a block above or below reth's finalized block, a wrong hash, a wrong state root, another chain id, a gas cap under the head block's limit, no right to act for the confirmer), the anchor, and blocks 4 and 5 committing on the new network as children of block 3. The unit tests are in `tests/test_propose.py`.
+
 ## Switching a running chain to a later fork or ZisK release
 
 A chain that runs can move to another program (and so to another key, `programVK` and `rootC`) with a later fork in its chain settings, such as Osaka at a time T a few blocks or days ahead, and to another ZisK release. The blocks before T run the same under both settings, so the new program takes over at a block before T and the fork follows at T. This needs the 0.3.0 Daml package on the chain (`SetProgram`, see "Upgrading a running chain's package" above if the chain runs an older version), and the producer stopped for the whole switch, so that no `Advance` runs between the two keys.
@@ -372,6 +402,41 @@ Run it against a scratch reth: its own container name, ports, state folder and d
 
 Both modes are tested against a fake Ledger API with recorded blocks and a fake reth Engine API: `python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'`.
 
+## A logical synchronizer upgrade, locally
+
+The Canton Network moves a synchronizer to a new protocol version with a logical synchronizer upgrade (LSU). The successor keeps the logical synchronizer id and gets a new physical id (protocol version and serial), with new sequencer and mediator nodes that take over the old ones' identity and topology. The participants stay, keep their contracts and offsets, and move to the successor at the upgrade time. `tests/canton_lsu.sh` runs one on the local network, from protocol version 36 to 37, while the chain makes blocks:
+
+```sh
+tests/canton_lsu.sh                                  # the participants move by themselves
+LSU_SWITCH=manual tests/canton_lsu.sh                # each participant is moved by perform_manual_lsu
+LSU_HOLD_SECONDS=8 LSU_OUT=/tmp/lsu tests/canton_lsu.sh   # a block's confirmation held across the upgrade time; the record is kept in /tmp/lsu
+```
+
+It runs what `tests/network_pipeline.sh` runs: the real reth through `launch.sh` (discovery off, no peers), the real Canton 3.7.2 and Daml package, the real builder (`builder.py run`, two blocks in flight, an empty block every 15 s) and the real sidecar for `legs`, with the rehearsal's stand-ins for the proof. A transfer is sent every 2 s. Canton starts with `canton/lsu.conf` added (a second `-c`): a second sequencer and mediator that wait with no identity, which `bootstrap.synchronizer_local()` leaves out, so the network starts as it always does. A second Canton process, a console on the nodes' admin APIs (`canton/lsu-console.conf`), runs `canton/lsu.canton`. Its steps are those of Canton's own LSU example (`examples/12-lsu` in the release) and integration tests:
+
+1. sequencer1, the synchronizer's owner, proposes the `LsuAnnouncement`: the successor `<logical id>::37-1` (protocol version 37, serial 0 + 1) and an upgrade time 60 s later (`LSU_LEAD_SECONDS`). From here to the upgrade time the topology is frozen: a new party is refused with `TOPOLOGY_LSU_TOPOLOGY_FREEZE`. An `Advance` is not a topology change, so blocks go on committing.
+2. sequencer1's and mediator1's ids and keys, and the sequencer's topology state for the successor (`sequencer_lsu_state`), are exported to files. sequencer2 takes them with `setup.initialize_from_lsu_predecessor` on the successor's parameters, and mediator2 with `setup.assign` to sequencer2.
+3. sequencer1 announces sequencer2's endpoint as its successor (`LsuSequencerConnectionSuccessor`). Each participant then knows the successor of every sequencer it uses, and moves to the successor at the upgrade time by itself. With `LSU_SWITCH=manual` nothing is announced, and after the upgrade time each participant is moved by `synchronizers.perform_manual_lsu` (the admin API's `PerformManualLsu`).
+4. Once every participant is connected to the successor and not to the predecessor, a new party is allocated there.
+
+A node gives out its private keys over its admin API only with `canton.parameters.enable-key-download`, which `lsu.conf` turns on for this test network only. Canton says not to turn it on in production; a console in the node's own process does not need it.
+
+The run passes when the console's steps all ran (the freeze refused a new party, every participant is on the successor, and a new party was allocated after the upgrade); the journal's rules hold and reth agrees with the journal (`tests/pipeline_check.py`, as in the pipeline scenario); Canton's head is reth's finalized block at the end, and reth's finalized block was never above Canton's head during the run; 10 blocks committed after the upgrade (`LSU_AFTER_BLOCKS`); every transfer sent is in a final block; the gap between the last commit before the upgrade time and the first after it is under 300 s (`LSU_MAX_GAP`); and no transaction is named lost. `tests/lsu_record.py` writes the record (`record.txt` and `record.json` in `LSU_OUT`): the two physical ids, when each participant was on the successor, every block attempt that was in flight at the upgrade time and what became of its height, and the commits around the upgrade. With `LSU_HOLD_SECONDS`, the stand-in sidecars hold every call Canton makes while it validates a block for that many seconds, from 6 s before the upgrade time (`LSU_HOLD_WINDOW`) to 1 s after it, so that a block sent just before the upgrade time is still being confirmed when the upgrade time passes. The files the console exports (the synchronizer nodes' keys) stay in the run's own temporary folder and are deleted with it. The nightly workflow `lsu-nightly.yml` runs both switches with the hold.
+
+The record of three runs on 2026-11-13, on one Linux x86-64 machine with 16 cores (times from the upgrade time):
+
+| Run | Block in flight at the upgrade time | Its answer | Its height committed on 37 | Last commit on 36 to first on 37 | Participants on 37 |
+|---|---|---|---|---|---|
+| automatic switch | block 51, sent at +0.1 s (after the upgrade time, before the switch) | `LOCAL_VERDICT_TIMEOUT` at +0.7 s | +4.3 s, built again | 7.6 s | +1.0 s |
+| automatic, confirmation held 8 s | block 50, sent at −6.2 s | `LOCAL_VERDICT_TIMEOUT` at +3.1 s | +6.7 s, built again | 16.8 s (8 s of it the hold) | +3.9 s |
+| manual, confirmation held 8 s | block 50, sent at −4.6 s | `LOCAL_VERDICT_TIMEOUT` at +4.6 s | +8.1 s, built again | 13.8 s | +5.4 s |
+
+In each run 20 to 22 blocks committed in the 60 s freeze. The block behind the timed-out one, built on it, was dropped, and its transactions went back to reth's pool. The height was built again from the pool and committed on the successor, and the chain went on with nothing lost and no step by hand. An `Advance` that is in flight at the upgrade time fails within seconds, not after Canton's confirmation timeout: in the held runs the confirmations would have come about 10 s after the upgrade time, and the participant timed the request out at +3.1 s and +4.6 s. The participants moved after that answer. The first block on protocol version 37 made the external calls (the block check and `legs`) under 37.
+
+The builder counts `LOCAL_VERDICT_TIMEOUT` as a confirmation timeout. A block that carries no leg of a party outside the chain's own (the blocks here) fails as `not_taken`, and nobody is blamed. A block that carries such a leg is booked as a refusal, and the party of the leg is held back (`PartyBlame`), although the upgrade timed the block out, not the party. That case is not run here.
+
+Not covered here: the Canton Network's 24-hour freeze (the local one is the 60 s lead); traffic (the local network has no traffic control, so no traffic state moves); nodes that keep their data in PostgreSQL (everything here is in memory); Splice's own LSU automation (the SV app, Scan's `/v0/lsu`); legs (deposits, withdrawals, payments) in flight at the upgrade time; external transactions prepared before the upgrade and submitted after it; and contracts made on 36 and disclosed on 37.
+
 ## The smoke test
 
 `smoke.sh` runs the builder once, with no transactions in the pool. It checks that
@@ -390,13 +455,14 @@ The Canton side is tested without a GPU:
 ```sh
 tests/network_static.sh      # reth only through launch.sh; the extension only on the two confirming participants; the recorded smoke result
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
-python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
+python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal and anchor scripts, against a fake Ledger API and a fake reth
 tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
 python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'   # rebuild reth from Canton's block records and re-check a range, against a fake Ledger API and a fake reth
 python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights, and the registry's --contract-step with a fake reth for the code hash
 tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
+tests/canton_lsu.sh          # a logical synchronizer upgrade from protocol version 36 to 37 under a running chain (needs Docker; nightly: lsu-nightly.yml)
 ```
 
 `canton_network.sh` needs Linux x86-64, Java 21, Python 3 and network access. It checks that the bootstrap, the upload and the vetting work; that the chain names the gateway party and address, and the Ledger API's user rights are right (the builder's user may read as the gateway and may not act as it; the operator's user may act as it); that a token is registered once and not twice; that a block is refused and changes nothing when the sidecar's answer to the block check (`verify2`; `verify` under 0.1.0 and 0.2.0) is `no`, when its `legs` answer is `no` or is not the line Daml expects, and when only the confirmer's sidecar says `no`; that a good one commits; and that Canton asks the operator's sidecar for both the block check (`verify2`; `verify` under 0.1.0 and 0.2.0) and `legs` when it receives the block and both sidecars when it validates it.

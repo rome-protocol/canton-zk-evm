@@ -7,7 +7,9 @@ TESTNET_CHAIN_ID=770102
 GAS_CAP=30000000
 RETH_VERSION=2.5.2
 # Each *_IMAGE has a *_IMAGE_ID next to it: the image ID (the config digest of its linux/amd64 manifest, which `docker image inspect --format '{{.Id}}'`
-# prints on the classic image store). The pinned-images action requires an image loaded from the Actions cache to have exactly that ID before it
+# prints on the classic image store). On the containerd image store, which the runners have had since ubuntu-26.04, that command prints the digest of the
+# image itself (the one in *_IMAGE) instead, and the pinned-images action accepts that as the pinned ID there: both name the same content.
+# The action requires an image loaded from the Actions cache to have exactly that ID before it
 # gives it the pinned name, so no cache entry, whoever wrote it, can make a job run anything but the pinned image. To move an image pin, change both
 # lines (the ID is in the registry's manifest for that digest); tests/static.sh checks that every *_IMAGE has its *_IMAGE_ID.
 RETH_IMAGE=ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1
