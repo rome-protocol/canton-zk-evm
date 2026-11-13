@@ -159,19 +159,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - name: Diagnose the image store
-        run: |
-          set -a; . ./PINS; set +a
-          docker version --format 'server {{.Server.Version}}'
-          docker info --format 'driver={{.Driver}} status={{.DriverStatus}}'
-          docker image inspect --format 'Id={{.Id}}' "$EXPLORER_BROWSER_IMAGE"
-          docker image inspect --format 'RepoDigests={{.RepoDigests}}' "$EXPLORER_BROWSER_IMAGE"
-          echo "PINS image=$EXPLORER_BROWSER_IMAGE"; echo "PINS id=$EXPLORER_BROWSER_IMAGE_ID"
-          cat /etc/os-release | head -2
       - name: The browser image is the pinned one
         run: |
+          # The action's own check: the pinned digest name and the pinned ID, on the classic and on the containerd image store alike.
+          .github/actions/pinned-images/pinned-images.sh verify PINS EXPLORER_BROWSER_IMAGE
           set -a; . ./PINS; set +a
-          test "$(docker image inspect --format '{{.Id}}' "$EXPLORER_BROWSER_IMAGE")" = "$EXPLORER_BROWSER_IMAGE_ID"
           docker run --rm --user "$(id -u):$(id -g)" "$EXPLORER_BROWSER_IMAGE" node --version
       - name: The rehearsal, then the nightly part
         run: |
