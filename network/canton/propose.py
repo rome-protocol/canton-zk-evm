@@ -16,6 +16,24 @@
     asks reth, at the finalized block, whether the gateway contract made that token, and stops if it did not.
     Prints one JSON line: the registered token. Refuses to run if the token is registered or proposed already.
 
+  propose.py anchor --head-number <n> --head-hash <hex> --program-vk <hex> --root-c <hex> --rules-hash <hex>
+             [--chain-id <id>] [--gas-cap <n>] [--gateway-address <hex>] [--head-state-root <hex>] [--reth-url <url>] [--grant] [--dry-run]
+
+    Creates the chain on a Canton network at an existing EVM head, the one reth has finalized, instead of at block 0: for a new
+    network that takes over a chain that runs (a move from one Canton network to another, or the same chain after a network reset). The
+    chain id, the program key, the ZisK root, the rules hash, the gas cap and the gateway contract's address are the old chain's, so give
+    them as the old chain had them (--gas-cap too, if it was raised: the default is PINS's). The block number and hash are the ones the old chain's
+    last committed block had; the state root is read from reth. Daml has no proposal that starts above block 0, so this is one submission that
+    creates the chain contract, signed by the operator, the confirmer and the gateway together: it needs a participant that hosts all three, as the
+    Canton Network's validator participants do here, and the operator's Ledger API user must hold the confirmer's right to act as well. --grant
+    gives it that right for the one submission (it needs the ADMIN token) and takes it away again afterwards.
+    It stops, before it submits anything, if reth's finalized block is not the block given (number and hash; it says whether the given block
+    is above, below or off reth's finalized chain), if reth is another chain, if the gateway contract's code at that block is not the reviewed
+    build, if the gas cap is under the head block's gas limit, or if a chain or a chain proposal is on this network already. With --dry-run it
+    makes every check and submits nothing. Prints one JSON line (the chain's contract id and head, reth's latest block, and "next", the list of what
+    to register again); the same list goes to stderr. Run it with the builder stopped, and before it starts: if reth's latest block is above its finalized one,
+    sync_reth.py (which restart.sh runs) moves reth back to the chain's head first.
+
 The parties come from $CZE_STATE_DIR/canton/parties.env (written by bootstrap.canton). The operator's Ledger API is
 CZE_LEDGER_URL (default http://127.0.0.1:7575), the confirmer's is CZE_CONFIRMER_LEDGER_URL (default
 http://127.0.0.1:7576); reth's is --reth-url (default http://127.0.0.1:$RETH_HTTP_PORT, port 8545 unless set). The
@@ -25,7 +43,7 @@ On an existing participant (network/external/, the Canton Network): CZE_USER_PRE
 (operator, confirmer), CZE_TOKEN_FILE_<ROLE> (OPERATOR, CONFIRMER, ...) names a file, mode 0600, that holds that user's bearer
 token, and both Ledger API URLs are the one participant's. The token is read from the file, sent as a header and never printed.
 """
-import argparse, json, os, re, stat, sys, time, urllib.request, uuid
+import argparse, json, os, re, stat, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -85,6 +103,27 @@ def post(url: str, body: dict, token=None):
     request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **auth(token)})
     with urllib.request.urlopen(request, timeout=120) as r:
         return json.load(r)
+
+
+def call(method: str, url: str, body: dict, token=None):
+    request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **auth(token)}, method=method)
+    with urllib.request.urlopen(request, timeout=120) as r:
+        return json.load(r)
+
+
+def right(kind: str, party: str) -> dict:
+    return {"kind": {kind: {"value": {"party": party}}}}
+
+
+def user_acts_as(url: str, user: str, token=None) -> set:
+    """The parties the Ledger API user may act as."""
+    found = get(f"{url}/v2/users/{user}/rights", token)
+    return {(r["kind"]["CanActAs"].get("value") or {}).get("party") for r in found.get("rights", []) if "CanActAs" in r["kind"]}
+
+
+def change_acts_as(method: str, url: str, user: str, parties: set, token=None) -> None:
+    """method POST grants the right to act as each of the parties to the user, PATCH takes it away."""
+    call(method, f"{url}/v2/users/{user}/rights", {"userId": user, "identityProviderId": "", "rights": [right("CanActAs", p) for p in sorted(parties)]}, token)
 
 
 class Ledger:
@@ -156,6 +195,100 @@ def propose(args, parties: dict, operator_url: str, confirmer_url: str, resume: 
     return {"contractId": chain["contractId"], "chainId": chain["chainId"], "headNumber": chain["headNumber"], "headHash": chain["headHash"]}
 
 
+ZK_CHAIN_OPTIONAL = ("changeDelay", "pauseMax", "pausedUntil", "pauseCooldownUntil", "pauseStartedAt", "withdrawalQuota", "quotaWindow", "withdrawn", "contracts", "twins")
+
+
+def rpc(reth_url: str, method: str, params: list):
+    answer = post(reth_url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+    if "error" in answer:
+        raise SystemExit(f"reth refused {method}: {answer['error'].get('message')}")
+    return answer.get("result")
+
+
+def anchor_head(args, reth_url: str) -> dict:
+    """reth's finalized block, after the checks that it is the head that was named: the chain id, the number and hash, the state root if one was given, the gateway
+    contract's code and the gas cap. Returns the head (number, hash, state root without 0x) and reth's latest block number."""
+    if rpc(reth_url, "eth_chainId", []) != hex(args.chain_id):
+        raise SystemExit(f"reth is not chain {args.chain_id} (it says {rpc(reth_url, 'eth_chainId', [])})")
+    final = rpc(reth_url, "eth_getBlockByNumber", ["finalized", False])
+    if not final:
+        raise SystemExit("reth has no finalized block: the head to anchor at is reth's finalized block, and there is none")
+    number, block_hash = int(final["number"], 16), final["hash"].removeprefix("0x")
+    if (number, block_hash) != (args.head_number, args.head_hash):
+        given = rpc(reth_url, "eth_getBlockByHash", ["0x" + args.head_hash, False])
+        if given is None:
+            where = "reth does not have a block with that hash"
+        elif int(given["number"], 16) != args.head_number:
+            where = f"reth has that hash as block {int(given['number'], 16)}, not {args.head_number}"
+        elif args.head_number > number:
+            where = "that block is above reth's finalized block: it is not final"
+        else:
+            where = "that block is below reth's finalized block: it is not the head"
+        raise SystemExit(f"the head to anchor at is block {args.head_number} ({args.head_hash}) and reth's finalized block is {number} ({block_hash}): {where}. "
+                         "Anchor at reth's finalized block, which must be the last block the old chain committed")
+    state_root = final["stateRoot"].removeprefix("0x")
+    if args.head_state_root is not None and args.head_state_root != state_root:
+        raise SystemExit(f"the state root given ({args.head_state_root}) is not the one reth has for block {number} ({state_root})")
+    wanted_code = "0x" + (ROOT / "gateway" / "Gateway.bin-runtime").read_text().strip()
+    code = rpc(reth_url, "eth_getCode", ["0x" + args.gateway_address, final["number"]])
+    if code != wanted_code:
+        raise SystemExit(f"reth's block {number} does not hold the reviewed gateway code at {args.gateway_address}")
+    if int(final["gasLimit"], 16) > args.gas_cap:
+        raise SystemExit(f"the head block's gas limit ({int(final['gasLimit'], 16)}) is over the gas cap {args.gas_cap}: give the cap the old chain had (--gas-cap)")
+    latest = int(rpc(reth_url, "eth_getBlockByNumber", ["latest", False])["number"], 16)
+    return {"number": number, "hash": block_hash, "stateRoot": state_root, "rethLatest": latest}
+
+
+def anchor_next(chain_id: int, gateway_address: str) -> list:
+    """What to register on the new network after the chain is anchored: the old network's records are not there."""
+    return [
+        "Canton-backed tokens (Canton Coin, test tokens): the old wrapped tokens stood for the old network's custody and must never be registered here. Holders withdraw "
+        "them to the old network before the move; register a new wrapped token for each instrument the new network has: Gateway.register on the EVM side, then "
+        "propose.py token --evm-token <address> --instrument-admin <party> --instrument-id <id> --factory <contract id>",
+        "the vault and any other registered contract: setup.py --contract-step add --contract-address <address> --contract-kind vault (or gateway); the code is copied with the EVM data",
+        "the twins: new TwinRules on this network (demo/twin.py rules <token>), then setup.py --twin-step add --twin-token <address> --twin-decimals <n> --twin-rules <contract id> --twin-rules-disclosed <file>",
+        f"then start the builder: the first block is the head's number plus one (the chain's gateway contract is {gateway_address}, chain id {chain_id})",
+    ]
+
+
+def anchor_chain(args, parties: dict, url: str, reth_url: str, dry_run: bool = False, grant: bool = False) -> dict:
+    head = anchor_head(args, reth_url)
+    user = user_id("operator")
+    acts = (parties["GATEWAY_PARTY"], parties["CONFIRMER_PARTY"])
+    operator = Ledger(url, user, parties["OPERATOR_PARTY"], acts, role_token("operator"))
+    if operator.active("ZkChain") or operator.active("ChainProposal"):
+        raise SystemExit("a chain or a proposal already exists on this network: the chain is anchored on a network that has none")
+    missing = {parties["OPERATOR_PARTY"], *acts} - user_acts_as(url, user, role_token("operator"))
+    if missing and not (grant or dry_run):
+        raise SystemExit(f"the Ledger API user {user} cannot act for {sorted(missing)}: all three parties sign the chain. Give it the right, or run this with --grant (ADMIN token)")
+    result = {"chainId": str(args.chain_id), "headNumber": str(head["number"]), "headHash": head["hash"], "headStateRoot": head["stateRoot"],
+              "rethLatest": head["rethLatest"], "next": anchor_next(args.chain_id, args.gateway_address)}
+    if dry_run:
+        return {**result, "submitted": False, "actingRightsMissing": sorted(missing)}
+    create = {"CreateCommand": {"templateId": PKG + "ZkChain", "createArguments": {
+        "operator": parties["OPERATOR_PARTY"], "confirmer": parties["CONFIRMER_PARTY"], "gateway": parties["GATEWAY_PARTY"],
+        "builder": parties["BUILDER_PARTY"], "reader": parties["READER_PARTY"], "chainId": str(args.chain_id), "programVK": args.program_vk,
+        "rootC": args.root_c, "rulesHash": args.rules_hash, "gasCap": str(args.gas_cap), "gatewayAddress": args.gateway_address,
+        "headNumber": str(head["number"]), "headHash": head["hash"], "headStateRoot": head["stateRoot"], **{k: None for k in ZK_CHAIN_OPTIONAL}}}}
+    admin = role_token("admin")
+    if missing:
+        change_acts_as("POST", url, user, missing, admin)
+    try:
+        operator.submit(create)
+    except urllib.error.HTTPError as err:
+        reason = err.read().decode(errors="replace")[:1500]
+        err.close()
+        raise SystemExit(f"the participant refused the chain: HTTP {err.code} {reason}") from None
+    finally:
+        if missing:
+            try:
+                change_acts_as("PATCH", url, user, missing, admin)
+            except (OSError, urllib.error.URLError) as err:
+                print(f"WARNING: the right of {user} to act for {sorted(missing)} could not be taken away again ({err}): take it away by hand", file=sys.stderr)
+    [chain] = operator.wait_for("ZkChain")
+    return {**result, "contractId": chain["contractId"], "submitted": True, "actingRightsGranted": sorted(missing)}
+
+
 def gateway_made(reth_url: str, gateway_address: str, token: str) -> bool:
     """Asks reth, at the finalized block, whether the gateway contract made the token: its `wrapped(token)`. The finalized
     block is the one Canton has committed, so a token made in a block Canton has not accepted does not count."""
@@ -201,9 +334,32 @@ def address(ap: argparse.ArgumentParser, name: str, value: str) -> str:
 
 
 def parse(argv: list, pins: dict):
-    """(mode, arguments): "token" if argv starts with it, else "chain"."""
-    mode = "token" if argv[:1] == ["token"] else "chain"
+    """(mode, arguments): "token" or "anchor" if argv starts with it, else "chain"."""
+    mode = argv[0] if argv[:1] in (["token"], ["anchor"]) else "chain"
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    if mode == "anchor":
+        ap.add_argument("--head-number", type=int, required=True)
+        for name in ("head-hash", "program-vk", "root-c", "rules-hash"):
+            ap.add_argument("--" + name, required=True)
+        ap.add_argument("--head-state-root")
+        ap.add_argument("--chain-id", type=int, default=int(pins["CHAIN_ID"]))
+        ap.add_argument("--gas-cap", type=int, default=int(pins["GAS_CAP"]))
+        ap.add_argument("--gateway-address", default=pins["GATEWAY_ADDRESS"])
+        ap.add_argument("--reth-url", default=f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}")
+        ap.add_argument("--grant", action="store_true", help="give the operator's user the confirmer's right to act for this one submission (the ADMIN token)")
+        ap.add_argument("--dry-run", action="store_true", help="make every check, submit nothing")
+        args = ap.parse_args(argv[1:])
+        if args.head_number < 0:
+            ap.error("--head-number must be a block number")
+        for name in ("head_hash", "head_state_root", "program_vk", "root_c", "rules_hash"):
+            value = getattr(args, name)
+            if value is not None:
+                value = value.lower().removeprefix("0x")
+                setattr(args, name, value)
+                if not HEX.match(value) or len(value) != 64:
+                    ap.error(f"--{name.replace('_', '-')} must be 64 hex digits, with or without 0x")
+        args.gateway_address = address(ap, "--gateway-address", args.gateway_address)
+        return mode, args
     if mode == "token":
         for name in ("evm-token", "instrument-admin", "instrument-id", "factory"):
             ap.add_argument("--" + name, required=True)
@@ -233,6 +389,9 @@ def main() -> int:
     confirmer_url = os.environ.get("CZE_CONFIRMER_LEDGER_URL", "http://127.0.0.1:7576")
     if mode == "token":
         result = register_token(args, parties, operator_url, confirmer_url, args.reth_url)
+    elif mode == "anchor":
+        result = anchor_chain(args, parties, operator_url, args.reth_url, args.dry_run, args.grant)
+        print("\n".join(["Register on this network next:"] + ["  - " + line for line in result["next"]]), file=sys.stderr)
     else:
         result = propose(args, parties, operator_url, confirmer_url)
     print(json.dumps(result))

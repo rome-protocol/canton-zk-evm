@@ -12,7 +12,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `canton/canton-persistent.conf`, `postgres.sh` | The persistent mode: the same nodes in PostgreSQL, and the database that holds them (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |
 | `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
 | `canton/run.sh`, `canton/resume.canton` | Start Canton and wait until it is ready: `run.sh bootstrap` runs `bootstrap.canton`, and `run.sh resume` (persistent mode only) starts the nodes on the databases they kept and runs `resume.canton`, which creates nothing |
-| `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
+| `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM. `propose.py anchor` creates the chain on a new network at an existing EVM head (see [Continuing the chain on a new Canton network](#continuing-the-chain-on-a-new-canton-network)) |
 | `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `external/setup.py`, `external/sidecar.sh`, `external/participant-config.sh`, `external/check-env.sh` | Ostia on a participant that exists already (see [Running on an existing participant](#running-on-an-existing-participant-the-canton-network)): the setup, the lone sidecar, the participant's configuration line, and the check of the settings |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
@@ -319,6 +319,36 @@ The confirmer cannot see the rules (the gateway is their admin), and the accept 
 
 The builder reads the pins from the chain record at each block, and the pinned `TwinRules` (it must read as the gateway, or have them in `--disclosed`) to see that they are active: archiving them stops the token. It needs `--twin-registry-url` (builder/README.md) for the locks, whose id parts the registry service holds, and sees the holdings a release burns only when it reads as the gateway.
 
+## Continuing the chain on a new Canton network
+
+The EVM chain (reth's data, its chain id, its blocks) can go on when the Canton side is new: a reset of the Canton network (all parties, packages and contracts are gone, reth's data is not), or a move of the chain to another network. `propose.py chain` cannot do it, because the chain proposal always starts at block 0. `propose.py anchor` creates the chain contract at the head the old chain had reached, in one submission signed by the operator, the confirmer and the gateway together, so the first block on the new network is the head's number plus one. No Daml change is needed (Daml 0.5.0: the chain contract has no `ensure`, and `Advance` only checks the head).
+
+```sh
+# the new network's participant has the package, the parties and the users (setup.py without chain arguments), the builder is stopped, and reth runs on its data
+python3 network/canton/propose.py anchor --head-number <N> --head-hash <hash of block N> --program-vk <hex> --root-c <hex> --rules-hash <hex> \
+  --gas-cap <the old chain's cap> [--gateway-address <hex>] [--chain-id <id>] --dry-run     # every check, nothing submitted
+python3 network/canton/propose.py anchor ... --grant                                         # the same, for real
+```
+
+The head is the last block the old chain committed, from the old builder's record (or the old network's last `ZkChain`). The state root is read from reth. The chain id, program key, ZisK root, rules hash, gas cap and gateway address are the old chain's: the program key, root and rules hash must be the ones the new network's sidecar is pinned to, and the gas cap is the old chain's (it may have been raised above `PINS`).
+
+It stops, before it submits anything, if
+- reth's finalized block is not the head given (number and hash): the message says whether the given block is above reth's finalized block (not final), below it, or not reth's at all. A block that reth holds above its finalized block was never committed by the old chain and is no place to anchor;
+- reth is another chain, or its block at the head does not hold the reviewed gateway code (`gateway/Gateway.bin-runtime`) at the gateway address, or the head block's gas limit is over the gas cap given, or the state root given (optional) is not reth's;
+- a chain or a chain proposal is on the network already (one ledger per chain: the old network's chain is left as it is, and a second ledger for the same chain must never be started);
+- the Ledger API user `<prefix>operator` cannot act for all three parties. The chain is signed by the operator, the confirmer and the gateway, so the participant must host all three (a validator's participant does, as on DevNet and TestNet), and the operator's user needs the confirmer's right for this one submission. `--grant` gives it with the ADMIN token and takes it away again, whatever the outcome; without it the right has to be there. The local three-participant network of `up.sh` has the confirmer on a participant of its own, so it cannot be anchored.
+
+With `--dry-run` it makes every check and submits nothing. It prints one JSON line (the chain's contract id and head, `rethLatest`, and `next`, the list below), and the list on stderr.
+
+**What to register again on the new network**, because none of the old network's records are there:
+1. Canton-backed tokens. The old wrapped tokens (Canton Coin, test tokens) stood for the old network's custody, and must never be registered on the new one: holders withdraw them on the old network first. A new wrapped token for each instrument the new network has (`Gateway.register` on the EVM, then `propose.py token`).
+2. The registered contracts, the vault above all: `setup.py --contract-step add --contract-address <address> --contract-kind vault` (and `gateway` for a second gateway). Their code is in reth's data already.
+3. The twins: new `TwinRules` on the new network (`demo/twin.py rules <token>`), then `setup.py --twin-step add`.
+
+Then start the builder. If reth's latest block is above its finalized block (`rethLatest` says so; a block that was imported and never committed), `network/sync_reth.py` (what `restart.sh` runs) moves reth back to the chain's head first and sends its transactions again. Never anchor below what an AggLayer or any other reader has taken as final: the anchor is reth's finalized block, and a chain that has been attached to AggLayer must not be started again from block 0.
+
+`tests/demo_chain_anchor.sh` (the CI job `chain-anchor` in `.github/workflows/demo.yml`) runs it on the local Canton with real reth: Ostia to block 3 on one network, Canton stopped and started again (new parties), the refused anchors (a block above or below reth's finalized block, a wrong hash, a wrong state root, another chain id, a gas cap under the head block's limit, no right to act for the confirmer), the anchor, and blocks 4 and 5 committing on the new network as children of block 3. The unit tests are in `tests/test_propose.py`.
+
 ## Switching a running chain to a later fork or ZisK release
 
 A chain that runs can move to another program (and so to another key, `programVK` and `rootC`) with a later fork in its chain settings, such as Osaka at a time T a few blocks or days ahead, and to another ZisK release. The blocks before T run the same under both settings, so the new program takes over at a block before T and the fork follows at T. This needs the 0.3.0 Daml package on the chain (`SetProgram`, see "Upgrading a running chain's package" above if the chain runs an older version), and the producer stopped for the whole switch, so that no `Advance` runs between the two keys.
@@ -390,7 +420,7 @@ The Canton side is tested without a GPU:
 ```sh
 tests/network_static.sh      # reth only through launch.sh; the extension only on the two confirming participants; the recorded smoke result
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
-python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
+python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal and anchor scripts, against a fake Ledger API and a fake reth
 tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
 python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'   # rebuild reth from Canton's block records and re-check a range, against a fake Ledger API and a fake reth
 python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights, and the registry's --contract-step with a fake reth for the code hash
