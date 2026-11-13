@@ -2296,6 +2296,84 @@ class ShareLimits(Behind):
             self.assertIn("or from another network", e.exception.message)
 
 
+class SharedNetworks(Behind):
+    """Address ranges that many users share (such as a VPN's exit addresses) are counted as one network; nothing else changes."""
+    RANGE = "2001:db8:a00::/40"
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(A.set_shared_networks, "")
+
+    def test_two_48s_of_a_listed_range_are_one_network_and_other_addresses_are_keyed_as_before(self):
+        A.set_shared_networks(self.RANGE + ",198.51.100.0/24")
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:a00:1::5")), A.pending_owner(A.client_key("2001:db8:a05:9::7")))   # two /48s of the range
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:a00:1::5")), "2001:db8:a00::/40")
+        self.assertEqual(A.pending_owner(A.client_key("198.51.100.7")), A.pending_owner(A.client_key("198.51.100.200")))
+        self.assertEqual(A.pending_owner(A.client_key("198.51.100.7")), "198.51.100.0/24")
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:b00:1::5")), "2001:db8:b00::/48")   # outside the range: its /48 as today
+        self.assertNotEqual(A.pending_owner(A.client_key("2001:db8:b00:1::5")), A.pending_owner(A.client_key("2001:db8:b01:1::5")))
+        self.assertEqual(A.pending_owner(A.client_key("203.0.113.7")), "203.0.113.7")   # an IPv4 address outside: as it is
+        self.assertEqual(A.pending_owner(A.client_key("::ffff:198.51.100.9")), "198.51.100.0/24")   # an IPv4 address inside an IPv6 one
+
+    def test_an_empty_setting_is_todays_behaviour(self):
+        A.set_shared_networks("")
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:a00:1::5")), "2001:db8:a00::/48")
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:a05:1::5")), "2001:db8:a05::/48")
+        self.assertEqual(A.pending_owner(A.client_key("198.51.100.7")), "198.51.100.7")
+
+    def test_the_setting_is_read_from_the_environment_at_start_and_a_bad_entry_stops_the_start(self):
+        self.addCleanup(A.set_shared_networks, "")
+        self.assertEqual(A.parse_shared_networks(" 2001:db8:a00::/40 , 198.51.100.0/24,,"), [ipaddress.ip_network("2001:db8:a00::/40"), ipaddress.ip_network("198.51.100.0/24")])
+        for bad in ("not-a-range", "2001:db8::/80", "2001:db8:a00::1/40"):
+            with self.assertRaises(ValueError):
+                A.parse_shared_networks(bad)
+        argv = ["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s")]
+
+        def stop(*args, **kw):
+            raise SystemExit(0)
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t", "OSTIA_SHARED_NETWORKS": self.RANGE}), unittest.mock.patch.object(A, "make_server", stop), self.assertRaises(SystemExit):
+            A.main(argv)
+        self.assertEqual(A.pending_owner(A.client_key("2001:db8:a05:1::5")), "2001:db8:a00::/40")
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t", "OSTIA_SHARED_NETWORKS": "garbage"}), self.assertRaises(SystemExit) as e:
+            A.main(argv)
+        self.assertIn("OSTIA_SHARED_NETWORKS", str(e.exception))
+
+    def test_new_accounts_of_two_48s_in_a_listed_range_share_one_budget(self):
+        A.set_shared_networks(self.RANGE)
+        self.proxied(creates=A.day_limit(5, A.NETWORK_ACCOUNTS), creates_net=A.day_limit(2, A.NETWORK_ACCOUNTS))
+        self.assertEqual(self.open_account("2001:db8:a01:1::1", 1)[0], 200)
+        self.assertEqual(self.open_account("2001:db8:a02:1::1", 2)[0], 200)   # another /48 of the range
+        status, out, _ = self.open_account("2001:db8:a03:1::1", 3)   # a third /48 of the range
+        self.assertEqual((status, out["code"]), (429, "accounts_network_full"))
+        self.assertEqual(self.open_account("2001:db8:c01:1::1", 4)[0], 200)   # outside the range: its own budget
+        self.assertEqual(self.open_account("2001:db8:c02:1::1", 5)[0], 200)
+        self.assertEqual(self.open_account("198.51.100.4", 6)[0], 200)
+
+    def test_sends_of_two_48s_in_a_listed_range_share_one_budget(self):
+        A.set_shared_networks(self.RANGE)
+        self.proxied(per_net=A.day_limit(2, A.NETWORK_SENDS))
+        self.assertEqual(self.make_account()[0], 200)
+        self.assertEqual([self.send_from(f"2001:db8:a0{n}:1::1")[0] for n in (1, 2)], [200, 200])   # two /48s of the range
+        status, out, _ = self.send_from("2001:db8:a03:1::1")
+        self.assertEqual((status, out["code"]), (429, "send_network_full"))
+        self.service.prepared.items.clear()
+        self.assertEqual(self.send_from("2001:db8:c01:1::1")[0], 200)   # outside the range
+        self.assertEqual(self.send_from("198.51.100.4")[0], 200)
+
+    def test_the_public_relay_and_the_network_rate_count_the_range_as_one(self):
+        A.set_shared_networks(self.RANGE)
+        outside = FakeOutside()
+        try:
+            self.proxied(registries={ADMIN: (outside.url, None)}, public_relay_net=A.Limiter(2, 60))
+            path = f"/accounts/v1/public-registry/{ADMIN}/allocation-factory"
+            statuses = [self.at(f"2001:db8:a0{n}:1::1", "POST", path, {"x": 1})[0] for n in (1, 2, 3)]   # three /48s of the range
+            self.assertEqual(statuses, [200, 200, 429])
+            self.assertEqual(self.at("2001:db8:c01:1::1", "POST", path, {"x": 1})[0], 200)
+        finally:
+            outside.server.shutdown()
+        self.assertEqual(sorted(k for k in self.service.network_rate.hits if k.startswith("2001:db8:a")), ["2001:db8:a00::/40"])   # the network rate has one key for the range
+
+
 class HumanChecks(OutsideCase):
     PATH = "/turnstile/v0/siteverify"
 
