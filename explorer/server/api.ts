@@ -25,7 +25,7 @@ import { FIELDS, pick } from "./rest/fields.ts";
 import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
-import { createNotice } from "./notice.ts";
+import { createNotices, type Notice } from "./notice.ts";
 
 export { FIELDS };
 
@@ -105,8 +105,10 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   /** A gateway leg in the fields of FIELDS.blockLeg, and the Canton side of its swap in the fields of FIELDS.legCanton. */
   const legOf = (l: BlockLeg) => ({ ...pick(l, FIELDS.blockLeg), canton: l.canton && { ...pick(l.canton, FIELDS.legCanton), instrument: l.canton.instrument && pick(l.canton.instrument, FIELDS.legInstrument) } });
 
-  const notice = createNotice({ file: config.noticeFile, now });
-  const noticeNow = () => { const n = notice(); return n && pick(n, FIELDS.notice); };
+  const notices = createNotices({ file: config.noticeFile, now });
+  /** A notice as the API gives it: the three fields always, the level and the link only when it has them. */
+  const noticeOut = (n: Notice) => ({ ...pick(n, FIELDS.notice), ...(n.level ? { level: n.level } : {}), ...(n.link ? { link: pick(n.link, FIELDS.noticeLink) } : {}) });
+  const noticesNow = () => notices().map(noticeOut);
 
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
@@ -126,6 +128,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     // A degraded check is named in `problems` and the answer stays 200 (design 6.5); `ok` is the overall word and is true only when every check is.
     const serving = s.started && !s.down && latest !== undefined && canton;
     const all = serving && s.problems.length === 0;
+    const shown = noticesNow();
     return {
       status: serving ? 200 : 503,
       body: {
@@ -133,7 +136,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
-        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, ownTraffic: Object.keys(config.ownAddresses).length > 0, notice: noticeNow(),
+        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, ownTraffic: Object.keys(config.ownAddresses).length > 0, notices: shown, notice: shown[0] ?? null,
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };

@@ -188,7 +188,7 @@ export const DOCS: Record<string, Doc> = {
       { name: "step", about: "The width of a point: 1m, 10m, 1h or 1d, as the window allows.", values: Object.keys(STEPS) },
     ], object: F.statsSeries,
   },
-  "/api/status": { tag: "Status", summary: "What the chain and the explorer are doing now. `notice` is the message the operators set for planned work, `{text, startsAt, endsAt}` (plain text; the times are ISO 8601, UTC), and null when there is none or its `endsAt` has passed.", object: FIELDS.status },
+  "/api/status": { tag: "Status", summary: "What the chain and the explorer are doing now. `notices` is the list of messages the operators set, major ones first, each `{text, startsAt, endsAt}` (plain text; the times are ISO 8601, UTC) with `level: major` for the large banner and `link: {url, label}` (an http(s) address) when it has them; the list is empty when there is none or every `endsAt` has passed. `notice` is the first of them, or null, for clients from before the list.", object: FIELDS.status },
   "/api/health": { tag: "Status", summary: "Every health check with its word (ok, degraded or down), since when, and when its writer last looked; the overall word is down, and the status code 503, only when final data is stale or wrong, or an id column has used more than 90% of its range (db_ids). A check whose writer has stopped counts as failed and says so.", object: FIELDS.health },
   "/api/block/{id}": { tag: "Pages", summary: "A block as its page shows it: a final block, or one still on its way.", param: "The block's number or its 0x hash.", object: FIELDS.block },
   "/api/tx/{hash}": { tag: "Pages", summary: "A transaction as its page shows it, with where it is in its life.", param: "The transaction's 0x hash.", object: FIELDS.tx },

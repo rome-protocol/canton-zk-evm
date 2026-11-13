@@ -7,7 +7,7 @@ import { DOCS_URL, FOOTER_LINE, ISSUES_URL, SOURCE_URL } from "../copy.ts";
 import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
 import { Icon } from "./Icon.tsx";
-import { NoticeBanner } from "./Notice.tsx";
+import { NoticeBanners } from "./Notice.tsx";
 import { SearchBox } from "./SearchBox.tsx";
 
 export { FOOTER_LINE };
@@ -150,7 +150,7 @@ function ShellBody({ children }: { children: ReactNode }) {
   useEffect(() => { document.title = title; }, [title]);
   return (
     <div className="page">
-      <NoticeBanner notice={status?.notice} />
+      <NoticeBanners notices={status?.notices} notice={status?.notice} />
       {status && <TopBar status={status} />}
       <header ref={header} className={`top${home ? " home" : ""}${folded ? " folded" : ""}`}>
         <Link className="brand" to="/">
