@@ -1472,8 +1472,9 @@ def details_of(status) -> list:
 
 def is_canton_category(value) -> bool:
     """Whether Canton reads this metadata value as an error category: a string that Java's `Integer.parseInt` takes (`StringOps.toInt`, Canton 3.7.2): an optional sign
-    and decimal digits only, no space, no underscore, nothing after the digits, and a value within 32 bits. Python's `int()` takes more (' 2', '2\\n', '1_2', any size)."""
-    if not isinstance(value, str) or not re.fullmatch(r"[+-]?\d+", value):
+    and decimal digits of the Basic Multilingual Plane only (Java reads UTF-16 code units, so a digit above U+FFFF, such as U+1D7D0, is refused), no space, no
+    underscore, nothing after the digits, and a value within 32 bits. Python's `int()` takes more (' 2', '2\\n', '1_2', any size, digits above U+FFFF)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[+-]?\d+", value) or any(ord(ch) > 0xFFFF for ch in value):
         return False
     try:
         return -2**31 <= int(value) < 2**31
@@ -1517,12 +1518,15 @@ def reported_in_status(status) -> bool:
 
 
 def reported_in_body(text) -> bool:
-    """Whether a participant wrote a definite rejection (the JSON API's error body): its `context` has the keys of `reported_in`."""
+    """Whether a participant wrote a definite rejection (the JSON API's error body): its `context` has the keys of `reported_in`, or its `code` is not the bare id of
+    one of Canton's two confirmation timeouts. When the JSON API cannot decode the status (`DecodedCantonError.fromStatusRuntimeException`, Canton 3.7.2), it
+    falls back to `JsCantonError.fromUnstructuredError`: the `code` is the whole description of the status, and the `context` is empty. Canton never words its own
+    timeout that way, so such a body is a participant's."""
     try:
         body = json.loads(text)
     except (TypeError, ValueError):
         return False
-    return isinstance(body, dict) and reported_in(body.get("context"))
+    return isinstance(body, dict) and (reported_in(body.get("context")) or body.get("code") not in (MEDIATOR_TIMEOUT, LOCAL_TIMEOUT))
 
 
 def unresponsive_of_body(text) -> list | None:

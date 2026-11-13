@@ -462,6 +462,7 @@ class FakeLedger:
         self.hosting_bearer = None     # a bearer token: a lookup about a party that does not carry it is answered 403, as a participant does for a user with no right to read as the party
         self.connected = True   # the participant is connected to a synchronizer (when not, it answers an empty list for every party)
         self.refuse_timeout = False   # Advance is refused at once (HTTP 409) with the mediator's timeout, naming `confirm_names`
+        self.refuse_undecoded = None   # with `refuse_timeout`: the description the status carries when the JSON API cannot decode it (the body of `JsCantonError.fromUnstructuredError`: the code is the whole description, the context empty)
         self.confirm_names = None   # with confirm_timeout "completion" or `refuse_timeout`: the parties the mediator's timeout names as unresponsive (as Canton 3.7.2 words it), None: it names none
         self.confirm_reported = False   # the timeout's words are a participant's (Canton adds `reported_by_participant_id` and `confirming_parties` to a rejection a confirming participant sent): the metadata has them
         self.timeout_code = "MEDIATOR_SAYS_TX_TIMED_OUT"   # the code of the completion that confirm_timeout "completion" lands
@@ -747,6 +748,9 @@ class FakeLedger:
                         ledger.hold.wait(30)
                     command_id = body["commandId"]
                     failed = {"commandId": command_id, "offset": 43, "status": {"code": 9, "message": "failed"}}
+                    if ledger.refuse_timeout and ledger.refuse_undecoded and not ledger.fail_but_commit:   # a status the JSON API cannot decode
+                        ledger.outcomes[command_id] = failed
+                        return self._reply(409, {"code": ledger.refuse_undecoded, "cause": f"ABORTED: {ledger.refuse_undecoded}", "correlationId": None, "traceId": None, "context": {}, "resources": [], "errorCategory": -1, "grpcCodeValue": 10})
                     if ledger.refuse_timeout and not ledger.fail_but_commit:   # a definite rejection by the mediator's timeout, as the JSON API words it on Canton 3.7.2 (read on a local network)
                         ledger.outcomes[command_id] = failed
                         return self._reply(409, {"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "cause": "Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",

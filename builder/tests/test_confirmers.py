@@ -670,6 +670,10 @@ class NamedTimeout(tp.Loop):
             "category with a no-break space": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\u00a02"}}}],
             "category a number, not a string": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": 2}}}],
             "category true": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": True}}}],
+            "category with a digit above U+FFFF": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\U0001D7D0"}}}],
+            "category with a digit above U+FFFF after a digit": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "2\U0001D7D0"}}}],
+            "category with a digit above U+FFFF, Osmanya": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\U000104A2"}}}],
+            "category with a digit above U+FFFF, Brahmi": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\U00011068"}}}],
             "category with more digits than Python converts": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "1" * 5000}}}],
             "two RetryInfo": [{"typeUrl": ERROR_INFO, "valueDecoded": info}, {"typeUrl": RETRY_INFO, "valueDecoded": {}}, {"typeUrl": RETRY_INFO, "valueDecoded": {}}],
             "two RequestInfo": [{"typeUrl": ERROR_INFO, "valueDecoded": info}, {"typeUrl": REQUEST_INFO, "valueDecoded": {}}, {"typeUrl": REQUEST_INFO, "valueDecoded": {}}],
@@ -692,12 +696,12 @@ class NamedTimeout(tp.Loop):
                 self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
 
     def test_a_category_is_read_as_java_reads_an_int(self):
-        """Canton reads it with `Integer.parseInt` (checked on Java 21): a sign and digits, within 32 bits; Python's `int()` takes more."""
+        """Canton reads it with `Integer.parseInt` (checked on Java 21): a sign and decimal digits of the Basic Multilingual Plane, within 32 bits; Python's `int()` takes more."""
         for value in ("2", "+2", "-2", "0002", "2147483647", "-2147483648", "\u0662"):
             self.assertTrue(b.is_canton_category(value), value)
             status = {"details": [{"typeUrl": ERROR_INFO, "valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "metadata": {"unresponsiveParties": "v::1", "category": value}}}]}
             self.assertEqual((b.unresponsive_of_status(status), b.reported_in_status(status)), (["v::1"], False), value)
-        for value in (" 2", "2 ", "2\n", "\n2", "\t2", "1_2", "99999999999", "2147483648", "-2147483649", "+", "-", "", "2.0", "0x2", "1e1", "\u00a02", None, 2, True, ["2"]):
+        for value in (" 2", "2 ", "2\n", "\n2", "\t2", "1_2", "99999999999", "2147483648", "-2147483649", "+", "-", "", "2.0", "0x2", "1e1", "\u00a02", "\U0001D7D0", "2\U0001D7D0", "\U000104A2", "\U00011068", None, 2, True, ["2"]):
             self.assertFalse(b.is_canton_category(value), repr(value))
 
     def test_a_status_that_canton_would_not_decode_and_says_a_timeout_in_its_words_goes_to_trial(self):
@@ -798,6 +802,20 @@ class NamedTimeout(tp.Loop):
                 self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))   # the parties are on trial, as for any timeout that names nobody
                 self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
 
+    def test_a_definite_rejection_the_api_could_not_decode_goes_to_trial_on_the_first_timeout(self):
+        """When the JSON API cannot decode the status, its body carries the whole description as `code` and an empty `context` (`JsCantonError.fromUnstructuredError`):
+        that is a participant's status, so a LOCAL_VERDICT_TIMEOUT in it must not be believed (no blame up to the limit)."""
+        for description in ("LOCAL_VERDICT_TIMEOUT(3,0): x", "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): x"):
+            with self.subTest(description=description):
+                s, pay, plain = self.leg_pool()
+                s.ledger.refuse_timeout, s.ledger.refuse_undecoded = True, description
+                p = self.producer(s)
+                p.step()
+                self.assertEqual((self.reports[-1]["rejected"], self.reports[-1]["timedOut"], self.reports[-1]["reportedByParticipant"]), (True, True, True))
+                self.assertNotIn("unresponsive", self.reports[-1])
+                self.assertEqual((p.blame.until, p.blame.suspects), ({}, {"u::1", "v::1"}))   # the first timeout: the parties of the block are on trial
+                self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
+
     def test_a_definite_rejection_a_participant_wrote_goes_to_trial_too(self):
         s, pay, plain = self.leg_pool()
         s.ledger.refuse_timeout, s.ledger.confirm_names, s.ledger.confirm_reported = True, ["v::1"], True
@@ -896,8 +914,10 @@ class NamedTimeout(tp.Loop):
         body = lambda context: json.dumps({"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "context": context})
         self.assertTrue(b.reported_in_body(body({"unresponsiveParties": "a::1", **keys})))
         self.assertIsNone(b.unresponsive_of_body(body({"unresponsiveParties": "a::1", **keys})))
-        for text in (body({"unresponsiveParties": "a::1"}), body("x"), "not json", None, "[]"):
+        for text in (body({"unresponsiveParties": "a::1"}), body("x"), "not json", None, "[]", json.dumps({"code": "LOCAL_VERDICT_TIMEOUT", "context": {}})):
             self.assertFalse(b.reported_in_body(text))
+        for code in ("LOCAL_VERDICT_TIMEOUT(3,0): x", "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): x", "CONTRACT_NOT_FOUND"):   # not the bare id Canton's own timeout carries
+            self.assertTrue(b.reported_in_body(json.dumps({"code": code, "context": {}})), code)
 
     def test_which_timeout_the_words_carry(self):
         self.assertEqual(b.timeout_code("MEDIATOR_SAYS_TX_TIMED_OUT(2,0): x"), "MEDIATOR_SAYS_TX_TIMED_OUT")
