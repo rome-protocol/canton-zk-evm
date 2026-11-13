@@ -587,22 +587,102 @@ class NamedTimeout(tp.Loop):
         self.assertEqual((p.blame.suspects, p.blame.live), (set(), set()))
 
     def test_a_party_the_mediator_names_that_has_no_leg_in_the_block_holds_nobody_and_is_journaled(self):
-        """An instrument's admin, the operator's own party or an outside participant's: none of the block's users is blamed for it, however often it repeats."""
+        """An instrument's admin, the operator's own party or an outside participant's: none of the block's users is blamed for it, for as many timeouts in a row as the limit allows."""
         s, pay, plain = self.leg_pool()
         s.ledger.confirm_timeout, s.ledger.confirm_names = "completion", ["dso::1220" + "ab" * 32]
         p = self.producer(s)
-        for _ in range(4):
+        for _ in range(3):
             p.step()
             self.now[0] += 2.0
         self.assertEqual((p.blame.until, p.blame.suspects, p.blame.held()), ({}, set(), {}))
-        self.assertEqual((p.failures, p.refused), (0, 4))   # four refused blocks, and no party is held
+        self.assertEqual((p.failures, p.refused), (0, 3))   # three refused blocks, and no party is held
         lines = self.journal_lines(s, "timeout_no_blame")
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 3)
         self.assertEqual((lines[0]["code"], lines[0]["unresponsive"], lines[0]["legParties"]), ("MEDIATOR_SAYS_TX_TIMED_OUT", ["dso::1220" + "ab" * 32], 2))
         self.assertEqual(self.journal_lines(s, "party_held"), [])
         s.ledger.confirm_timeout = None
         p.step()
         self.assertTrue(self.reports[-1]["committed"])   # the leg is in the block again, and is not held
+
+    def test_after_the_limit_of_timeouts_in_a_row_that_held_nobody_the_parties_go_on_trial(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout, s.ledger.confirm_names = "completion", ["dso::1220" + "ab" * 32]
+        p = self.producer(s, no_blame_limit=2)
+        for _ in range(2):
+            p.step()
+            self.now[0] += 2.0
+        self.assertEqual((p.blame.suspects, len(self.journal_lines(s, "timeout_no_blame"))), (set(), 2))
+        p.step()   # the third: the trial, as for a timeout that names nobody
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))
+        line = self.journal_lines(s, "timeout_no_blame")[-1]
+        self.assertIn("2 timeouts in a row", line["reason"])
+        self.assertEqual(p.blame.silent, 2)   # the row stays at the limit until a party is held or a block is answered
+
+    def test_the_limit_is_for_a_row_a_block_answered_by_canton_ends_it(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout, s.ledger.confirm_names = "completion", ["dso::1220" + "ab" * 32]
+        p = self.producer(s)
+        for _ in range(2):
+            p.step()
+            self.now[0] += 2.0
+        self.assertEqual(p.blame.silent, 2)
+        s.ledger.confirm_timeout = None
+        p.step()
+        self.assertTrue(self.reports[-1]["committed"])
+        self.assertEqual(p.blame.silent, 0)
+
+    def test_a_limit_of_zero_puts_the_parties_on_trial_at_once(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout, s.ledger.confirm_names = "completion", ["dso::1220" + "ab" * 32]
+        p = self.producer(s, no_blame_limit=0)
+        p.step()
+        self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))
+
+    def test_a_party_the_mediator_names_is_held_whatever_the_count_of_timeouts_that_held_nobody(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.confirm_timeout, s.ledger.confirm_names = "completion", ["dso::1220" + "ab" * 32]
+        p = self.producer(s, no_blame_limit=1)
+        p.step()
+        self.now[0] += 2.0
+        s.ledger.confirm_names = ["v::1"]
+        p.step()
+        self.assertEqual(set(p.blame.until), {"v::1"})
+
+    def test_words_a_participant_wrote_name_nobody_and_go_to_trial(self):
+        """A confirming participant chooses the status of its own rejection, and Canton adds `reported_by_participant_id` and `confirming_parties` to it: a forged
+        MEDIATOR_SAYS_TX_TIMED_OUT that names a user, or a LOCAL_VERDICT_TIMEOUT, must not hold that user or stall the blocks without end."""
+        for code, names in (("MEDIATOR_SAYS_TX_TIMED_OUT", ["v::1"]), ("MEDIATOR_SAYS_TX_TIMED_OUT", ["dso::1220" + "ab" * 32]), ("LOCAL_VERDICT_TIMEOUT", None)):
+            with self.subTest(code=code, names=names):
+                s, pay, plain = self.leg_pool()
+                s.ledger.confirm_timeout, s.ledger.timeout_code, s.ledger.confirm_names, s.ledger.confirm_reported = "completion", code, names, True
+                p = self.producer(s)
+                p.step()
+                self.assertEqual(self.reports[-1]["timedOut"], True)
+                self.assertNotIn("unresponsive", self.reports[-1])
+                self.assertTrue(self.reports[-1]["reportedByParticipant"])
+                self.assertEqual(p.blame.until, {})   # nobody is held on its word
+                self.assertEqual((p.blame.suspects, p.blame.live), ({"u::1", "v::1"}, {"u::1"}))   # the parties are on trial, as for any timeout that names nobody
+                self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
+
+    def test_a_definite_rejection_a_participant_wrote_goes_to_trial_too(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.refuse_timeout, s.ledger.confirm_names, s.ledger.confirm_reported = True, ["v::1"], True
+        p = self.producer(s)
+        p.step()
+        self.assertEqual((self.reports[-1]["rejected"], self.reports[-1]["timedOut"], self.reports[-1]["reportedByParticipant"]), (True, True, True))
+        self.assertNotIn("unresponsive", self.reports[-1])
+        self.assertEqual((p.blame.until, p.blame.suspects), ({}, {"u::1", "v::1"}))
+
+    def test_a_completion_that_comes_after_the_api_gave_up_and_a_participant_wrote_goes_to_trial(self):
+        s, pay, plain = self.leg_pool()
+        s.ledger.late = True
+        p = self.producer(s)
+        p.step()
+        s.ledger.confirm_names, s.ledger.confirm_reported = ["v::1"], True
+        s.ledger.land(ok=False, status=s.ledger.timeout_status())
+        p.step()
+        self.assertEqual(self.reports[-1]["resolved"], "not committed")
+        self.assertEqual((p.blame.until, p.blame.suspects), ({}, {"u::1", "v::1"}))
 
     def test_the_participants_own_timeout_names_no_party_and_blames_nobody(self):
         s, pay, plain = self.leg_pool()
@@ -663,6 +743,28 @@ class NamedTimeout(tp.Loop):
         self.assertIsNone(b.unresponsive_of_body(json.dumps({"code": "CONTRACT_NOT_FOUND", "context": {"unresponsiveParties": "a::1"}})))
         self.assertIsNone(b.unresponsive_of_body(json.dumps({"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "context": "x"})))
 
+    def test_what_a_participant_wrote_names_nobody(self):
+        keys = {"reported_by_participant_id": "PAR::x::1220aa", "confirming_parties": "a::1"}
+        self.assertFalse(b.reported_in({"unresponsiveParties": "a::1", "category": "2"}))
+        for metadata in (None, {}, "x", {"unresponsiveParties": "a::1"}):
+            self.assertFalse(b.reported_in(metadata))
+        for key in keys:
+            self.assertTrue(b.reported_in({key: "x", "unresponsiveParties": "a::1"}))
+            self.assertIsNone(b.unresponsive_in({key: "x", "unresponsiveParties": "a::1"}))
+        status = {"details": [{"valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "metadata": {"unresponsiveParties": "a::1", **keys}}}]}
+        self.assertTrue(b.reported_in_status(status))
+        self.assertIsNone(b.unresponsive_of_status(status))
+        found, _, _ = b.completion_in([{"completionResponse": {"Completion": {"value": {"commandId": "c1", "status": {**status, "code": 10, "message": "m"}, "offset": 4}}}}], "c1")
+        self.assertEqual((found["reportedByParticipant"], "unresponsive" in found), (True, False))
+        honest = {"details": [{"valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "metadata": {"unresponsiveParties": "a::1", "category": "2"}}}]}
+        for other in (honest, {}, None, "x", {"details": ["x"]}):
+            self.assertFalse(b.reported_in_status(other))
+        body = lambda context: json.dumps({"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "context": context})
+        self.assertTrue(b.reported_in_body(body({"unresponsiveParties": "a::1", **keys})))
+        self.assertIsNone(b.unresponsive_of_body(body({"unresponsiveParties": "a::1", **keys})))
+        for text in (body({"unresponsiveParties": "a::1"}), body("x"), "not json", None, "[]"):
+            self.assertFalse(b.reported_in_body(text))
+
     def test_which_timeout_the_words_carry(self):
         self.assertEqual(b.timeout_code("MEDIATOR_SAYS_TX_TIMED_OUT(2,0): x"), "MEDIATOR_SAYS_TX_TIMED_OUT")
         self.assertEqual(b.timeout_code("LOCAL_VERDICT_TIMEOUT(5,x): late"), "LOCAL_VERDICT_TIMEOUT")
@@ -677,6 +779,17 @@ class Blame(unittest.TestCase):
     def setUp(self):
         self.now = [1_000.0]
         self.blame = b.PartyBlame(600, clock=lambda: self.now[0])
+
+    def test_timeouts_that_hold_nobody_count_up_to_the_limit_and_a_conviction_or_an_answer_ends_the_row(self):
+        self.assertEqual([self.blame.no_blame(3) for _ in range(4)], [True, True, True, False])
+        self.assertEqual(self.blame.silent, 3)
+        self.blame.timed_out({"a"})   # a party is held back
+        self.assertEqual(self.blame.silent, 0)
+        self.assertTrue(self.blame.no_blame(1))
+        self.assertFalse(self.blame.no_blame(1))
+        self.blame.answered({"b"})   # a block answered by Canton
+        self.assertTrue(self.blame.no_blame(1))
+        self.assertFalse(self.blame.no_blame(0))
 
     def test_one_party_is_convicted_and_held_for_the_cool_down_and_then_for_twice_as_long_each_time(self):
         holds = []

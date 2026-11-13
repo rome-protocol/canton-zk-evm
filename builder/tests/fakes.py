@@ -463,6 +463,7 @@ class FakeLedger:
         self.connected = True   # the participant is connected to a synchronizer (when not, it answers an empty list for every party)
         self.refuse_timeout = False   # Advance is refused at once (HTTP 409) with the mediator's timeout, naming `confirm_names`
         self.confirm_names = None   # with confirm_timeout "completion" or `refuse_timeout`: the parties the mediator's timeout names as unresponsive (as Canton 3.7.2 words it), None: it names none
+        self.confirm_reported = False   # the timeout's words are a participant's (Canton adds `reported_by_participant_id` and `confirming_parties` to a rejection a confirming participant sent): the metadata has them
         self.timeout_code = "MEDIATOR_SAYS_TX_TIMED_OUT"   # the code of the completion that confirm_timeout "completion" lands
         self.confirm_timeout = None   # "completion": Advance is answered 408 and its completion says the mediator did not get the confirmations in time; "none": 408 and no completion at all
         self.hosting_asked: list = []   # (party, participant id) of each lookup
@@ -488,12 +489,16 @@ class FakeLedger:
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
 
+    def reported_keys(self) -> dict:
+        return {"reported_by_participant_id": "PAR::bad::1220aa", "confirming_parties": "u::1"} if self.confirm_reported else {}
+
     def timeout_status(self) -> dict:
         """The status of a failed completion that says the confirmations did not come in time, in the form Canton 3.7.2 gives it (read on a local network): the
         mediator's timeout carries an ErrorInfo detail whose metadata names the unresponsive parties; the participant's own timeout has no such detail."""
+        metadata = {"category": "2", **({"unresponsiveParties": ",".join(self.confirm_names)} if self.confirm_names else {}), **self.reported_keys()}
         if self.timeout_code != "MEDIATOR_SAYS_TX_TIMED_OUT":
-            return {"code": 10, "message": f"{self.timeout_code}(5,ab): Rejected transaction due to a participant determined timeout", "details": []}
-        metadata = {"category": "2", **({"unresponsiveParties": ",".join(self.confirm_names)} if self.confirm_names else {})}
+            return {"code": 10, "message": f"{self.timeout_code}(5,ab): Rejected transaction due to a participant determined timeout",
+                    "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...", "valueDecoded": {"reason": self.timeout_code, "domain": "", "metadata": metadata}}] if self.confirm_reported else []}
         return {"code": 10, "message": "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",
                 "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...",
                              "valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "domain": "", "metadata": metadata, "unknownFields": {"fields": {}}}},
@@ -745,7 +750,7 @@ class FakeLedger:
                     if ledger.refuse_timeout and not ledger.fail_but_commit:   # a definite rejection by the mediator's timeout, as the JSON API words it on Canton 3.7.2 (read on a local network)
                         ledger.outcomes[command_id] = failed
                         return self._reply(409, {"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "cause": "Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",
-                                                 "correlationId": None, "traceId": None, "context": {"category": "2", **({"unresponsiveParties": ",".join(ledger.confirm_names)} if ledger.confirm_names else {})},
+                                                 "correlationId": None, "traceId": None, "context": {"category": "2", **({"unresponsiveParties": ",".join(ledger.confirm_names)} if ledger.confirm_names else {}), **ledger.reported_keys()},
                                                  "resources": [], "errorCategory": 2, "grpcCodeValue": 10, "retryInfo": "1 second", "definiteAnswer": None})
                     if ledger.refuse and not ledger.fail_but_commit:
                         ledger.outcomes[command_id] = failed

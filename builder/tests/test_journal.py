@@ -699,7 +699,7 @@ class PoolAndRun(Lines):
         p.run()
         start, stop = self.journal(s, "run_started")[0], self.journal(s, "run_stopped")[0]
         self.assertEqual(start["settings"], {"strategy": "on_demand", "gather_ms": 250, "heartbeat_seconds": 600, "max_in_flight": 1, "idle_ms": 500,
-                                             "exclude_cooldown_seconds": 60, "test": True, "traffic_read": False})
+                                             "exclude_cooldown_seconds": 60, "timeout_no_blame_limit": 3, "test": True, "traffic_read": False})
         self.assertEqual((start["strategy"], start["source_commit"], stop["state"]), ("on_demand", "abc123", "stopped"))
         self.assertEqual(self.status()["runId"], start["run"])
 

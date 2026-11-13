@@ -85,5 +85,7 @@ for label, template, args, choice, expected in (("one party", "Proposal", {"a": 
         fail(f"{label}: the rejection's context names {named}, not {expected}: {text[:600]}")
     if found["committed"] or b.timeout_code(found["reason"]) != b.MEDIATOR_TIMEOUT or sorted(found.get("unresponsive") or []) != expected:
         fail(f"{label}: the completion does not name {expected}: {found}")
-    print(f"ok: {label}: the timeout's rejection and completion name {expected}")
+    if b.reported_in_body(text) or found.get("reportedByParticipant"):
+        fail(f"{label}: the mediator's own timeout carries the keys of a participant's rejection: {text[:600]}")
+    print(f"ok: {label}: the timeout's rejection and completion name {expected}, and carry no key a participant's rejection adds")
     time.sleep(2)   # the participant is back before the next round
