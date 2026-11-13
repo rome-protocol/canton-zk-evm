@@ -25,6 +25,7 @@ import { FIELDS, pick } from "./rest/fields.ts";
 import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
+import { createNotice } from "./notice.ts";
 
 export { FIELDS };
 
@@ -104,6 +105,9 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   /** A gateway leg in the fields of FIELDS.blockLeg, and the Canton side of its swap in the fields of FIELDS.legCanton. */
   const legOf = (l: BlockLeg) => ({ ...pick(l, FIELDS.blockLeg), canton: l.canton && { ...pick(l.canton, FIELDS.legCanton), instrument: l.canton.instrument && pick(l.canton.instrument, FIELDS.legInstrument) } });
 
+  const notice = createNotice({ file: config.noticeFile, now });
+  const noticeNow = () => { const n = notice(); return n && pick(n, FIELDS.notice); };
+
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
@@ -129,7 +133,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
-        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, ownTraffic: Object.keys(config.ownAddresses).length > 0,
+        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, ownTraffic: Object.keys(config.ownAddresses).length > 0, notice: noticeNow(),
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };
