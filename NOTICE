@@ -12,7 +12,7 @@ work comes from and to reproduce this NOTICE.
 
 guest/ (a copy of part of zisk-eth-client)
     A copy of part of zisk-eth-client (https://github.com/0xPolygonHermez/zisk-eth-client),
-    tag v0.13.1, commit edf8adcda75c015f4225abe3aabb3bed03e21beb.
+    tag v0.14.0, commit dfa27ff2e3544fb3c7467499415830d20de2218d.
     Copyright (c) 2025 SilentSig Switzerland GmbH.
     Licensed under Apache-2.0 or MIT, at your option. The two licence files, guest/LICENSE-APACHE
     and guest/LICENSE-MIT, are upstream's and stay with the code. Rome Protocol passes on the
@@ -24,8 +24,9 @@ guest/ (a copy of part of zisk-eth-client)
     - the two changes marked "canton-zk-evm change": in crates/clients/reth/guest/src/run.rs, and in
       crates/clients/reth/guest/Cargo.toml (which adds the cze-rules dependency);
     - the lockfile guest/bin/guests/stateless-validator-reth/Cargo.lock, which has the two entries that
-      match the dependency above. The file carries no marking of its own; this notice and
-      guest/README.md record the change.
+      match the dependency above and five security updates of locked crates (crossbeam-epoch, zstd,
+      zstd-safe, zstd-sys). The file carries no marking of its own; this notice and
+      guest/README.md record the changes.
     guest/README.md lists the changes.
 
 daml/dars/
@@ -47,7 +48,11 @@ verifier/src/vk.rs
     SNARK setup of ZisK v1.3.2-alpha, commit 1e22630bb7e143c30705a1603ed87cfd3da8c6ec, installs,
     so they serve both releases. Only the mathematical parameter values were taken; the Rust verifier was written
     independently by Rome Protocol. The file also holds the same kind of parameters from ZisK
-    v1.2.0-alpha, commit fbbc69bcd2ea9a78d1a438b4a897bc48ff0b00a3, used only in tests.
+    v1.2.0-alpha, commit fbbc69bcd2ea9a78d1a438b4a897bc48ff0b00a3, used only in tests, and the sixteen
+    numbers of the key of ZisK v1.4.0-alpha, commit 64a1f1664184e76053686745d50c6b9aaa51b034, which
+    are not ZisK's: ZisK 1.4.0 publishes no PLONK key, so they were read from the PlonkVerifier.sol
+    that prover/build-plonk-key.sh generates (snarkjs, GPL-3.0) from ZisK's published Poseidon1
+    proving key and the Hermez powers-of-tau file. Again only the numbers were taken.
 
 explorer/
     Rome Protocol's own code, under LICENSE, except for the third-party parts listed here. The
