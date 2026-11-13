@@ -171,6 +171,9 @@ class Deploy(unittest.TestCase):
         p2 = ENTRIES["permit2"]
         self.assertEqual(deploy.expected_hash(p2, 770101), p2["knownRuntimeCodeHashes"]["770101"])
         self.assertNotEqual(deploy.expected_hash(p2, 1), deploy.expected_hash(p2, 770101))
+        # TestNet's chain: its own hash is pinned, and it is not DevNet's.
+        self.assertEqual(deploy.expected_hash(p2, 770102), p2["knownRuntimeCodeHashes"]["770102"])
+        self.assertNotEqual(p2["knownRuntimeCodeHashes"]["770102"], p2["knownRuntimeCodeHashes"]["770101"])
 
     def test_a_dry_run_sends_nothing(self):
         code, out, err = self.run_it("--dry-run")
