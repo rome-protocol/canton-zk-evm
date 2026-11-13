@@ -38,22 +38,23 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 /// The ZisK release a chain's proofs were made with. It picks the verifying key the proof is
-/// checked under. A chain that was set up before releases were named is on 1.3.1, so that is the
-/// default.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// checked under. There is no default: a deployment names its release (a missing release is an
+/// error, not a guess).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Release {
-    #[default]
     V1_3_1,
     V1_3_2,
+    V1_4_0,
 }
 
 impl Release {
-    /// A release by its number: `1.3.1` or `1.3.2`, with or without the `-alpha` that ZisK's own
-    /// tags carry.
+    /// A release by its number: `1.3.1`, `1.3.2` or `1.4.0`, with or without the `-alpha` that
+    /// ZisK's own tags carry.
     pub fn parse(s: &str) -> Option<Release> {
         match s.strip_suffix("-alpha").unwrap_or(s) {
             "1.3.1" => Some(Release::V1_3_1),
             "1.3.2" => Some(Release::V1_3_2),
+            "1.4.0" => Some(Release::V1_4_0),
             _ => None,
         }
     }
@@ -63,26 +64,33 @@ impl Release {
         match self {
             Release::V1_3_1 => "1.3.1",
             Release::V1_3_2 => "1.3.2",
+            Release::V1_4_0 => "1.4.0",
         }
     }
 
-    /// The verifying key of the release's final circuit.
+    /// The verifying key of the release's final circuit. 1.3.1 and 1.3.2 share one; 1.4.0 has its own
+    /// (our own PLONK setup on ZisK's Poseidon1 key, see `prover/build-plonk-key.sh`).
     pub fn key(self) -> &'static zk_verifier::vk::VerifyingKey {
         match self {
             Release::V1_3_1 => &zk_verifier::vk::ZISK_1_3_1,
             Release::V1_3_2 => &zk_verifier::vk::ZISK_1_3_2,
+            Release::V1_4_0 => &zk_verifier::vk::ZISK_1_4_0,
         }
     }
 
-    /// The release for a byte of the WebAssembly interface (0 is 1.3.1, 1 is 1.3.2).
+    /// The release for a byte of the WebAssembly interface (0 is 1.3.1, 1 is 1.3.2, 2 is 1.4.0).
     pub fn from_code(code: u8) -> Option<Release> {
         match code {
             0 => Some(Release::V1_3_1),
             1 => Some(Release::V1_3_2),
+            2 => Some(Release::V1_4_0),
             _ => None,
         }
     }
 }
+
+/// The words a release is named by in the messages: the ones this sidecar knows.
+pub const KNOWN_RELEASES: &str = "1.3.1, 1.3.2 or 1.4.0";
 
 /// A proof check: whether the 1,344 bytes verify under the PLONK key of the release.
 type ProofCheck = fn(Release, &[u8]) -> Result<bool, zk_verifier::Error>;
@@ -91,8 +99,11 @@ type ProofCheck = fn(Release, &[u8]) -> Result<bool, zk_verifier::Error>;
 pub const MAX_KEYS: usize = 4;
 
 /// One program the sidecar accepts proofs of: its key, the root of the ZisK release's final
-/// circuit, and the release. The release picks the PLONK key the proof is checked under; the other
-/// two are the pins the proof must carry.
+/// circuit, the release, and the blocks it is valid for. The release picks the PLONK key the proof
+/// is checked under; the program key and root are the pins the proof must carry. A key valid for
+/// all blocks (the default) is accepted whatever the block's number; one with a range is accepted
+/// only for the blocks in it, so a program switch at block N lists the old key `..N` and the new
+/// one `N..`, and a block proven under the key that does not belong to its number is refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Key {
     /// The key of the program whose proofs are accepted.
@@ -101,36 +112,101 @@ pub struct Key {
     pub root_c: [u8; 32],
     /// The ZisK release the proofs are made with.
     pub release: Release,
+    /// The first block number the key is valid for.
+    pub first_block: u64,
+    /// The block number the key is no longer valid from (exclusive); none means it has no end.
+    pub until_block: Option<u64>,
 }
 
 impl Key {
+    /// A key valid for every block.
     pub fn new(program_vk: [u8; 32], root_c: [u8; 32], release: Release) -> Key {
         Key {
             program_vk,
             root_c,
             release,
+            first_block: 0,
+            until_block: None,
         }
     }
 
-    /// A key from `<programVK>:<rootC>[:<release>]`: 64 lowercase hex digits each (with or without
-    /// a `0x`), and a release number; without one the release is 1.3.1.
+    /// The same key, valid from block `first` on.
+    pub fn from_block(self, first: u64) -> Key {
+        Key {
+            first_block: first,
+            ..self
+        }
+    }
+
+    /// The same key, valid for the blocks before `until`.
+    pub fn before_block(self, until: u64) -> Key {
+        Key {
+            until_block: Some(until),
+            ..self
+        }
+    }
+
+    /// Whether the key is valid for block `number`.
+    pub fn covers(&self, number: u64) -> bool {
+        number >= self.first_block && self.until_block.is_none_or(|u| number < u)
+    }
+
+    /// A key from `<programVK>:<rootC>:<release>[@<from>..<until>]`: 64 lowercase hex digits each
+    /// (with or without a `0x`), a release number (required), and optionally the blocks it is valid
+    /// for, as Rust writes a range: `@..N` the blocks before N, `@N..` from N on, `@N..M` the blocks
+    /// N up to but not including M. Without a range it is valid for every block.
     pub fn parse(s: &str) -> Result<Key, String> {
-        let parts: Vec<&str> = s.split(':').collect();
-        if !(2..=3).contains(&parts.len()) {
-            return Err(format!("{s:?} is not <programVK>:<rootC>[:<release>]"));
+        let (head, range) = match s.split_once('@') {
+            Some((h, r)) => (h, Some(r)),
+            None => (s, None),
+        };
+        let parts: Vec<&str> = head.split(':').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "{s:?} is not <programVK>:<rootC>:<release>[@<from>..<until>]"
+            ));
         }
         let hex32 = |v: &str| -> Result<[u8; 32], String> {
             unhex(v.strip_prefix("0x").unwrap_or(v))
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| format!("{v:?} is not 64 lowercase hex digits"))
         };
-        let release = match parts.get(2) {
-            None => Release::default(),
-            Some(r) => Release::parse(r).ok_or_else(|| {
-                format!("{r} is not a ZisK release this sidecar knows (1.3.1 or 1.3.2)")
-            })?,
-        };
-        Ok(Key::new(hex32(parts[0])?, hex32(parts[1])?, release))
+        let release = Release::parse(parts[2]).ok_or_else(|| {
+            format!(
+                "{} is not a ZisK release this sidecar knows ({KNOWN_RELEASES})",
+                parts[2]
+            )
+        })?;
+        let mut key = Key::new(hex32(parts[0])?, hex32(parts[1])?, release);
+        if let Some(range) = range {
+            let bad = || {
+                format!("{range:?} is not a block range: <from>..<until>, either side may be empty")
+            };
+            let (from, until) = range.split_once("..").ok_or_else(bad)?;
+            let number = |t: &str| -> Result<Option<u64>, String> {
+                if t.is_empty() {
+                    return Ok(None);
+                }
+                t.bytes()
+                    .all(|c| c.is_ascii_digit())
+                    .then(|| t.parse().ok())
+                    .flatten()
+                    .map(Some)
+                    .ok_or_else(bad)
+            };
+            let (from, until) = (number(from)?, number(until)?);
+            if from.is_none() && until.is_none() {
+                return Err(bad());
+            }
+            if let (Some(f), Some(u)) = (from, until) {
+                if f >= u {
+                    return Err(format!("{range:?} is an empty block range"));
+                }
+            }
+            key.first_block = from.unwrap_or(0);
+            key.until_block = until;
+        }
+        Ok(key)
     }
 }
 
@@ -147,11 +223,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// The pins of a chain on ZisK 1.3.1, which is what a chain is on when its release is not named.
-    pub fn new(program_vk: [u8; 32], root_c: [u8; 32]) -> Config {
-        Config::for_release(program_vk, root_c, Release::V1_3_1)
-    }
-
     /// The pins of a chain whose proofs are made with `release`.
     pub fn for_release(program_vk: [u8; 32], root_c: [u8; 32], release: Release) -> Config {
         Config {
@@ -287,6 +358,11 @@ fn check_fields(
 ) -> Result<String, &'static str> {
     let (key, hash) = proven_block(cfg, &proof)?;
     let b = block::check(&hash, &header, &txs)?;
+    // The key must be the one that belongs to this block: the header's number is committed by the
+    // proof (the proof fixes the block hash, and the header hashes to it).
+    if !key.covers(b.number) {
+        return Err("the proof's key is not valid for this block number");
+    }
     Ok(format!(
         "ok {} {} {} {} {} {} {} {} {} {}",
         hex(&key.program_vk),

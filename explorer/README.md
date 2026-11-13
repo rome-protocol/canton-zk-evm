@@ -238,7 +238,7 @@ programVK@4200=0x<64 hex digits>
 rootC@4200=0x<64 hex digits>
 ```
 
-Each key also names its ZisK release, which picks the verifying key a proof is checked under: `zisk=1.3.1` for the key from block 0 and `zisk@<block>=1.3.2` for a later one (`1.3.1` or `1.3.2`; a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. For a chain that moves from 1.3.1 to 1.3.2 at block 1500:
+Each key also names its ZisK release, which picks the verifying key a proof is checked under: `zisk=1.3.1` for the key from block 0 and `zisk@<block>=1.3.2` for a later one (`1.3.1`, `1.3.2` or `1.4.0`; a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. For a chain that moves from 1.3.1 to 1.3.2 at block 1500:
 
 ```
 zisk=1.3.1
@@ -249,7 +249,7 @@ programVK@1500=0x<64 hex digits>
 rootC@1500=0x<64 hex digits>
 ```
 
-The recorded session's file, `prover/fixtures/session.txt`, has `zisk=1.3.2-alpha`, so it is a chain on 1.3.2 from block 0. The explorer refuses to start for a `zisk` value that is not a release it knows, or a `zisk` line given twice.
+The recorded session's file, `prover/fixtures/session.txt`, has `zisk=1.4.0-alpha`, so it is a chain on 1.4.0 from block 0. A chain that moves from 1.3.2 to 1.4.0 at block N is `zisk=1.3.2` for the key from block 0 and `zisk@N=1.4.0` with `programVK@N=` and `rootC@N=` for the new key; the Verify panel hands the browser's check the key and the release of the range the block is in (`pinsAt`), so block N-1 is checked under the 1.3.2 key and block N under the 1.4.0 key. The explorer refuses to start for a `zisk` value that is not a release it knows, or a `zisk` line given twice.
 
 This chain used the first key for blocks 0 to 1499, the second for blocks 1500 to 4199 and the third from block 4200 on. The ranges come in increasing order of block, and the last one is the current key. The explorer refuses to start (a `ConfigError` that names the line) when a later key has only one of the two lines, a block number is not a whole number above 0, a block number is repeated or does not come after the one before it, a line is given twice, or a value is not `0x` and 64 hex digits.
 

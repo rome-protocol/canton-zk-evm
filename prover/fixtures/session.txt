@@ -1,34 +1,35 @@
 # The first proof of this chain: a block with one plain transfer, proved by ZisK on one GPU.
-# Recorded on 2026-10-26, from the guest that prover/build-guest.sh builds (the same ELF from two source folders; see guest/README.md).
+# Recorded on 2026-11-13, from the guest that prover/build-guest.sh builds (the same ELF and programVK on two machines; see guest/README.md).
 # Plain facts, one key=value per line. transfer-proof.json is the proof (the four fields of
 # cargo-zisk-dev export-solidity-calldata); wrapped-proof.hex is the same four one after the other.
-zisk=1.3.2-alpha
-guest=zisk-eth-client v0.13.1 (edf8adcda75c015f4225abe3aabb3bed03e21beb) with the chain-rules check
+zisk=1.4.0-alpha
+guest=zisk-eth-client v0.14.0 (dfa27ff2e3544fb3c7467499415830d20de2218d) with the chain-rules check
 chain_id=770101
 # Block 1's parent is a throwaway genesis: a copy of network/genesis.json that also funds a test key.
 block=1
-block_hash=0xf442808c04bc645679ab479c46a92ea4d01e3458cdf3e2dd1bb3892f01f8c9cc
+block_hash=0x92695619a597914f6f5a6d8fd7dcef4f781810bc8f35da04c04bb4ae8fae42c4
 transactions=1
 gas_used=21000
-elf_sha256=5f783bc3cf72d7aa8e94c339aac9ec6e16c438a95d07f440912a2dbed9fc8ee7
-programVK=0x0a01bac665147bb69d8fae02c549f18dc73540f2e6734d8b38e1fb9f5074daed
+elf_sha256=2473f2bedae8a569046a0691400883755f2b5d116222004810ba797692463f59
+programVK=0xce6eccb4ad4809d565267c86e0f70052fb3bdf8fec203dffa5634df52d4298fe
 # The key of the guest that stopped at Prague, which the demo results of 2026-10-05 (demo/results/) ran, and the root of ZisK 1.3.1's final circuit, which those results carry. They are kept as recorded.
 previous_programVK=0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f
 previous_rootC=0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4
-# This guest built for ZisK 1.3.1-alpha: the key of the blocks a chain proved under 1.3.1 (that release's root is previous_rootC).
-zisk_1_3_1_programVK=0xdbe132ed93824452dc2466618977d8825653b829576a384f1b6e4367bca00688
-rootC=0x6b2490fba336fb00f0c8719a961de309a8db6f43a9bfb7575ca5f014d609b265
+# The guest this chain ran before the move to ZisK 1.4.0 (zisk-eth-client v0.13.1, built for ZisK 1.3.2-alpha, guest ELF SHA-256 98b61e3985fe0344a3876cf35689d8ee73908053d6dd5161caf31b68b34b3905): the key of the blocks a chain proved under 1.3.2 (that release's root is previous_1_3_2_rootC). The sidecars of a chain that switches to 1.4.0 keep it for the blocks before the switch.
+previous_1_3_2_programVK=0x2632dfc18a5ad266e57798606d72c14e473ea6dca2e5d9ec9cfcb9afb3b987cd
+previous_1_3_2_rootC=0x6b2490fba336fb00f0c8719a961de309a8db6f43a9bfb7575ca5f014d609b265
+rootC=0xe9414e134bb6945a148a79d44c8e850e5ef582a2b0e8dbfb2428ff0a515a6e66
 rulesHash=4f695c4d6399408ba9966b86bf0bafdb0b3251c0df10aa432eb7dfd32a126211
-input_sha256=9245e116bf0eb7db5695afa402ad2fc77a00619ead478477b3fcc4acc9ba5219
+input_sha256=2a57d782e8669d353bb8209db4805afaccae77f7b9eb905f8baf1f73efdec14d
 gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.178.04
-steps=398397
-# Seconds. The prover was already running with its keys loaded; the first setup of the program took 41 s.
-# guest_build_seconds is all of prover/build-guest.sh from an empty build folder, the dependency download included.
-prove_seconds=6.49 6.71 6.72
-guest_build_seconds=126
-program_setup_seconds=43
+steps=365866
+# Seconds. The prover was already running with its keys loaded (the worker with the PLONK key preloaded holds about 95 GB of the card); the first setup of the program took 46 s.
+# guest_build_seconds is all of prover/build-guest.sh from an empty build folder on the GPU machine (48 cores), the dependency download included.
+prove_seconds=6.48 6.57 6.57
+guest_build_seconds=208
+program_setup_seconds=46
 wrapped_proof_bytes=1344
 verified_cargo_zisk=yes
 verified_zk_verifier=yes
-# The same input with the chain id changed to 1 in its chain config was refused: the prover answered "Failed to generate proof" and returned no proof (checked again on this ELF).
+# The same input with the chain id changed to 1 in its chain config was refused: the prover answered "Failed to generate proof" and returned no proof (checked on this ELF).
 other_chain_id_refused=yes
