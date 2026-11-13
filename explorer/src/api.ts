@@ -2,6 +2,9 @@ import type { Lifecycle } from "./block-times.ts";
 import type { FaucetInfo } from "./faucet/faucet-client.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
+/** A notice of the operators: plain text, the two times, and optionally the level ("major" is the large banner) and a link to a page that explains it. */
+export interface StatusNotice { text: string; startsAt: string; endsAt: string; level?: "major"; link?: { url: string; label: string } }
+
 export interface ApiStatus {
   chainId: number;
   chainName: string;
@@ -28,7 +31,9 @@ export interface ApiStatus {
   /** True when this deployment names its own test and load addresses (OWN_ADDRESSES). Absent from a server older than this page: read as false. */
   ownTraffic?: boolean;
   /** A message about planned work, set by the operators: its plain text and the ISO times it starts and ends. Null when there is none (or it has ended); absent from a server older than this. */
-  notice?: { text: string; startsAt: string; endsAt: string } | null;
+  notice?: StatusNotice | null;
+  /** Every notice that has not ended, major first; a server from before this field has only `notice`. */
+  notices?: StatusNotice[];
   /** The newest block the index holds, how many blocks it is behind Canton's finalized head (null while unknown), where stage 2 is, and the chain instance. */
   indexHead: number | null;
   indexLag: number | null;

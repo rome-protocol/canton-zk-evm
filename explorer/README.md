@@ -140,7 +140,7 @@ The indexer reads the settings above that it shares with the server (`RETH_RPC_U
 
 ## A notice for planned work
 
-When an outage or an upgrade is planned, the explorer can tell the people who use it. It reads the file named by `OSTIA_NOTICE_FILE` (with `run.sh`, `<state>/explorer/notice.json`) and shows what it says as a strip at the top of every page, the Bridge and the Faucet included. The server reads the file again when what it holds is 3 seconds old, so a notice appears and goes by writing or removing the file, with no restart. With no setting, or no file, there is no notice, and nothing else about the explorer changes.
+When an outage, an upgrade or a move is planned, the explorer can tell the people who use it. It reads the file named by `OSTIA_NOTICE_FILE` (with `run.sh`, `<state>/explorer/notice.json`) and shows what it says as a strip at the top of every page, the Bridge and the Faucet included. The server reads the file again when what it holds is 3 seconds old, so a notice appears and goes by writing or removing the file, with no restart. With no setting, or no file, there is no notice, and nothing else about the explorer changes.
 
 ```json
 {
@@ -150,10 +150,31 @@ When an outage or an upgrade is planned, the explorer can tell the people who us
 }
 ```
 
+The file holds that one object, or a list of up to 5 of them. A notice may also carry a `level` and a `link`, which make it a large banner that points to a page that explains it:
+
+```json
+[
+  {
+    "level": "major",
+    "text": "This DevNet chain moves to Canton TestNet. Nothing needs doing unless you hold tokens you want to keep.",
+    "link": { "url": "https://example.org/docs/move", "label": "What is changing" },
+    "startsAt": "2026-11-13T00:00:00Z",
+    "endsAt": "2026-12-01T00:00:00Z"
+  },
+  {
+    "text": "Upgrading the validator database. Ostia pauses for about 45 minutes.",
+    "startsAt": "2026-11-14T09:00:00Z",
+    "endsAt": "2026-11-14T10:00:00Z"
+  }
+]
+```
+
 - `text` is plain text of at most 300 characters: white space is folded to single spaces, and it is drawn as text, never as HTML.
-- `startsAt` and `endsAt` are ISO 8601 times that name their zone (`Z` or `+01:00`); `endsAt` must be after `startsAt`. Each time shows in the reader's own zone.
-- A file that is not valid (not JSON, a missing or malformed field, a text that is too long, a file over 4096 characters) is not shown, and the server logs why once; a mistake in the file never stops the explorer. A file that is replaced by a rename is picked up like one that is written in place.
-- `/api/status` (and `/healthz`) carry `notice`: `{ "text", "startsAt", "endsAt" }` while there is a notice that has not ended, and `null` otherwise. The strip reads "Planned maintenance: <text> <the time range>" before `startsAt`, "Maintenance in progress: <text> until <time>" from `startsAt`, and is gone at `endsAt`, by the reader's own clock. It stays on a page that is already open while the explorer cannot be reached.
+- `startsAt` and `endsAt` are ISO 8601 times that name their zone (`Z` or `+01:00`); `endsAt` must be after `startsAt`. Each time shows in the reader's own zone. Each notice in a list has its own times, and goes at its own end.
+- `level` is optional, and the only value is `"major"`. A major notice is a large banner ("Important notice: ..." with its times, more room, larger text, readable in the light and the dark theme and at the width of a phone), and major notices show above the others, each group in the file's order. Without `level` the notice is the slim strip below.
+- `link` is optional: `{ "url", "label" }`. The `url` is an `http` or `https` address of at most 500 characters, with no white space and no user name or password; the `label` is plain text of at most 60 characters. It is drawn as a link that opens in a new tab, and like the text it is never HTML; any other scheme (`javascript:`, `data:`, `mailto:`, a relative address) refuses the file.
+- A file that is not valid (not JSON, a missing or malformed field, a text that is too long, a bad `level` or `link`, more than 5 notices, a file over 4096 characters) is not shown, and the server logs why once, naming the notice of a list that is wrong; a mistake in the file never stops the explorer. A file that is replaced by a rename is picked up like one that is written in place.
+- `/api/status` (and `/healthz`) carry `notices`: the list of notices that have not ended, major first, each `{ "text", "startsAt", "endsAt" }` with `level` and `link` when it has them; `[]` when there is none. They also carry `notice`, the first of them or `null`, for clients from before the list. The slim strip reads "Planned maintenance: <text> <the time range>" before `startsAt`, "Maintenance in progress: <text> until <time>" from `startsAt`, and is gone at `endsAt`, by the reader's own clock. It stays on a page that is already open while the explorer cannot be reached.
 - Write the file in the explorer's own folder (`<state>/explorer`, which the container has mounted), because a single file mounted into a container would not follow a replacement of the file.
 
 ## What it reads from reth
