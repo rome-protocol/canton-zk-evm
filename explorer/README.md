@@ -100,6 +100,7 @@ The server takes its settings from environment variables. A wrong value stops it
 | `RPC_HEAVY_CONCURRENCY`, `RPC_HEAVY_QUEUE` | `8`, `16` | The global limit on heavy `/rpc` calls (all clients together): how many run at once, and how many may wait for a free place. Their sum may be at most 32, or the explorer refuses to start: every running or waiting heavy call holds one of the 64 request places, and the other half is kept for light calls. See [The global cap on heavy calls](#the-global-cap-on-heavy-calls) |
 | `TRUSTED_IP_HEADER` | none | The request header that holds the client's address, such as `X-Real-IP`, for a server that sits behind a proxy that writes it. With none, the address of the connection is used |
 | `EXPLORER_DATABASE_URL`, or `EXPLORER_DB_PASSWORD_FILE` with its parts | none, and the explorer does not start without it | The explorer's database (see [The database](#the-database)). It holds the chain the indexer writes, which the block and transaction pages read. The tracker and the faucet keep their state in it instead of in their files, only one API instance runs each loop, and `TRACKER_FILE` and `FAUCET_STATE_FILE` are imported once and renamed to `<file>.imported` |
+| `OSTIA_NOTICE_FILE` | none (`run.sh` sets `/var/lib/explorer/notice.json`, which is `<state>/explorer/notice.json` on the host) | A JSON file with a notice of planned work, shown as a strip at the top of every page. Not set, or no such file: no notice. See [A notice for planned work](#a-notice-for-planned-work) |
 | `TRACKER_FILE` | none | A file in which an earlier version kept the tracker's list. The tracker now keeps its list in the database. If the file exists at start, its entries are imported once and the file is renamed to `<file>.imported`. `run.sh` mounts a writable folder and sets `/var/lib/explorer/tracker.json` |
 | `TRACKER_MAX`, `TRACKER_MAX_BYTES`, `TRACKER_PER_SENDER`, `TRACKER_MAX_PENDING_MINUTES` | `10000`, `16777216`, `64`, `60` | The most entries the tracker holds, the most characters of signed transactions it holds for open entries, the most open entries one sender may have, and how many minutes an open entry may stay without a block before it is dropped. See [The transaction tracker](#the-transaction-tracker) |
 | `FAUCET_KEY_FILE` | none | The faucet's key. With none, the faucet is off |
@@ -136,6 +137,24 @@ The indexer reads the settings above that it shares with the server (`RETH_RPC_U
 | `GATEWAY_PARTY`, `GATEWAY_LEDGER_TOKEN_FILE` | none | Turn on the custody check ([above](#the-custody-check)): the gateway's Canton party, and a 0600 file with a bearer token for a user that can only read as it. Both or neither. `run.sh` mounts the file read-only for the indexer only |
 | `CUSTODY_MS` | `30000` | How often the custody is read (at least 1000) |
 | `CUSTODY_LIMIT` | `200` | How many contracts the read of the gateway's registered tokens asks Canton for (one `GatewayToken` per token: a handful). Keep it at or below the participant's list maximum (Canton's default is 200) and above the number of registered tokens: a list as long as the limit may have been cut, and is refused; Canton 3.6.3 answers 413 for a list past its own maximum, so a limit above it fails closed. The holdings are not read as a list, so their number does not count against it |
+
+## A notice for planned work
+
+When an outage or an upgrade is planned, the explorer can tell the people who use it. It reads the file named by `OSTIA_NOTICE_FILE` (with `run.sh`, `<state>/explorer/notice.json`) and shows what it says as a strip at the top of every page, the Bridge and the Faucet included. The server reads the file again when what it holds is 3 seconds old, so a notice appears and goes by writing or removing the file, with no restart. With no setting, or no file, there is no notice, and nothing else about the explorer changes.
+
+```json
+{
+  "text": "Upgrading the validator database. Ostia pauses for about 45 minutes.",
+  "startsAt": "2026-11-14T09:00:00Z",
+  "endsAt": "2026-11-14T10:00:00Z"
+}
+```
+
+- `text` is plain text of at most 300 characters: white space is folded to single spaces, and it is drawn as text, never as HTML.
+- `startsAt` and `endsAt` are ISO 8601 times that name their zone (`Z` or `+01:00`); `endsAt` must be after `startsAt`. Each time shows in the reader's own zone.
+- A file that is not valid (not JSON, a missing or malformed field, a text that is too long, a file over 4096 characters) is not shown, and the server logs why once; a mistake in the file never stops the explorer. A file that is replaced by a rename is picked up like one that is written in place.
+- `/api/status` (and `/healthz`) carry `notice`: `{ "text", "startsAt", "endsAt" }` while there is a notice that has not ended, and `null` otherwise. The strip reads "Planned maintenance: <text> <the time range>" before `startsAt`, "Maintenance in progress: <text> until <time>" from `startsAt`, and is gone at `endsAt`, by the reader's own clock. It stays on a page that is already open while the explorer cannot be reached.
+- Write the file in the explorer's own folder (`<state>/explorer`, which the container has mounted), because a single file mounted into a container would not follow a replacement of the file.
 
 ## What it reads from reth
 

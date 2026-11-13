@@ -24,6 +24,8 @@
 # RPC_RATE_PER_MINUTE, RPC_HEAVY_CONCURRENCY, RPC_HEAVY_QUEUE, LEG_CHECK_URL, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
+# The pages show a notice of planned work when <state>/explorer/notice.json exists (OSTIA_NOTICE_FILE, /var/lib/explorer/notice.json inside; see explorer/README.md, "A notice for planned work").
+# The server reads it again every few seconds, so it is set or cleared by writing or removing that file, with no restart of the container.
 # The database: the explorer shows the chain the indexer wrote there, and does not start without one. With none named, `start` takes the one
 # network/explorer-db.sh makes (it starts it if it is not running; password in <state>/explorer-db.env, port CZE_EXPLORER_DB_PORT, default 5433).
 # To name another: EXPLORER_DB_PASSWORD_FILE and FAUCET_CLIENT_KEY_FILE are mounted read-only like the faucet's key; EXPLORER_DB_HOST, EXPLORER_DB_PORT,
@@ -150,7 +152,7 @@ explorer_args() {
   ARGS=(run -d --name "$NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID")
   # The one place the explorer may write. The caller owns it, as the container runs as the caller.
   [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || (umask 077; mkdir -p "$STATE/explorer")
-  ARGS+=(-v "$STATE/explorer:/var/lib/explorer" -e "TRACKER_FILE=${TRACKER_FILE:-/var/lib/explorer/tracker.json}" -e "FAUCET_STATE_FILE=${FAUCET_STATE_FILE:-/var/lib/explorer/faucet.json}")
+  ARGS+=(-v "$STATE/explorer:/var/lib/explorer" -e "TRACKER_FILE=${TRACKER_FILE:-/var/lib/explorer/tracker.json}" -e "FAUCET_STATE_FILE=${FAUCET_STATE_FILE:-/var/lib/explorer/faucet.json}" -e "OSTIA_NOTICE_FILE=${OSTIA_NOTICE_FILE:-/var/lib/explorer/notice.json}")
   chain_args
   local key=${FAUCET_KEY_FILE:-}
   [ -n "$key" ] || { [ ! -f "$STATE/faucet/key" ] || key=$STATE/faucet/key; }

@@ -64,6 +64,8 @@ export interface Config {
   ownAddresses: Readonly<Record<string, string>>;
   /** The account service's `/healthz` on this machine (ACCOUNTS_HEALTH_URL, such as http://127.0.0.1:8081/healthz), read into the health row `accounts`; null when not set, and then there is no such row. */
   accountsHealthUrl: string | null;
+  /** A file with a notice for the pages (OSTIA_NOTICE_FILE, see server/notice.ts); null when not set, and then there is never a notice. */
+  noticeFile: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -332,6 +334,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     ownAddresses: ownAddresses(env),
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
     accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
+    noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),

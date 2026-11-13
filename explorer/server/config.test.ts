@@ -293,3 +293,11 @@ describe("the builder grant's settings", () => {
     expect(() => load({ ...on, FAUCET_GITHUB_CLIENT_ID: "a b" })).toThrow(/FAUCET_GITHUB_CLIENT_ID/);
   });
 });
+
+describe("the notice file", () => {
+  it("is off until OSTIA_NOTICE_FILE names a file", () => {
+    expect(load().noticeFile).toBeNull();
+    expect(load({ OSTIA_NOTICE_FILE: "  " }).noticeFile).toBeNull();
+    expect(load({ OSTIA_NOTICE_FILE: "/var/lib/explorer/notice.json" }).noticeFile).toBe("/var/lib/explorer/notice.json");
+  });
+});
