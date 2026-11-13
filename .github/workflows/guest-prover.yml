@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Lint the prover scripts and the fixtures test
-        run: shellcheck prover/*.sh tests/fixtures.sh tests/guest-repro.sh
+        run: shellcheck prover/*.sh tests/fixtures.sh tests/guest-repro.sh tests/zisk-artifacts.sh
 
   fixtures:
     runs-on: ubuntu-latest
@@ -31,6 +31,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: The recorded proof is consistent
         run: tests/fixtures.sh
+
+  zisk-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: install.sh uses a ZisK release file only with its pinned SHA-256
+        run: tests/zisk-artifacts.sh
 
   guest-repro:
     runs-on: ubuntu-latest

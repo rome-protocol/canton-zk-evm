@@ -22,6 +22,18 @@ ZISK_COMMIT=1e22630bb7e143c30705a1603ed87cfd3da8c6ec
 ZISK_ETH_CLIENT_VERSION=0.13.1
 ZISK_ETH_CLIENT_COMMIT=edf8adcda75c015f4225abe3aabb3bed03e21beb
 ZISKUP_SHA256=a2d1781f64f31719ef251f55a48c664ab35cdb7431d42167894f94b5fbec64e1
+# SHA-256 of the three files prover/install.sh installs for ZISK_VERSION: the release binaries (cargo_zisk_linux_amd64.tar.gz of the GitHub
+# release; GitHub shows the same digest), the proving key (zisk-provingkey-<version>.tar.gz) and the PLONK key (zisk-provingkey-plonk-<version>.tar.gz)
+# from ZisK's setup bucket. install.sh checks each before it is installed; upstream publishes only an md5 of each key, next to the key.
+# prover/zisk-<version>-keys.sha256 lists every file the two keys unpack to, which install.sh checks after the install.
+ZISK_RELEASE_SHA256=abb779427f6c6924c7482f943356f60c6577499432bb806af349669b2a729bd7
+ZISK_STARK_SETUP_SHA256=824ed6b5f0dbb4900129bc296ecd0ab4199eb12799e1de36e59a9df78516dbea
+ZISK_PLONK_SETUP_SHA256=86406028280d3d9391e27c4466fdc45063c394da0cfb85b3256eaa8c3c7f663e
+# The powers-of-tau file the PLONK key is built on: Hermez's final_24 (54 contributions and a beacon), 19,327,435,928 bytes. install.sh does not
+# download it; it is pinned for rebuilding a PLONK key. Its blake2b-512 is the one snarkjs's README publishes; the SHA-256 was taken from a copy
+# that matched it. The addresses in ZisK's docs answer 403; https://circom.info/powersOfTau28_hez_final_24.ptau serves it.
+ZISK_PTAU_BLAKE2B=fa404d140d5819d39984833ca5ec3632cd4995f81e82db402371a4de7c2eae8687c62bc632a95b0c6aadba3fb02680a94e09174b7233ccd26d78baca2647c733
+ZISK_PTAU_SHA256=032647abe127f4562f8118dd5f866ab595c1f2bbd03d0a85ff3739a4a967d9be
 # The Rust toolchain the guest is built with: a release of 0xPolygonHermez/rust and the checksum of its linux-x86_64 archive. Without this pin ZisK's installer takes the highest zisk-4.x.y release there is.
 ZISK_TOOLCHAIN=zisk-4.0.0
 ZISK_TOOLCHAIN_SHA256=c4c44b5612dd025f630c2f984ae5f8a862b885c4b14bfc57c980eb8073b8cf62

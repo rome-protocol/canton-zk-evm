@@ -27,6 +27,16 @@ done
 [ -z "${FOUNDRY_IMAGE:-}${FOUNDRY_VERSION:-}" ] || fail "PINS must not pin Foundry: the chain has no funded test accounts"
 [[ $ZISK_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_COMMIT is not a full commit hash"
 [[ $ZISK_ETH_CLIENT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_ETH_CLIENT_COMMIT is not a full commit hash"
+# What prover/install.sh installs is pinned by content: the installer, the toolchain, the release binaries and both keys by SHA-256,
+# every file the keys unpack to by a list, and the ptau a PLONK key is rebuilt from by its published blake2b-512 and a SHA-256.
+for k in ZISKUP_SHA256 ZISK_TOOLCHAIN_SHA256 ZISK_RELEASE_SHA256 ZISK_STARK_SETUP_SHA256 ZISK_PLONK_SETUP_SHA256 ZISK_PTAU_SHA256; do
+  [[ ${!k:-} =~ ^[0-9a-f]{64}$ ]] || fail "$k is missing from PINS or is not a SHA-256"
+done
+[[ ${ZISK_PTAU_BLAKE2B:-} =~ ^[0-9a-f]{128}$ ]] || fail "ZISK_PTAU_BLAKE2B is missing from PINS or is not a blake2b-512"
+keys=$ROOT/prover/zisk-$ZISK_VERSION-keys.sha256
+[ -s "$keys" ] || fail "PINS names ZisK $ZISK_VERSION but there is no list of its key files ($keys)"
+! grep -vqE '^[0-9a-f]{64}  provingKey(Snark)?/[A-Za-z0-9_./-]+$' "$keys" || fail "$keys has a line that is not a SHA-256 and a path under provingKey/ or provingKeySnark/"
+! grep -qF '../' "$keys" || fail "$keys has a path that leaves the ZisK folder"
 
 # The Canton and Daml toolchain is pinned by content: a SHA-256 for the Canton tarball and jar, the dpm program, the SDK manifest and the compiler's registry manifest.
 for k in CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DPM_LINUX_AMD64_SHA256 DAML_SDK_MANIFEST_SHA256 DAMLC_LINUX_AMD64_MANIFEST_SHA256; do
