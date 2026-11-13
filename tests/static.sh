@@ -59,6 +59,9 @@ jq -e '.dependencies | to_entries | all(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+
   || fail "prover/plonk-key/package.json has a version that is a range or a branch"
 [ "$(jq -r '.dependencies.snarkjs' "$ROOT/prover/plonk-key/package.json")" = "$SNARKJS_VERSION" ] || fail "snarkjs in prover/plonk-key/package.json is not SNARKJS_VERSION"
 [[ $ZISK_TOOLCHAIN =~ ^zisk-4\.[0-9]+\.[0-9]+$ ]] || fail "ZISK_TOOLCHAIN is not a zisk-4.x.y release"
+# Every script that starts the real sidecar names its ZisK release: the sidecar has no default release and refuses to start without one.
+bad=$(grep -rnE 'release/zk-sidecar"? +--program-vk' "$ROOT/tests" "$ROOT/network" 2>/dev/null | grep -v -e '--zisk-release' -e 'T/sidecar/target' || true)  # (tests/network_checks.sh starts a stand-in that records its command line, as an older sidecar)
+[ -z "$bad" ] || fail "a script starts zk-sidecar without --zisk-release: $bad"
 # The guest's program key, root and ELF are the ones the recorded session holds, and the rules hash is the recorded one.
 for k in GUEST_PROGRAM_VK GUEST_ROOT_C; do [[ ${!k:-} =~ ^0x[0-9a-f]{64}$ ]] || fail "$k is missing from PINS or is not 0x and 64 hex digits"; done
 [[ ${GUEST_ELF_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail "GUEST_ELF_SHA256 is missing from PINS or is not a SHA-256"

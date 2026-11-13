@@ -90,7 +90,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
 VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 768))$VK$RC
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
-background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
+background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --zisk-release 1.4.0 --listen 127.0.0.1:9085
 for port in 8085 8086; do
   background "stand-in-$port" python3 "$ROOT/tests/demo_sidecar.py" "$port" 9085 "$VK" "$RC" "$PROOF"
 done
