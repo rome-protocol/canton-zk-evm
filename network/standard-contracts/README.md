@@ -44,7 +44,7 @@ The presigned transactions are priced at 100 gwei and have fixed gas limits, so 
 
 **Permit2's init code is not in any one file upstream.** It is rebuilt from two files of Uniswap's repository, and `contracts.json` says which: the constructor from Permit2's source compiled with solc 0.8.17, and the runtime code from Uniswap's precompiled copy (`test/utils/DeployPermit2.sol`). The check that it is the canonical init code is the address: CREATE2 from the deployer, with Permit2's salt, gives `0x000000000022D473030F116dDEE9F6B43aC78BA3` from exactly this init code, and the script checks that on every run.
 
-**Permit2's runtime code differs by chain.** It holds the chain id and the domain separator built from it as immutables, so its runtime code hash is not the same on two chains. The script works the hash out for the chain it runs against from the init code (`contracts.json` also holds the hash for chain 770101, which the script checks too).
+**Permit2's runtime code differs by chain.** It holds the chain id and the domain separator built from it as immutables, so its runtime code hash is not the same on two chains. The script works the hash out for the chain it runs against from the init code (`contracts.json` also holds the hash for chains 770101 and 770102, which the script checks too).
 
 **Where each hash comes from** is in `contracts.json`, in each entry's `source`. For `create2-deployer` and `multicall3` the runtime code is the tail of the presigned transaction's init code (those two have no immutables). For `createx` it is the init code after its constructor with the contract's own address written into its 25 immutable slots, and it equals the repository's published `deployedBytecode` filled the same way.
 
