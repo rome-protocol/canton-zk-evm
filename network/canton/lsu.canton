@@ -1,0 +1,147 @@
+// A logical synchronizer upgrade (LSU) of the local network, run by tests/canton_lsu.sh from a console that reaches the nodes over their
+// admin APIs (network/canton/lsu-console.conf). The steps are those of Canton's own example (examples/12-lsu of the release) and of its
+// LSU integration tests:
+//   1. announce: sequencer1, the synchronizer's owner, proposes the LsuAnnouncement of the successor: the same logical synchronizer, protocol
+//      version LSU_TO_PV, serial + 1, upgrade time LSU_LEAD_SECONDS from now. From here to the upgrade time the topology is frozen.
+//   2. the freeze: a new party on the operator's participant is refused.
+//   3. the move: sequencer1's and mediator1's ids and keys, and the sequencer's topology state for the successor (sequencer_lsu_state), go to
+//      files in LSU_EXPORT_DIR; sequencer2 and mediator2 (network/canton/lsu.conf), which started with no identity, take them in on the
+//      successor's protocol version.
+//   4. the switch. LSU_SWITCH=auto (the default): sequencer1 announces sequencer2's endpoint as its successor (LsuSequencerConnectionSuccessor);
+//      each participant then knows the successor of every sequencer it uses and moves to the successor by itself at the upgrade time.
+//      LSU_SWITCH=manual: no successor is announced; after the upgrade time each participant is moved by perform_manual_lsu.
+//   5. waits until every participant is connected to the successor and not to the predecessor, then allocates a party on the successor.
+// Each step prints a line "LSU <what> <time> <detail>" that tests/canton_lsu.sh reads; "LSU DONE" at the end.
+import com.digitalasset.canton.discard.Implicits._
+import com.digitalasset.canton.data.CantonTimestamp
+import com.digitalasset.canton.console.InstanceReference
+import com.digitalasset.canton.util.BinaryFileUtil
+import com.digitalasset.canton.topology.transaction.GrpcConnection
+import com.google.protobuf.ByteString
+import better.files.File
+import java.time.Instant
+
+def env(name: String, default: => String): String = sys.env.getOrElse(name, default)
+def say(what: String, detail: String = ""): Unit = println(s"LSU $what ${Instant.now()} $detail".trim)
+def firstLines(e: Throwable): String = String.valueOf(e.getMessage).linesIterator.take(2).mkString(" ").take(300)
+def waitUntil(what: String, seconds: Int)(ok: => Boolean): Unit = {
+  val end = System.currentTimeMillis() + seconds * 1000L
+  def check(): Boolean = try ok catch { case _: Throwable => false }
+  while (!check()) {
+    if (System.currentTimeMillis() > end) sys.error(s"$what: not within $seconds s")
+    Thread.sleep(500)
+  }
+}
+
+val exportDir = File(env("LSU_EXPORT_DIR", sys.error("set LSU_EXPORT_DIR")))
+exportDir.createDirectoryIfNotExists()
+val toPv = ProtocolVersion.tryCreate(env("LSU_TO_PV", "37"))
+val leadSeconds = env("LSU_LEAD_SECONDS", "60").toLong
+val switchMode = env("LSU_SWITCH", "auto")
+if (switchMode != "auto" && switchMode != "manual") sys.error(s"LSU_SWITCH is auto or manual, not $switchMode")
+val ps = Seq(operator, confirmer, users)
+
+// ---- the predecessor and the successor
+val currentPsid = sequencer1.physical_synchronizer_id
+val lsid = sequencer1.synchronizer_id
+val currentStatic = sequencer1.synchronizer_parameters.static.get()
+val newStatic = currentStatic.copy(protocolVersion = toPv, serial = NonNegativeInt.tryCreate(currentStatic.serial.unwrap + 1))
+val newPsid = PhysicalSynchronizerId(lsid, newStatic.toInternal.fold(e => sys.error(e), identity))
+ps.foreach(p => if (!p.synchronizers.is_connected(currentPsid)) sys.error(s"${p.name} is not connected to $currentPsid"))
+say("current_psid", currentPsid.toProtoPrimitive)
+say("successor_psid", newPsid.toProtoPrimitive)
+
+// ---- 1. the announcement
+val upgradeTime = CantonTimestamp.assertFromInstant(Instant.now().plusSeconds(leadSeconds))
+say("upgrade_time", upgradeTime.toInstant.toString)
+sequencer1.topology.lsu.announcement.propose(newPsid, upgradeTime).discard
+waitUntil("every synchronizer node sees the announcement", 60) {
+  Seq[InstanceReference](sequencer1, mediator1).forall(
+    _.topology.lsu.announcement.list(store = Some(currentPsid)).exists(_.item.successorSynchronizerId == newPsid.opaque)
+  )
+}
+say("announced")
+
+// ---- 2. the topology freeze: a new party is refused until the upgrade
+try {
+  val p = operator.parties.enable("lsuFreezeProbe", synchronize = Some(com.digitalasset.canton.config.NonNegativeDuration.ofSeconds(20)))
+  say("freeze_probe", s"allocated ${p.toProtoPrimitive} (not refused)")
+} catch { case e: Throwable => say("freeze_probe", s"refused: ${firstLines(e)}") }
+
+// ---- 3. the move: ids, keys and the topology state, from sequencer1 and mediator1 to sequencer2 and mediator2
+Seq[InstanceReference](sequencer1, mediator1).foreach { node =>
+  BinaryFileUtil.writeByteStringToFile(s"${exportDir / node.name}-uid", ByteString.copyFromUtf8(node.id.uid.toProtoPrimitive))
+  node.keys.public.list().foreach { key =>
+    // key names are "<node>-<purpose>": the file is "<node>-<purpose>.keys"
+    val purpose = key.name.map(_.toProtoPrimitive.split("-").drop(1).mkString("-")).getOrElse(key.id.toProtoPrimitive)
+    node.keys.secret.download_to(key.id, outputFile = s"${exportDir / node.name}-$purpose.keys")
+  }
+}
+sequencer1.topology.transactions.sequencer_lsu_state(outputFile = s"${exportDir / "sequencer1"}-lsu-state")
+say("exported", exportDir.list.map(_.name).toSeq.sorted.mkString(","))
+
+def takeIdentity(node: InstanceReference, from: String): Unit = {
+  exportDir.list.filter(f => f.name.startsWith(s"$from-") && f.name.endsWith(".keys")).foreach { f =>
+    node.keys.secret.upload(BinaryFileUtil.tryReadByteStringFromFile(f.canonicalPath), Some(f.name.stripSuffix(".keys")))
+  }
+  node.topology.init_id_from_uid(UniqueIdentifier.tryFromProtoPrimitive((exportDir / s"$from-uid").contentAsString))
+  node.health.wait_for_ready_for_initialization()
+}
+takeIdentity(sequencer2, "sequencer1")
+sequencer2.setup.initialize_from_lsu_predecessor(s"${exportDir / "sequencer1"}-lsu-state", lsid, newStatic)
+say("sequencer2_initialized", sequencer2.id.toProtoPrimitive)
+takeIdentity(mediator2, "mediator1")
+mediator2.setup.assign(
+  newPsid,
+  SequencerConnections.tryMany(
+    Seq(sequencer2.sequencerConnection.withAlias(SequencerAlias.tryCreate("sequencer2"))),
+    PositiveInt.one,
+    NonNegativeInt.zero,
+    SubmissionRequestAmplification.NoAmplification,
+    SequencerConnectionPoolDelays.default,
+    SubscriptionLivenessLimits.default,
+  ),
+)
+say("mediator2_assigned", mediator2.id.toProtoPrimitive)
+if (Instant.now().isAfter(upgradeTime.toInstant)) sys.error(s"the successor was not ready before the upgrade time: raise LSU_LEAD_SECONDS")
+
+// ---- 4. the switch
+val successorConnection = sequencer2.sequencerConnection
+if (switchMode == "auto") {
+  sequencer1.topology.lsu.sequencer_successors
+    .propose_successor(
+      sequencerId = sequencer1.id,
+      endpoints = successorConnection.endpoints.map(_.toURI(useTls = false)).toSet,
+      successorSynchronizerId = newPsid,
+    )
+    .discard
+  say("successor_announced", successorConnection.endpoints.map(_.toURI(useTls = false)).mkString(","))
+} else {
+  waitUntil("the upgrade time", (leadSeconds + 60).toInt)(Instant.now().isAfter(upgradeTime.toInstant))
+  ps.foreach { p =>
+    p.synchronizers.perform_manual_lsu(
+      currentPsid,
+      newPsid,
+      Some(upgradeTime),
+      Map(sequencer1.id -> GrpcConnection(successorConnection.endpoints, successorConnection.transportSecurity, successorConnection.customTrustCertificates)),
+    )
+    say("manual_lsu", p.name)
+  }
+}
+
+// ---- 5. every participant on the successor
+val switchSeconds = env("LSU_SWITCH_TIMEOUT_SECONDS", "300").toInt
+ps.foreach { p =>
+  waitUntil(s"${p.name} on the successor", (leadSeconds + switchSeconds).toInt) {
+    p.synchronizers.is_connected(newPsid) && !p.synchronizers.is_connected(currentPsid)
+  }
+  say("switched", s"${p.name} ${p.synchronizers.list_connected().map(_.physicalSynchronizerId.toProtoPrimitive).mkString(",")}")
+}
+// The topology is no longer frozen: a new party is allocated on the successor.
+try {
+  val p = operator.parties.enable("lsuAfter", synchronize = Some(com.digitalasset.canton.config.NonNegativeDuration.ofSeconds(120)))
+  say("party_after", s"allocated ${p.toProtoPrimitive}")
+} catch { case e: Throwable => say("party_after", s"FAILED: ${firstLines(e)}") }
+val probeSeen = operator.parties.list(filterParty = "lsuFreezeProbe").nonEmpty
+say("freeze_probe_after", if (probeSeen) "the refused party exists after the upgrade" else "the refused party does not exist")
+say("DONE")
