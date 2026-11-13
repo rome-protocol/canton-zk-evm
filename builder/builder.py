@@ -1465,20 +1465,46 @@ def unresponsive_in(metadata) -> list | None:
     return [p for p in (x.strip() for x in value.split(",")) if p] or None
 
 
+def details_of(status) -> list:
+    """The detail entries of a failed completion's status that are objects."""
+    return [d for d in (status.get("details") if isinstance(status, dict) else None) or [] if isinstance(d, dict)]
+
+
+def decodes_as_canton_error(status) -> bool:
+    """Whether Canton would decode this status as an error of its own (`DecodedCantonError.tryDeserializeStatus`, Canton 3.7.2): exactly one ErrorInfo detail with
+    an integer `category` in its metadata, and at most one RequestInfo and one RetryInfo. Only a status that decodes gets the participant's keys (`reported_in`) when a
+    participant wrote it, and every error Canton makes itself decodes, so a status that names parties and does not decode is a forgery."""
+    kinds = [str(d.get("typeUrl") or "").rsplit(".", 1)[-1] for d in details_of(status)]
+    if kinds.count("ErrorInfo") != 1 or kinds.count("RequestInfo") > 1 or kinds.count("RetryInfo") > 1:
+        return False
+    info = next(d for d, kind in zip(details_of(status), kinds) if kind == "ErrorInfo").get("valueDecoded")
+    metadata = info.get("metadata") if isinstance(info, dict) else None
+    category = metadata.get("category") if isinstance(metadata, dict) else None
+    try:
+        int(category)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def unresponsive_of_status(status) -> list | None:
     """The parties named by a failed completion's status: the ErrorInfo detail of MEDIATOR_SAYS_TX_TIMED_OUT, whose metadata has them. Only that structured
-    detail counts, never the words of the message (a contract's own error text can say anything)."""
-    for detail in (status.get("details") if isinstance(status, dict) else None) or []:
-        info = detail.get("valueDecoded") if isinstance(detail, dict) else None
+    detail counts, never the words of the message (a contract's own error text can say anything), and only when the status decodes as one of Canton's
+    (`decodes_as_canton_error`): a participant's status that Canton passes through unchanged because it cannot decode it has no keys to show who wrote it."""
+    if not decodes_as_canton_error(status):
+        return None
+    for detail in details_of(status):
+        info = detail.get("valueDecoded")
         if isinstance(info, dict) and info.get("reason") == MEDIATOR_TIMEOUT:
             return unresponsive_in(info.get("metadata"))
     return None
 
 
 def reported_in_status(status) -> bool:
-    """Whether a participant wrote a failed completion's status: an ErrorInfo detail of it has the keys of `reported_in`."""
-    return any(isinstance(d, dict) and isinstance(d.get("valueDecoded"), dict) and reported_in(d["valueDecoded"].get("metadata"))
-               for d in (status.get("details") if isinstance(status, dict) else None) or [])
+    """Whether a participant wrote a failed completion's status: an ErrorInfo detail of it has the keys of `reported_in`, or it names unresponsive parties and
+    does not decode as one of Canton's (see `decodes_as_canton_error`)."""
+    infos = [d["valueDecoded"].get("metadata") for d in details_of(status) if isinstance(d.get("valueDecoded"), dict)]
+    return any(reported_in(m) for m in infos) or (not decodes_as_canton_error(status) and any(isinstance(m, dict) and "unresponsiveParties" in m for m in infos))
 
 
 def reported_in_body(text) -> bool:
@@ -1609,8 +1635,8 @@ class Waiting(Said):
 
 
 class PartyBlame:
-    """The parties held back after a block failed on a confirmation timeout. When the mediator's timeout names the parties that did not confirm, those of
-    the block's legs are held (`named`) and no other. When it names nobody, as follows: a leg's party that is not on the operator's participants is held at once
+    """The parties held back after a block failed on a confirmation timeout. When the mediator's timeout names the parties that did not confirm and all of
+    them have a leg in the block, they are held (`named`); when it names one that has none (the chain's own, an admin), nobody is. When it names nobody, as follows: a leg's party that is not on the operator's participants is held at once
     (`Hosting`, asked again without its cache). Otherwise the parties of the block's legs are tried a few at a time: half of them are kept out of the
     next blocks, and the half that is let in is cleared by a block that carries one of its parties and is answered, or narrowed again by another timeout,
     until one party is left, which is held back (`convict`). Each conviction of a party holds it twice as long as the one before, from `cooldown` up to a day,
@@ -1679,11 +1705,15 @@ class PartyBlame:
     @_locked
     def named(self, carried: set, unresponsive) -> list:
         """The mediator named the parties that did not confirm a block that carried the legs of `carried`. Returns the parties held back for it: the ones of
-        `carried` that it names, and no other (a party it names that has no leg in the block is the chain's own, an instrument's admin or another outside
-        participant's: none of the block's users is blamed for it)."""
+        `carried` that it names, when it names no other. A party it names that has no leg in the block is the chain's own (the operator's and the gateway's, so
+        the participant that confirms for them), an instrument's admin or another outside participant's: the mediator names every confirmer that is still
+        missing, so the users hosted on a silent participant of the operator's are named with the chain's own parties, and none of the block's users is held
+        for it (a user that was the cause is found by the next timeouts, `no_blame` and then the trial)."""
         now = self.clock()
         self.expire(now)
         named = set(unresponsive)
+        if not named <= set(carried):
+            return []
         gone = sorted(p for p in carried if p in named and p not in self.until)
         for party in gone:
             self.convict(party, now)
@@ -4121,7 +4151,8 @@ class Producer:
 
     def timeout(self, result: dict, carried: set) -> None:
         """The block failed on a confirmation timeout and carried legs of parties outside the chain's own: one of their participants did not confirm. No
-        transaction is blamed (a transaction of the block that has no such leg cannot be the cause). The parties are: those the mediator names (`PartyBlame.named`),
+        transaction is blamed (a transaction of the block that has no such leg cannot be the cause). The parties are: those the mediator names (`PartyBlame.named`: only
+        when every party it names has a leg in the block, so a timeout on the operator's own participant, which names the chain's own parties, holds no user),
         none for LOCAL_VERDICT_TIMEOUT, and the parties on trial (`PartyBlame.timed_out`) when the rejection names nobody, when a participant wrote it (it may be
         forged: `reported_in`), and when `no_blame_limit` timeouts in a row held nobody back. A timeout that holds nobody back is journaled (`timeout_no_blame`).
         The legs of a party that is held back are left out of the next blocks, with the reason."""
@@ -4134,7 +4165,9 @@ class Producer:
         because = "Canton's mediator names it among the parties that did not confirm in time"
         if not held:
             if (named or (trusted and code == LOCAL_TIMEOUT)) and self.blame.no_blame(self.no_blame_limit):
-                nobody = "none of the parties the mediator names has a leg in the block" if named else "LOCAL_VERDICT_TIMEOUT names no party and points at the synchronizer's side"
+                nobody = (("the mediator names a party that has no leg in the block (the chain's own, an instrument's admin): the users it names are not blamed with it"
+                           if set(named) & carried else "none of the parties the mediator names has a leg in the block")
+                          if named else "LOCAL_VERDICT_TIMEOUT names no party and points at the synchronizer's side")
             else:   # the parties of the block are put on trial, as before
                 held, because = self.blame.timed_out(carried, self.cfg.hosting), "a block that carried its leg did not get Canton's confirmations in time"
                 if not trusted:
