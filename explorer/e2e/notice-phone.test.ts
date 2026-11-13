@@ -14,10 +14,13 @@ const core = process.env.PLAYWRIGHT_CORE;
 const src = join(import.meta.dirname, "..", "src"), pub = join(import.meta.dirname, "..", "public");
 const LONG = "Upgrading the DevNet validator database and the explorer's index at the same time. ".repeat(3).trim() + " Transactions, the bridge and the faucet resume afterwards, with nothing to do on your side.";
 const warn = '<svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l6.2 11H1.8z"/><path d="M8 6.6v3.2M8 11.6v.1"/></svg>';
-const notice = (state: "planned" | "now", label: string, text: string, when: string) =>
-  `<div class="notice ${state}" role="status" id="${state}">${warn}<p><b>${label}</b> ${text} <span class="notice-when">${when}</span></p></div>`;
+const notice = (state: "planned" | "now", label: string, text: string, when: string, major = false, link = "") =>
+  `<div class="notice ${major ? "major " : ""}${state}" role="status" id="${major ? "major" : state}">${warn}<p><b>${label}</b> ${text} <span class="notice-when">${when}</span>${link}</p></div>`;
+const MOVE = "This DevNet chain moves to Canton TestNet. Keep doing what you are doing; if you hold tokens you want to keep, move them before the cut-over. Questions are welcome in the forum.";
+const LINK = '<a class="notice-link" href="https://explorer.example.org/docs/move-to-testnet" target="_blank" rel="noopener noreferrer">What is changing and what to do</a>';
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><style>${readFileSync(join(src, "styles.css"), "utf8")}</style></head>
-<body><div class="page">${notice("planned", "Planned maintenance:", LONG, "Nov 14, 10:00 PM – Nov 15, 01:30 AM GMT+1")}
+<body><div class="page">${notice("now", "Important notice:", MOVE, "until Dec 1, 01:00 AM GMT+1", true, LINK)}
+${notice("planned", "Planned maintenance:", LONG, "Nov 14, 10:00 PM – Nov 15, 01:30 AM GMT+1")}
 <section class="topbar" aria-label="Chain at a glance"><span class="sd ok"><i></i><b>All 16 checks ok</b></span><span>Final block <b>12</b></span></section>
 ${notice("now", "Maintenance in progress:", "Upgrading the DevNet validator database.", "until 10:45 AM GMT+1")}
 <div class="main">x</div></div></body></html>`;
@@ -55,7 +58,10 @@ describe.skipIf(!core)("the notice of planned work, in a browser", () => {
     const page = rgba(getComputedStyle(document.querySelector(".page")!).backgroundColor);
     const back = over(rgba(getComputedStyle(el).backgroundColor), page);
     const out: Record<string, number> = {};
-    for (const [name, node] of [["text", el.querySelector("p")!], ["label", el.querySelector("b")!], ["when", el.querySelector(".notice-when")!]] as const) out[name] = ratio(over(rgba(getComputedStyle(node).color), back), back);
+    const nodes: (readonly [string, Element])[] = [["text", el.querySelector("p")!], ["label", el.querySelector("b")!], ["when", el.querySelector(".notice-when")!]];
+    const link = el.querySelector(".notice-link");
+    if (link) nodes.push(["link", link]);
+    for (const [name, node] of nodes) out[name] = ratio(over(rgba(getComputedStyle(node).color), back), back);
     out.icon = ratio(over(rgba(getComputedStyle(el.querySelector(".ic")!).color), back), back);
     return out;
   }, id);
@@ -64,12 +70,12 @@ describe.skipIf(!core)("the notice of planned work, in a browser", () => {
     for (const scheme of ["light", "dark"] as const) {
       const page = await open(width, scheme);
       const r = await page.evaluate(() => {
-        const rects = ["planned", "now"].map((id) => { const e = document.getElementById(id)!; const b = e.getBoundingClientRect(), p = e.querySelector("p")!.getBoundingClientRect(); return { left: b.left, right: b.right, height: b.height, pRight: p.right, pLeft: p.left }; });
+        const rects = ["major", "planned", "now"].map((id) => { const e = document.getElementById(id)!; const b = e.getBoundingClientRect(), p = e.querySelector("p")!.getBoundingClientRect(); return { left: b.left, right: b.right, height: b.height, pRight: p.right, pLeft: p.left }; });
         return { rects, scrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth, width: document.documentElement.clientWidth, topFirst: document.querySelector(".page")!.firstElementChild!.id };
       });
       await page.close();
       expect(r.scrolls, `${scheme} ${width}`).toBe(false);
-      expect(r.topFirst).toBe("planned");
+      expect(r.topFirst).toBe("major");
       for (const b of r.rects) {
         expect(b.left).toBeGreaterThanOrEqual(0);
         expect(b.right).toBeLessThanOrEqual(r.width + 0.5);
@@ -77,16 +83,16 @@ describe.skipIf(!core)("the notice of planned work, in a browser", () => {
         expect(b.pRight).toBeLessThanOrEqual(r.width - (width <= 720 ? 16 : 32) + 0.5);
       }
       // the long text takes several lines on a phone, and the short one stays one line wide
-      if (width < 500) expect(r.rects[0]!.height).toBeGreaterThan(r.rects[1]!.height * 2);
+      if (width < 500) expect(r.rects[1]!.height).toBeGreaterThan(r.rects[2]!.height * 2);
     }
   });
 
   it.each([360, 1280])("keeps every text colour at 4.5:1 or more against its background, and the icon at 3:1, in both themes, at %i px", async (width) => {
     for (const scheme of ["light", "dark"] as const) {
       const page = await open(width, scheme);
-      for (const id of ["planned", "now"]) {
+      for (const id of ["major", "planned", "now"]) {
         const c = await contrasts(page, id);
-        for (const k of ["text", "label", "when"]) expect(c[k], `${scheme} ${id} ${k}`).toBeGreaterThanOrEqual(4.5);
+        for (const k of id === "major" ? ["text", "label", "when", "link"] : ["text", "label", "when"]) expect(c[k], `${scheme} ${id} ${k}`).toBeGreaterThanOrEqual(4.5);
         expect(c.icon, `${scheme} ${id} icon`).toBeGreaterThanOrEqual(3);
       }
       await page.close();
@@ -99,5 +105,32 @@ describe.skipIf(!core)("the notice of planned work, in a browser", () => {
     await page.close();
     expect(r.planned).toBe("none");
     expect(r.now).not.toBe("none");
+  });
+
+  it.each([360, 1280])("draws the major banner larger and clearer than the slim one, its link a button that fits the width, at %i px", async (width) => {
+    for (const scheme of ["light", "dark"] as const) {
+      const page = await open(width, scheme);
+      const r = await page.evaluate(() => {
+        const px = (id: string, sel: string, prop: string) => parseFloat(getComputedStyle(document.getElementById(id)!.querySelector(sel)!)[prop as never] as string);
+        const link = document.querySelector("#major .notice-link")!.getBoundingClientRect();
+        const box = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+        return {
+          majorFont: px("major", "p", "fontSize"), slimFont: px("planned", "p", "fontSize"), majorLabel: px("major", "b", "fontSize"), slimLabel: px("planned", "b", "fontSize"),
+          majorPad: parseFloat(getComputedStyle(document.getElementById("major")!).paddingTop), slimPad: parseFloat(getComputedStyle(document.getElementById("planned")!).paddingTop),
+          linkRight: link.right, linkLeft: link.left, linkHeight: link.height, majorHeight: box("major").height, slimHeight: box("now").height, width: document.documentElement.clientWidth,
+          edge: getComputedStyle(document.getElementById("major")!).boxShadow, scrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        };
+      });
+      await page.close();
+      expect(r.majorFont, `${scheme} ${width}`).toBeGreaterThan(r.slimFont);
+      expect(r.majorLabel).toBeGreaterThan(r.slimLabel);
+      expect(r.majorPad).toBeGreaterThan(r.slimPad);
+      expect(r.majorHeight).toBeGreaterThan(r.slimHeight);
+      expect(r.edge).not.toBe("none");
+      expect(r.linkLeft).toBeGreaterThanOrEqual(0);
+      expect(r.linkRight).toBeLessThanOrEqual(r.width);
+      expect(r.linkHeight).toBeGreaterThanOrEqual(36);
+      expect(r.scrolls).toBe(false);
+    }
   });
 });
