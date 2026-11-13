@@ -326,11 +326,11 @@ The EVM chain (reth's data, its chain id, its blocks) can go on when the Canton 
 ```sh
 # the new network's participant has the package, the parties and the users (setup.py without chain arguments), the builder is stopped, and reth runs on its data
 python3 network/canton/propose.py anchor --head-number <N> --head-hash <hash of block N> --program-vk <hex> --root-c <hex> --rules-hash <hex> \
-  --gas-cap <the old chain's cap> [--gateway-address <hex>] [--chain-id <id>] --dry-run     # every check, nothing submitted
+  --gas-cap <the old chain's cap, required> [--gateway-address <hex>] [--chain-id <id>] --dry-run     # every check, nothing submitted
 python3 network/canton/propose.py anchor ... --grant                                         # the same, for real
 ```
 
-The head is the last block the old chain committed, from the old builder's record (or the old network's last `ZkChain`). The state root is read from reth. The chain id, program key, ZisK root, rules hash, gas cap and gateway address are the old chain's: the program key, root and rules hash must be the ones the new network's sidecar is pinned to, and the gas cap is the old chain's (it may have been raised above `PINS`).
+The head is the last block the old chain committed, from the old builder's record (or the old network's last `ZkChain`). The state root is read from reth. The chain id, program key, ZisK root, rules hash, gas cap and gateway address are the old chain's: the program key, root and rules hash must be the ones the new network's sidecar is pinned to, and the gas cap is the old chain's (it may have been raised above `PINS`: DevNet's chain runs at 60,000,000, `PINS` says 30,000,000). `--gas-cap` has no default and the anchor will not run without it: a lower cap than the old chain had would stay until a proposal raised it.
 
 It stops, before it submits anything, if
 - reth's finalized block is not the head given (number and hash): the message says whether the given block is above reth's finalized block (not final), below it, or not reth's at all. A block that reth holds above its finalized block was never committed by the old chain and is no place to anchor;
@@ -338,14 +338,14 @@ It stops, before it submits anything, if
 - a chain or a chain proposal is on the network already (one ledger per chain: the old network's chain is left as it is, and a second ledger for the same chain must never be started);
 - the Ledger API user `<prefix>operator` cannot act for all three parties. The chain is signed by the operator, the confirmer and the gateway, so the participant must host all three (a validator's participant does, as on DevNet and TestNet), and the operator's user needs the confirmer's right for this one submission. `--grant` gives it with the ADMIN token and takes it away again, whatever the outcome; without it the right has to be there. The local three-participant network of `up.sh` has the confirmer on a participant of its own, so it cannot be anchored.
 
-With `--dry-run` it makes every check and submits nothing. It prints one JSON line (the chain's contract id and head, `rethLatest`, and `next`, the list below), and the list on stderr.
+With `--dry-run` it makes every check and submits nothing. It prints one JSON line (the chain's contract id and head, `rethLatest`, `actingRightsRevoked` and `next`, the list below), and the list on stderr. `actingRightsRevoked` is `false` if the right that `--grant` gave could not be taken away again: the chain is created, the JSON is still printed, the exit status is 1 and the right has to be taken away by hand.
 
 **What to register again on the new network**, because none of the old network's records are there:
 1. Canton-backed tokens. The old wrapped tokens (Canton Coin, test tokens) stood for the old network's custody, and must never be registered on the new one: holders withdraw them on the old network first. A new wrapped token for each instrument the new network has (`Gateway.register` on the EVM, then `propose.py token`).
 2. The registered contracts, the vault above all: `setup.py --contract-step add --contract-address <address> --contract-kind vault` (and `gateway` for a second gateway). Their code is in reth's data already.
 3. The twins: new `TwinRules` on the new network (`demo/twin.py rules <token>`), then `setup.py --twin-step add`.
 
-Then start the builder. If reth's latest block is above its finalized block (`rethLatest` says so; a block that was imported and never committed), `network/sync_reth.py` (what `restart.sh` runs) moves reth back to the chain's head first and sends its transactions again. Never anchor below what an AggLayer or any other reader has taken as final: the anchor is reth's finalized block, and a chain that has been attached to AggLayer must not be started again from block 0.
+Then start the builder. If reth's latest block is above its finalized block (`rethLatest` says so; a block that was imported and never committed), run `network/sync_reth.py` (what `restart.sh` runs) before the builder: it moves reth back to the chain's head and sends its transactions again (the list says so when it applies). The old network's builder must stay stopped for good: one ledger per chain. Never anchor below what an AggLayer or any other reader has taken as final: the anchor is reth's finalized block, and a chain that has been attached to AggLayer must not be started again from block 0.
 
 `tests/demo_chain_anchor.sh` (the CI job `chain-anchor` in `.github/workflows/demo.yml`) runs it on the local Canton with real reth: Ostia to block 3 on one network, Canton stopped and started again (new parties), the refused anchors (a block above or below reth's finalized block, a wrong hash, a wrong state root, another chain id, a gas cap under the head block's limit, no right to act for the confirmer), the anchor, and blocks 4 and 5 committing on the new network as children of block 3. The unit tests are in `tests/test_propose.py`.
 

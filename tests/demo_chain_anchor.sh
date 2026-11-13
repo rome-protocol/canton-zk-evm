@@ -5,6 +5,8 @@
 # tests/demo_registered_gateway.sh). Canton runs as a participant that exists before Ostia comes (tests/external_bootstrap.canton and
 # network/external/setup.py, as on the Canton Network's DevNet and TestNet): one participant hosts the operator, the confirmer and the gateway, which is what
 # the anchor needs. Every port is moved to a block of its own (CZE_ANCHOR_PORT_BASE, default 26000), so the test runs beside other networks on one machine.
+# The block spans PB+1 to PB+202 (PB+202 is the mediator's admin port): two copies on one machine need bases at least 203 apart, and each its own reth container
+# (RETH_CONTAINER, default cze-anchor-reth), because a container name is one per machine however the ports are moved.
 # Steps, each checked:
 #   1. network A: the chain proposed at block 0, an EVM contract deployed, EVM transfers, blocks 1 to N committed (reth's finalized block is N);
 #      a block that reth imports and Canton never gets (the builder is killed while it waits for the proof) is left on reth, above its finalized block;
@@ -31,7 +33,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 PB=${CZE_ANCHOR_PORT_BASE:-26000}
 LEDGER=$((PB + 75)); CONFIRMER_LEDGER=$((PB + 76))
-export RETH_HTTP_PORT=$((PB + 45)) RETH_WS_PORT=$((PB + 46)) RETH_ENGINE_PORT=$((PB + 51)) RETH_CONTAINER=cze-anchor-reth
+export RETH_HTTP_PORT=$((PB + 45)) RETH_WS_PORT=$((PB + 46)) RETH_ENGINE_PORT=$((PB + 51))
+export RETH_CONTAINER=${RETH_CONTAINER:-cze-anchor-reth}
 export CZE_LEDGER_URL=http://127.0.0.1:$LEDGER CZE_USER_PREFIX=ostia- CZE_LEDGER_NO_AUTH=1
 # Canton's ports, moved: the sequencer, the mediator, each participant's admin, ledger and JSON API, and the two sidecars the participants call.
 cat > "$WORK/ports.conf" <<CONF
@@ -214,6 +217,7 @@ refused "not $N" --head-number "$N" --head-hash "$(jq -r .hash <<<"$OTHER" | sed
 refused "state root" --head-number "$N" --head-hash "${N_HASH#0x}" --head-state-root "$(printf '77%.0s' $(seq 32))" --gas-cap "$GAS_CAP"
 refused "gas limit" --head-number "$N" --head-hash "${N_HASH#0x}" --gas-cap 1000000
 refused "cannot act for" --head-number "$N" --head-hash "${N_HASH#0x}" --gas-cap "$GAS_CAP"
+refused "required: --gas-cap" --head-number "$N" --head-hash "${N_HASH#0x}"
 
 step "the anchor at block $N: a dry run first, then for real"
 dry=$(anchor --head-number "$N" --head-hash "${N_HASH#0x}" --gas-cap "$GAS_CAP" --dry-run 2> "$WORK/anchor.err")
@@ -225,7 +229,11 @@ done_json=$(anchor --head-number "$N" --head-hash "${N_HASH#0x}" --head-state-ro
 echo "$done_json" | jq -c 'del(.next)'
 cat "$WORK/anchor.err"
 is "$(jq -r .submitted <<<"$done_json")" true "the anchor submitted"
+is "$(jq -r .actingRightsRevoked <<<"$done_json")" true "the anchor's report that the granted right was taken away"
 grep -q "Register on this network next" "$WORK/anchor.err" || fail "the anchor did not print what to register next"
+# reth's latest block is above the head here (the block that was imported and never committed): the list must say to run sync_reth.py, and that the old builder stays off.
+grep -q "network/sync_reth.py" "$WORK/anchor.err" || fail "the list of what to do next does not say to run sync_reth.py before the builder"
+grep -q "old network's builder must stay stopped" "$WORK/anchor.err" || fail "the list of what to do next does not say that the old network's builder stays stopped"
 for word in token vault twin; do grep -q "$word" "$WORK/anchor.err" || fail "the list of what to register next lacks the $word"; done
 is "$(jq -r .rethLatest <<<"$done_json")" "$LATEST_NUMBER" "reth's latest block, as the anchor reports it"
 c=$(chain)
