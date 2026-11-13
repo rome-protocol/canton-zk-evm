@@ -5,7 +5,7 @@
 # Needs sudo, an NVIDIA driver (525.60.13 or newer) and about 100 GB of free disk.
 # The version, its commit, the checksum of its installer and the Rust toolchain release with its checksum come from PINS,
 # and so do the SHA-256 of the release binaries and of both keys. ZISK_ARTIFACTS_DIR may name a folder that already holds
-# those three files (see below).
+# those five files (see below).
 set -euo pipefail
 # shellcheck disable=SC1091
 . "$(dirname "$0")/common.sh"
@@ -25,37 +25,36 @@ printf '[Manager]\nDefaultLimitMEMLOCK=infinity\n' | sudo tee /etc/systemd/syste
 
 command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 
-# The installer of the pinned release, checked against the checksum in PINS before it runs.
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-curl -sSfL -o "$TMP/ziskup" "https://raw.githubusercontent.com/0xPolygonHermez/zisk/v${ZISK_VERSION}/ziskup/ziskup"
-echo "$ZISKUP_SHA256  $TMP/ziskup" | sha256sum -c - || fail "ziskup does not match ZISKUP_SHA256"
-
+# Everything ZisK's own servers supply, each file checked against its SHA-256 in PINS before it is used (zisk-artifacts.sh says why):
+# the installer (ziskup, from ZisK's GitHub), the Rust toolchain release (from 0xPolygonHermez/rust), the release binaries (GitHub)
+# and the two keys (ZisK's setup bucket). They go to ZISK_ARTIFACTS_DIR when it is set, and stay there; a file already there with the
+# pinned checksum is used as it is, so a kept copy of the five files installs without ZisK's servers (what is still fetched is the
+# system packages, Rust's rustup if cargo is missing, and Node and snarkjs). Otherwise they go to a folder under the prover state and
+# are deleted once installed. The keys are about 5 GB and 22 GB, and ziskup copies each once more before it unpacks it.
+#
 # The Rust toolchain: left to itself, ZisK's installer takes the highest zisk-4.x.y release of 0xPolygonHermez/rust, so what it installs changes when
 # a release is published there (zisk-4.1.0 was published on 2026-10-26, and the guest ELF and its programVK come from the toolchain). The release in
-# PINS is downloaded here, checked against its checksum, and handed to the installer as the source of the toolchain (ZISK_TOOLCHAIN_SOURCE_DIR).
-TOOLCHAIN_ASSET=rust-toolchain-x86_64-unknown-linux-gnu.tar.gz
-mkdir -p "$TMP/toolchain"
-curl -sSfL -o "$TMP/toolchain/$TOOLCHAIN_ASSET" "https://github.com/0xPolygonHermez/rust/releases/download/${ZISK_TOOLCHAIN}/${TOOLCHAIN_ASSET}"
-echo "$ZISK_TOOLCHAIN_SHA256  $TMP/toolchain/$TOOLCHAIN_ASSET" | sha256sum -c - || fail "the toolchain $ZISK_TOOLCHAIN does not match ZISK_TOOLCHAIN_SHA256"
-export ZISK_TOOLCHAIN_SOURCE_DIR=$TMP/toolchain
-
-# The release binaries and the two keys, each checked against its SHA-256 in PINS before ziskup installs it (zisk-artifacts.sh says
-# why). They go to ZISK_ARTIFACTS_DIR when it is set, and stay there; a file already there with the pinned checksum is used as it
-# is, so a kept copy of the three files installs without the upstream servers. Otherwise they go to a folder under the prover state
-# and are deleted once installed. The keys are about 5 GB and 22 GB, and ziskup copies each once more before it unpacks it.
+# PINS is checked here and handed to the installer as the source of the toolchain (ZISK_TOOLCHAIN_SOURCE_DIR, which holds the archive).
 # shellcheck disable=SC1091
 . "$(dirname "$0")/zisk-artifacts.sh"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 ART=${ZISK_ARTIFACTS_DIR:-$STATE/zisk-artifacts}
 WORK=$STATE/zisk-install
 mkdir -p "$ART" "$WORK"
 ART=$(cd "$ART" && pwd)
+ZISKUP_URL=https://raw.githubusercontent.com/0xPolygonHermez/zisk/v${ZISK_VERSION}/ziskup/ziskup
 RELEASE_URL=https://github.com/0xPolygonHermez/zisk/releases/download/v$ZISK_VERSION
 BUCKET_URL=https://storage.googleapis.com/zisk-setup
+TOOLCHAIN_ASSET=rust-toolchain-x86_64-unknown-linux-gnu.tar.gz
+TOOLCHAIN_URL=https://github.com/0xPolygonHermez/rust/releases/download/${ZISK_TOOLCHAIN}/${TOOLCHAIN_ASSET}
 PROVINGKEY=zisk-provingkey-$ZISK_VERSION.tar.gz
 PLONKKEY=zisk-provingkey-plonk-$ZISK_VERSION.tar.gz
+zisk_fetch_checked "$ZISKUP_URL" "$ART/ziskup" "$ZISKUP_SHA256"
+zisk_fetch_checked "$TOOLCHAIN_URL" "$ART/$TOOLCHAIN_ASSET" "$ZISK_TOOLCHAIN_SHA256"
+export ZISK_TOOLCHAIN_SOURCE_DIR=$ART
 zisk_fetch_checked "$RELEASE_URL/cargo_zisk_linux_amd64.tar.gz" "$ART/cargo_zisk_linux_amd64.tar.gz" "$ZISK_RELEASE_SHA256"
 zisk_fetch_checked "$BUCKET_URL/$PROVINGKEY" "$ART/$PROVINGKEY" "$ZISK_STARK_SETUP_SHA256"
-zisk_local_installer "$TMP/ziskup" "$TMP/ziskup-local" "$ART"
+zisk_local_installer "$ART/ziskup" "$TMP/ziskup-local" "$ART"
 ( cd "$WORK" && bash "$TMP/ziskup-local" -v "$ZISK_VERSION" --provingkey --gpu -y )
 [ -n "${ZISK_ARTIFACTS_DIR:-}" ] || rm -f "$ART/$PROVINGKEY" "$ART/$PROVINGKEY.md5"
 zisk_fetch_checked "$BUCKET_URL/$PLONKKEY" "$ART/$PLONKKEY" "$ZISK_PLONK_SETUP_SHA256"

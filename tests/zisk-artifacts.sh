@@ -20,7 +20,7 @@ bad=$(printf 'something else\n' | sha256sum | cut -d' ' -f1)
 
 # A download whose checksum is not the pinned one is refused and leaves nothing behind.
 if (zisk_fetch_checked "file://$T/upstream/key.tar.gz" "$T/art/key.tar.gz" "$bad") 2>/dev/null; then fail "a file with another checksum was accepted"; fi
-[ ! -e "$T/art/key.tar.gz" ] && [ ! -e "$T/art/key.tar.gz.part" ] || fail "a refused download left a file"
+if [ -e "$T/art/key.tar.gz" ] || [ -e "$T/art/key.tar.gz.part" ]; then fail "a refused download left a file"; fi
 
 # The pinned checksum: downloaded, kept, and an md5 file ziskup can check written next to it.
 out=$(zisk_fetch_checked "file://$T/upstream/key.tar.gz" "$T/art/key.tar.gz" "$good")
@@ -51,5 +51,13 @@ bash -n "$T/ziskup-local" || fail "the local copy of ziskup is not valid bash"
 printf '#!/bin/sh\necho hello\n' > "$T/other"
 if (zisk_local_installer "$T/other" "$T/other-local" "$T/art") 2>/dev/null; then fail "an installer without the two lines was changed"; fi
 if (zisk_local_installer "$T/ziskup" "$T/ziskup-rel" art) 2>/dev/null; then fail "a relative folder was accepted"; fi
+
+# install.sh gets every ZisK file through zisk_fetch_checked, so a kept folder is enough: no other download from ZisK's GitHub.
+if grep -E 'curl|wget' "$ROOT/prover/install.sh" | grep -v '^#' | grep -qE '0xPolygonHermez|zisk-setup|ZISKUP_URL|RELEASE_URL|BUCKET_URL|TOOLCHAIN_URL'; then
+  fail "install.sh downloads a ZisK file without zisk_fetch_checked"
+fi
+for f in ZISKUP_URL TOOLCHAIN_URL RELEASE_URL BUCKET_URL; do
+  [ "$(grep -c "zisk_fetch_checked \"\$$f" "$ROOT/prover/install.sh" || true)" -ge 1 ] || fail "install.sh does not fetch $f through zisk_fetch_checked"
+done
 
 echo "zisk artifacts checks pass"

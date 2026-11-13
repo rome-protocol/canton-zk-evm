@@ -2,12 +2,13 @@
 # Helpers for install.sh: the ZisK release files, checked by SHA-256 before they are installed. Source this file; do not run it.
 #
 # ziskup checks a key it downloads only against an md5 file from the same bucket, which catches a broken download but not a
-# changed file, and it does not check the binaries at all. install.sh therefore downloads the three files itself, checks each
-# against its SHA-256 in PINS, and runs a copy of ziskup whose two download addresses point at the folder that holds them.
+# changed file, and it does not check the binaries at all. install.sh therefore downloads the files itself (ziskup, the Rust
+# toolchain archive, the release binaries and the two keys), checks each against its SHA-256 in PINS, and runs a copy of ziskup
+# whose two download addresses point at the folder that holds them.
 
 # zisk_fetch_checked URL FILE SHA256: leaves at FILE a file whose SHA-256 is SHA256. A file already there with that checksum is
 # kept (a copy put there beforehand, so the upstream servers are not needed); otherwise URL is downloaded and checked first.
-# Also writes FILE.md5 (md5sum's format, the bare name), which ziskup reads next to each key.
+# Also writes FILE.md5 (md5sum's format, the bare name), which ziskup reads next to each key (unused for the other files).
 zisk_fetch_checked() {
   local url=$1 file=$2 sha=$3 name
   name=$(basename "$file")
