@@ -27,9 +27,11 @@ done
 [ -z "${FOUNDRY_IMAGE:-}${FOUNDRY_VERSION:-}" ] || fail "PINS must not pin Foundry: the chain has no funded test accounts"
 [[ $ZISK_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_COMMIT is not a full commit hash"
 [[ $ZISK_ETH_CLIENT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_ETH_CLIENT_COMMIT is not a full commit hash"
-# What prover/install.sh installs is pinned by content: the installer, the toolchain, the release binaries and both keys by SHA-256,
-# every file the keys unpack to by a list, and the ptau a PLONK key is rebuilt from by its published blake2b-512 and a SHA-256.
-for k in ZISKUP_SHA256 ZISK_TOOLCHAIN_SHA256 ZISK_RELEASE_SHA256 ZISK_STARK_SETUP_SHA256 ZISK_PLONK_SETUP_SHA256 ZISK_PTAU_SHA256; do
+# What prover/install.sh installs is pinned by content: the installer, the toolchain, the release binaries and the proving key by SHA-256,
+# every file the key unpacks to by a list, our PLONK key by the SHA-256 of its five files, the Node packages it is built with
+# by a tree digest, and the ptau it is built on by its published blake2b-512 and a SHA-256.
+for k in ZISKUP_SHA256 ZISK_TOOLCHAIN_SHA256 ZISK_RELEASE_SHA256 ZISK_STARK_SETUP_SHA256 ZISK_PTAU_SHA256 ZISK_PUBLICS_INFO_SHA256 PLONK_NODE_TREE_SHA256 \
+         ZISK_PLONK_FINAL_ZK_SHA256 ZISK_PLONK_FINAL_VK_SHA256 ZISK_PLONK_VERIFIER_SHA256 ZISK_VADCOP_FINAL_VK_SHA256 ZISK_RECURSIVEF_VK_SHA256; do
   [[ ${!k:-} =~ ^[0-9a-f]{64}$ ]] || fail "$k is missing from PINS or is not a SHA-256"
 done
 [[ ${ZISK_PTAU_BLAKE2B:-} =~ ^[0-9a-f]{128}$ ]] || fail "ZISK_PTAU_BLAKE2B is missing from PINS or is not a blake2b-512"
@@ -37,6 +39,34 @@ keys=$ROOT/prover/zisk-$ZISK_VERSION-keys.sha256
 [ -s "$keys" ] || fail "PINS names ZisK $ZISK_VERSION but there is no list of its key files ($keys)"
 ! grep -vqE '^[0-9a-f]{64}  provingKey(Snark)?/[A-Za-z0-9_./-]+$' "$keys" || fail "$keys has a line that is not a SHA-256 and a path under provingKey/ or provingKeySnark/"
 ! grep -qF '../' "$keys" || fail "$keys has a path that leaves the ZisK folder"
+# The list of the 22 files of our PLONK key, and the five pins in PINS: the same hashes.
+plonk_list=$ROOT/prover/zisk-$ZISK_VERSION-plonk-key.sha256
+[ "$(wc -l < "$plonk_list" | tr -d ' ')" = 22 ] || fail "$plonk_list does not list 22 files"
+! grep -vqE '^[0-9a-f]{64}  provingKeySnark/[A-Za-z0-9_./-]+$' "$plonk_list" || fail "$plonk_list has a line that is not a SHA-256 and a path under provingKeySnark/"
+for pin in ZISK_PLONK_FINAL_ZK_SHA256:final/final.zkey ZISK_PLONK_FINAL_VK_SHA256:final/final.verkey.json ZISK_PLONK_VERIFIER_SHA256:final/PlonkVerifier.sol \
+           ZISK_VADCOP_FINAL_VK_SHA256:vadcop_final.verkey.json ZISK_RECURSIVEF_VK_SHA256:recursivef/recursivef.verkey.json; do
+  var=${pin%%:*}; path=${pin##*:}
+  [ "${!var}" = "$(grep -F "  provingKeySnark/$path" "$plonk_list" | cut -d' ' -f1)" ] || fail "$var in PINS is not the hash of $path in $(basename "$plonk_list")"
+done
+[ "$(sha256sum "$ROOT/prover/plonk-key/publics.json" | cut -d' ' -f1)" = "$ZISK_PUBLICS_INFO_SHA256" ] || fail "prover/plonk-key/publics.json is not the pinned ZISK_PUBLICS_INFO_SHA256"
+# The Node packages of the PLONK key come from a lock file that pins every one of them: a registry package by its integrity hash, the git package
+# (pil2-compiler) by a full commit hash over https, and nothing else.
+jq -e '[.packages | to_entries[] | select(.key != "") | .value] | all(
+  ((.resolved // "") | startswith("https://registry.npmjs.org/")) and (.integrity // "" | startswith("sha512-"))
+  or ((.resolved // "") | test("^git\\+https://github\\.com/0xPolygonHermez/pil2-compiler\\.git#[0-9a-f]{40}$")))' "$ROOT/prover/plonk-key/package-lock.json" >/dev/null \
+  || fail "prover/plonk-key/package-lock.json has a package that is not pinned by integrity or by a full commit hash"
+jq -e '.dependencies | to_entries | all(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") or test("#[0-9a-f]{40}$"))' "$ROOT/prover/plonk-key/package.json" >/dev/null \
+  || fail "prover/plonk-key/package.json has a version that is a range or a branch"
+[ "$(jq -r '.dependencies.snarkjs' "$ROOT/prover/plonk-key/package.json")" = "$SNARKJS_VERSION" ] || fail "snarkjs in prover/plonk-key/package.json is not SNARKJS_VERSION"
+[[ $ZISK_TOOLCHAIN =~ ^zisk-4\.[0-9]+\.[0-9]+$ ]] || fail "ZISK_TOOLCHAIN is not a zisk-4.x.y release"
+# The guest's program key, root and ELF are the ones the recorded session holds, and the rules hash is the recorded one.
+for k in GUEST_PROGRAM_VK GUEST_ROOT_C; do [[ ${!k:-} =~ ^0x[0-9a-f]{64}$ ]] || fail "$k is missing from PINS or is not 0x and 64 hex digits"; done
+[[ ${GUEST_ELF_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail "GUEST_ELF_SHA256 is missing from PINS or is not a SHA-256"
+session_fact() { grep -E "^$1=" "$ROOT/prover/fixtures/session.txt" | cut -d= -f2-; }
+[ "$(session_fact programVK)" = "$GUEST_PROGRAM_VK" ] || fail "programVK in prover/fixtures/session.txt is not GUEST_PROGRAM_VK in PINS"
+[ "$(session_fact rootC)" = "$GUEST_ROOT_C" ] || fail "rootC in prover/fixtures/session.txt is not GUEST_ROOT_C in PINS"
+[ "$(session_fact elf_sha256)" = "$GUEST_ELF_SHA256" ] || fail "elf_sha256 in prover/fixtures/session.txt is not GUEST_ELF_SHA256 in PINS"
+[ "$(session_fact rulesHash)" = "$(tr -d '\n' < "$ROOT/guest/fixtures/rules-hash.txt")" ] || fail "rulesHash in prover/fixtures/session.txt is not guest/fixtures/rules-hash.txt"
 
 # The Canton and Daml toolchain is pinned by content: a SHA-256 for the Canton tarball and jar, the dpm program, the SDK manifest and the compiler's registry manifest.
 for k in CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DPM_LINUX_AMD64_SHA256 DAML_SDK_MANIFEST_SHA256 DAMLC_LINUX_AMD64_MANIFEST_SHA256; do

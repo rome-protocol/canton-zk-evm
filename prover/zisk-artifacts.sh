@@ -40,3 +40,30 @@ zisk_local_installer() {
       "$src" > "$out"
   [ "$(diff "$src" "$out" | grep -c '^>')" = 2 ] || fail "the local copy of ziskup does not differ from it in exactly two lines"
 }
+
+# node_tree_digest DIR: one SHA-256 for a node_modules tree: the SHA-256 of every file and the target of every link, by name in byte order.
+# The same packages give the same digest wherever they were installed.
+node_tree_digest() {
+  ( cd "$1" && { find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; find . -type l -printf '%p -> %l\n' | LC_ALL=C sort; } | sha256sum | cut -d' ' -f1 )
+}
+
+# zisk_install_node_deps DEST SRC: installs the Node packages of the PLONK key (SRC/package.json and SRC/package-lock.json) into DEST/node_modules with npm ci,
+# install scripts off, and stops unless the tree is the one PLONK_NODE_TREE_SHA256 pins. Needs the pinned Node and npm on PATH.
+zisk_install_node_deps() {
+  local dest=$1 src=$2 tree
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  cp "$src/package.json" "$src/package-lock.json" "$dest/"
+  ( cd "$dest" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error ) || fail "npm ci failed in $dest"
+  tree=$(node_tree_digest "$dest/node_modules") || fail "could not digest $dest/node_modules"
+  [ "$tree" = "$PLONK_NODE_TREE_SHA256" ] || fail "the installed Node packages (digest $tree) are not the pinned ones (PLONK_NODE_TREE_SHA256 $PLONK_NODE_TREE_SHA256)"
+  echo "node packages: installed from package-lock.json, tree digest matches PINS"
+}
+
+# check_plonk_key_list SNARKDIR LIST: every file of LIST (the 22 files of the key, named provingKeySnark/<path>) is in SNARKDIR (a provingKeySnark
+# folder) with its SHA-256, the compiled witness libraries included; it prints each file that differs. The two builds that were compared agreed on all of them.
+check_plonk_key_list() {
+  local dir=$1 list=$2
+  [ -d "$dir" ] && [ -s "$list" ] || return 1
+  sed 's#  provingKeySnark/#  #' "$list" | ( cd "$dir" && sha256sum -c --quiet - )
+}
