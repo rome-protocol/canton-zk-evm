@@ -5,6 +5,8 @@
 #   - reth is started only by network/reth/launch.sh, and network/up.sh checks discovery after starting it
 #   - canton.conf: every node in memory and on localhost, the extension on the operator's and the confirmer's
 #     participants only, each pointing at its own sidecar port, and the sidecar ports are the ones up.sh starts
+#   - lsu.conf and lsu-console.conf (tests/canton_lsu.sh): the successor's two nodes in memory, on localhost and waiting for an identity, no participant
+#     changed, and key download on only there
 #   - no key, token or password is written in any network file
 #   - the recorded smoke result is complete and consistent and in format 2 (what network/smoke.sh writes), and the same
 #     checks are run on a fixture, which they must accept, and on copies with one fault each, which they must refuse
@@ -42,6 +44,16 @@ done
 for port in 8085 8086; do grep -q "$port" "$ROOT/network/up.sh" || fail "up.sh does not start a sidecar on $port"; done
 # The Ledger API port the builder defaults to is the operator's.
 grep -A8 '^    operator {' "$CONF" | grep -q 'http-ledger-api.*port = 7575' || fail "the operator's JSON Ledger API is not on 7575"
+
+# The upgrade test's configs: lsu.conf adds the successor's sequencer and mediator, in memory and on localhost, with no identity until the upgrade
+# gives them one, and changes no participant; the key download it turns on (for the console's export of the nodes' keys) is in no other config.
+LCONF=$ROOT/network/canton/lsu.conf
+[ "$(grep -c 'storage.type = memory' "$LCONF")" = 2 ] || fail "lsu.conf does not keep its two nodes in memory"
+[ "$(grep -c 'init.identity.type = manual' "$LCONF")" = 2 ] || fail "the successor's nodes in lsu.conf do not wait for an identity"
+! grep -q 'participants' "$LCONF" || fail "lsu.conf adds or changes a participant"
+bad=$(grep -hE 'address *=' "$LCONF" "$ROOT/network/canton/lsu-console.conf" | grep -v '"127.0.0.1"' || true)
+[ -z "$bad" ] || fail "an address other than 127.0.0.1 in the upgrade's configs: $bad"
+! grep -q 'enable-key-download' "$CONF" "$ROOT/network/canton/canton-persistent.conf" || fail "key download is on in the network's own configs"
 
 # The persistent mode (CZE_PERSIST=1): canton.conf stays in memory (the default), canton-persistent.conf puts every node in PostgreSQL,
 # on 127.0.0.1, with the password from the environment; the database is a pinned image, published on localhost only, with the password in

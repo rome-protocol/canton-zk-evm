@@ -372,6 +372,41 @@ Run it against a scratch reth: its own container name, ports, state folder and d
 
 Both modes are tested against a fake Ledger API with recorded blocks and a fake reth Engine API: `python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'`.
 
+## A logical synchronizer upgrade, locally
+
+The Canton Network moves a synchronizer to a new protocol version with a logical synchronizer upgrade (LSU). The successor keeps the logical synchronizer id and gets a new physical id (protocol version and serial), with new sequencer and mediator nodes that take over the old ones' identity and topology. The participants stay, keep their contracts and offsets, and move to the successor at the upgrade time. `tests/canton_lsu.sh` runs one on the local network, from protocol version 36 to 37, while the chain makes blocks:
+
+```sh
+tests/canton_lsu.sh                                  # the participants move by themselves
+LSU_SWITCH=manual tests/canton_lsu.sh                # each participant is moved by perform_manual_lsu
+LSU_HOLD_SECONDS=8 LSU_OUT=/tmp/lsu tests/canton_lsu.sh   # a block's confirmation held across the upgrade time; the record is kept in /tmp/lsu
+```
+
+It runs what `tests/network_pipeline.sh` runs: the real reth through `launch.sh` (discovery off, no peers), the real Canton 3.7.2 and Daml package, the real builder (`builder.py run`, two blocks in flight, an empty block every 15 s) and the real sidecar for `legs`, with the rehearsal's stand-ins for the proof. A transfer is sent every 2 s. Canton starts with `canton/lsu.conf` added (a second `-c`): a second sequencer and mediator that wait with no identity, which `bootstrap.synchronizer_local()` leaves out, so the network starts as it always does. A second Canton process, a console on the nodes' admin APIs (`canton/lsu-console.conf`), runs `canton/lsu.canton`. Its steps are those of Canton's own LSU example (`examples/12-lsu` in the release) and integration tests:
+
+1. sequencer1, the synchronizer's owner, proposes the `LsuAnnouncement`: the successor `<logical id>::37-1` (protocol version 37, serial 0 + 1) and an upgrade time 60 s later (`LSU_LEAD_SECONDS`). From here to the upgrade time the topology is frozen: a new party is refused with `TOPOLOGY_LSU_TOPOLOGY_FREEZE`. An `Advance` is not a topology change, so blocks go on committing.
+2. sequencer1's and mediator1's ids and keys, and the sequencer's topology state for the successor (`sequencer_lsu_state`), are exported to files. sequencer2 takes them with `setup.initialize_from_lsu_predecessor` on the successor's parameters, and mediator2 with `setup.assign` to sequencer2.
+3. sequencer1 announces sequencer2's endpoint as its successor (`LsuSequencerConnectionSuccessor`). Each participant then knows the successor of every sequencer it uses, and moves to the successor at the upgrade time by itself. With `LSU_SWITCH=manual` nothing is announced, and after the upgrade time each participant is moved by `synchronizers.perform_manual_lsu` (the admin API's `PerformManualLsu`).
+4. Once every participant is connected to the successor and not to the predecessor, a new party is allocated there.
+
+A node gives out its private keys over its admin API only with `canton.parameters.enable-key-download`, which `lsu.conf` turns on for this test network only. Canton says not to turn it on in production; a console in the node's own process does not need it.
+
+The run passes when the console's steps all ran (the freeze refused a new party, every participant is on the successor, and a new party was allocated after the upgrade); the journal's rules hold and reth agrees with the journal (`tests/pipeline_check.py`, as in the pipeline scenario); Canton's head is reth's finalized block at the end, and reth's finalized block was never above Canton's head during the run; 10 blocks committed after the upgrade (`LSU_AFTER_BLOCKS`); every transfer sent is in a final block; the gap between the last commit before the upgrade time and the first after it is under 300 s (`LSU_MAX_GAP`); and no transaction is named lost. `tests/lsu_record.py` writes the record (`record.txt` and `record.json` in `LSU_OUT`): the two physical ids, when each participant was on the successor, every block attempt that was in flight at the upgrade time and what became of its height, and the commits around the upgrade. With `LSU_HOLD_SECONDS`, the stand-in sidecars hold every call Canton makes while it validates a block for that many seconds, from 6 s before the upgrade time (`LSU_HOLD_WINDOW`) to 1 s after it, so that a block sent just before the upgrade time is still being confirmed when the upgrade time passes. The files the console exports (the synchronizer nodes' keys) stay in the run's own temporary folder and are deleted with it. The nightly workflow `lsu-nightly.yml` runs both switches with the hold.
+
+The record of three runs on 2026-11-13, on one Linux x86-64 machine with 16 cores (times from the upgrade time):
+
+| Run | Block in flight at the upgrade time | Its answer | Its height committed on 37 | Last commit on 36 to first on 37 | Participants on 37 |
+|---|---|---|---|---|---|
+| automatic switch | block 51, sent at +0.1 s (after the upgrade time, before the switch) | `LOCAL_VERDICT_TIMEOUT` at +0.7 s | +4.3 s, built again | 7.6 s | +1.0 s |
+| automatic, confirmation held 8 s | block 50, sent at −6.2 s | `LOCAL_VERDICT_TIMEOUT` at +3.1 s | +6.7 s, built again | 16.8 s (8 s of it the hold) | +3.9 s |
+| manual, confirmation held 8 s | block 50, sent at −4.6 s | `LOCAL_VERDICT_TIMEOUT` at +4.6 s | +8.1 s, built again | 13.8 s | +5.4 s |
+
+In each run 20 to 22 blocks committed in the 60 s freeze. The block behind the timed-out one, built on it, was dropped, and its transactions went back to reth's pool. The height was built again from the pool and committed on the successor, and the chain went on with nothing lost and no step by hand. An `Advance` that is in flight at the upgrade time fails within seconds, not after Canton's confirmation timeout: in the held runs the confirmations would have come about 10 s after the upgrade time, and the participant timed the request out at +3.1 s and +4.6 s. The participants moved after that answer. The first block on protocol version 37 made the external calls (the block check and `legs`) under 37.
+
+The builder counts `LOCAL_VERDICT_TIMEOUT` as a confirmation timeout. A block that carries no leg of a party outside the chain's own (the blocks here) fails as `not_taken`, and nobody is blamed. A block that carries such a leg is booked as a refusal, and the party of the leg is held back (`PartyBlame`), although the upgrade timed the block out, not the party. That case is not run here.
+
+Not covered here: the Canton Network's 24-hour freeze (the local one is the 60 s lead); traffic (the local network has no traffic control, so no traffic state moves); nodes that keep their data in PostgreSQL (everything here is in memory); Splice's own LSU automation (the SV app, Scan's `/v0/lsu`); legs (deposits, withdrawals, payments) in flight at the upgrade time; external transactions prepared before the upgrade and submitted after it; and contracts made on 36 and disclosed on 37.
+
 ## The smoke test
 
 `smoke.sh` runs the builder once, with no transactions in the pool. It checks that
@@ -397,6 +432,7 @@ python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup 
 tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
+tests/canton_lsu.sh          # a logical synchronizer upgrade from protocol version 36 to 37 under a running chain (needs Docker; nightly: lsu-nightly.yml)
 ```
 
 `canton_network.sh` needs Linux x86-64, Java 21, Python 3 and network access. It checks that the bootstrap, the upload and the vetting work; that the chain names the gateway party and address, and the Ledger API's user rights are right (the builder's user may read as the gateway and may not act as it; the operator's user may act as it); that a token is registered once and not twice; that a block is refused and changes nothing when the sidecar's answer to the block check (`verify2`; `verify` under 0.1.0 and 0.2.0) is `no`, when its `legs` answer is `no` or is not the line Daml expects, and when only the confirmer's sidecar says `no`; that a good one commits; and that Canton asks the operator's sidecar for both the block check (`verify2`; `verify` under 0.1.0 and 0.2.0) and `legs` when it receives the block and both sidecars when it validates it.
