@@ -231,8 +231,10 @@ impl Config {
         }
     }
 
-    /// A list of keys. It is refused when empty, longer than `MAX_KEYS`, or when two entries have
-    /// the same program key.
+    /// A list of keys. It is refused when empty, longer than `MAX_KEYS`, when two entries have
+    /// the same program key, or, when any entry names a block range, when two entries' ranges
+    /// overlap (a key without a range counts as every block). A list in which no entry has a range
+    /// is every key valid for every block, which is how a sidecar is started before a switch.
     pub fn with_keys(keys: Vec<Key>) -> Result<Config, String> {
         if keys.is_empty() {
             return Err("no key given".to_string());
@@ -246,6 +248,24 @@ impl Config {
                     "program key {} is listed twice",
                     hex(&k.program_vk)
                 ));
+            }
+        }
+        if keys
+            .iter()
+            .any(|k| k.first_block != 0 || k.until_block.is_some())
+        {
+            // Half-open ranges [first, until), an open end being infinite.
+            let end = |k: &Key| k.until_block.map_or(u128::MAX, u128::from);
+            for (i, k) in keys.iter().enumerate() {
+                if let Some(o) = keys[..i].iter().find(|o| {
+                    u128::from(k.first_block) < end(o) && u128::from(o.first_block) < end(k)
+                }) {
+                    return Err(format!(
+                        "the block ranges of program keys {} and {} overlap",
+                        hex(&o.program_vk),
+                        hex(&k.program_vk)
+                    ));
+                }
             }
         }
         Ok(Config {

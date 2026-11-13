@@ -302,6 +302,54 @@ fn a_range_covers_its_first_block_and_stops_before_its_last() {
 }
 
 #[test]
+fn ranges_that_overlap_are_refused_and_ranges_that_meet_are_not() {
+    let b = |r| Key::new([0xbb; 32], [0x22; 32], r);
+    let c = |r| Key::new([0xcc; 32], [0x33; 32], r);
+    let (kb, kc) = (b(Release::V1_3_2), c(Release::V1_4_0));
+    // The switch at 5000: the old key before it, the new one from it.
+    assert!(Config::with_keys(vec![kb.before_block(5000), kc.from_block(5000)]).is_ok());
+    assert!(Config::with_keys(vec![kc.from_block(5000), kb.before_block(5000)]).is_ok());
+    assert!(Config::with_keys(vec![
+        kb.before_block(5000),
+        kc.from_block(5000).before_block(6000)
+    ])
+    .is_ok());
+    // The `@N..` forgotten on the new key: it would be accepted for every block before N too.
+    for list in [
+        vec![kb.before_block(5000), kc],
+        vec![kc, kb.before_block(5000)],
+        vec![kb.from_block(5000), kc],
+        vec![kb, kc.from_block(5000)],
+        // One block of overlap, and one range inside another.
+        vec![kb.before_block(5001), kc.from_block(5000)],
+        vec![
+            kb.from_block(10).before_block(20),
+            kc.from_block(15).before_block(16),
+        ],
+        vec![kb.from_block(10), kc.from_block(u64::MAX)],
+    ] {
+        let err = Config::with_keys(list).err().expect("overlap refused");
+        assert!(err.contains("overlap"), "{err}");
+    }
+    // No key with a range: every key valid for every block, as when the sidecars start before a switch.
+    assert!(Config::with_keys(vec![kb, kc]).is_ok());
+    // Three keys: the third overlaps the first.
+    let kd = Key::new([0xdd; 32], [0x44; 32], Release::V1_4_0);
+    assert!(Config::with_keys(vec![
+        kb.before_block(100),
+        kc.from_block(100).before_block(200),
+        kd.from_block(200)
+    ])
+    .is_ok());
+    assert!(Config::with_keys(vec![
+        kb.before_block(100),
+        kc.from_block(100).before_block(200),
+        kd.from_block(150)
+    ])
+    .is_err());
+}
+
+#[test]
 fn a_key_is_parsed_with_its_block_range() {
     let (a, b) = ("11".repeat(32), "22".repeat(32));
     let key = |rel: &str, range: &str| Key::parse(&format!("{a}:{b}:{rel}{range}"));

@@ -113,6 +113,19 @@ fn keys_with_block_ranges_get_as_far_as_the_address_and_bad_ranges_do_not() {
 }
 
 #[test]
+fn keys_whose_block_ranges_overlap_stop_it_before_it_listens() {
+    let b = format!("{:0>64}", "1");
+    let c = format!("{:0>64}", "2");
+    // The new key without its `@5000..`.
+    let old = format!("{b}:{KEY}:1.3.2@..5000");
+    let new = format!("{c}:{KEY}:1.4.0");
+    let (code, err) = run_keys(&["--key", &old, "--key", &new]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("overlap"), "{err}");
+    assert!(!err.contains("cannot listen"), "{err}");
+}
+
+#[test]
 fn up_to_four_keys_get_as_far_as_the_address() {
     for n in 1..=4 {
         let keys: Vec<String> = (1..=n)
