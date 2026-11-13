@@ -494,11 +494,11 @@ class FakeLedger:
 
     def timeout_status(self) -> dict:
         """The status of a failed completion that says the confirmations did not come in time, in the form Canton 3.7.2 gives it (read on a local network): the
-        mediator's timeout carries an ErrorInfo detail whose metadata names the unresponsive parties; the participant's own timeout has no such detail."""
+        mediator's timeout carries an ErrorInfo detail whose metadata names the unresponsive parties; the participant's own timeout has the same detail without names (every error Canton makes decodes)."""
         metadata = {"category": "2", **({"unresponsiveParties": ",".join(self.confirm_names)} if self.confirm_names else {}), **self.reported_keys()}
         if self.timeout_code != "MEDIATOR_SAYS_TX_TIMED_OUT":
             return {"code": 10, "message": f"{self.timeout_code}(5,ab): Rejected transaction due to a participant determined timeout",
-                    "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...", "valueDecoded": {"reason": self.timeout_code, "domain": "", "metadata": metadata}}] if self.confirm_reported else []}
+                    "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...", "valueDecoded": {"reason": self.timeout_code, "domain": "", "metadata": metadata}}]}
         return {"code": 10, "message": "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",
                 "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...",
                              "valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "domain": "", "metadata": metadata, "unknownFields": {"fields": {}}}},

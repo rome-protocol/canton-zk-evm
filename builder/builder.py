@@ -1470,6 +1470,17 @@ def details_of(status) -> list:
     return [d for d in (status.get("details") if isinstance(status, dict) else None) or [] if isinstance(d, dict)]
 
 
+def is_canton_category(value) -> bool:
+    """Whether Canton reads this metadata value as an error category: a string that Java's `Integer.parseInt` takes (`StringOps.toInt`, Canton 3.7.2): an optional sign
+    and decimal digits only, no space, no underscore, nothing after the digits, and a value within 32 bits. Python's `int()` takes more (' 2', '2\\n', '1_2', any size)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[+-]?\d+", value):
+        return False
+    try:
+        return -2**31 <= int(value) < 2**31
+    except ValueError:   # more digits than Python converts
+        return False
+
+
 def decodes_as_canton_error(status) -> bool:
     """Whether Canton would decode this status as an error of its own (`DecodedCantonError.tryDeserializeStatus`, Canton 3.7.2): exactly one ErrorInfo detail with
     an integer `category` in its metadata, and at most one RequestInfo and one RetryInfo. Only a status that decodes gets the participant's keys (`reported_in`) when a
@@ -1479,12 +1490,7 @@ def decodes_as_canton_error(status) -> bool:
         return False
     info = next(d for d, kind in zip(details_of(status), kinds) if kind == "ErrorInfo").get("valueDecoded")
     metadata = info.get("metadata") if isinstance(info, dict) else None
-    category = metadata.get("category") if isinstance(metadata, dict) else None
-    try:
-        int(category)
-    except (TypeError, ValueError):
-        return False
-    return True
+    return is_canton_category(metadata.get("category") if isinstance(metadata, dict) else None)
 
 
 def unresponsive_of_status(status) -> list | None:
@@ -1501,10 +1507,13 @@ def unresponsive_of_status(status) -> list | None:
 
 
 def reported_in_status(status) -> bool:
-    """Whether a participant wrote a failed completion's status: an ErrorInfo detail of it has the keys of `reported_in`, or it names unresponsive parties and
-    does not decode as one of Canton's (see `decodes_as_canton_error`)."""
+    """Whether a participant wrote a failed completion's status: an ErrorInfo detail of it has the keys of `reported_in`, or it does not decode as one of Canton's
+    (see `decodes_as_canton_error`) and either names unresponsive parties or says in its words that a confirmation timed out (every timeout Canton writes itself decodes)."""
     infos = [d["valueDecoded"].get("metadata") for d in details_of(status) if isinstance(d.get("valueDecoded"), dict)]
-    return any(reported_in(m) for m in infos) or (not decodes_as_canton_error(status) and any(isinstance(m, dict) and "unresponsiveParties" in m for m in infos))
+    if any(reported_in(m) for m in infos):
+        return True
+    words = status.get("message") if isinstance(status, dict) else None
+    return not decodes_as_canton_error(status) and (any(isinstance(m, dict) and "unresponsiveParties" in m for m in infos) or confirmation_timeout(words))
 
 
 def reported_in_body(text) -> bool:
@@ -5008,7 +5017,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
     ap.add_argument("--exclude-cooldown-seconds", type=float, default=600, help="run: how long a transaction in two refused blocks in a row is left out")
-    ap.add_argument("--timeout-no-blame-limit", type=int, default=3, metavar="K", help="run: after K confirmation timeouts in a row that held nobody back (the mediator named no party of the block, or the timeout is LOCAL_VERDICT_TIMEOUT), "
+    ap.add_argument("--timeout-no-blame-limit", type=int, default=3, metavar="K", help="run: after K confirmation timeouts in a row that held nobody back (the mediator named a party with no leg in the block, or the timeout is LOCAL_VERDICT_TIMEOUT), "
                     "the parties of the block are put on trial as for a timeout that names nobody (default 3; 0: always)")
     return ap
 

@@ -654,6 +654,23 @@ class NamedTimeout(tp.Loop):
             "two ErrorInfo": [{"typeUrl": ERROR_INFO, "valueDecoded": info}, {"typeUrl": ERROR_INFO, "valueDecoded": info}],
             "no category": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1"}}}],
             "category not a number": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "two"}}}],
+            "category with a space before": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": " 2"}}}],
+            "category with a space after": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "2 "}}}],
+            "category with a newline after": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "2\n"}}}],
+            "category with a tab": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\t2"}}}],
+            "category with an underscore": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "1_2"}}}],
+            "category past 32 bits": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "99999999999"}}}],
+            "category 2**31": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "2147483648"}}}],
+            "category below -2**31": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "-2147483649"}}}],
+            "category with a sign only": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "+"}}}],
+            "category empty": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": ""}}}],
+            "category a float": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "2.0"}}}],
+            "category hex": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "0x2"}}}],
+            "category in an exponent": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "1e1"}}}],
+            "category with a no-break space": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "\u00a02"}}}],
+            "category a number, not a string": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": 2}}}],
+            "category true": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": True}}}],
+            "category with more digits than Python converts": [{"typeUrl": ERROR_INFO, "valueDecoded": {**info, "metadata": {"unresponsiveParties": "v::1", "category": "1" * 5000}}}],
             "two RetryInfo": [{"typeUrl": ERROR_INFO, "valueDecoded": info}, {"typeUrl": RETRY_INFO, "valueDecoded": {}}, {"typeUrl": RETRY_INFO, "valueDecoded": {}}],
             "two RequestInfo": [{"typeUrl": ERROR_INFO, "valueDecoded": info}, {"typeUrl": REQUEST_INFO, "valueDecoded": {}}, {"typeUrl": REQUEST_INFO, "valueDecoded": {}}],
             "no type": [{"valueDecoded": info}],
@@ -673,6 +690,39 @@ class NamedTimeout(tp.Loop):
                 self.assertEqual(p.blame.until, {})   # v::1 is not held on that word
                 self.assertEqual(p.blame.suspects, {"u::1", "v::1"})   # the parties of the block are on trial instead
                 self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
+
+    def test_a_category_is_read_as_java_reads_an_int(self):
+        """Canton reads it with `Integer.parseInt` (checked on Java 21): a sign and digits, within 32 bits; Python's `int()` takes more."""
+        for value in ("2", "+2", "-2", "0002", "2147483647", "-2147483648", "\u0662"):
+            self.assertTrue(b.is_canton_category(value), value)
+            status = {"details": [{"typeUrl": ERROR_INFO, "valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "metadata": {"unresponsiveParties": "v::1", "category": value}}}]}
+            self.assertEqual((b.unresponsive_of_status(status), b.reported_in_status(status)), (["v::1"], False), value)
+        for value in (" 2", "2 ", "2\n", "\n2", "\t2", "1_2", "99999999999", "2147483648", "-2147483649", "+", "-", "", "2.0", "0x2", "1e1", "\u00a02", None, 2, True, ["2"]):
+            self.assertFalse(b.is_canton_category(value), repr(value))
+
+    def test_a_status_that_canton_would_not_decode_and_says_a_timeout_in_its_words_goes_to_trial(self):
+        """A participant that rejects chooses its status and words: one that does not decode and says LOCAL_VERDICT_TIMEOUT must not be believed (no blame up to the
+        limit); the same words in a status that decodes, as Canton writes them, are the participant's own timeout and blame nobody."""
+        detail = {"typeUrl": ERROR_INFO, "valueDecoded": {"reason": "LOCAL_VERDICT_TIMEOUT", "domain": "", "metadata": {"category": "5"}}}
+        for what, code, details in (("two ErrorInfo", 10, [detail, detail]), ("no detail", 10, []), ("category past 32 bits", 10, [{**detail, "valueDecoded": {**detail["valueDecoded"], "metadata": {"category": "99999999999"}}}])):
+            for word in ("LOCAL_VERDICT_TIMEOUT(3,0): a participant's own words", "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): the words of a mediator"):
+                with self.subTest(what, word=word[:12]):
+                    status = {"code": code, "message": word, "details": details}
+                    self.assertFalse(b.decodes_as_canton_error(status))
+                    self.assertTrue(b.reported_in_status(status))
+                    s, pay, plain = self.leg_pool()
+                    s.ledger.confirm_timeout = "completion"
+                    s.ledger.timeout_status = lambda status=status: status
+                    p = self.producer(s)
+                    p.step()
+                    self.assertEqual((self.reports[-1]["timedOut"], self.reports[-1]["reportedByParticipant"]), (True, True))
+                    self.assertEqual(p.blame.until, {})
+                    self.assertEqual(p.blame.suspects, {"u::1", "v::1"})   # the first one: the parties of the block are on trial, not up to the limit
+                    self.assertIn("a participant's own", self.journal_lines(s, "timeout_no_blame")[0]["reason"])
+        status = {"code": 10, "message": "LOCAL_VERDICT_TIMEOUT(5,ab): Rejected transaction due to a participant determined timeout", "details": [detail]}
+        self.assertTrue(b.decodes_as_canton_error(status))
+        self.assertFalse(b.reported_in_status(status))
+        self.assertFalse(b.reported_in_status({"code": 10, "message": "CONTRACT_NOT_FOUND(11,0): x", "details": []}))   # not a timeout in its words
 
     def test_the_status_canton_gives_decodes_and_extra_kinds_of_detail_do_not_break_it(self):
         info = {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "domain": "", "metadata": {"unresponsiveParties": "v::1", "category": "2"}}
