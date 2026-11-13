@@ -17,12 +17,13 @@
     Prints one JSON line: the registered token. Refuses to run if the token is registered or proposed already.
 
   propose.py anchor --head-number <n> --head-hash <hex> --program-vk <hex> --root-c <hex> --rules-hash <hex>
-             [--chain-id <id>] [--gas-cap <n>] [--gateway-address <hex>] [--head-state-root <hex>] [--reth-url <url>] [--grant] [--dry-run]
+             --gas-cap <n> [--chain-id <id>] [--gateway-address <hex>] [--head-state-root <hex>] [--reth-url <url>] [--grant] [--dry-run]
 
     Creates the chain on a Canton network at an existing EVM head, the one reth has finalized, instead of at block 0: for a new
     network that takes over a chain that runs (a move from one Canton network to another, or the same chain after a network reset). The
     chain id, the program key, the ZisK root, the rules hash, the gas cap and the gateway contract's address are the old chain's, so give
-    them as the old chain had them (--gas-cap too, if it was raised: the default is PINS's). The block number and hash are the ones the old chain's
+    them as the old chain had them. --gas-cap is required, with no default: the old chain's cap may have been raised above PINS's (DevNet's was),
+    and a lower cap on the new network could be raised again only by a proposal. The block number and hash are the ones the old chain's
     last committed block had; the state root is read from reth. Daml has no proposal that starts above block 0, so this is one submission that
     creates the chain contract, signed by the operator, the confirmer and the gateway together: it needs a participant that hosts all three, as the
     Canton Network's validator participants do here, and the operator's Ledger API user must hold the confirmer's right to act as well. --grant
@@ -31,8 +32,10 @@
     is above, below or off reth's finalized chain), if reth is another chain, if the gateway contract's code at that block is not the reviewed
     build, if the gas cap is under the head block's gas limit, or if a chain or a chain proposal is on this network already. With --dry-run it
     makes every check and submits nothing. Prints one JSON line (the chain's contract id and head, reth's latest block, and "next", the list of what
-    to register again); the same list goes to stderr. Run it with the builder stopped, and before it starts: if reth's latest block is above its finalized one,
-    sync_reth.py (which restart.sh runs) moves reth back to the chain's head first.
+    to register again, and "actingRightsRevoked", false if the granted right could not be taken away again); the same list goes to stderr. Run it with the
+    builder stopped, and before it starts: if reth's latest block is above its finalized one, sync_reth.py (which restart.sh runs) moves reth back to
+    the chain's head first, and the list says so. The old network's builder must stay stopped for good: one ledger per chain. The exit status is not 0 if the
+    right could not be taken away again (the chain is created; take the right away by hand).
 
 The parties come from $CZE_STATE_DIR/canton/parties.env (written by bootstrap.canton). The operator's Ledger API is
 CZE_LEDGER_URL (default http://127.0.0.1:7575), the confirmer's is CZE_CONFIRMER_LEDGER_URL (default
@@ -239,14 +242,17 @@ def anchor_head(args, reth_url: str) -> dict:
     return {"number": number, "hash": block_hash, "stateRoot": state_root, "rethLatest": latest}
 
 
-def anchor_next(chain_id: int, gateway_address: str) -> list:
-    """What to register on the new network after the chain is anchored: the old network's records are not there."""
+def anchor_next(chain_id: int, gateway_address: str, head_number: int = 0, reth_latest: int = 0) -> list:
+    """What to do on the new network after the chain is anchored: the old network's records are not there, reth may be ahead of the head, and the old builder stays off."""
     return [
         "Canton-backed tokens (Canton Coin, test tokens): the old wrapped tokens stood for the old network's custody and must never be registered here. Holders withdraw "
         "them to the old network before the move; register a new wrapped token for each instrument the new network has: Gateway.register on the EVM side, then "
         "propose.py token --evm-token <address> --instrument-admin <party> --instrument-id <id> --factory <contract id>",
         "the vault and any other registered contract: setup.py --contract-step add --contract-address <address> --contract-kind vault (or gateway); the code is copied with the EVM data",
         "the twins: new TwinRules on this network (demo/twin.py rules <token>), then setup.py --twin-step add --twin-token <address> --twin-decimals <n> --twin-rules <contract id> --twin-rules-disclosed <file>",
+        *([f"reth's latest block ({reth_latest}) is above the head ({head_number}): run network/sync_reth.py (restart.sh runs it) before the builder, to move reth back to the head"]
+          if reth_latest > head_number else []),
+        "the old network's builder must stay stopped: one ledger per chain, and a second builder for this chain would fork it",
         f"then start the builder: the first block is the head's number plus one (the chain's gateway contract is {gateway_address}, chain id {chain_id})",
     ]
 
@@ -262,15 +268,17 @@ def anchor_chain(args, parties: dict, url: str, reth_url: str, dry_run: bool = F
     if missing and not (grant or dry_run):
         raise SystemExit(f"the Ledger API user {user} cannot act for {sorted(missing)}: all three parties sign the chain. Give it the right, or run this with --grant (ADMIN token)")
     result = {"chainId": str(args.chain_id), "headNumber": str(head["number"]), "headHash": head["hash"], "headStateRoot": head["stateRoot"],
-              "rethLatest": head["rethLatest"], "next": anchor_next(args.chain_id, args.gateway_address)}
+              "rethLatest": head["rethLatest"],
+              "next": anchor_next(args.chain_id, args.gateway_address, head["number"], head["rethLatest"])}
     if dry_run:
-        return {**result, "submitted": False, "actingRightsMissing": sorted(missing)}
+        return {**result, "submitted": False, "actingRightsMissing": sorted(missing), "actingRightsRevoked": True}
     create = {"CreateCommand": {"templateId": PKG + "ZkChain", "createArguments": {
         "operator": parties["OPERATOR_PARTY"], "confirmer": parties["CONFIRMER_PARTY"], "gateway": parties["GATEWAY_PARTY"],
         "builder": parties["BUILDER_PARTY"], "reader": parties["READER_PARTY"], "chainId": str(args.chain_id), "programVK": args.program_vk,
         "rootC": args.root_c, "rulesHash": args.rules_hash, "gasCap": str(args.gas_cap), "gatewayAddress": args.gateway_address,
         "headNumber": str(head["number"]), "headHash": head["hash"], "headStateRoot": head["stateRoot"], **{k: None for k in ZK_CHAIN_OPTIONAL}}}}
     admin = role_token("admin")
+    revoked = True   # nothing granted, nothing to take away
     if missing:
         change_acts_as("POST", url, user, missing, admin)
     try:
@@ -284,9 +292,11 @@ def anchor_chain(args, parties: dict, url: str, reth_url: str, dry_run: bool = F
             try:
                 change_acts_as("PATCH", url, user, missing, admin)
             except (OSError, urllib.error.URLError) as err:
+                revoked = False
                 print(f"WARNING: the right of {user} to act for {sorted(missing)} could not be taken away again ({err}): take it away by hand", file=sys.stderr)
     [chain] = operator.wait_for("ZkChain")
-    return {**result, "contractId": chain["contractId"], "submitted": True, "actingRightsGranted": sorted(missing)}
+    return {**result, "contractId": chain["contractId"], "submitted": True, "actingRightsGranted": sorted(missing),
+            "actingRightsRevoked": revoked}
 
 
 def gateway_made(reth_url: str, gateway_address: str, token: str) -> bool:
@@ -343,7 +353,7 @@ def parse(argv: list, pins: dict):
             ap.add_argument("--" + name, required=True)
         ap.add_argument("--head-state-root")
         ap.add_argument("--chain-id", type=int, default=int(pins["CHAIN_ID"]))
-        ap.add_argument("--gas-cap", type=int, default=int(pins["GAS_CAP"]))
+        ap.add_argument("--gas-cap", type=int, required=True, help="the old chain's gas cap (no default: it may have been raised above PINS's)")
         ap.add_argument("--gateway-address", default=pins["GATEWAY_ADDRESS"])
         ap.add_argument("--reth-url", default=f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}")
         ap.add_argument("--grant", action="store_true", help="give the operator's user the confirmer's right to act for this one submission (the ADMIN token)")
@@ -395,6 +405,9 @@ def main() -> int:
     else:
         result = propose(args, parties, operator_url, confirmer_url)
     print(json.dumps(result))
+    if result.get("actingRightsRevoked") is False:
+        print("ERROR: the chain is created, but the right that was granted could not be taken away again: take it away by hand", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -1,5 +1,6 @@
 """network/canton/propose.py against a fake JSON Ledger API and a fake reth. Run: python3 -m unittest discover -s tests -p 'test_propose.py'"""
-import json, sys, threading, unittest
+import contextlib, io, json, os, sys, threading, unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ class FakeLedger:
     def __init__(self, contracts=None, late=0):
         self.submitted, self.contracts, self.late, self.on_submit = [], contracts if contracts is not None else {}, late, None
         self.rights, self.rights_calls = set(), []   # the parties the Ledger API user may act as, and the changes made to them
+        self.fail_patch = False                       # the participant refuses to take a right away
         ledger = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -46,6 +48,11 @@ class FakeLedger:
                 self._send({})
 
             def do_PATCH(self):
+                if ledger.fail_patch:
+                    self.rfile.read(int(self.headers["content-length"]))
+                    ledger.rights_calls.append(("PATCH", self.path, "refused"))
+                    self.send_response(500); self.send_header("content-length", "0"); self.end_headers()
+                    return
                 self._rights("PATCH")
 
             def do_POST(self):
@@ -404,6 +411,67 @@ class Anchor(unittest.TestCase):
         op, reth = self.network(finalized=5, latest=6)
         self.assertEqual(propose.anchor_chain(anchor_args(reth), PARTIES, op.url, reth.url)["rethLatest"], 6)
 
+    def test_the_result_says_whether_the_granted_right_was_taken_away(self):
+        op, reth = self.network(rights={"operator::1", "gateway::1"})
+        result = propose.anchor_chain(anchor_args(reth), PARTIES, op.url, reth.url, grant=True)
+        self.assertEqual((result["actingRightsGranted"], result["actingRightsRevoked"]), (["confirmer::2"], True))
+        op, reth = self.network()   # nothing granted, so nothing to take away
+        self.assertIs(propose.anchor_chain(anchor_args(reth), PARTIES, op.url, reth.url)["actingRightsRevoked"], True)
+        op, reth = self.network(rights={"operator::1"})
+        self.assertIs(propose.anchor_chain(anchor_args(reth), PARTIES, op.url, reth.url, dry_run=True)["actingRightsRevoked"], True)
+
+    def test_a_right_that_could_not_be_taken_away_is_reported_in_the_result(self):
+        op, reth = self.network(rights={"operator::1", "gateway::1"})
+        op.fail_patch = True
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            result = propose.anchor_chain(anchor_args(reth), PARTIES, op.url, reth.url, grant=True)
+        self.assertEqual((result["submitted"], result["actingRightsGranted"], result["actingRightsRevoked"]), (True, ["confirmer::2"], False))
+        self.assertIn("could not be taken away again", err.getvalue())
+
+    def run_main(self, op, reth, *extra):
+        """propose.py anchor through main(): (exit status, the JSON line, stderr)."""
+        head = reth.block(reth.finalized)
+        argv = ["propose.py", "anchor", "--head-number", str(reth.finalized), "--head-hash", head["hash"][2:], "--program-vk", "cd" * 32, "--root-c", "ef" * 32,
+                "--rules-hash", "12" * 32, "--gas-cap", "30000000", "--reth-url", reth.url, *extra]
+        env = {"CZE_LEDGER_URL": op.url, "CZE_USER_PREFIX": ""}
+        pins = {"CHAIN_ID": "770101", "GAS_CAP": "30000000", "GATEWAY_ADDRESS": "0x" + GW}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, env), \
+                mock.patch.object(propose, "read_env_file", lambda path: PARTIES if "parties.env" in str(path) else pins), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = propose.main()
+        return status, json.loads(out.getvalue().splitlines()[-1]), err.getvalue()
+
+    def test_it_exits_with_an_error_when_the_granted_right_could_not_be_taken_away(self):
+        op, reth = self.network(rights={"operator::1", "gateway::1"})
+        status, result, err = self.run_main(op, reth, "--grant")
+        self.assertEqual((status, result["actingRightsRevoked"], op.rights), (0, True, {"operator::1", "gateway::1"}))
+        op, reth = self.network(rights={"operator::1", "gateway::1"})
+        op.fail_patch = True
+        status, result, err = self.run_main(op, reth, "--grant")
+        self.assertEqual((status, result["submitted"], result["actingRightsRevoked"]), (1, True, False))   # the JSON is still printed: the chain exists
+        self.assertIn("take it away by hand", err)
+
+    def test_it_says_to_run_sync_reth_when_reth_is_above_the_head_and_that_the_old_builder_stays_stopped(self):
+        op, reth = self.network(finalized=5, latest=7)
+        status, result, err = self.run_main(op, reth)
+        self.assertEqual(status, 0)
+        (sync,) = [line for line in result["next"] if "sync_reth.py" in line]
+        self.assertIn("before the builder", sync)
+        self.assertIn("sync_reth.py", err)
+        self.assertTrue(any("old network's builder must stay stopped" in line for line in result["next"]))
+        self.assertIn("old network's builder must stay stopped", err)
+        self.assertLess(result["next"].index(sync), len(result["next"]) - 1, "the builder comes last")
+        self.assertIn("then start the builder", result["next"][-1])
+
+    def test_it_does_not_mention_sync_reth_when_reth_is_at_the_head(self):
+        op, reth = self.network(finalized=5, latest=5)
+        status, result, err = self.run_main(op, reth)
+        self.assertEqual(status, 0)
+        self.assertFalse(any("sync_reth.py" in line for line in result["next"]))
+        self.assertTrue(any("old network's builder must stay stopped" in line for line in result["next"]))
+
     def test_a_refusal_by_the_participant_takes_the_granted_right_back(self):
         op, reth = self.network(rights={"operator::1", "gateway::1"})
         op.on_submit = lambda body: (_ for _ in ()).throw(RuntimeError("never"))
@@ -452,8 +520,18 @@ class Arguments(unittest.TestCase):
                          ("anchor", 5, H, 60000000, 770101, GW, None, False, False))
         self.assertEqual(a.reth_url, "http://127.0.0.1:8545")
 
+    def test_the_anchor_mode_requires_the_gas_cap(self):
+        keys = ["--head-number", "5", "--head-hash", H, "--program-vk", "cd" * 32, "--root-c", "ef" * 32, "--rules-hash", "12" * 32]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as why:
+            propose.parse(["anchor", *keys], self.PINS)
+        self.assertNotEqual(why.exception.code, 0)
+        self.assertIn("--gas-cap", err.getvalue())
+        _, a = propose.parse(["anchor", *keys, "--gas-cap", "60000000"], self.PINS)
+        self.assertEqual(a.gas_cap, 60000000)   # the cap given, never PINS's 30,000,000
+
     def test_the_anchor_mode_refuses_a_hash_or_key_that_is_not_32_bytes_of_hex(self):
-        keys = ["--program-vk", "cd" * 32, "--root-c", "ef" * 32, "--rules-hash", "12" * 32]
+        keys = ["--program-vk", "cd" * 32, "--root-c", "ef" * 32, "--rules-hash", "12" * 32, "--gas-cap", "30000000"]
         for bad in ("abc", "zz" * 32, "ab" * 31):
             with self.assertRaises(SystemExit):
                 propose.parse(["anchor", "--head-number", "5", "--head-hash", bad, *keys], self.PINS)
