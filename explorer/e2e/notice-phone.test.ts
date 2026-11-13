@@ -99,6 +99,24 @@ describe.skipIf(!core)("the notice of planned work, in a browser", () => {
     }
   });
 
+  it.each([360, 1280])("keeps the major link readable while the pointer is over it (4.5:1 or more, opaque colours), in both themes, at %i px", async (width) => {
+    for (const scheme of ["light", "dark"] as const) {
+      const page = await open(width, scheme);
+      await page.hover("#major .notice-link");
+      const ratio = await page.evaluate(() => {
+        const rgba = (c: string) => { const m = c.match(/[\d.]+/g)!.map(Number); return { r: m[0]!, g: m[1]!, b: m[2]!, a: m[3] ?? 1 }; };
+        const lum = ({ r, g, b }: { r: number; g: number; b: number }) => { const f = (v: number) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+        const cs = getComputedStyle(document.querySelector("#major .notice-link")!);
+        const fg = rgba(cs.color), bg = rgba(cs.backgroundColor);
+        const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+        return { ratio: (hi! + 0.05) / (lo! + 0.05), opaque: fg.a === 1 && bg.a === 1 };
+      });
+      await page.close();
+      expect(ratio.opaque, `${scheme} ${width}`).toBe(true);
+      expect(ratio.ratio, `${scheme} ${width}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("marks work in progress with the heavier edge and leaves planned work without it", async () => {
     const page = await open(360, "light");
     const r = await page.evaluate(() => ({ now: getComputedStyle(document.getElementById("now")!).boxShadow, planned: getComputedStyle(document.getElementById("planned")!).boxShadow }));
