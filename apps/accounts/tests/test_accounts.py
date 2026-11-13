@@ -2321,6 +2321,17 @@ class SharedNetworks(Behind):
         self.assertEqual(A.pending_owner(A.client_key("2001:db8:a05:1::5")), "2001:db8:a05::/48")
         self.assertEqual(A.pending_owner(A.client_key("198.51.100.7")), "198.51.100.7")
 
+    def test_an_ipv6_range_narrower_than_a_48_is_refused_so_a_listing_only_tightens_the_limits(self):
+        for narrow in ("2001:db8:a00::/49", "2001:db8:a00::/56", "2001:db8:a00:1::/64", "2001:db8:a00::/128"):
+            with self.assertRaises(ValueError, msg=narrow):
+                A.parse_shared_networks(narrow)
+            with self.assertRaises(ValueError, msg=narrow):
+                A.parse_shared_networks("198.51.100.0/24," + narrow)
+        self.assertEqual(A.parse_shared_networks("2001:db8:a00::/48,2001:db8:a00::/47,198.51.100.7/32"), [ipaddress.ip_network(x) for x in ("2001:db8:a00::/48", "2001:db8:a00::/47", "198.51.100.7/32")])   # a /48 or wider, and any IPv4 range
+        with unittest.mock.patch.dict(os.environ, {"LEDGER_TOKEN": "t", "OSTIA_SHARED_NETWORKS": "2001:db8:a00::/56"}), self.assertRaises(SystemExit) as e:
+            A.main(["--ledger-url", "http://127.0.0.1:1", "--user-id", "u", "--state-file", os.path.join(self.dir.name, "s")])
+        self.assertIn("a /48 or wider", str(e.exception))
+
     def test_the_setting_is_read_from_the_environment_at_start_and_a_bad_entry_stops_the_start(self):
         self.addCleanup(A.set_shared_networks, "")
         self.assertEqual(A.parse_shared_networks(" 2001:db8:a00::/40 , 198.51.100.0/24,,"), [ipaddress.ip_network("2001:db8:a00::/40"), ipaddress.ip_network("198.51.100.0/24")])

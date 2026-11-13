@@ -142,13 +142,13 @@ SHARED_NETWORKS: list = []   # address ranges that many users share, such as a V
 
 
 def parse_shared_networks(text: str) -> list:
-    """Comma-separated CIDR ranges, IPv4 or IPv6. ValueError for an entry that is not a range, has host bits set, or is an IPv6 range narrower than a /64 (a client is known by its /64)."""
+    """Comma-separated CIDR ranges, IPv4 or IPv6. ValueError for an entry that is not a range, has host bits set, or is an IPv6 range narrower than a /48 (the network of an IPv6 address is its /48, so a listing can only tighten the limits)."""
     found = []
     for entry in text.split(","):
         if entry.strip():
             net = ipaddress.ip_network(entry.strip())
-            if net.version == 6 and net.prefixlen > 64:
-                raise ValueError(f"{entry.strip()}: an IPv6 range is a /64 or wider")
+            if net.version == 6 and net.prefixlen > 48:
+                raise ValueError(f"{entry.strip()}: an IPv6 range is a /48 or wider")
             found.append(net)
     return found
 
