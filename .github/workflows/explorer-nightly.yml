@@ -159,6 +159,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Diagnose the image store
+        run: |
+          set -a; . ./PINS; set +a
+          docker version --format 'server {{.Server.Version}}'
+          docker info --format 'driver={{.Driver}} status={{.DriverStatus}}'
+          docker image inspect --format 'Id={{.Id}}' "$EXPLORER_BROWSER_IMAGE"
+          docker image inspect --format 'RepoDigests={{.RepoDigests}}' "$EXPLORER_BROWSER_IMAGE"
+          echo "PINS image=$EXPLORER_BROWSER_IMAGE"; echo "PINS id=$EXPLORER_BROWSER_IMAGE_ID"
+          cat /etc/os-release | head -2
       - name: The browser image is the pinned one
         run: |
           set -a; . ./PINS; set +a
