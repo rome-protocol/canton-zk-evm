@@ -241,9 +241,13 @@ runs() { # record text, expected program key, expected release
   side stop 127.0.0.1:18085 >/dev/null
 }
 trap 'side stop 127.0.0.1:18085 >/dev/null 2>&1; rm -rf "$WORK"' EXIT
-# A record with no release is ZisK 1.3.1's (a running chain's guest.txt); a release goes through with ZisK's -alpha removed.
+# A record with no release is refused (none is assumed); a release goes through with ZisK's -alpha removed.
+printf 'programVK=0x%s\nrootC=0x%s\n' "$K2" "$R2" > "$T/rec.txt"; mkdir -p "$CZE_STATE_DIR/net"
+CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null 2>&1 && fail "sidecar.sh started a sidecar for a record with no zisk= line"
+side stop 127.0.0.1:18085 >/dev/null 2>&1 || true
 runs "programVK=0x$K2
 rootC=0x$R2
+zisk=1.3.1
 " "$K2" 1.3.1
 runs "programVK=0x$K1
 rootC=0x$R1
@@ -259,7 +263,7 @@ rootC=0x$R1
 zisk=1.3.2x
 " "$K1" 1.3.2x
 # A sidecar that runs already without the flag is the 1.3.1 one for the same keys and address, not "another one".
-printf 'programVK=0x%s\nrootC=0x%s\n' "$K2" "$R2" > "$T/rec.txt"
+printf 'programVK=0x%s\nrootC=0x%s\nzisk=1.3.1\n' "$K2" "$R2" > "$T/rec.txt"
 CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null
 side stop 127.0.0.1:18085 >/dev/null
 nohup "$T/sidecar/target/release/zk-sidecar" --program-vk "$K2" --root-c "$R2" --listen 127.0.0.1:18085 >/dev/null 2>&1 < /dev/null &
