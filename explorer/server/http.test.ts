@@ -130,7 +130,7 @@ describe("the http server", () => {
 });
 
 describe("the Content-Security-Policy", () => {
-  const POLICY = "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'";
+  const POLICY = "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
 
   it("is on every HTML answer (the home page and any route the pages own), and on nothing else", async () => {
     for (const path of ["/", "/block/12", "/index.html"]) {
@@ -150,7 +150,7 @@ describe("the Content-Security-Policy", () => {
       await new Promise((ok) => s.close(ok));
       return res.headers.get("content-security-policy");
     };
-    expect(await asked("https://check.example/api.js?render=explicit")).toBe("script-src 'self' 'wasm-unsafe-eval' https://check.example; object-src 'none'; base-uri 'self'");
+    expect(await asked("https://check.example/api.js?render=explicit")).toBe("script-src 'self' 'wasm-unsafe-eval' https://check.example; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
     expect(await asked("not an address")).toBe(POLICY);
     expect(await asked(null)).toBe(POLICY);
   });
@@ -165,6 +165,35 @@ describe("the Content-Security-Policy", () => {
     }
     expect(page).not.toMatch(/\son[a-z]+\s*=/i);
     expect(page).not.toMatch(/javascript:/i);
+  });
+});
+
+describe("the security headers", () => {
+  const SENT = { "x-frame-options": "DENY", "referrer-policy": "strict-origin-when-cross-origin", "strict-transport-security": "max-age=31536000" };
+
+  it("are on the pages, the files, the api (a refusal too) and the 404", async () => {
+    for (const [path, init] of [["/", undefined], ["/block/12", undefined], ["/assets/app.js", undefined], ["/api/status", undefined], ["/api/faucet", { method: "POST", body: "{}" }], ["/api/slow-down", { method: "POST", body: "{}" }], ["/healthz", undefined], ["/missing.png", undefined]] as const) {
+      const res = await get(path, init);
+      for (const [name, value] of Object.entries(SENT)) expect(res.headers.get(name), `${path} ${name}`).toBe(value);
+    }
+  });
+
+  it("send no includeSubDomains and no preload with HSTS, and a framing refusal in the policy and in X-Frame-Options", async () => {
+    const res = await get("/");
+    expect(res.headers.get("strict-transport-security")).not.toMatch(/includeSubDomains|preload/i);
+    expect(res.headers.get("content-security-policy")).toMatch(/(^|; )frame-ancestors 'none'(;|$)/);
+    expect(res.headers.get("content-security-policy")).toMatch(/(^|; )form-action 'self'(;|$)/);
+  });
+
+  it("leave a route's own Referrer-Policy as the route sets it", async () => {
+    const api = async () => ({ status: 302, body: {}, headers: { location: "/faucet", "referrer-policy": "no-referrer" } });
+    const s = createHttpServer(api, join(dir, "dist"));
+    await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+    const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/faucet/github/start`, { redirect: "manual" });
+    await new Promise((ok) => s.close(ok));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 });
 

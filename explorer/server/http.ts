@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { textOf } from "./rest/cache.ts";
-import { contentSecurityPolicy } from "./csp.ts";
+import { SECURITY_HEADERS, contentSecurityPolicy } from "./csp.ts";
 
 const gzipAsync = promisify(gzip);
 import { extname, resolve, sep } from "node:path";
@@ -94,6 +94,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
 
   return createServer(async (req, res) => {
     const method = req.method ?? "GET", target = req.url ?? "/";
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
     let pathname: string;
     try {
       // A path starts with one slash: "//" would be read as a host, and "*" or a full address is not a path at all.
