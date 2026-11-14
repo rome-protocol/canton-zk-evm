@@ -434,6 +434,7 @@
     "max_in_flight": 1,
     "strategy": "on_demand",
     "test": false,
+    "timeout_no_blame_limit": 3,
     "traffic_read": false
    },
    "source_commit": "unknown",

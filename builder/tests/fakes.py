@@ -461,6 +461,11 @@ class FakeLedger:
         self.hosting_failure = None   # an HTTP status that every hosting lookup answers
         self.hosting_bearer = None     # a bearer token: a lookup about a party that does not carry it is answered 403, as a participant does for a user with no right to read as the party
         self.connected = True   # the participant is connected to a synchronizer (when not, it answers an empty list for every party)
+        self.refuse_timeout = False   # Advance is refused at once (HTTP 409) with the mediator's timeout, naming `confirm_names`
+        self.refuse_undecoded = None   # with `refuse_timeout`: the description the status carries when the JSON API cannot decode it (the body of `JsCantonError.fromUnstructuredError`: the code is the whole description, the context empty)
+        self.confirm_names = None   # with confirm_timeout "completion" or `refuse_timeout`: the parties the mediator's timeout names as unresponsive (as Canton 3.7.2 words it), None: it names none
+        self.confirm_reported = False   # the timeout's words are a participant's (Canton adds `reported_by_participant_id` and `confirming_parties` to a rejection a confirming participant sent): the metadata has them
+        self.timeout_code = "MEDIATOR_SAYS_TX_TIMED_OUT"   # the code of the completion that confirm_timeout "completion" lands
         self.confirm_timeout = None   # "completion": Advance is answered 408 and its completion says the mediator did not get the confirmations in time; "none": 408 and no completion at all
         self.hosting_asked: list = []   # (party, participant id) of each lookup
         self.completion_queries: list = []   # (query string, body) of each completions read
@@ -485,14 +490,29 @@ class FakeLedger:
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
 
-    def land(self, ok: bool = True, message: str = "rejected") -> None:
-        """The commands held back by `late` are decided now: committed (the head moves) or failed (the head stays)."""
+    def reported_keys(self) -> dict:
+        return {"reported_by_participant_id": "PAR::bad::1220aa", "confirming_parties": "u::1"} if self.confirm_reported else {}
+
+    def timeout_status(self) -> dict:
+        """The status of a failed completion that says the confirmations did not come in time, in the form Canton 3.7.2 gives it (read on a local network): the
+        mediator's timeout carries an ErrorInfo detail whose metadata names the unresponsive parties; the participant's own timeout has the same detail without names (every error Canton makes decodes)."""
+        metadata = {"category": "2", **({"unresponsiveParties": ",".join(self.confirm_names)} if self.confirm_names else {}), **self.reported_keys()}
+        if self.timeout_code != "MEDIATOR_SAYS_TX_TIMED_OUT":
+            return {"code": 10, "message": f"{self.timeout_code}(5,ab): Rejected transaction due to a participant determined timeout",
+                    "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...", "valueDecoded": {"reason": self.timeout_code, "domain": "", "metadata": metadata}}]}
+        return {"code": 10, "message": "MEDIATOR_SAYS_TX_TIMED_OUT(2,0): Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",
+                "details": [{"typeUrl": "type.googleapis.com/google.rpc.ErrorInfo", "value": "Chp...",
+                             "valueDecoded": {"reason": "MEDIATOR_SAYS_TX_TIMED_OUT", "domain": "", "metadata": metadata, "unknownFields": {"fields": {}}}},
+                            {"typeUrl": "type.googleapis.com/google.rpc.RetryInfo", "value": "CgIIAQ==", "valueDecoded": {"retryDelay": {"seconds": 1, "nanos": 0}}}]}
+
+    def land(self, ok: bool = True, message: str = "rejected", status: dict | None = None) -> None:
+        """The commands held back by `late` are decided now: committed (the head moves) or failed (the head stays), with `status` as the failed completion's status when given."""
         for command_id, header, cid in self.pending:
             no = self.refusal(header, cid) if ok else None   # it is decided now, against the head as it is now, as Canton does
             if ok and not no:
                 self.advance(header, cid)
             self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok and not no else \
-                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": no[2] if no else message}}
+                {"commandId": command_id, "offset": self.land_offset, "status": status or {"code": 9, "message": no[2] if no else message}}
         self.pending = []
 
     def advance(self, header: bytes, cid: str) -> None:
@@ -728,6 +748,14 @@ class FakeLedger:
                         ledger.hold.wait(30)
                     command_id = body["commandId"]
                     failed = {"commandId": command_id, "offset": 43, "status": {"code": 9, "message": "failed"}}
+                    if ledger.refuse_timeout and ledger.refuse_undecoded and not ledger.fail_but_commit:   # a status the JSON API cannot decode
+                        ledger.outcomes[command_id] = failed
+                        return self._reply(409, {"code": ledger.refuse_undecoded, "cause": f"ABORTED: {ledger.refuse_undecoded}", "correlationId": None, "traceId": None, "context": {}, "resources": [], "errorCategory": -1, "grpcCodeValue": 10})
+                    if ledger.refuse_timeout and not ledger.fail_but_commit:   # a definite rejection by the mediator's timeout, as the JSON API words it on Canton 3.7.2 (read on a local network)
+                        ledger.outcomes[command_id] = failed
+                        return self._reply(409, {"code": "MEDIATOR_SAYS_TX_TIMED_OUT", "cause": "Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe.",
+                                                 "correlationId": None, "traceId": None, "context": {"category": "2", **({"unresponsiveParties": ",".join(ledger.confirm_names)} if ledger.confirm_names else {}), **ledger.reported_keys()},
+                                                 "resources": [], "errorCategory": 2, "grpcCodeValue": 10, "retryInfo": "1 second", "definiteAnswer": None})
                     if ledger.refuse and not ledger.fail_but_commit:
                         ledger.outcomes[command_id] = failed
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
@@ -737,7 +765,7 @@ class FakeLedger:
                         return self._reply(ledger.reply_status, {"cause": ledger.reply_status_cause})
                     if ledger.confirm_timeout:
                         if ledger.confirm_timeout == "completion":
-                            ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "status": {"code": 10, "message": "MEDIATOR_SAYS_TX_TIMED_OUT(2,ab): Rejected transaction as the mediator did not receive sufficient confirmations within the expected timeframe."}}
+                            ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "status": ledger.timeout_status()}
                         return self._reply(408, {"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"})
                     exercise = body["commands"][0]["ExerciseCommand"]
                     header = bytes.fromhex(exercise["choiceArgument"]["headerHex"])

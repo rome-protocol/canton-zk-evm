@@ -3,7 +3,7 @@
 
   builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>]
   builder.py run [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
-                 [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600]
+                 [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--timeout-no-blame-limit 3]
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
 side, and builds the block again without any transaction whose leg has none. Only then does it prove the block and
@@ -895,7 +895,7 @@ def record_seconds(text) -> float | None:
 def completion_in(items: list, command_id: str) -> tuple:
     """(the command's outcome in a completions read, the last offset the read reached, Canton's time the read reached). The outcome is None
     when the read shows no completion of the command, else {"committed": True, "updateId", "completionOffset"} (status code 0 or no status)
-    or {"committed": False, "reason"} (any other status code). Canton's time is the latest OffsetCheckpoint record time in the read (epoch
+    or {"committed": False, "reason", "unresponsive"?, "reportedByParticipant"?} (any other status code; "unresponsive": the parties a mediator's timeout names; "reportedByParticipant": a participant wrote the status). Canton's time is the latest OffsetCheckpoint record time in the read (epoch
     seconds; with several synchronizers in one checkpoint, the earliest of them), None when the read has no checkpoint with one."""
     found, last, reached = None, None, None
     for item in items:
@@ -920,6 +920,10 @@ def completion_in(items: list, command_id: str) -> tuple:
                      "completionOffset": offset if type(offset) is int else None}
         else:
             found = {"committed": False, "reason": f"Canton failed the command (status {code}): {str(status.get('message', ''))[:500]}"}
+            if names := unresponsive_of_status(status):
+                found["unresponsive"] = names   # the parties the mediator says did not confirm in time
+            if reported_in_status(status):
+                found["reportedByParticipant"] = True   # a participant wrote this status: see `reported_in`
         break
     return found, last, reached
 
@@ -1432,6 +1436,108 @@ def confirmation_timeout(text) -> bool:
     return bool(CONFIRMATION_TIMEOUT.search(str(text or "")))
 
 
+MEDIATOR_TIMEOUT, LOCAL_TIMEOUT = "MEDIATOR_SAYS_TX_TIMED_OUT", "LOCAL_VERDICT_TIMEOUT"
+
+
+def timeout_code(text) -> str | None:
+    """Which of Canton's two confirmation timeouts the words of a failed command carry (the mediator's when both), None when neither."""
+    found = {m.group(0) for m in CONFIRMATION_TIMEOUT.finditer(str(text or ""))}
+    return MEDIATOR_TIMEOUT if MEDIATOR_TIMEOUT in found else LOCAL_TIMEOUT if found else None
+
+
+PARTICIPANT_KEYS = ("reported_by_participant_id", "confirming_parties")
+
+
+def reported_in(metadata) -> bool:
+    """Whether a participant wrote the error that this metadata belongs to. On Canton 3.7.2 a confirming participant that rejects chooses the status of its rejection
+    itself (`LocalVerdict.reason`), and the submitter's completion carries it with the keys `reported_by_participant_id` and `confirming_parties` added; the mediator's
+    own timeout has neither (read on a local network). So these words may be a participant's, whatever code they carry, and they name nobody to blame."""
+    return isinstance(metadata, dict) and any(key in metadata for key in PARTICIPANT_KEYS)
+
+
+def unresponsive_in(metadata) -> list | None:
+    """The parties the mediator's timeout names, from the metadata of its error: `unresponsiveParties` holds their ids, joined by commas (Canton 3.7.2, read
+    on a local network with one participant that stopped answering, for one party and for two). None when the metadata names none, and when a participant
+    wrote it (`reported_in`)."""
+    value = metadata.get("unresponsiveParties") if isinstance(metadata, dict) and not reported_in(metadata) else None
+    if not isinstance(value, str):
+        return None
+    return [p for p in (x.strip() for x in value.split(",")) if p] or None
+
+
+def details_of(status) -> list:
+    """The detail entries of a failed completion's status that are objects."""
+    return [d for d in (status.get("details") if isinstance(status, dict) else None) or [] if isinstance(d, dict)]
+
+
+def is_canton_category(value) -> bool:
+    """Whether Canton reads this metadata value as an error category: a string that Java's `Integer.parseInt` takes (`StringOps.toInt`, Canton 3.7.2): an optional sign
+    and decimal digits of the Basic Multilingual Plane only (Java reads UTF-16 code units, so a digit above U+FFFF, such as U+1D7D0, is refused), no space, no
+    underscore, nothing after the digits, and a value within 32 bits. Python's `int()` takes more (' 2', '2\\n', '1_2', any size, digits above U+FFFF)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[+-]?\d+", value) or any(ord(ch) > 0xFFFF for ch in value):
+        return False
+    try:
+        return -2**31 <= int(value) < 2**31
+    except ValueError:   # more digits than Python converts
+        return False
+
+
+def decodes_as_canton_error(status) -> bool:
+    """Whether Canton would decode this status as an error of its own (`DecodedCantonError.tryDeserializeStatus`, Canton 3.7.2): exactly one ErrorInfo detail with
+    an integer `category` in its metadata, and at most one RequestInfo and one RetryInfo. Only a status that decodes gets the participant's keys (`reported_in`) when a
+    participant wrote it, and every error Canton makes itself decodes, so a status that names parties and does not decode is a forgery."""
+    kinds = [str(d.get("typeUrl") or "").rsplit(".", 1)[-1] for d in details_of(status)]
+    if kinds.count("ErrorInfo") != 1 or kinds.count("RequestInfo") > 1 or kinds.count("RetryInfo") > 1:
+        return False
+    info = next(d for d, kind in zip(details_of(status), kinds) if kind == "ErrorInfo").get("valueDecoded")
+    metadata = info.get("metadata") if isinstance(info, dict) else None
+    return is_canton_category(metadata.get("category") if isinstance(metadata, dict) else None)
+
+
+def unresponsive_of_status(status) -> list | None:
+    """The parties named by a failed completion's status: the ErrorInfo detail of MEDIATOR_SAYS_TX_TIMED_OUT, whose metadata has them. Only that structured
+    detail counts, never the words of the message (a contract's own error text can say anything), and only when the status decodes as one of Canton's
+    (`decodes_as_canton_error`): a participant's status that Canton passes through unchanged because it cannot decode it has no keys to show who wrote it."""
+    if not decodes_as_canton_error(status):
+        return None
+    for detail in details_of(status):
+        info = detail.get("valueDecoded")
+        if isinstance(info, dict) and info.get("reason") == MEDIATOR_TIMEOUT:
+            return unresponsive_in(info.get("metadata"))
+    return None
+
+
+def reported_in_status(status) -> bool:
+    """Whether a participant wrote a failed completion's status: an ErrorInfo detail of it has the keys of `reported_in`, or it does not decode as one of Canton's
+    (see `decodes_as_canton_error`) and either names unresponsive parties or says in its words that a confirmation timed out (every timeout Canton writes itself decodes)."""
+    infos = [d["valueDecoded"].get("metadata") for d in details_of(status) if isinstance(d.get("valueDecoded"), dict)]
+    if any(reported_in(m) for m in infos):
+        return True
+    words = status.get("message") if isinstance(status, dict) else None
+    return not decodes_as_canton_error(status) and (any(isinstance(m, dict) and "unresponsiveParties" in m for m in infos) or confirmation_timeout(words))
+
+
+def reported_in_body(text) -> bool:
+    """Whether a participant wrote a definite rejection (the JSON API's error body): its `context` has the keys of `reported_in`, or its `code` is not the bare id of
+    one of Canton's two confirmation timeouts. When the JSON API cannot decode the status (`DecodedCantonError.fromStatusRuntimeException`, Canton 3.7.2), it
+    falls back to `JsCantonError.fromUnstructuredError`: the `code` is the whole description of the status, and the `context` is empty. Canton never words its own
+    timeout that way, so such a body is a participant's."""
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and (reported_in(body.get("context")) or body.get("code") not in (MEDIATOR_TIMEOUT, LOCAL_TIMEOUT))
+
+
+def unresponsive_of_body(text) -> list | None:
+    """The parties named by a definite rejection of a command (the JSON API's error body): its `context` has them when its `code` is the mediator's timeout."""
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return unresponsive_in(body.get("context")) if isinstance(body, dict) and body.get("code") == MEDIATOR_TIMEOUT else None
+
+
 class Hosting:
     """Whether a party is hosted, with the right to confirm, on one of the participants the operator lists. Asked of the builder's own participant for each
     listed participant (`GET /v2/state/connected-synchronizers?party=&participantId=`: the permission that participant holds for the party on each
@@ -1542,7 +1648,8 @@ class Waiting(Said):
 
 
 class PartyBlame:
-    """The parties held back after a block failed on a confirmation timeout. A leg's party that is not on the operator's participants is held at once
+    """The parties held back after a block failed on a confirmation timeout. When the mediator's timeout names the parties that did not confirm and all of
+    them have a leg in the block, they are held (`named`); when it names one that has none (the chain's own, an admin), nobody is. When it names nobody, as follows: a leg's party that is not on the operator's participants is held at once
     (`Hosting`, asked again without its cache). Otherwise the parties of the block's legs are tried a few at a time: half of them are kept out of the
     next blocks, and the half that is let in is cleared by a block that carries one of its parties and is answered, or narrowed again by another timeout,
     until one party is left, which is held back (`convict`). Each conviction of a party holds it twice as long as the one before, from `cooldown` up to a day,
@@ -1557,6 +1664,7 @@ class PartyBlame:
         self.suspects: set = set() # the parties of the block that timed out, one of which is to blame
         self.live: set = set()     # of them, the ones the blocks may carry meanwhile: the others wait
         self.trial_ends = 0.0      # a trial that finds nothing (the parties have no legs waiting) ends by itself
+        self.silent = 0            # the timeouts in a row that held nobody back and put nobody on trial (`no_blame`)
 
     def expire(self, now: float) -> None:
         for party in [p for p, t in self.until.items() if t <= now]:
@@ -1584,6 +1692,7 @@ class PartyBlame:
                 **{p: {"until": iso(t), "strikes": self.strikes.get(p, 1)} for p, t in sorted(self.until.items())}}
 
     def convict(self, party: str, now: float) -> float:
+        self.silent = 0
         self.strikes[party] = self.strikes.get(party, 0) + 1
         hold = min(self.cooldown * 2 ** (self.strikes[party] - 1), max(self.cooldown, BLAME_CAP))
         self.until[party] = now + hold
@@ -1596,6 +1705,34 @@ class PartyBlame:
         order = sorted(suspects)
         self.suspects, self.live = set(order), set(order[:(len(order) + 1) // 2])
         self.trial_ends = now + max(self.cooldown, 60.0)
+
+    @_locked
+    def no_blame(self, limit: int) -> bool:
+        """A timeout that holds nobody back and puts nobody on trial: True, and it counts, while fewer than `limit` such timeouts came in a row (a party held back
+        or a block answered by Canton ends the row). False after that: the parties of the block are tried instead."""
+        if self.silent >= limit:
+            return False
+        self.silent += 1
+        return True
+
+    @_locked
+    def named(self, carried: set, unresponsive) -> list:
+        """The mediator named the parties that did not confirm a block that carried the legs of `carried`. Returns the parties held back for it: the ones of
+        `carried` that it names, when it names no other. A party it names that has no leg in the block is the chain's own (the operator's and the gateway's, so
+        the participant that confirms for them), an instrument's admin or another outside participant's: the mediator names every confirmer that is still
+        missing, so the users hosted on a silent participant of the operator's are named with the chain's own parties, and none of the block's users is held
+        for it (a user that was the cause is found by the next timeouts, `no_blame` and then the trial)."""
+        now = self.clock()
+        self.expire(now)
+        named = set(unresponsive)
+        if not named <= set(carried):
+            return []
+        gone = sorted(p for p in carried if p in named and p not in self.until)
+        for party in gone:
+            self.convict(party, now)
+        if gone:
+            self.end_trial()
+        return gone
 
     @_locked
     def timed_out(self, carried: set, hosting: "Hosting | None" = None) -> list:
@@ -1628,6 +1765,7 @@ class PartyBlame:
     def answered(self, carried: set) -> None:
         """A block that carried these parties' legs was answered by Canton (committed, or refused for another reason: the confirmations came): the parties of
         it that were on trial are cleared, and the rest are narrowed again."""
+        self.silent = 0
         if not self.live:
             return
         tried = set(carried) & self.live
@@ -3014,6 +3152,8 @@ class Reply:
     rejected: bool = False
     not_taken: bool = False
     timed_out: bool = False            # the participant's own words say that the confirmations did not come in time
+    unresponsive: list | None = None   # of a rejection that says so: the parties the mediator names as not having confirmed
+    reported: bool = False             # of a rejection that says so: a participant wrote it (`reported_in`)
     found: dict | None = None          # the command's own completion, read when the Advance got no usable answer
     advance_seconds: float = 0.0
     answered_at: float = 0.0
@@ -3066,6 +3206,8 @@ def send_advance(cfg: Config, sub: Submission) -> Reply:
             text = e.read().decode(errors="replace")
         reply.reason, reply.rejected, reply.not_taken = text[:600], definite_rejection(e.code, text), e.code in NEVER_TAKEN_CODES
         reply.timed_out = reply.rejected and confirmation_timeout(text)   # a proxy's or the API's own timeout page says nothing of the confirmations: the completion does
+        reply.unresponsive = unresponsive_of_body(text) if reply.timed_out else None
+        reply.reported = reply.timed_out and reported_in_body(text)
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
         reply.reason = f"no usable reply from Canton: {e}"
         reply.not_taken = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
@@ -3092,7 +3234,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
     replaces its record; the paid traffic of such a block follows on a `paid_traffic` line of its attempt."""
     attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs + [x for g in sub.built.extra_gateways for x in g["legs"]]
     report, command_id, answer, reason, rejected, not_taken = sub.report, sub.command_id, reply.answer, reply.reason, reply.rejected, reply.not_taken
-    timed_out = reply.timed_out
+    timed_out, unresponsive, reported = reply.timed_out, reply.unresponsive, reply.reported
     report["advanceSeconds"] = reply.advance_seconds
     traffic_before, traffic_after = sub.traffic_before, reply.traffic_after
     traffic = traffic_used(traffic_before, traffic_after)
@@ -3114,6 +3256,8 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
         else:
             reason = f"{reason}; {found['reason']}"
             timed_out = timed_out or confirmation_timeout(found["reason"])
+            unresponsive = unresponsive or found.get("unresponsive")
+            reported = reported or bool(found.get("reportedByParticipant"))
     if reason is not None:   # Canton refused the command (its own answer, or its failed completion), or it never reached the service: not committed
         clear_unresolved(cfg)    # a definite answer: the command cannot commit any more
         rewind_error = None
@@ -3138,7 +3282,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             rejected = bool(report.get("legParties"))
         answered("refused" if rejected else "not_taken", reason=reason[:600])
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
-                **({"timedOut": True} if timed_out else {}),
+                **({"timedOut": True, "timeoutCode": timeout_code(reason), **({"unresponsive": unresponsive} if unresponsive else {}), **({"reportedByParticipant": True} if reported else {})} if timed_out else {}),
                 **(gateway_evidence(cfg, sub) if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried and the registry as Canton holds it now, to tell a race from a forged sentence
                 **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {})}   # which contract is gone: the Advance's own chain contract, or another
     # Committed. After a lost reply the update id and offset are not known: null.
@@ -3351,7 +3495,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         # legs (Producer.settle_unknown). No completion for the whole window is a plain failure that nobody is blamed for. The record carries `legParties` whenever the block had a leg of a party
         # outside the chain's own; settle_unknown ignores them without `timedOut`.
         timed = found is not None and confirmation_timeout(found.get("reason"))
-        return False, lost, how, {"timedOut": True} if timed else {}
+        return False, lost, how, {"timedOut": True, "timeoutCode": timeout_code(found["reason"]), **({"unresponsive": found["unresponsive"]} if found.get("unresponsive") else {}),
+                              **({"reportedByParticipant": True} if found.get("reportedByParticipant") else {})} if timed else {}
 
 
 def recover_saved(cfg: Config, wait=None, close=None, canton_head: dict | None = None) -> dict | None:
@@ -3566,13 +3711,14 @@ class Producer:
                  cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending,
                  resolve=resolve_unknown, recover=recover_saved, wait=None, gather_ms: float = 0, journal: Journal | None = None, test: bool = False,
                  source_commit: str = "unknown", status_tick: float = STATUS_TICK_SECONDS,
-                 status_stall: float = STATUS_STALL_SECONDS, max_in_flight: int = 1):
+                 status_stall: float = STATUS_STALL_SECONDS, max_in_flight: int = 1, no_blame_limit: int = 3):
         self.cfg, self.stop, self.idle, self.empty_every, self.cooldown = cfg, stop, idle, empty_every, cooldown
+        self.no_blame_limit = no_blame_limit
         self.gather_ms = gather_ms
         self.journal = journal or Journal(Path(cfg.work_dir) / "journal", clock=clock)
         self.source_commit = source_commit
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": max_in_flight,
-                         "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url),
+                         "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "timeout_no_blame_limit": no_blame_limit, "test": test, "traffic_read": bool(cfg.traffic_url),
                          **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {}),
                          **({"provers": [p.name for p in cfg.pool.provers], "prove_timeout_seconds": cfg.pool.timeout} if cfg.pool and cfg.pool.managed else {})}
         self.status_tick, self.status_stall = status_tick, status_stall
@@ -3951,7 +4097,7 @@ class Producer:
         if not committed and info.get("timedOut"):   # the command did not get its confirmations: the parties of its legs are blamed as after an answered timeout
             carried = {p for ps in (u.get("legParties") or {}).values() if isinstance(ps, list) for p in ps if isinstance(p, str)}
             if carried:
-                self.timeout({}, carried)
+                self.timeout(info, carried)
         known = {"update_id": info.get("updateId"), "completion_offset": info.get("completionOffset")} if committed else {}
         self.journal.event("resolved", attempt=u.get("attempt"), outcome=report["resolved"], via=how, **known, **extra)
         if committed:
@@ -4018,13 +4164,35 @@ class Producer:
 
     def timeout(self, result: dict, carried: set) -> None:
         """The block failed on a confirmation timeout and carried legs of parties outside the chain's own: one of their participants did not confirm. No
-        transaction is blamed (a transaction of the block that has no such leg cannot be the cause). The parties are: see `PartyBlame.timed_out`. The legs of a
-        party that is held back are left out of the next blocks, with the reason."""
+        transaction is blamed (a transaction of the block that has no such leg cannot be the cause). The parties are: those the mediator names (`PartyBlame.named`: only
+        when every party it names has a leg in the block, so a timeout on the operator's own participant, which names the chain's own parties, holds no user),
+        none for LOCAL_VERDICT_TIMEOUT, and the parties on trial (`PartyBlame.timed_out`) when the rejection names nobody, when a participant wrote it (it may be
+        forged: `reported_in`), and when `no_blame_limit` timeouts in a row held nobody back. A timeout that holds nobody back is journaled (`timeout_no_blame`).
+        The legs of a party that is held back are left out of the next blocks, with the reason."""
         self.previous_kept = set()   # a timeout is not one of "two refused blocks in a row": the transactions are not suspects
         self.limit_kept, self.limit_legs = set(), set()
-        for party in self.blame.timed_out(carried, self.cfg.hosting):
-            self.journal.event("party_held", party=party, until=iso(self.blame.until[party]), strikes=self.blame.strikes[party],
-                               reason="a block that carried its leg did not get Canton's confirmations in time")
+        code = result.get("timeoutCode")
+        trusted = not result.get("reportedByParticipant")   # a participant that rejects chooses its words: they name nobody to blame
+        named = result.get("unresponsive") if trusted else None
+        held = self.blame.named(carried, named) if named else []   # the mediator says which parties did not confirm: only those of the block's legs are held back
+        because = "Canton's mediator names it among the parties that did not confirm in time"
+        if not held:
+            if (named or (trusted and code == LOCAL_TIMEOUT)) and self.blame.no_blame(self.no_blame_limit):
+                nobody = (("the mediator names a party that has no leg in the block (the chain's own, an instrument's admin): the users it names are not blamed with it"
+                           if set(named) & carried else "none of the parties the mediator names has a leg in the block")
+                          if named else "LOCAL_VERDICT_TIMEOUT names no party and points at the synchronizer's side")
+            else:   # the parties of the block are put on trial, as before
+                held, because = self.blame.timed_out(carried, self.cfg.hosting), "a block that carried its leg did not get Canton's confirmations in time"
+                if not trusted:
+                    nobody = "the words are a participant's own, so they name nobody: the parties of the block are on trial"
+                elif named or code == LOCAL_TIMEOUT:
+                    nobody = f"{self.no_blame_limit} timeouts in a row held nobody back: the parties of the block are on trial"
+                else:
+                    nobody = "the rejection names no party: the parties of the block are on trial"
+        for party in held:
+            self.journal.event("party_held", party=party, until=iso(self.blame.until[party]), strikes=self.blame.strikes[party], reason=because)
+        if not held:
+            self.journal.event("timeout_no_blame", code=code, unresponsive=(named or [])[:20], legParties=len(carried), reason=nobody)
 
     def refusal(self, result: dict, now: float) -> None:
         """Canton refused the block. A transaction in two refused blocks in a row is suspected. A lone suspect is held back for the
@@ -4769,7 +4937,7 @@ def produce(cfg: Config, args) -> int:
         cfg.pool.stop = stop
     engine = Pipeline if args.max_in_flight > 1 else Producer   # one block at a time keeps the code path it has always had
     producer = engine(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
-           gather_ms=args.gather_ms, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight)
+           gather_ms=args.gather_ms, no_blame_limit=args.timeout_no_blame_limit, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight)
     checking = None
     if args.leg_check_port:   # the leg check: a service of its own threads beside the loop, on this machine only
         checking = LegCheckServer(cfg, args.leg_check_port)
@@ -4853,6 +5021,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
     ap.add_argument("--exclude-cooldown-seconds", type=float, default=600, help="run: how long a transaction in two refused blocks in a row is left out")
+    ap.add_argument("--timeout-no-blame-limit", type=int, default=3, metavar="K", help="run: after K confirmation timeouts in a row that held nobody back (the mediator named a party with no leg in the block, or the timeout is LOCAL_VERDICT_TIMEOUT), "
+                    "the parties of the block are put on trial as for a timeout that names nobody (default 3; 0: always)")
     return ap
 
 
@@ -4899,6 +5069,8 @@ def main() -> int:
             raise BuilderError("bad arguments: --exclude is for once; run leaves out the transactions Canton keeps refusing by itself")
         if args.exclude_cooldown_seconds < 0:
             raise BuilderError("bad arguments: --exclude-cooldown-seconds cannot be negative")
+        if args.timeout_no_blame_limit < 0:
+            raise BuilderError("bad arguments: --timeout-no-blame-limit cannot be negative")
         if args.command == "run":
             named = args.prover or [x for x in os.environ.get("CZE_PROVERS", "").split(",") if x.strip()]
             check_strategy(args.strategy, args.gather_ms, args.heartbeat_seconds, max_in_flight=args.max_in_flight, provers=max(1, len(named)))

@@ -1,0 +1,17 @@
+// The synchronizer, with a confirmation timeout of 6 seconds (the default is 30: the test would wait for it), the submitter's participant, its party and user.
+// $WORK is the test's folder, $DAR the probe package.
+val work = sys.env("WORK")
+nodes.local.start()
+bootstrap.synchronizer_local()
+val protocolVersion = sequencer1.synchronizer_parameters.static.get().protocolVersion.toProtoPrimitive
+if (protocolVersion != sys.env("CANTON_PROTOCOL_VERSION").toInt) sys.error(s"the synchronizer runs protocol version $protocolVersion")
+sequencer1.topology.synchronizer_parameters.propose_update(sequencer1.synchronizer_id, _.update(
+  confirmationResponseTimeout = com.digitalasset.canton.config.NonNegativeFiniteDuration.ofSeconds(6),
+  mediatorReactionTimeout = com.digitalasset.canton.config.NonNegativeFiniteDuration.ofSeconds(6)))
+Thread.sleep(3000)
+submitter.synchronizers.connect_local(sequencer1, alias = "da")
+val party = submitter.parties.enable("submitter")
+submitter.ledger_api.users.create("sub", actAs = Set(party), primaryParty = Some(party))
+submitter.dars.upload(sys.env("DAR"), vetAllPackages = true, synchronizeVetting = true)
+java.nio.file.Files.writeString(java.nio.file.Path.of(work, "submitter.id"), party.toProtoPrimitive)
+println("SUBMITTER NODE DONE")

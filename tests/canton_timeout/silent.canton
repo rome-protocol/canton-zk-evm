@@ -1,0 +1,10 @@
+// The participant that will not answer: it hosts two parties, which the submitter's choices need to confirm.
+val work = sys.env("WORK")
+nodes.local.start()
+silent.synchronizers.connect("da", "http://127.0.0.1:5001")
+val one = silent.parties.enable("silent")
+val two = silent.parties.enable("silent2")
+silent.ledger_api.users.create("sil", actAs = Set(one, two), primaryParty = Some(one))
+silent.dars.upload(sys.env("DAR"), vetAllPackages = true, synchronizeVetting = true)
+java.nio.file.Files.writeString(java.nio.file.Path.of(work, "silent.ids"), one.toProtoPrimitive + "\n" + two.toProtoPrimitive + "\n")
+println("SILENT NODE DONE")
