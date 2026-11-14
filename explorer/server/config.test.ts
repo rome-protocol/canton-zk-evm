@@ -155,15 +155,15 @@ describe("pins", () => {
   it("reads the real published file when nothing else is given", () => {
     const c = loadConfig({ READER_PARTY: "reader::1220ab" });
     expect(c.pins).toEqual({
-      programVK: "0x0a01bac665147bb69d8fae02c549f18dc73540f2e6734d8b38e1fb9f5074daed",
-      rootC: "0x6b2490fba336fb00f0c8719a961de309a8db6f43a9bfb7575ca5f014d609b265",
+      programVK: "0xce6eccb4ad4809d565267c86e0f70052fb3bdf8fec203dffa5634df52d4298fe",
+      rootC: "0xe9414e134bb6945a148a79d44c8e850e5ef582a2b0e8dbfb2428ff0a515a6e66",
       file: "session.txt",
       keys: [{
         fromBlock: 0,
-        programVK: "0x0a01bac665147bb69d8fae02c549f18dc73540f2e6734d8b38e1fb9f5074daed",
-        rootC: "0x6b2490fba336fb00f0c8719a961de309a8db6f43a9bfb7575ca5f014d609b265",
-        // The recorded session names the release it was made with, `zisk=1.3.2-alpha`.
-        zisk: "1.3.2",
+        programVK: "0xce6eccb4ad4809d565267c86e0f70052fb3bdf8fec203dffa5634df52d4298fe",
+        rootC: "0xe9414e134bb6945a148a79d44c8e850e5ef582a2b0e8dbfb2428ff0a515a6e66",
+        // The recorded session names the release it was made with, `zisk=1.4.0-alpha`.
+        zisk: "1.4.0",
       }],
     });
   });
@@ -233,6 +233,14 @@ describe("pin key ranges", () => {
     expect(keyFor(p, 9_999).zisk).toBe("1.3.2");
   });
 
+  it("reads the switch to ZisK 1.4.0: key B on 1.3.2 up to the switch block, key C on 1.4.0 from it", () => {
+    const p = parsePins(`zisk=1.3.2-alpha\n${base}zisk@100 = 1.4.0-alpha\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, "x.txt");
+    expect(p.keys).toEqual([{ fromBlock: 0, programVK: VK, rootC: ROOT, zisk: "1.3.2" }, { fromBlock: 100, programVK: VK2, rootC: ROOT2, zisk: "1.4.0" }]);
+    expect(keyFor(p, 99)).toMatchObject({ programVK: VK, rootC: ROOT, zisk: "1.3.2" });
+    expect(keyFor(p, 100)).toMatchObject({ programVK: VK2, rootC: ROOT2, zisk: "1.4.0" });
+    expect(() => parsePins(`zisk=1.4.1\n${base}`, "x.txt")).toThrow(/not a ZisK release/);
+  });
+
   it("reads a two-range file, 1.3.1 and then 1.3.2, with the release at the block where it changes", () => {
     const p = parsePins(`zisk=1.3.1-alpha\n${base}zisk@100 = 1.3.2-alpha\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, "x.txt");
     expect(p.keys).toEqual([{ fromBlock: 0, programVK: VK, rootC: ROOT, zisk: "1.3.1" }, { fromBlock: 100, programVK: VK2, rootC: ROOT2, zisk: "1.3.2" }]);
@@ -250,7 +258,7 @@ describe("pin key ranges", () => {
     bad("zisk=1.2.0\n", /zisk= is "1.2.0", which is not a ZisK release/);
     bad("zisk=\n", /zisk= is ""/);
     bad("zisk=1.3.2\nzisk=1.3.1\n", /zisk= is given twice/);
-    bad(`zisk@100=1.4.0\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, /zisk@100= is "1.4.0"/);
+    bad(`zisk@100=1.4.1\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, /zisk@100= is "1.4.1"/);
     bad(`zisk@100=1.3.2\nzisk@100=1.3.2\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, /zisk@100= is given twice/);
     bad("zisk@100=1.3.2\n", /needs both programVK@100= and rootC@100=/);
     bad(`zisk@0=1.3.2\n`, /block number above 0/);
@@ -291,5 +299,13 @@ describe("the builder grant's settings", () => {
     expect(() => load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "https://explorer.example.org/faucet" })).toThrow(/FAUCET_GITHUB_REDIRECT_URL/);
     expect(load({ ...on, FAUCET_GITHUB_REDIRECT_URL: "http://localhost:8088/api/faucet/github/callback" }).faucet.github).not.toBeNull();
     expect(() => load({ ...on, FAUCET_GITHUB_CLIENT_ID: "a b" })).toThrow(/FAUCET_GITHUB_CLIENT_ID/);
+  });
+});
+
+describe("the notice file", () => {
+  it("is off until OSTIA_NOTICE_FILE names a file", () => {
+    expect(load().noticeFile).toBeNull();
+    expect(load({ OSTIA_NOTICE_FILE: "  " }).noticeFile).toBeNull();
+    expect(load({ OSTIA_NOTICE_FILE: "/var/lib/explorer/notice.json" }).noticeFile).toBe("/var/lib/explorer/notice.json");
   });
 });

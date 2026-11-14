@@ -8,7 +8,7 @@ use common::*;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use zk_sidecar::{http, Config};
+use zk_sidecar::{http, Config, Release};
 
 /// Starts a sidecar on a free port and returns its address.
 fn start(cfg: Config) -> String {
@@ -119,7 +119,7 @@ fn verify_answers_in_hex() {
 fn verify_refuses_the_session_proof_with_a_flipped_byte() {
     let s = session();
     let b = reth_block();
-    let addr = start(Config::new(s.program_vk, s.root_c));
+    let addr = start(Config::for_release(s.program_vk, s.root_c, Release::V1_4_0));
     let mut abi = s.abi.clone();
     abi[500] ^= 1;
     let line = format!("{},{},{}", hex(&abi), hex(&b.header), hex(&b.txs));

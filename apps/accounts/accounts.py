@@ -81,7 +81,7 @@ RELAY_MAX_BODY = 64 * 1024       # bytes of a relayed request, as JSON
 OUTSIDE_DEADLINE = 15            # seconds a call to a registry or the wallet may take in all
 USER_AGENT = "Rome Protocol rome@romeprotocol.com"
 FAUCET_AMOUNT = re.compile(r"[0-9]{1,15}(\.[0-9]{1,10})?\Z")   # Canton Coin has 10 decimals
-SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the pinned Canton's OpenAPI spec (3.7.2, unchanged from 3.7.1) leaves the format a free string and names no value; RAW is what the pinned Canton accepts
+SIGNATURE_FORMAT = "SIGNATURE_FORMAT_RAW"   # the pinned Canton's OpenAPI spec (3.7.3, unchanged from 3.7.1) leaves the format a free string and names no value; RAW is what the pinned Canton accepts
 
 
 SLOW_VERIFY_WARNING = ("WARNING: the cryptography package is not installed: signatures are checked in pure Python (about 5 ms each), so a flood of requests costs "
@@ -138,8 +138,37 @@ def client_key(address: str) -> str:
     return str(ipaddress.ip_network((a, 64), strict=False)) if a.version == 6 else str(a)
 
 
+SHARED_NETWORKS: list = []   # address ranges that many users share, such as a VPN's exit addresses: each counts as one client network (the environment's OSTIA_SHARED_NETWORKS, read at start)
+
+
+def parse_shared_networks(text: str) -> list:
+    """Comma-separated CIDR ranges, IPv4 or IPv6. ValueError for an entry that is not a range, has host bits set, or is an IPv6 range narrower than a /48 (the network of an IPv6 address is its /48, so a listing can only tighten the limits)."""
+    found = []
+    for entry in text.split(","):
+        if entry.strip():
+            net = ipaddress.ip_network(entry.strip())
+            if net.version == 6 and net.prefixlen > 48:
+                raise ValueError(f"{entry.strip()}: an IPv6 range is a /48 or wider")
+            found.append(net)
+    return found
+
+
+def set_shared_networks(text: str) -> None:
+    global SHARED_NETWORKS
+    SHARED_NETWORKS = parse_shared_networks(text)
+
+
 def pending_owner(key: str) -> str:
-    """What the caps on waiting entries count a client by: an IPv4 address as it is, an IPv6 address as its /48 (the rate limits stay per /64)."""
+    """What the per-network limits and the caps on waiting entries count a client by: an IPv4 address as it is, an IPv6 address as its /48 (the rate limits stay per /64);
+    an address inside a listed shared range, the range (all of it is one network)."""
+    if SHARED_NETWORKS:
+        try:
+            net = ipaddress.ip_network(key)
+        except ValueError:
+            return key
+        for shared in SHARED_NETWORKS:
+            if net.version == shared.version and net.subnet_of(shared):
+                return str(shared)
     try:
         return str(ipaddress.ip_network(key).supernet(new_prefix=48)) if "/" in key else key
     except ValueError:
@@ -1323,6 +1352,10 @@ def main(argv=None):
         sys.exit(f"--trusted-proxy-addresses: {e}")
     if a.trusted_proxies < 1:
         sys.exit("--trusted-proxies is at least 1")
+    try:
+        set_shared_networks(os.environ.get("OSTIA_SHARED_NETWORKS", ""))
+    except ValueError as e:
+        sys.exit(f"OSTIA_SHARED_NETWORKS: {e}")
     registries = parse_registries(a.registry, a.registry_token_file)
     faucet = faucet_from(a.faucet_amount, a.faucet_url, a.faucet_token_file, a.faucet_per_day)
     if bool(a.human_check_url) != bool(a.human_check_secret_file):

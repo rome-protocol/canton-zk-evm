@@ -14,7 +14,10 @@ const NO_HASH: &str = "the proof does not commit to one block hash";
 
 fn session_config() -> (Config, Vec<u8>) {
     let s = session();
-    (Config::new(s.program_vk, s.root_c), s.abi)
+    (
+        Config::for_release(s.program_vk, s.root_c, Release::V1_4_0),
+        s.abi,
+    )
 }
 
 #[test]
@@ -27,7 +30,7 @@ fn the_session_proof_is_accepted_and_commits_to_block_1() {
 fn the_verifier_crates_proofs_are_accepted_under_their_own_keys() {
     for block in [14, 166, 169] {
         let p = verifier_proof("1.3.1", block);
-        let cfg = Config::new(p.program_vk, p.root_c);
+        let cfg = Config::for_release(p.program_vk, p.root_c, Release::V1_3_1);
         // The two releases proved the same blocks, so each block's 1.2.0 proof must commit to the
         // same hash as its 1.3.1 proof. The hash read from the 1.2.0 proof, which is not checked
         // here, is the expected answer for the 1.3.1 proof, which is.
@@ -44,7 +47,7 @@ fn the_verifier_crates_proofs_are_accepted_under_their_own_keys() {
 fn the_other_release_proofs_are_refused() {
     for block in [14, 166, 169] {
         let p = verifier_proof("1.2.0", block);
-        let cfg = Config::new(p.program_vk, p.root_c);
+        let cfg = Config::for_release(p.program_vk, p.root_c, Release::V1_3_1);
         assert_eq!(
             proven_block_hash(&cfg, &p.abi),
             Err(NOT_VERIFIED),
@@ -94,7 +97,10 @@ fn a_proof_under_another_program_key_is_refused() {
     let mut wrong = s.program_vk;
     wrong[0] ^= 1;
     assert_eq!(
-        proven_block_hash(&Config::new(wrong, s.root_c), &s.abi),
+        proven_block_hash(
+            &Config::for_release(wrong, s.root_c, Release::V1_4_0),
+            &s.abi
+        ),
         Err(OTHER_PROGRAM)
     );
 }
@@ -105,7 +111,10 @@ fn a_proof_under_another_root_is_refused() {
     let mut wrong = s.root_c;
     wrong[31] ^= 1;
     assert_eq!(
-        proven_block_hash(&Config::new(s.program_vk, wrong), &s.abi),
+        proven_block_hash(
+            &Config::for_release(s.program_vk, wrong, Release::V1_4_0),
+            &s.abi
+        ),
         Err(OTHER_PROGRAM)
     );
 }
@@ -132,8 +141,30 @@ fn public_values_in_another_layout_are_refused() {
 #[test]
 fn the_session_proof_is_accepted_under_the_pins_of_its_release() {
     let s = session();
-    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_3_2);
+    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_4_0);
     assert_eq!(proven_block_hash(&cfg, &s.abi), Ok(s.block_hash));
+}
+
+#[test]
+fn the_1_4_0_proof_is_refused_under_the_1_3_x_keys_and_the_1_3_2_proofs_under_1_4_0() {
+    let s = session();
+    for release in [Release::V1_3_1, Release::V1_3_2] {
+        let cfg = Config::for_release(s.program_vk, s.root_c, release);
+        assert_eq!(
+            proven_block_hash(&cfg, &s.abi),
+            Err(NOT_VERIFIED),
+            "{release:?}"
+        );
+    }
+    for block in [14, 166, 169] {
+        let p = verifier_proof("1.3.2", block);
+        let cfg = Config::for_release(p.program_vk, p.root_c, Release::V1_4_0);
+        assert_eq!(
+            proven_block_hash(&cfg, &p.abi),
+            Err(NOT_VERIFIED),
+            "block {block}"
+        );
+    }
 }
 
 #[test]
@@ -168,16 +199,6 @@ fn each_releases_proofs_are_accepted_under_its_own_release_and_refused_under_the
 }
 
 #[test]
-fn a_chain_without_a_named_release_is_on_1_3_1() {
-    let p = verifier_proof("1.3.1", 14);
-    assert_eq!(
-        Config::new(p.program_vk, p.root_c).keys()[0].release,
-        Release::V1_3_1
-    );
-    assert_eq!(Release::default(), Release::V1_3_1);
-}
-
-#[test]
 fn a_1_3_2_proof_that_is_altered_is_refused_under_the_1_3_2_release() {
     let p = verifier_proof("1.3.2", 166);
     let cfg = Config::for_release(p.program_vk, p.root_c, Release::V1_3_2);
@@ -196,11 +217,15 @@ fn a_1_3_2_proof_that_is_altered_is_refused_under_the_1_3_2_release() {
 fn releases_are_read_by_number_with_or_without_alpha() {
     assert_eq!(Release::parse("1.3.1"), Some(Release::V1_3_1));
     assert_eq!(Release::parse("1.3.2-alpha"), Some(Release::V1_3_2));
+    assert_eq!(Release::parse("1.4.0"), Some(Release::V1_4_0));
+    assert_eq!(Release::parse("1.4.0-alpha"), Some(Release::V1_4_0));
     for bad in [
         "",
         "1.2.0",
         "1.3",
         "1.3.2-beta",
+        "1.4.1",
+        "1.4",
         "1.3.2-alpha-alpha",
         "v1.3.2",
         " 1.3.2",
@@ -210,5 +235,7 @@ fn releases_are_read_by_number_with_or_without_alpha() {
     assert_eq!(Release::V1_3_2.name(), "1.3.2");
     assert_eq!(Release::from_code(0), Some(Release::V1_3_1));
     assert_eq!(Release::from_code(1), Some(Release::V1_3_2));
-    assert_eq!(Release::from_code(2), None);
+    assert_eq!(Release::from_code(2), Some(Release::V1_4_0));
+    assert_eq!(Release::V1_4_0.name(), "1.4.0");
+    assert_eq!(Release::from_code(3), None);
 }

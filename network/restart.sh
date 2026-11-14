@@ -96,8 +96,9 @@ guest() { sed -n "s/^$1=//p" "$NET/guest.txt"; }
 PROGRAM_VK=$(guest programVK); ROOT_C=$(guest rootC)
 [[ $PROGRAM_VK =~ ^0x[0-9a-f]{64}$ && $ROOT_C =~ ^0x[0-9a-f]{64}$ ]] || fail "$NET/guest.txt does not hold the guest's keys"
 PROGRAM_VK=${PROGRAM_VK#0x}; ROOT_C=${ROOT_C#0x}
-# The chain's own ZisK release (up.sh records it as zisk= in guest.txt); a chain made before that line existed ran under 1.3.1.
-ZISK_RELEASE=$(guest zisk); ZISK_RELEASE=${ZISK_RELEASE%-alpha}; ZISK_RELEASE=${ZISK_RELEASE:-1.3.1}
+# The chain's own ZisK release (up.sh records it as zisk= in guest.txt). A guest.txt with no zisk= line is refused: no release is assumed.
+ZISK_RELEASE=$(guest zisk); ZISK_RELEASE=${ZISK_RELEASE%-alpha}
+[ -n "$ZISK_RELEASE" ] || fail "$NET/guest.txt has no zisk= line: add the ZisK release the chain's guest was built for (for example zisk=1.3.2-alpha)"
 SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
 [ -x "$SIDECAR" ] || cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 if [ "$CANTON_MODE" = external ]; then

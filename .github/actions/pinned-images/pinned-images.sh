@@ -3,9 +3,11 @@
 #   pinned-images.sh resolve PINS_FILE "NAME NAME ..."   checks the names, writes the cache keys and folders to $GITHUB_OUTPUT
 #   pinned-images.sh ensure                              loads each image from its folder, else pulls it by digest; checks the image ID;
 #                                                        asks for a save of every image that was not in the cache
+#   pinned-images.sh verify PINS_FILE "NAME NAME ..."    checks that each image on this machine is the pinned one (digest name and ID), as a job's own step
 #
 # The repository holds the truth, the cache only holds bytes. Every *_IMAGE of PINS is pinned by digest and has a *_IMAGE_ID next to it,
-# the image ID (config digest, linux/amd64). An image comes into a job in one of two ways:
+# the image ID: on the classic image store the config digest of the linux/amd64 manifest; on the containerd image store (the runners since
+# ubuntu-26.04) the digest of the image itself (the manifest or index), which is the digest in the *_IMAGE pin. An image comes into a job in one of two ways:
 #   - from the Actions cache: the tarball must load as exactly that ID, or it is dropped; then the digest name is written for it into
 #     Docker's own reference file (repositories.json of the classic image store) while the daemon is stopped, as a pull would have
 #     done, so the registry is not asked at all. No cache entry, whoever wrote it, can make a job run anything but the pinned image.
@@ -45,12 +47,19 @@ have_pinned() {
 
 containerd_store() { docker info --format '{{.DriverStatus}}' 2>/dev/null | grep -q 'io.containerd.snapshotter'; }
 
-# True when the image under this reference has the ID PINS records. On the containerd image store an ID is not the config digest, so
-# there the check is left to Docker's own verification of a pull by digest.
+# True when this ID is the pinned one for the image under this reference. On the classic image store that is the *_IMAGE_ID of PINS (the config digest).
+# On the containerd image store an image's ID is the digest of the image itself, the one the reference pins; a digest is a hash of the content,
+# so an ID that is that digest is exactly the pinned image.
+id_is_pinned() {
+  local ref=$1 want=$2 got=$3
+  [ "$got" = "$want" ] && return 0
+  containerd_store && [ "$got" = "sha256:$(digest_of "$ref")" ]
+}
+
+# True when the image under this reference has the ID PINS records (see id_is_pinned).
 has_id() {
   local ref=$1 want=$2
-  if containerd_store; then return 0; fi
-  [ "$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)" = "$want" ]
+  id_is_pinned "$ref" "$want" "$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
 }
 
 # The other home of an official image: public.ecr.aws/docker/library/NAME[:tag]@digest is docker.io/library/NAME@digest. Nothing for the others.
@@ -171,7 +180,7 @@ cmd_ensure() {
     hex=$(digest_of "$ref"); tar="$dir/$hex.tar"
     [ -f "$tar" ] || continue
     loaded_id=$(docker load --input "$tar" 2>/dev/null | sed -n 's/^Loaded image ID: //p' | tail -n 1 || true)
-    if [ "$loaded_id" != "$id" ]; then
+    if ! id_is_pinned "$ref" "$id" "$loaded_id"; then
       log "the cached $ref is not the pinned image (loaded as '${loaded_id:-nothing}', PINS has $id); dropping it"; rm -f "$tar"; continue
     fi
     if ! { have_pinned "$ref" && has_id "$ref" "$id"; }; then bind="$bind$ref $id"$'\n'; fi
@@ -211,8 +220,23 @@ cmd_ensure() {
   done < "$list"
 }
 
+# Checks that each named image is on this machine under its pinned digest and has the pinned ID.
+cmd_verify() {
+  local pins=${1:?PINS file} names=${2:?image names} name value id
+  [ -f "$pins" ] || fail "no PINS file at $pins"
+  for name in $names; do
+    value=$(grep -E "^${name}=" "$pins" | head -n 1 | cut -d= -f2- || true)
+    id=$(grep -E "^${name}_ID=" "$pins" | head -n 1 | cut -d= -f2- || true)
+    [ -n "$value" ] && [ -n "$id" ] || fail "$name or ${name}_ID is not in $pins"
+    have_pinned "$value" || fail "$name is not on this machine under the pinned digest ($value)"
+    has_id "$value" "$id" || fail "$name is on this machine, but its image ID is not the pinned one"
+    log "$name is the pinned image"
+  done
+}
+
 case ${1:-} in
+  verify) shift; cmd_verify "$@" ;;
   resolve) shift; cmd_resolve "$@" ;;
   ensure) cmd_ensure ;;
-  *) fail "usage: $0 resolve PINS_FILE NAMES | ensure" ;;
+  *) fail "usage: $0 resolve PINS_FILE NAMES | ensure | verify PINS_FILE NAMES" ;;
 esac

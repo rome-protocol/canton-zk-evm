@@ -1,0 +1,11 @@
+{
+  "name": "cze-plonk-key-build",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node tooling for building the PLONK key of ZisK 1.4.0-alpha (setup-snark), pinned",
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "pil2-compiler": "git+https://github.com/0xPolygonHermez/pil2-compiler.git#e2a7f2656c127855587bbd4a471a24d7b24e76be",
+    "snarkjs": "0.7.6"
+  }
+}
