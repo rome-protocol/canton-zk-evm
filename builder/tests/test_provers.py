@@ -560,6 +560,9 @@ class Unavailable(Case):
         self.assertEqual(pool.status()[0]["state"], "down")
         self.wait_for_calls(2, "again, with a busy answer")   # waits 0.4 s after the capacity refusal, then 0.8 s after the busy one
         self.assertEqual(self.calls(), [f"{tag(A)} capacity", f"{tag(A)} busy"])
+        deadline = time.monotonic() + 2
+        while pool.provers[0].busy and time.monotonic() < deadline:   # the pool has handled the busy answer once it frees the prover
+            time.sleep(0.005)
         for _ in range(10):   # the busy answer came from its coordinator: its worker is there
             self.assertIsNone(pool.status())
             time.sleep(0.03)
