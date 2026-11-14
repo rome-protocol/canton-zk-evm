@@ -351,7 +351,7 @@ describe.skipIf(!TEST_URL)("status and health", () => {
 
 describe.skipIf(!TEST_URL)("pin key ranges", () => {
   const OLD = "programVK=0x" + "cd".repeat(32) + "\nrootC=0x" + "ef".repeat(32) + "\n";
-  const NEW = "programVK@2=0x" + "ee".repeat(32) + "\nrootC@2=0x" + "ee".repeat(32) + "\n"; // the fake chain's proofs are under this key
+  const NEW = "zisk@2=1.3.1\nprogramVK@2=0x" + "ee".repeat(32) + "\nrootC@2=0x" + "ee".repeat(32) + "\n"; // the fake chain's proofs are under this key
   const proofOk = async (get: (p: string) => Promise<{ body: any }>, n: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
     const p = (await get(`/api/block/${n}`)).body.canton.proof;
     return [p.programVK.ok, p.rootC.ok];
@@ -361,7 +361,7 @@ describe.skipIf(!TEST_URL)("pin key ranges", () => {
     const { get } = await boot(chain(), { pinsText: OLD + NEW });
     expect(await proofOk(get, 1)).toEqual([false, false]); // height 1 is under the first key, the proof is under the second
     expect(await proofOk(get, 2)).toEqual([true, true]);
-    const { get: before } = await boot(chain(), { pinsText: "programVK=0x" + "ee".repeat(32) + "\nrootC=0x" + "ee".repeat(32) + "\nprogramVK@2=0x" + "cd".repeat(32) + "\nrootC@2=0x" + "ef".repeat(32) + "\n" });
+    const { get: before } = await boot(chain(), { pinsText: "programVK=0x" + "ee".repeat(32) + "\nrootC=0x" + "ee".repeat(32) + "\nzisk@2=1.3.1\nprogramVK@2=0x" + "cd".repeat(32) + "\nrootC@2=0x" + "ef".repeat(32) + "\n" });
     expect(await proofOk(before, 1)).toEqual([true, true]);
     expect(await proofOk(before, 2)).toEqual([false, false]); // the proof is under the first key, the height is the second's
   });
@@ -379,8 +379,8 @@ describe.skipIf(!TEST_URL)("pin key ranges", () => {
     expect(one.pins).toMatchObject({ programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) });
   });
 
-  it("gives each key's ZisK release in /api/status, 1.3.1 when the pins name none", async () => {
-    const { get } = await boot(chain(), { pinsText: OLD + NEW + "zisk@2=1.3.2\n" });
+  it("gives each key's ZisK release in /api/status, 1.3.1 for a first range that names none", async () => {
+    const { get } = await boot(chain(), { pinsText: OLD + NEW.replace("zisk@2=1.3.1", "zisk@2=1.3.2") });
     const body = (await get("/api/status")).body as { pins: { keys: { fromBlock: number; zisk: string }[] } };
     expect(body.pins.keys.map((k) => [k.fromBlock, k.zisk])).toEqual([[0, "1.3.1"], [2, "1.3.2"]]);
   });
