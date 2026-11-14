@@ -19,26 +19,47 @@ BUSYBOX_IMAGE_ID=sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db49
 # The image the verifier's compiles run in: it has glibc's shared libraries, which the official linux-amd64 solc builds need (libdl.so.2 and the others; busybox has none). Debian bookworm-slim, by its index digest.
 SOLC_SANDBOX_IMAGE=public.ecr.aws/docker/library/debian@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 SOLC_SANDBOX_IMAGE_ID=sha256:8da84df25d28176be84164040cd45e128c6b4c6a80b7d7cbe17fe2b9f198efc2
-ZISK_VERSION=1.3.2-alpha
-ZISK_COMMIT=1e22630bb7e143c30705a1603ed87cfd3da8c6ec
-ZISK_ETH_CLIENT_VERSION=0.13.1
-ZISK_ETH_CLIENT_COMMIT=edf8adcda75c015f4225abe3aabb3bed03e21beb
-ZISKUP_SHA256=a2d1781f64f31719ef251f55a48c664ab35cdb7431d42167894f94b5fbec64e1
-# SHA-256 of the three files prover/install.sh installs for ZISK_VERSION: the release binaries (cargo_zisk_linux_amd64.tar.gz of the GitHub
-# release; GitHub shows the same digest), the proving key (zisk-provingkey-<version>.tar.gz) and the PLONK key (zisk-provingkey-plonk-<version>.tar.gz)
-# from ZisK's setup bucket. install.sh checks each before it is installed; upstream publishes only an md5 of each key, next to the key.
-# prover/zisk-<version>-keys.sha256 lists every file the two keys unpack to, which install.sh checks after the install.
-ZISK_RELEASE_SHA256=abb779427f6c6924c7482f943356f60c6577499432bb806af349669b2a729bd7
-ZISK_STARK_SETUP_SHA256=824ed6b5f0dbb4900129bc296ecd0ab4199eb12799e1de36e59a9df78516dbea
-ZISK_PLONK_SETUP_SHA256=86406028280d3d9391e27c4466fdc45063c394da0cfb85b3256eaa8c3c7f663e
-# The powers-of-tau file the PLONK key is built on: Hermez's final_24 (54 contributions and a beacon), 19,327,435,928 bytes. install.sh does not
-# download it; it is pinned for rebuilding a PLONK key. Its blake2b-512 is the one snarkjs's README publishes; the SHA-256 was taken from a copy
+ZISK_VERSION=1.4.0-alpha
+ZISK_COMMIT=64a1f1664184e76053686745d50c6b9aaa51b034
+ZISK_ETH_CLIENT_VERSION=0.14.0
+ZISK_ETH_CLIENT_COMMIT=dfa27ff2e3544fb3c7467499415830d20de2218d
+ZISKUP_SHA256=82035c8bc4f334e19dfe4edac1e29fc29950100bc2a0cb4f88f39e35367c07ba
+# SHA-256 of the files prover/install.sh installs for ZISK_VERSION: the release binaries (cargo_zisk_linux_amd64.tar.gz of the GitHub release;
+# GitHub shows the same digest) and the Poseidon1 proving key (zisk-provingkey-<version>-poseidon1.tar.gz) from ZisK's setup bucket, which publishes
+# only an md5 of it. ZisK 1.4.0 publishes no PLONK key, and its default final proof (pilfflonk, from the blake3 key) is one our verifier does not check,
+# so our PLONK key is built by prover/build-plonk-key.sh from the Poseidon1 key and the ptau below. install.sh checks both downloads before it
+# installs them; prover/zisk-<version>-keys.sha256 lists every file the Poseidon1 key unpacks to, which install.sh checks after the install.
+ZISK_RELEASE_SHA256=10ebf127e7cb40d46f9c4c5b380cf7a36c6970b4b22ade1118078047ffc97433
+ZISK_STARK_SETUP_SHA256=e839a4453d3571ae01843809e7e313b04b612695159e566cf73904a3abbdab33
+# The five files of our PLONK key that the verifier and the sidecars depend on (under provingKeySnark/: final/final.zkey, final/final.verkey.json, final/PlonkVerifier.sol, vadcop_final.verkey.json, recursivef/recursivef.verkey.json): the proving key and its verification key, the
+# Solidity verifier whose eight commitments are verifier/src/vk.rs ZISK_1_4_0, and the two verification keys of ZisK's final circuits (vadcop_final's is
+# the rootC of every proof). The setup is deterministic: two machines built byte-identical files. build-plonk-key.sh checks what it built against these,
+# and install.sh checks the installed files.
+ZISK_PLONK_FINAL_ZK_SHA256=c2953b148ec4f57343dd8d86c92cbfa398904b82e71cfe134f51cf4ddaae7480
+ZISK_PLONK_FINAL_VK_SHA256=907f675ac645cc0933d749a507c48056cb2c6fd6305bf708705b1827d72e93ae
+ZISK_PLONK_VERIFIER_SHA256=12a7aef80b86860d731185bb092caf65d9c8fd3f27e92a40dae413500d6a9bb1
+ZISK_VADCOP_FINAL_VK_SHA256=65c22b03963919d3183397a110fb728b3143260933392df62bf9351efd815587
+ZISK_RECURSIVEF_VK_SHA256=93aa5969187c7aff85fd3393cc817747510fcd2043b42360113e6a05950d9f70
+# SHA-256 of the node_modules tree that prover/plonk-key/package-lock.json installs (npm ci, install scripts off): every file by its SHA-256 and every
+# link by its target, by name in byte order (node_tree_digest in prover/zisk-artifacts.sh). The lock pins pil2-compiler to a commit.
+PLONK_NODE_TREE_SHA256=1a42799b25925662857a08c0c7613b721551a93104c90ad13321bfb2ac9187ba
+# SHA-256 of prover/plonk-key/publics.json: state-machines/publics.json of ZisK at ZISK_COMMIT, the layout of the final circuit's public inputs, which setup-snark takes.
+ZISK_PUBLICS_INFO_SHA256=1a6ae04d3c3593efe097501e643f58c1f4eee1ed6822141d28a1a7f25775e0de
+# The powers-of-tau file the PLONK key is built on: Hermez's final_24 (54 contributions and a beacon), 19,327,435,928 bytes. build-plonk-key.sh
+# downloads it when it is not in ZISK_ARTIFACTS_DIR and checks both digests. Its blake2b-512 is the one snarkjs's README publishes; the SHA-256 was taken from a copy
 # that matched it. The addresses in ZisK's docs answer 403; https://circom.info/powersOfTau28_hez_final_24.ptau serves it.
 ZISK_PTAU_BLAKE2B=fa404d140d5819d39984833ca5ec3632cd4995f81e82db402371a4de7c2eae8687c62bc632a95b0c6aadba3fb02680a94e09174b7233ccd26d78baca2647c733
 ZISK_PTAU_SHA256=032647abe127f4562f8118dd5f866ab595c1f2bbd03d0a85ff3739a4a967d9be
 # The Rust toolchain the guest is built with: a release of 0xPolygonHermez/rust and the checksum of its linux-x86_64 archive. Without this pin ZisK's installer takes the highest zisk-4.x.y release there is.
-ZISK_TOOLCHAIN=zisk-4.0.0
-ZISK_TOOLCHAIN_SHA256=c4c44b5612dd025f630c2f984ae5f8a862b885c4b14bfc57c980eb8073b8cf62
+ZISK_TOOLCHAIN=zisk-4.1.0
+ZISK_TOOLCHAIN_SHA256=9a9921a558ca652dfc46e5043a92aa70a8ef8ec1be1bbb0f3c392dd7c0b5cfe1
+# The guest this build makes (prover/build-guest.sh, from network/genesis.json): zisk-eth-client v0.14.0 with our chain rules, built with the ZISK_TOOLCHAIN
+# toolchain, under ZisK ZISK_VERSION. Its program key, the root of ZisK's final circuit (the one every proof carries) and the SHA-256 of its ELF were
+# the same on two machines. tests/static.sh checks that they are the ones recorded in prover/fixtures/session.txt, which the sidecars and the explorer
+# are pinned to. The rules hash is guest/fixtures/rules-hash.txt: it did not change with the move to v0.14.0.
+GUEST_PROGRAM_VK=0xce6eccb4ad4809d565267c86e0f70052fb3bdf8fec203dffa5634df52d4298fe
+GUEST_ROOT_C=0xe9414e134bb6945a148a79d44c8e850e5ef582a2b0e8dbfb2428ff0a515a6e66
+GUEST_ELF_SHA256=2473f2bedae8a569046a0691400883755f2b5d116222004810ba797692463f59
 NODE_VERSION=20.20.2
 NODE_SHA256=df770b2a6f130ed8627c9782c988fda9669fa23898329a61a871e32f965e007d
 # The Docker command-line program (the static linux x86_64 build), which the verifier's sandbox tests mount into the pinned Node image (alpine, where the

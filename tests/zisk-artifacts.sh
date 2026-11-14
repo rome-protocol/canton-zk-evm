@@ -60,4 +60,47 @@ for f in ZISKUP_URL TOOLCHAIN_URL RELEASE_URL BUCKET_URL; do
   [ "$(grep -c "zisk_fetch_checked \"\$$f" "$ROOT/prover/install.sh" || true)" -ge 1 ] || fail "install.sh does not fetch $f through zisk_fetch_checked"
 done
 
+# node_tree_digest: one digest for a node_modules tree, the same wherever it was made, and any change to a file, a link, a name or an added file changes it.
+mkdir -p "$T/tree-a/node_modules/pkg/bin" "$T/tree-b/node_modules/pkg/bin"
+for t in a b; do
+  printf 'one\n' > "$T/tree-$t/node_modules/pkg/index.js"
+  printf 'two\n' > "$T/tree-$t/node_modules/pkg/bin/cli.js"
+  ln -s ../pkg/bin/cli.js "$T/tree-$t/node_modules/link"
+done
+touch -d '2020-01-01' "$T/tree-b/node_modules/pkg/index.js"   # times do not count
+d=$(node_tree_digest "$T/tree-a/node_modules")
+[[ $d =~ ^[0-9a-f]{64}$ ]] || fail "node_tree_digest gave $d"
+[ "$(node_tree_digest "$T/tree-b/node_modules")" = "$d" ] || fail "the same tree gave two digests"
+printf 'one!\n' > "$T/tree-b/node_modules/pkg/index.js"
+[ "$(node_tree_digest "$T/tree-b/node_modules")" != "$d" ] || fail "a changed file kept the digest"
+printf 'one\n' > "$T/tree-b/node_modules/pkg/index.js"
+ln -sfn ../pkg/index.js "$T/tree-b/node_modules/link"
+[ "$(node_tree_digest "$T/tree-b/node_modules")" != "$d" ] || fail "a link to another file kept the digest"
+ln -sfn ../pkg/bin/cli.js "$T/tree-b/node_modules/link"
+[ "$(node_tree_digest "$T/tree-b/node_modules")" = "$d" ] || fail "the restored tree has another digest"
+printf 'x\n' > "$T/tree-b/node_modules/extra.js"
+[ "$(node_tree_digest "$T/tree-b/node_modules")" != "$d" ] || fail "an added file kept the digest"
+
+# check_plonk_key_list: every file of the list is in the folder with its SHA-256, and it names each one that differs.
+mkdir -p "$T/snark/final" "$T/snark/recursivef"
+printf 'zkey\n' > "$T/snark/final/final.zkey"; printf 'vk\n' > "$T/snark/final/final.verkey.json"; printf 'rec\n' > "$T/snark/recursivef/recursivef.verkey.json"
+( cd "$T" && sha256sum snark/final/final.zkey snark/final/final.verkey.json snark/recursivef/recursivef.verkey.json | sed 's# snark/# provingKeySnark/#' ) > "$T/plonk.list"
+check_plonk_key_list "$T/snark" "$T/plonk.list" || fail "the matching key files were refused"
+printf 'zkey!\n' > "$T/snark/final/final.zkey"
+if out=$(check_plonk_key_list "$T/snark" "$T/plonk.list" 2>&1); then fail "a changed final.zkey was accepted"; fi
+[[ $out == *final/final.zkey* ]] || fail "the refusal does not name the changed file: $out"
+printf 'zkey\n' > "$T/snark/final/final.zkey"
+rm "$T/snark/recursivef/recursivef.verkey.json"
+if (check_plonk_key_list "$T/snark" "$T/plonk.list") >/dev/null 2>&1; then fail "a missing key file was accepted"; fi
+if (check_plonk_key_list "$T/no-such-folder" "$T/plonk.list") >/dev/null 2>&1; then fail "a missing folder was accepted"; fi
+
+# install.sh installs the proving key by its pinned checksum (the Poseidon1 one), and the PLONK key only through check_plonk_key_files; it never runs setup_snark (pilfflonk).
+grep -q -- '--poseidon1' "$ROOT/prover/install.sh" || fail "install.sh does not install the Poseidon1 key"
+grep -q 'check_plonk_key_list' "$ROOT/prover/install.sh" || fail "install.sh does not check the PLONK key against its list"
+! grep -v '^ *#' "$ROOT/prover/install.sh" | grep -q 'setup_snark' || fail "install.sh runs setup_snark, which installs a pilfflonk key"
+# build-plonk-key.sh installs the Node packages from the lock file only, with npm ci, and keeps npm from running during the setup.
+grep -q 'npm ci --ignore-scripts' "$ROOT/prover/zisk-artifacts.sh" || fail "the Node packages are not installed with npm ci from the lock file"
+! grep -v '^ *#' "$ROOT/prover/build-plonk-key.sh" "$ROOT/prover/zisk-artifacts.sh" | grep -E 'npm (install|i) ' | grep -q . || fail "a prover script runs npm install, which takes whatever the registry holds"
+grep -q 'npm must not run' "$ROOT/prover/build-plonk-key.sh" || fail "build-plonk-key.sh does not stop npm from running during the setup"
+
 echo "zisk artifacts checks pass"

@@ -283,6 +283,29 @@ pub fn session() -> Session {
     }
 }
 
+/// The block the session proof is for (block 1 of the throwaway chain), as `prover/fixtures/block1.json` records it: its hash, its header and its
+/// transaction list as they sit in the block's own encoding. It is the real block of `session()`'s real proof.
+pub fn session_block() -> RethBlock {
+    let j = read_json(format!(
+        "{}/../prover/fixtures/block1.json",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    let text = |k: &str| j[k].as_str().unwrap().to_string();
+    let num = |k: &str| j[k].as_u64().unwrap();
+    RethBlock {
+        hash: arr32(&text("hash")),
+        parent: arr32(&text("parentHash")),
+        state_root: arr32(&text("stateRoot")),
+        number: num("number"),
+        timestamp: num("timestamp"),
+        gas_limit: num("gasLimit"),
+        gas_used: num("gasUsed"),
+        tx_count: num("txCount") as usize,
+        header: unhex(&text("header")),
+        txs: unhex(&text("txs")),
+    }
+}
+
 /// One of the verifier crate's proofs: its release, block number and 1,344 bytes.
 pub struct VerifierProof {
     pub abi: Vec<u8>,
@@ -327,7 +350,7 @@ pub fn accept_any(_: Release, _: &[u8]) -> Result<bool, zk_verifier::Error> {
 }
 
 pub fn config_accepting_any() -> Config {
-    Config::new([0xaa; 32], [0xbb; 32]).with_proof_check(accept_any)
+    Config::for_release([0xaa; 32], [0xbb; 32], Release::V1_4_0).with_proof_check(accept_any)
 }
 
 /// The 1,344-byte input for `block`'s hash under the pins of `config_accepting_any`.

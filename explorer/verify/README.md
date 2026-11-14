@@ -26,7 +26,7 @@ The module imports nothing. It exports its `memory` and four functions:
 |---|---|
 | `alloc(len)` | Returns the address of `len` bytes of room for the caller's input |
 | `dealloc(ptr, len)` | Gives that room back |
-| `verify_block(pins, line, line_len)` | `pins` is 65 bytes: the program key, then the ZisK release root, then one byte for the ZisK release (0 is 1.3.1, 1 is 1.3.2; any other byte is answered with `no unknown ZisK release`). The release picks the key the proof is checked under. `line` is `proofHex,headerHex,txsHex` as text. Returns the length of the answer |
+| `verify_block(pins, line, line_len)` | `pins` is 65 bytes: the program key, then the ZisK release root, then one byte for the ZisK release (0 is 1.3.1, 1 is 1.3.2, 2 is 1.4.0; any other byte is answered with `no unknown ZisK release`). The release picks the key the proof is checked under. `line` is `proofHex,headerHex,txsHex` as text. Returns the length of the answer |
 | `answer_ptr()` | The address of the answer's bytes. It stays until the next call |
 
 The answer is the sidecar's own: `ok` and ten facts, or `no` and the reason. The reasons are listed in [sidecar/README.md](../../sidecar/README.md). Bytes that are not text get `no malformed input`.
@@ -54,4 +54,4 @@ They check that the export answers exactly as the sidecar's `verify` does, on th
 - with a proof of the wrong length, and with lines that are not well formed, the sidecar's own answers;
 - through the exported functions, the same answers as the plain call.
 
-There is no test of a full pass yet, because the recorded results do not hold a header and transactions for the session proof. CI also builds the module and asks the built file the same questions through the loader (`explorer/src/verify/verifier.test.ts`), and loads it through the panel's own download in a jsdom page (`explorer/src/verify/VerifyPanel.test.tsx`). Both run in Node's WebAssembly, not in a browser.
+The full pass is tested on the real ZisK 1.4.0 proof of block 1 with that block's own header and transactions (`prover/fixtures/block1.json`): the answer is `ok` and the block's ten facts, from the plain call, from the exported functions and from the sidecar's `verify`. CI also builds the module and asks the built file the same questions through the loader (`explorer/src/verify/verifier.test.ts`), and loads it through the panel's own download in a jsdom page (`explorer/src/verify/VerifyPanel.test.tsx`). Both run in Node's WebAssembly, not in a browser.

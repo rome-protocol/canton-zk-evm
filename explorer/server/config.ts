@@ -21,7 +21,7 @@ export function ownAddresses(env: Record<string, string | undefined>): Record<st
 export class ConfigError extends Error {}
 
 /** The ZisK releases a key range can name. A chain that names none is on the first. */
-export const ZISK_RELEASES = ["1.3.1", "1.3.2"] as const;
+export const ZISK_RELEASES = ["1.3.1", "1.3.2", "1.4.0"] as const;
 export type ZiskRelease = (typeof ZISK_RELEASES)[number];
 
 /** One program key: the two facts the confirmers pin (which program may prove blocks, and which ZisK release made the proof), from this block on, and the ZisK release it is under, which picks the verifying key. */

@@ -3,7 +3,8 @@
 #
 # Usage: prove-one.sh <input.bin> [out-folder]      (default folder: ./state/prover/out)
 #
-# Sends the input to the coordinator with a PLONK wrap, verifies the proof with cargo-zisk, and
+# Sends the input to the coordinator with a PLONK wrap, verifies the proof with cargo-zisk under our PLONK key's verification key
+# (cargo-zisk 1.4.0 requires the trusted key, -k, and never uses the one the proof carries; the file is checked against PINS first), and
 # writes to the folder:
 #   proof.bin         the proof as cargo-zisk saves it
 #   calldata.json     its four fields: proofBytes, programVK, rootCVadcopFinal, publicValues
@@ -22,6 +23,9 @@ OUT=${2:-$STATE/out}
 [ -s "$INPUT" ] || fail "no input file: $INPUT"
 [ -s "$GUEST_ELF" ] || fail "no guest ELF: $GUEST_ELF (run prover/build-guest.sh)"
 mkdir -p "$OUT"
+PLONK_VKEY=${CZE_PLONK_VKEY:-$ZISK_DIR/provingKeySnark/final/final.verkey.json}
+[ -s "$PLONK_VKEY" ] || fail "no PLONK verification key: $PLONK_VKEY (prover/install.sh)"
+echo "$ZISK_PLONK_FINAL_VK_SHA256  $PLONK_VKEY" | sha256sum -c --status - || fail "$PLONK_VKEY is not the pinned PLONK verification key (ZISK_PLONK_FINAL_VK_SHA256 in PINS)"
 
 echo "input sha256: $(sha256sum "$INPUT" | cut -d' ' -f1)"
 
@@ -33,7 +37,7 @@ cargo-zisk remote prove -e "$GUEST_ELF" -i "$INPUT" --plonk --timeout "${CZE_PRO
 end=$(date +%s.%N)
 echo "prove wall time: $(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.2f", e - s }') s"
 
-cargo-zisk verify -p "$OUT/proof.bin"
+cargo-zisk verify -p "$OUT/proof.bin" -k "$PLONK_VKEY"
 echo "verified with cargo-zisk"
 
 cargo-zisk-dev export-solidity-calldata -p "$OUT/proof.bin" -o "$OUT/calldata.json"
