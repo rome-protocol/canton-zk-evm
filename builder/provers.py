@@ -400,6 +400,7 @@ class Pool:
         """Whether the only prover is down for want of a ready worker, kept for the status file (nothing else reads it: no cool-down, no event, no journal line)."""
         with self.cond:
             prover.no_worker = no_worker
+
     def _down(self, prover: Prover, reason: str) -> None:
         if not self.managed:
             return

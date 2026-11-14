@@ -140,7 +140,7 @@ class Wiring(Loop):
         while time.time() < deadline and not seen:
             seen = [(x["name"], x["state"]) for x in self.status().get("provers", [])]
             time.sleep(0.01)
-        self.assertEqual(seen, [("local", "down")])   # the file the prover watch reads
+        self.assertEqual(seen, [("local", "down")])   # a watcher of the status file sees it
         stepper.join(60)
         self.assertFalse(stepper.is_alive())
         self.assertTrue(self.reports[-1]["committed"])
@@ -148,6 +148,7 @@ class Wiring(Loop):
         self.assertNotIn("provers", self.status())    # its worker came back and proved
         done.set()
         t.join(5)
+
     def test_the_ok_end_keeps_its_old_key_order_with_one_prover(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         p = self.producer_with(s, [f"a={A}"])

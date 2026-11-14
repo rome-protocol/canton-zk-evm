@@ -524,11 +524,13 @@ class Unavailable(Case):
         took = time.monotonic() - start
         self.assertGreaterEqual(took, 0.4 + 0.5 * 3 - 0.1)   # waits of 0.4, 0.5, 0.5, 0.5 s
         self.assertLess(took, 3.0)                           # not 0.4 + 0.8 + 1.6 + 1.6 s
+
     def test_the_cap_is_30_seconds_by_default_and_a_setting(self):
         self.assertEqual(pv.NO_WORKER_RETRY_MAX, 30.0)
         self.assertEqual(pv.Pool([pv.Prover("gpu0", A)]).no_worker_retry_max, 30.0)
         self.assertEqual(pv.Pool([pv.Prover("gpu0", A)], no_worker_retry_max=7).no_worker_retry_max, 7)
         self.assertEqual(pv.Pool([pv.Prover("gpu0", A)], cooldown_start=30).cooldown_max, 300.0)   # the cool-down of two or more provers is not the cap
+
     def test_one_prover_without_a_ready_worker_shows_down_while_it_waits_and_up_when_it_answers(self):
         pool = self.pool([A], no_worker_retry_max=1.0)
         self.script(A, "capacity", "capacity", "ok")
@@ -541,6 +543,7 @@ class Unavailable(Case):
         self.assertEqual(pool.events(), [])   # still no event and no journal line with one prover
         self.assertEqual(self.result(ticket, 10).prover, "gpu0")
         self.assertIsNone(pool.status())      # a proof: its worker is there
+
     def test_one_prover_that_answers_busy_after_no_ready_worker_is_up_again(self):
         pool = self.pool([A], busy_wait=0.05, busy_retries=0, no_worker_retry_max=2.0)
         self.script(A, "capacity", "sleep 0", "ok")
@@ -551,6 +554,7 @@ class Unavailable(Case):
         self.assertEqual(pool.status()[0]["state"], "down")
         self.result(ticket, 10)
         self.assertIsNone(pool.status())
+
     def test_a_busy_refusal_alone_never_shows_a_lone_prover_down(self):
         pool = self.pool([A], busy_wait=0.2)
         self.script(A, "busy", "ok")
@@ -559,6 +563,7 @@ class Unavailable(Case):
             self.assertIsNone(pool.status())
             time.sleep(0.02)
         self.result(ticket, 10)
+
     def test_a_cancelled_block_ends_the_wait(self):
         pool = self.pool([A])
         self.script(A, *["capacity"] * 20)
