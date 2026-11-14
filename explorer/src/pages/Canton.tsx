@@ -147,7 +147,7 @@ function Transactions({ b }: { b: ApiBlock }) {
 }
 
 /** The size of the proof and each fact read from its own bytes, against the explorer's pins. */
-function ProofFacts({ c, zisk }: { c: NonNullable<ApiBlock["canton"]>; /** The ZisK release of the key range the block is checked under. */ zisk: string }) {
+function ProofFacts({ c, zisk }: { c: NonNullable<ApiBlock["canton"]>; /** The ZisK release of the key range the block is checked under; undefined when the pins name none for it. */ zisk: string | undefined }) {
   const f = c.proof;
   return (
     <>
@@ -155,7 +155,7 @@ function ProofFacts({ c, zisk }: { c: NonNullable<ApiBlock["canton"]>; /** The Z
       {!f ? <span className="muted">its facts cannot be read</span> : (
         <>
           {f.programVK.ok ? <Good>ours</Good> : <Bad>program key is not ours</Bad>} <span className="muted">·</span>{" "}
-          {f.rootC.ok ? <Good>{`ZisK ${zisk}`}</Good> : <Bad>{`ZisK release is not ${zisk}`}</Bad>} <span className="muted">·</span>{" "}
+          {f.rootC.ok ? <Good>{`ZisK ${zisk ?? "release not named by the pins"}`}</Good> : <Bad>{`ZisK release is not ${zisk ?? "named by the pins"}`}</Bad>} <span className="muted">·</span>{" "}
           {f.blockHash.ok ? <Good>this block</Good> : <Bad>not this block's hash</Bad>}
         </>
       )}

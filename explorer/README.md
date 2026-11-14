@@ -238,7 +238,7 @@ programVK@4200=0x<64 hex digits>
 rootC@4200=0x<64 hex digits>
 ```
 
-Each key also names its ZisK release, which picks the verifying key a proof is checked under: `zisk=1.3.1` for the key from block 0 and `zisk@<block>=1.3.2` for a later one (`1.3.1`, `1.3.2` or `1.4.0`; a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. For a chain that moves from 1.3.1 to 1.3.2 at block 1500:
+Each key also names its ZisK release, which picks the verifying key a proof is checked under: `zisk=1.3.1` for the key from block 0 and `zisk@<block>=1.3.2` for a later one (`1.3.1`, `1.3.2` or `1.4.0`; a trailing `-alpha`, as in ZisK's own tags, is allowed). The key from block 0 that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. A later key must name its release: the explorer refuses to start for a `programVK@<block>=` that has no `zisk@<block>=`, because a release left out at a switch would be taken for 1.3.1 and every block under the new key would show as failed. For a chain that moves from 1.3.1 to 1.3.2 at block 1500:
 
 ```
 zisk=1.3.1

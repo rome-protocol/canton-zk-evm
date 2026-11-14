@@ -19,9 +19,9 @@ describe("pinsAt", () => {
     expect(pinsAt(pins, 499).zisk).toBe("1.3.1");
     expect(pinsAt(pins, 500).zisk).toBe("1.3.2");
   });
-  it("takes a range that names no release, from a server that does not send one, as 1.3.1", () => {
+  it("takes a first range that names no release, from a server that does not send one, as 1.3.1, and gives a later range that names none no release", () => {
     const pins = { programVK: C, rootC: D, file: "p.txt", keys: [{ fromBlock: 0, programVK: A, rootC: B }, { fromBlock: 500, programVK: C, rootC: D }] };
     expect(pinsAt(pins, 0).zisk).toBe("1.3.1");
-    expect(pinsAt(pins, 600).zisk).toBe("1.3.1");
+    expect(pinsAt(pins, 600).zisk).toBeUndefined();
   });
 });

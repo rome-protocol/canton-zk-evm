@@ -4,7 +4,7 @@
 
 /** A block record's three fields, as lowercase hex without 0x, exactly as /api/block gives them. */
 export interface BlockFields { proofHex: string; headerHex: string; txsHex: string }
-/** The two pins, as /api/status gives them: 0x and 64 hex digits each. `zisk` is the ZisK release the proofs are made with, 1.3.1, 1.3.2 or 1.4.0; the proof is checked under that release's key. Without it, the release is 1.3.1. */
+/** The two pins, as /api/status gives them: 0x and 64 hex digits each. `zisk` is the ZisK release the proofs are made with, 1.3.1, 1.3.2 or 1.4.0; the proof is checked under that release's key. Without it the check refuses: no release is assumed. */
 export interface Pins { programVK: string; rootC: string; zisk?: string }
 /** Runs the check and returns the sidecar's answer line. */
 export type Verifier = (block: BlockFields, pins: Pins) => string;
@@ -26,7 +26,8 @@ const RELEASE_CODES: Record<string, number> = { "1.3.1": 0, "1.3.2": 1, "1.4.0":
 
 /** The 65 bytes the module takes: the program key, then the ZisK release root, then the ZisK release. */
 export function pinBytes(pins: Pins): Uint8Array {
-  const code = RELEASE_CODES[pins.zisk ?? "1.3.1"];
+  if (pins.zisk === undefined) throw new Error("These pins name no ZisK release, and the check does not guess one (1.3.1, 1.3.2 or 1.4.0).");
+  const code = RELEASE_CODES[pins.zisk];
   if (code === undefined) throw new Error(`ZisK ${pins.zisk} is not a release this check knows (1.3.1, 1.3.2 or 1.4.0).`);
   const bytes = new Uint8Array(65);
   bytes[64] = code;

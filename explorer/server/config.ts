@@ -207,8 +207,10 @@ function captcha(env: Env): Config["captcha"] {
  * Reads `key=value` lines, ignoring blank lines and lines that start with #, and returns the pins. `programVK=` and `rootC=` are the key from
  * block 0. A later key is a pair of lines, `programVK@<fromBlock>=` and `rootC@<fromBlock>=`, from that block on; the pairs come in
  * increasing order of fromBlock, and the last one is the current key. Each key also names its ZisK release: `zisk=` for the key from block 0
- * and `zisk@<fromBlock>=` for a later one, as `1.3.1` or `1.3.2` (a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names
- * none is on ZisK 1.3.1, so a file from before releases were named reads as it always did.
+ * and `zisk@<fromBlock>=` for a later one, as `1.3.1`, `1.3.2` or `1.4.0` (a trailing `-alpha`, as in ZisK's own tags, is allowed). The key from
+ * block 0 that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. A later key must name its release:
+ * a file whose `programVK@<fromBlock>=` has no `zisk@<fromBlock>=` is refused, because a release left out at a switch would otherwise be
+ * taken for 1.3.1 and every block under the new key would show as failed.
  */
 export function parsePins(text: string, file: string): Pins {
   const kv = new Map<string, string>();
@@ -258,7 +260,10 @@ export function parsePins(text: string, file: string): Pins {
     if (r.programVK === undefined || r.rootC === undefined) {
       throw new ConfigError(`${file}: the key from block ${fromBlock} needs both programVK@${fromBlock}= and rootC@${fromBlock}=`);
     }
-    keys.push({ fromBlock, programVK: r.programVK, rootC: r.rootC, zisk: r.zisk ?? "1.3.1" });
+    if (r.zisk === undefined) {
+      throw new ConfigError(`${file}: the key from block ${fromBlock} needs zisk@${fromBlock}= naming its ZisK release (${ZISK_RELEASES.join(", ")}): a later key's release is not guessed`);
+    }
+    keys.push({ fromBlock, programVK: r.programVK, rootC: r.rootC, zisk: r.zisk });
   }
   const now = keys[keys.length - 1]!;
   return { programVK: now.programVK, rootC: now.rootC, file, keys };
