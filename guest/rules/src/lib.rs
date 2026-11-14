@@ -1,7 +1,7 @@
 //! The chain settings the guest is built for, and the rules hash that stands for them.
 //!
-//! The settings are the `config` part of `network/genesis.json`: chain id 770101, every fork
-//! from genesis up to Osaka. They are compiled into the guest, which refuses any input whose
+//! The settings are the `config` part of the genesis file the guest is built from (DevNet: chain id 770101, every fork
+//! from genesis up to Osaka; TestNet's file has chain id 770102). They are compiled into the guest, which refuses any input whose
 //! chain config is not exactly this one.
 //!
 //! The rules hash is the SHA-256 of the canonical encoding of the chain config. The canonical
@@ -14,8 +14,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// The chain id of this chain.
-pub const CHAIN_ID: u64 = 770101;
+/// The chain id of this chain: the `chainId` of the genesis file the guest is built from.
+pub const CHAIN_ID: u64 = chain_id_of(GENESIS);
 
 const GENESIS: &str = include_str!("../../../network/genesis.json");
 
@@ -92,5 +92,53 @@ pub fn check(config: &ChainConfig) -> Result<(), String> {
             to_hex(&theirs),
             to_hex(&ours)
         ))
+    }
+}
+
+// The `chainId` of a genesis file's `config`, read at compile time (the first `"chainId"` key, which is the config's).
+// It sits at the end of the file so that the lines above keep their numbers: a panic message carries its line.
+// It is private and used only in constants, so no code of it reaches the guest: a DevNet build is the same ELF as before.
+const fn chain_id_of(genesis: &str) -> u64 {
+    let b = genesis.as_bytes();
+    let key = b"\"chainId\"";
+    let mut i = 0;
+    while i + key.len() <= b.len() {
+        let mut j = 0;
+        while j < key.len() && b[i + j] == key[j] {
+            j += 1;
+        }
+        if j == key.len() {
+            i += key.len();
+            while b[i] == b' ' || b[i] == b':' {
+                i += 1;
+            }
+            let mut id: u64 = 0;
+            let start = i;
+            while i < b.len() && b[i] >= b'0' && b[i] <= b'9' {
+                id = id * 10 + (b[i] - b'0') as u64;
+                i += 1;
+            }
+            assert!(i > start, "the genesis file's chainId is not a number");
+            return id;
+        }
+        i += 1;
+    }
+    panic!("the genesis file has no chainId")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chain_config, chain_id_of, CHAIN_ID};
+
+    const DEVNET_GENESIS: &str = include_str!("../../../network/genesis.json");
+    const TESTNET_GENESIS: &str = include_str!("../../../network/genesis-770102.json");
+
+    #[test]
+    fn the_chain_id_comes_from_the_genesis_file() {
+        assert_eq!(chain_id_of(DEVNET_GENESIS), 770101);
+        assert_eq!(chain_id_of(TESTNET_GENESIS), 770102);
+        assert_eq!(CHAIN_ID, chain_id_of(DEVNET_GENESIS));
+        assert_eq!(CHAIN_ID, chain_config().chain_id);
+        assert_eq!(chain_id_of(r#"{ "config": { "chainId" : 42 , "x": 1 } }"#), 42);
     }
 }

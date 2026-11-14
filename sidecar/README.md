@@ -10,30 +10,34 @@ Use `programVK` and `rootC` from the successful guest build recorded in `state/n
 
 ```sh
 cd sidecar
-cargo run --release -- --program-vk <programVK> --root-c <rootC> --zisk-release 1.3.2
+cargo run --release -- --program-vk <programVK> --root-c <rootC> --zisk-release 1.4.0
 ```
 
 Replace the placeholders with the two recorded values. The default listen address is `127.0.0.1:8085`; use `--listen <address:port>` to change it.
 
 `--program-vk` and `--root-c` are the pins: the key of the program whose proofs are accepted, and the root of the ZisK release's final circuit. A proof made by anything else is refused.
 
-`--zisk-release` is the ZisK release the chain's proofs are made with, `1.3.1` or `1.3.2` (ZisK's own `-alpha` tag suffix is allowed), and it picks the verifying key the proof is checked under. Without it the release is 1.3.1, so a sidecar that is started as it always was keeps checking as it always did. A new chain is set up on 1.3.2 (`network/up.sh` and `network/external/sidecar.sh` pass it; the second reads it from `zisk=` in the record it is given: CZE_SESSION_FILE, else the recorded session in prover/fixtures/session.txt). Any other value stops the sidecar before it listens. The two releases share one PLONK key today, so the pins are what tell their proofs apart; the option is there so that the release stays a choice of the chain and not of the code, if a later release changes the key. See [SECURITY.md](../SECURITY.md) for why 1.3.1 is for existing chains only.
+`--zisk-release` is the ZisK release the chain's proofs are made with, `1.3.1`, `1.3.2` or `1.4.0` (ZisK's own `-alpha` tag suffix is allowed), and it picks the verifying key the proof is checked under. **It is required: there is no default release.** A sidecar started without it stops before it listens (it used to check as ZisK 1.3.1, which is not a release a new deployment may run). A new chain is set up on 1.4.0 (`network/up.sh` and `network/external/sidecar.sh` pass it; the second reads it from `zisk=` in the record it is given: CZE_SESSION_FILE, else the recorded session in prover/fixtures/session.txt). Any other value stops the sidecar before it listens. Releases 1.3.1 and 1.3.2 share one PLONK key, so for those two the pins are what tell their proofs apart; ZisK 1.4.0 has its own key (our own PLONK setup on ZisK's Poseidon1 key, `prover/build-plonk-key.sh`), so a 1.4.0 proof is refused under the 1.3.x key and a 1.3.x proof under the 1.4.0 key. See [SECURITY.md](../SECURITY.md) for why 1.3.1 is for existing chains only.
 
 ### A short list of keys
 
-Instead of the three single-key options, the sidecar can be started with up to four keys, each given as `--key <programVK>:<rootC>[:<release>]` (64 lowercase hex digits each, an optional `0x` in front of them, and a release as for `--zisk-release`; without one the release is 1.3.1):
+Instead of the three single-key options, the sidecar can be started with up to four keys, each given as `--key <programVK>:<rootC>:<release>[@<from>..<until>]` (64 lowercase hex digits each, an optional `0x` in front of them, and a release as for `--zisk-release`, which is required here too):
 
 ```sh
 cargo run --release -- \
-  --key <old programVK>:<old rootC>:1.3.1 \
-  --key <new programVK>:<new rootC>:1.3.2
+  --key <old programVK>:<old rootC>:1.3.2@..<switch block> \
+  --key <new programVK>:<new rootC>:1.4.0@<switch block>..
 ```
 
-A proof is accepted when it verifies under the PLONK key of an entry's release and carries that entry's own `programVK` and `rootC`. The pins are never matched across entries: a proof with one entry's program key and another entry's root is refused. The `ok` answer carries the program key and root of the entry the proof was accepted under, so the caller sees which one verified. The sidecar stops before it listens when more than four keys are given, when two entries have the same `programVK`, when a key is not in that form or its release is not one this sidecar knows, and when `--key` is mixed with `--program-vk`, `--root-c` or `--zisk-release`. A sidecar started with the single-key options behaves exactly as before.
+A proof is accepted when it verifies under the PLONK key of an entry's release and carries that entry's own `programVK` and `rootC`. The pins are never matched across entries: a proof with one entry's program key and another entry's root is refused. The `ok` answer carries the program key and root of the entry the proof was accepted under, so the caller sees which one verified. The sidecar stops before it listens when more than four keys are given, when two entries have the same `programVK`, when a key is not in that form, has no release or its release is not one this sidecar knows, when a block range is not `<from>..<until>` (either side may be empty, `from` must be below `until`), and when `--key` is mixed with `--program-vk`, `--root-c` or `--zisk-release`. A sidecar started with the single-key options behaves exactly as before (with the release named).
+
+**Block ranges.** A key without a range is valid for every block. A key with `@<from>..<until>` is valid for the blocks from `from` up to, but not including, `until`; either side may be empty (`@..N` is the blocks before N, `@N..` is block N and after). A program switch at block N is configured as the old key `@..N` and the new key `@N..`: a block with number N-1 is accepted under the old key and refused under the new one, and a block with number N is accepted under the new key and refused under the old one (`no the proof's key is not valid for this block number`). The number is the one in the block's header, which the proof's block hash fixes, so it cannot be chosen by the prover. The explorer's Verify check picks its key by block number the same way (`pinsAt`, from the key ranges in its pins file).
+
+When any key has a range, no two keys' ranges may overlap, and a key without a range counts as every block: the sidecar stops before it listens on `--key B:...:1.3.2@..N --key C:...:1.4.0` (the `@N..` forgotten), so that C is never accepted for the blocks before N. Only a list in which no key has a range leaves every key valid for every block.
 
 Listing a key does not make the chain take it. The chain contract (Daml's `Advance`) holds one program key and refuses a block under any other, whatever the sidecars accept, so a sidecar that lists the old and the new key during a program switch is safe: a block under the key the chain does not hold is refused at the commit. This lets the sidecars be restarted before a switch and not at a moment inside it (see "Switching a running chain" in [`network/README.md`](../network/README.md)).
 
-On DevNet, as of 2026-10-27, the sidecars of both participants run the `8a4e8cd` build with two `--key` entries, key A (programVK `0xdb79251d...`, ZisK 1.3.1) and key B (programVK `0x424aeb2b...bd69`, ZisK 1.3.2-alpha), so the blocks 0 to 15572 (key A) and from 15573 (key B) both verify. Only the sidecar on the first participant confirms blocks today: the second participant, whose sidecar is up, hosts no party.
+On DevNet, from the switch on 2026-10-27 (12:02Z, first block under key B: 15573) the sidecars of both participants ran the `8a4e8cd` build with two `--key` entries, key A (programVK `0xdb79251d...`, ZisK 1.3.1, blocks 0 to 15572) and key B (programVK `0x424aeb2b...bd69`, ZisK 1.3.2-alpha, from 15573). On 2026-10-28 between 12:04Z and 12:06Z they were restarted on key B only, as the runbook of the switch records; the explorer keeps both keys for the old blocks. Only the sidecar on the first participant confirms blocks today: the second participant, whose sidecar is up, hosts no party.
 
 ## What Canton calls
 
@@ -55,10 +59,11 @@ It checks, in this order:
 4. the header's Keccak-256 is that block hash, and the header is written in canonical RLP;
 5. the header has no ommers, and no withdrawals if it has a withdrawals root;
 6. the transaction list is written in canonical RLP, and its root is the header's transactions root.
+7. the key the proof was accepted under is valid for the block's number (the header's; a key with no block range is valid for every block, see "A short list of keys").
 
 The header is the block header's RLP. `txsHex` is the block's transaction list as it sits in the block's own RLP: a list in which a typed transaction is a byte string and an old-style one is a list. It is empty for a block with no transactions (not `c0`). The transactions root is worked out here in `src/trie.rs`.
 
-The reasons after `no` are: `malformed input`, `the proof is not 1,344 bytes`, `the proof does not verify`, `the proof was made by another program or ZisK release`, `the proof does not commit to one block hash`, `the header does not hash to the proven block hash`, `the header is malformed`, `the block has ommers`, `the block has withdrawals`, `the transactions do not match the header's transactions root`.
+The reasons after `no` are: `malformed input`, `the proof is not 1,344 bytes`, `the proof does not verify`, `the proof was made by another program or ZisK release`, `the proof does not commit to one block hash`, `the header does not hash to the proven block hash`, `the proof's key is not valid for this block number`, `the header is malformed`, `the block has ommers`, `the block has withdrawals`, `the transactions do not match the header's transactions root`.
 
 ## `verify2`
 

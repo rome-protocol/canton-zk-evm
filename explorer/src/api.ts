@@ -2,6 +2,9 @@ import type { Lifecycle } from "./block-times.ts";
 import type { FaucetInfo } from "./faucet/faucet-client.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
+/** A notice of the operators: plain text, the two times, and optionally the level ("major" is the large banner) and a link to a page that explains it. */
+export interface StatusNotice { text: string; startsAt: string; endsAt: string; level?: "major"; link?: { url: string; label: string } }
+
 export interface ApiStatus {
   chainId: number;
   chainName: string;
@@ -9,7 +12,7 @@ export interface ApiStatus {
   networkName: string | null;
   coin: { symbol: string; decimals: number };
   /** `programVK`, `rootC` and `file` are the current key, the last range. `keys` lists every key and the block it starts at; a server from before key ranges does not send it. */
-  pins: { programVK: string; rootC: string; file: string; keys?: { fromBlock: number; programVK: string; rootC: string; /** The ZisK release the key is under, as 1.3.1 or 1.3.2; a server from before releases were named does not send it, and the key is 1.3.1's. */ zisk?: string }[] };
+  pins: { programVK: string; rootC: string; file: string; keys?: { fromBlock: number; programVK: string; rootC: string; /** The ZisK release the key is under, as 1.3.1, 1.3.2 or 1.4.0; a server from before releases were named does not send it, and the key is 1.3.1's. */ zisk?: string }[] };
   /** True when reth and Canton can be read and every check the index runs passes. */
   ok: boolean;
   /** True while the explorer is still reading up to the newest block, for the first time or after a new run. `ok` is false meanwhile. A failed check or a failed look is never "starting". */
@@ -27,6 +30,10 @@ export interface ApiStatus {
   publicRpc: boolean;
   /** True when this deployment names its own test and load addresses (OWN_ADDRESSES). Absent from a server older than this page: read as false. */
   ownTraffic?: boolean;
+  /** A message about planned work, set by the operators: its plain text and the ISO times it starts and ends. Null when there is none (or it has ended); absent from a server older than this. */
+  notice?: StatusNotice | null;
+  /** Every notice that has not ended, major first; a server from before this field has only `notice`. */
+  notices?: StatusNotice[];
   /** The newest block the index holds, how many blocks it is behind Canton's finalized head (null while unknown), where stage 2 is, and the chain instance. */
   indexHead: number | null;
   indexLag: number | null;

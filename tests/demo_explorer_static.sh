@@ -104,6 +104,8 @@ rm -rf "$WORK/adir"
 sec=$(openssl rand -hex 8)   # made for this run, so no secret-like string is in the repository
 queue=$(FAUCET_BATCH=50 FAUCET_QUEUE_MAX=900 CAPTCHA_VERIFY_URL=https://check.example/verify CAPTCHA_SECRET="$sec" dry start)
 has "$queue" "-e FAUCET_STATE_FILE=/var/lib/explorer/faucet.json" "the faucet's state is kept in the explorer's folder"
+has "$queue" "-e OSTIA_NOTICE_FILE=/var/lib/explorer/notice.json" "the notice of planned work is read from the explorer's folder, which the container sees as it is changed"
+has "$(OSTIA_NOTICE_FILE=/var/lib/explorer/other.json dry start)" "-e OSTIA_NOTICE_FILE=/var/lib/explorer/other.json" "another path under that folder is passed on"
 has "$queue" "-e FAUCET_BATCH=50" "the batch size is passed on"
 has "$queue" "-e FAUCET_QUEUE_MAX=900" "the queue cap is passed on"
 has "$queue" "-e CAPTCHA_VERIFY_URL=https://check.example/verify" "the human check's address is passed on"

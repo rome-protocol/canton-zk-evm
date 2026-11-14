@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The accounts service on a real Canton, on the protocol version PINS names (CANTON_PROTOCOL_VERSION; CZE_PROTOCOL_VERSION=36 runs the other one Canton 3.7.2 supports): the pinned Canton, started as tests/canton_external.sh
+# The accounts service on a real Canton, on the protocol version PINS names (CANTON_PROTOCOL_VERSION; CZE_PROTOCOL_VERSION=36 runs the other one Canton 3.7.3 supports): the pinned Canton, started as tests/canton_external.sh
 # starts it (an existing participant with a login on its Ledger API), Ostia's chain set up on it, and a Ledger API user that holds NO right. The service
 # runs with that user's token alone (the participant lets a user with no right allocate up to 100 parties for itself); integration.py then makes an external party from an Ed25519 key, creates a WithdrawalAcceptance for it, and lists its holdings.
 # The tokens live two minutes (as on the DevNet) and are written again every twenty seconds, each by a replace of the file, so a reader never sees half of one.

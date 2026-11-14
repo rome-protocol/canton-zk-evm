@@ -1,3 +1,4 @@
+import { chainIdFromEnv } from "./env.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
@@ -124,5 +125,17 @@ describe("the Canton key from a wallet signature", () => {
     expect(users("signOnboarding")).toEqual(["accounts.ts"]);   // it checks the topology itself (topology.ts)
     expect(users("signRequest")).toEqual(["accounts.ts"]);
     expect(base64(new Uint8Array([1]))).toBe("AQ==");
+  });
+});
+
+describe("the chain the page signs for", () => {
+  it("is DevNet's, 770101, unless the build names another chain", () => {
+    expect(chainIdFromEnv({})).toBe(770101);
+    expect(chainIdFromEnv(undefined)).toBe(770101);
+    expect(chainIdFromEnv({ VITE_CHAIN_ID: "770101" })).toBe(770101);
+    expect(chainIdFromEnv({ VITE_CHAIN_ID: "770102" })).toBe(770102);
+  });
+  it("refuses a value that is not a chain id", () => {
+    for (const bad of ["abc", "-1", "0", "1.5", "7e5"]) expect(() => chainIdFromEnv({ VITE_CHAIN_ID: bad })).toThrow("VITE_CHAIN_ID is not a chain id");
   });
 });

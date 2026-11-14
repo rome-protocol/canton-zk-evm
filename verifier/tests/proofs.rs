@@ -278,11 +278,12 @@ fn the_recorded_proof_of_the_one_transfer_block_is_accepted_and_carries_its_pins
     ))
     .unwrap();
     let abi = hex::decode(hex_text.trim()).unwrap();
-    assert_eq!(verify(&vk::ZISK_1_3_1, &abi), Ok(true));
+    assert_eq!(verify(&vk::ZISK_1_4_0, &abi), Ok(true));
+    // It is a ZisK 1.4.0 proof: no earlier release's key accepts it.
+    assert_eq!(verify(&vk::ZISK_1_3_2, &abi), Ok(false));
     assert_eq!(verify(&vk::ZISK_1_2_0, &abi), Ok(false));
     // The program key and the root in the proof are the ones the session recorded for this guest
-    // on this release, and not the key of the guest it replaced (previous_programVK) nor the
-    // 1.3.1 root.
+    // on this release, and not the key of an earlier build (previous_programVK).
     assert_eq!(
         format!("0x{}", hex::encode(&abi[768..800])),
         recorded("programVK")
@@ -292,15 +293,114 @@ fn the_recorded_proof_of_the_one_transfer_block_is_accepted_and_carries_its_pins
         recorded("rootC")
     );
     assert_ne!(recorded("programVK"), recorded("previous_programVK"));
-    assert_eq!(
-        hex::encode(&abi[800..832]),
-        hex::encode(&load("1.3.2", 14).root_c)
-    );
-    assert_ne!(abi[800..832], load("1.3.1", 14).root_c[..]);
-    // Swapping in the root of the 1.3.1 release makes it a different statement, which is refused.
-    let mut other = abi.clone();
-    other[800..832].copy_from_slice(&load("1.3.1", 14).root_c);
-    assert_eq!(verify(&vk::ZISK_1_3_1, &other), Ok(false));
+    // The root is 1.4.0's own, not the root of the 1.3.x releases; swapping either of those in makes a
+    // different statement, which is refused.
+    for release in ["1.3.1", "1.3.2"] {
+        assert_ne!(abi[800..832], load(release, 14).root_c[..], "{release}");
+        let mut other = abi.clone();
+        other[800..832].copy_from_slice(&load(release, 14).root_c);
+        assert_eq!(verify(&vk::ZISK_1_4_0, &other), Ok(false), "{release}");
+    }
+}
+
+// ---- ZisK 1.4.0: our own PLONK key, built from ZisK's Poseidon1 key (prover/build-plonk-key.sh) ----
+
+/// The block of the 1.4.0 fixture: the one-transfer block of `prover/fixtures`.
+const BLOCK_1_4_0: u32 = 1;
+
+fn fixture_1_4_0() -> Fixture {
+    load("1.4.0", BLOCK_1_4_0)
+}
+
+#[test]
+fn the_1_4_0_proof_is_accepted_under_the_1_4_0_key() {
+    assert_eq!(verify(&vk::ZISK_1_4_0, &fixture_1_4_0().abi()), Ok(true));
+}
+
+#[test]
+fn the_1_4_0_proof_is_refused_under_every_earlier_key() {
+    let abi = fixture_1_4_0().abi();
+    assert_eq!(verify(&vk::ZISK_1_3_2, &abi), Ok(false));
+    assert_eq!(verify(&vk::ZISK_1_3_1, &abi), Ok(false));
+    assert_eq!(verify(&vk::ZISK_1_2_0, &abi), Ok(false));
+}
+
+#[test]
+fn the_earlier_proofs_are_refused_under_the_1_4_0_key_and_the_1_3_2_ones_still_pass_under_1_3_2() {
+    for release in ["1.2.0", "1.3.1", "1.3.2"] {
+        for (block, abi) in all(release) {
+            assert_eq!(
+                verify(&vk::ZISK_1_4_0, &abi),
+                Ok(false),
+                "{release} block {block} under 1.4.0"
+            );
+        }
+    }
+    for (block, abi) in all("1.3.2") {
+        assert_eq!(
+            verify(&vk::ZISK_1_3_2, &abi),
+            Ok(true),
+            "1.3.2 block {block} under 1.3.2"
+        );
+    }
+}
+
+#[test]
+fn the_1_4_0_key_is_its_own_key() {
+    assert_ne!(vk::ZISK_1_4_0.commitments(), vk::ZISK_1_3_2.commitments());
+    assert_ne!(vk::ZISK_1_4_0.commitments(), vk::ZISK_1_2_0.commitments());
+    assert_ne!(vk::ZISK_1_4_0, vk::ZISK_1_3_2);
+}
+
+#[test]
+fn the_1_4_0_proof_has_its_own_program_key_and_root() {
+    let new = fixture_1_4_0();
+    let old = load("1.3.2", 14);
+    assert_ne!(new.program_vk, old.program_vk);
+    assert_ne!(new.root_c, old.root_c);
+}
+
+#[test]
+fn a_1_4_0_proof_with_changed_public_values_program_key_or_root_is_refused() {
+    let good = fixture_1_4_0().abi();
+    // One bit in each of the 64 slots that hold a word, the first (0x20, the length) and the hash included.
+    for slot in 0..64 {
+        let mut abi = good.clone();
+        abi[832 + 8 * slot] ^= 1;
+        assert_eq!(
+            verify(&vk::ZISK_1_4_0, &abi),
+            Ok(false),
+            "public value slot {slot}"
+        );
+    }
+    for at in [768, 799, 800, 831] {
+        let mut abi = good.clone();
+        abi[at] ^= 1;
+        assert_eq!(verify(&vk::ZISK_1_4_0, &abi), Ok(false), "pin byte {at}");
+    }
+}
+
+#[test]
+fn a_1_4_0_proof_with_one_flipped_proof_byte_is_refused() {
+    let good = fixture_1_4_0().abi();
+    // The last byte of the last evaluation: a well-formed proof that the check itself refuses.
+    let mut abi = good.clone();
+    abi[767] ^= 1;
+    assert_eq!(verify(&vk::ZISK_1_4_0, &abi), Ok(false));
+    // A byte inside the first point's y coordinate: the point leaves the curve.
+    let mut abi = good;
+    abi[40] ^= 1;
+    assert_eq!(verify(&vk::ZISK_1_4_0, &abi), Err(Error::Malformed));
+}
+
+#[test]
+fn the_1_4_0_fixture_is_the_recorded_proof_of_the_one_transfer_block() {
+    let hex_text = std::fs::read_to_string(format!(
+        "{}/../prover/fixtures/wrapped-proof.hex",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    assert_eq!(hex::decode(hex_text.trim()).unwrap(), fixture_1_4_0().abi());
 }
 
 #[test]

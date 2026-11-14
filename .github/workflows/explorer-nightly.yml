@@ -161,8 +161,9 @@ jobs:
           java-version: "21"
       - name: The browser image is the pinned one
         run: |
+          # The action's own check: the pinned digest name and the pinned ID, on the classic and on the containerd image store alike.
+          .github/actions/pinned-images/pinned-images.sh verify PINS EXPLORER_BROWSER_IMAGE
           set -a; . ./PINS; set +a
-          test "$(docker image inspect --format '{{.Id}}' "$EXPLORER_BROWSER_IMAGE")" = "$EXPLORER_BROWSER_IMAGE_ID"
           docker run --rm --user "$(id -u):$(id -g)" "$EXPLORER_BROWSER_IMAGE" node --version
       - name: The rehearsal, then the nightly part
         run: |

@@ -329,6 +329,20 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .fl-step.now i { border-color: var(--amber); }
 .fl-name { font-weight: 600; font-size: 13px; }
 .fl-wait { margin: 10px 0 0; }
+/* the notice of planned work, above the header's bar: ink on the amber tint, so the text is far above AA in both themes; the amber is only the edge, and a thicker one once the work has started */
+.notice { display: flex; gap: 9px; align-items: flex-start; padding: 8px max(32px, calc((100% - 1280px) / 2)); background: var(--amber-tint); border-bottom: 1px solid var(--amber-line); color: var(--ink); font-size: 13.5px; line-height: 1.45; }
+.notice.now { box-shadow: inset 5px 0 0 var(--amber); }
+.notice .ic { flex: none; margin-top: 3px; color: var(--amber); }
+.notice p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.notice b { font-weight: 600; }
+.notice-when { color: var(--muted); }
+/* a major notice: the large banner. The same ink on the same tint, so the contrast is as above; larger text, more room, an amber edge all round, and the link as a button of its own */
+.notice.major { gap: 14px; padding-top: 18px; padding-bottom: 18px; border-bottom: 2px solid var(--amber); box-shadow: inset 8px 0 0 var(--amber); font-size: 17px; line-height: 1.5; }
+.notice.major .ic { margin-top: 3px; }
+.notice.major b { font-size: 18px; font-weight: 700; }
+.notice-link { display: inline-block; margin-left: 10px; color: var(--ink); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.notice.major .notice-link { display: block; width: fit-content; max-width: 100%; margin: 12px 0 0; padding: 9px 16px; border: 2px solid var(--ink); border-radius: 8px; text-decoration: none; }
+.notice.major .notice-link:hover { background: var(--ink); color: var(--bg); }
 /* the header's bar and links */
 .topbar { display: flex; flex-wrap: wrap; gap: 4px 22px; align-items: center; padding: 7px max(32px, calc((100% - 1280px) / 2)); background: var(--topbar); color: #efe4f1; font-size: 12.5px; }
 .topbar a { color: #fff; }
@@ -522,7 +536,7 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
   .rec { padding: 12px 16px; }
 }
 @media (max-width: 720px) { .fl-row { grid-template-columns: 1fr; } .fl-steps { grid-template-columns: 1fr; } .fl-step { padding: 0 0 0 24px; } .fl-step::before { display: none; } .fl-step i { top: 3px; } }
-@media (max-width: 720px) { .topbar { padding: 7px 16px; } .cols { grid-template-columns: minmax(0, 1fr); gap: 14px; } .stats, .stats.six, .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); } .top { flex-wrap: wrap; } }
+@media (max-width: 720px) { .topbar { padding: 7px 16px; } .notice { padding-left: 16px; padding-right: 16px; } .notice.major { padding-top: 14px; padding-bottom: 14px; font-size: 16px; } .cols { grid-template-columns: minmax(0, 1fr); gap: 14px; } .stats, .stats.six, .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); } .top { flex-wrap: wrap; } }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
 @media (max-width: 720px) { .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; } }
 @media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } } /* a row of tabs scrolls inside itself on a phone */

@@ -4,7 +4,9 @@ import { parsePins } from "../../server/config.ts";
 import { fetchVerifier, loadVerifier, parseAnswer, pinBytes, type BlockFields, type Verifier } from "./verifier.ts";
 
 const fixture = (path: string) => readFileSync(new URL(`../../../${path}`, import.meta.url));
-const pins = parsePins(fixture("prover/fixtures/session.txt").toString(), "session.txt");
+const parsed = parsePins(fixture("prover/fixtures/session.txt").toString(), "session.txt");
+// The check takes the release from the pins it is given, as the page does from the key range of the block: the session's is the first range's (ZisK 1.4.0).
+const pins = { ...parsed, zisk: parsed.keys[0]!.zisk };
 const proofHex = fixture("prover/fixtures/wrapped-proof.hex").toString().trim();
 // A real block, but not the one the session proof is for.
 const other = JSON.parse(fixture("sidecar/tests/fixtures/block.json").toString()) as { header: string; txs: string };
@@ -18,11 +20,12 @@ describe("pinBytes", () => {
     expect(bytes).toHaveLength(65);
     expect(bytes[64]).toBe(0);
   });
-  it("ends with the ZisK release: 0 for 1.3.1, which is also what no release means, and 1 for 1.3.2", () => {
+  it("ends with the ZisK release: 0 for 1.3.1, which is also what no release means, 1 for 1.3.2 and 2 for 1.4.0", () => {
     const pins = { programVK: "0x" + "01".repeat(32), rootC: "0x" + "02".repeat(32) };
     expect(pinBytes(pins)[64]).toBe(0);
     expect(pinBytes({ ...pins, zisk: "1.3.1" })[64]).toBe(0);
     expect(pinBytes({ ...pins, zisk: "1.3.2" })[64]).toBe(1);
+    expect(pinBytes({ ...pins, zisk: "1.4.0" })[64]).toBe(2);
   });
   it("refuses a release it does not know", () => {
     expect(() => pinBytes({ programVK: "00".repeat(32), rootC: "00".repeat(32), zisk: "1.2.0" })).toThrow("not a release this check knows");
@@ -52,6 +55,12 @@ describe("parseAnswer", () => {
 describe.skipIf(!process.env.VERIFY_WASM)("the built module, through the loader", () => {
   const load = (): Promise<Verifier> => loadVerifier(readFileSync(process.env.VERIFY_WASM!));
 
+  it("passes the proof with its own block: the real ZisK 1.4.0 proof of block 1 and that block's own header and transactions", async () => {
+    const own = JSON.parse(fixture("prover/fixtures/block1.json").toString()) as { hash: string; number: number; header: string; txs: string };
+    const line = (await load())({ proofHex, headerHex: own.header, txsHex: own.txs }, pins);
+    const answer = parseAnswer(line);
+    expect(answer).toMatchObject({ ok: true, blockHash: own.hash, number: String(own.number), programVK: pins.programVK.replace(/^0x/, ""), rootC: pins.rootC.replace(/^0x/, "") });
+  });
   it("passes the proof and refuses a header that is not its block's", async () => {
     expect((await load())(block, pins)).toBe("no the header does not hash to the proven block hash");
   });
@@ -63,11 +72,12 @@ describe.skipIf(!process.env.VERIFY_WASM)("the built module, through the loader"
     const wrong = { ...pins, programVK: "0x" + "00".repeat(32) };
     expect((await load())(block, wrong)).toBe("no the proof was made by another program or ZisK release");
   });
-  it("takes the release from the pins: both releases check the session proof, and the page cannot name another", async () => {
+  it("takes the release from the pins: the session proof is a 1.4.0 proof, so only the 1.4.0 key checks it, and the page cannot name another release", async () => {
     const verify = await load();
     const key = pins.keys[0]!;
-    expect(key.zisk).toBe("1.3.2");
-    for (const zisk of ["1.3.1", "1.3.2"]) expect(verify(block, { ...pins, zisk })).toBe("no the header does not hash to the proven block hash");
+    expect(key.zisk).toBe("1.4.0");
+    expect(verify(block, { ...pins, zisk: "1.4.0" })).toBe("no the header does not hash to the proven block hash");
+    for (const zisk of ["1.3.1", "1.3.2"]) expect(verify(block, { ...pins, zisk })).toBe("no the proof does not verify");
     expect(() => verify(block, { ...pins, zisk: "1.2.0" })).toThrow("not a release this check knows");
   });
   it("answers a malformed line, and keeps answering after one", async () => {

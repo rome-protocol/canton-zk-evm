@@ -112,6 +112,23 @@ jobs:
           java-version: "21"
       - run: tests/demo_registered_gateway.sh
 
+  # The chain goes on when the Canton side is new (network/canton/propose.py anchor), on the real network: Ostia runs to block 3, Canton is stopped and started again
+  # (new parties, no chain), the anchor is refused for a head that is not reth's finalized block (above it, below it, a wrong hash or state root), another chain id,
+  # a gas cap under the head block's limit and a user without the confirmer's right, then it creates the chain at block 3 and blocks 4 and 5 commit on the new
+  # network as children of block 3. Real reth (launch.sh, discovery off), Canton, builder and sidecar for the legs; the proof is a stand-in (tests/demo_chain_anchor.sh).
+  chain-anchor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_chain_anchor.sh
+
   # A chain that runs is upgraded to the next version of the Daml package, its gas cap is raised, and the block gas limit goes over the old cap,
   # on the real network: the DAR of the tag v0.2.0 and the current source, the package put on each participant in the steps of
   # network/external/setup.py --package-step (check, upload not vetted, vet with a dry run first), the builder pinned to the new package, the gas cap raised in
