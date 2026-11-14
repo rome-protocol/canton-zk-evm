@@ -178,7 +178,7 @@ describe("pins", () => {
 describe("pin key ranges", () => {
   const VK2 = "0x" + "a2".repeat(32), ROOT2 = "0x" + "b3".repeat(32), VK3 = "0x" + "a3".repeat(32), ROOT3 = "0x" + "b4".repeat(32);
   const base = `programVK=${VK}\nrootC=${ROOT}\n`;
-  const two = `${base}programVK@100=${VK2}\nrootC@100=${ROOT2}\n`;
+  const two = `${base}zisk@100=1.3.1\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`;
 
   it("reads the old two-line file as one range from block 0", () => {
     const p = parsePins(base, "x.txt");
@@ -188,7 +188,7 @@ describe("pin key ranges", () => {
   });
 
   it("reads later ranges, and the current key is the last one", () => {
-    const p = parsePins(`# a switch\n${two}programVK@250 = ${VK3}\nrootC@250=${ROOT3.toUpperCase().replace("0X", "0x")}\n`, "x.txt");
+    const p = parsePins(`# a switch\n${two}zisk@250=1.3.1\nprogramVK@250 = ${VK3}\nrootC@250=${ROOT3.toUpperCase().replace("0X", "0x")}\n`, "x.txt");
     expect(p.keys).toEqual([{ fromBlock: 0, programVK: VK, rootC: ROOT, zisk: "1.3.1" }, { fromBlock: 100, programVK: VK2, rootC: ROOT2, zisk: "1.3.1" }, { fromBlock: 250, programVK: VK3, rootC: ROOT3, zisk: "1.3.1" }]);
     expect(p).toMatchObject({ programVK: VK3, rootC: ROOT3, file: "x.txt" });
   });
@@ -203,8 +203,8 @@ describe("pin key ranges", () => {
 
   it("refuses a range with only one of the pair, bad hex, a repeated or out-of-order block", () => {
     const bad = (extra: string, re: RegExp) => expect(() => parsePins(base + extra, "x.txt"), extra).toThrow(re);
-    bad(`programVK@100=${VK2}\n`, /needs both programVK@100= and rootC@100=/);
-    bad(`rootC@100=${ROOT2}\n`, /needs both programVK@100= and rootC@100=/);
+    bad(`zisk@100=1.3.1\nprogramVK@100=${VK2}\n`, /needs both programVK@100= and rootC@100=/);
+    bad(`zisk@100=1.3.1\nrootC@100=${ROOT2}\n`, /needs both programVK@100= and rootC@100=/);
     bad(`programVK@100=${VK2}\nrootC@100=0x12\n`, /rootC@100= line of 0x and 64 hex/);
     bad(`programVK@100=${VK2}\nrootC@100=${ROOT2.slice(0, -1)}g\n`, /rootC@100=/);
     bad(`programVK@100=\nrootC@100=${ROOT2}\n`, /programVK@100=/);
@@ -222,11 +222,11 @@ describe("pin key ranges", () => {
     bad(`rootC=${ROOT2}\n`, /rootC= is given twice/);
     bad(`programVK@9007199254740992=${VK2}\nrootC@9007199254740993=${ROOT2}\n`, /block number above 0/);
     bad(`programVK@1234567890123456=${VK2}\nrootC@1234567890123456=${ROOT2}\n`, /block number above 0/);
-    bad(`programVK@200=${VK2}\nrootC@200=${ROOT2}\nprogramVK@100=${VK3}\nrootC@100=${ROOT3}\n`, /increasing order/);
+    bad(`zisk@200=1.3.1\nprogramVK@200=${VK2}\nrootC@200=${ROOT2}\nzisk@100=1.3.1\nprogramVK@100=${VK3}\nrootC@100=${ROOT3}\n`, /increasing order/);
   });
 
   it("names the ZisK release of each range: zisk= for the first and zisk@<block>= for a later one", () => {
-    const p = parsePins(`zisk=1.3.1\n${two}zisk@100=1.3.2\n`, "x.txt");
+    const p = parsePins(`zisk=1.3.1\n${base}zisk@100=1.3.2\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\n`, "x.txt");
     expect(p.keys.map((k) => [k.fromBlock, k.zisk])).toEqual([[0, "1.3.1"], [100, "1.3.2"]]);
     expect(keyFor(p, 99).zisk).toBe("1.3.1");
     expect(keyFor(p, 100).zisk).toBe("1.3.2");
@@ -248,9 +248,29 @@ describe("pin key ranges", () => {
     expect(keyFor(p, 100)).toMatchObject({ programVK: VK2, zisk: "1.3.2" });
   });
 
-  it("puts a file that names no release on 1.3.1, a later range too, and a first range on 1.3.2 when it says so", () => {
-    expect(parsePins(`${base}zisk@100=1.3.2\nprogramVK@100=${VK2}\nrootC@100=${ROOT2}\nprogramVK@200=${VK3}\nrootC@200=${ROOT3}\n`, "x.txt").keys.map((k) => k.zisk)).toEqual(["1.3.1", "1.3.2", "1.3.1"]);
+  it("puts a first range that names no release on 1.3.1, and a first range on 1.3.2 when it says so", () => {
+    expect(parsePins(base, "x.txt").keys[0]!.zisk).toBe("1.3.1");
     expect(parsePins(`zisk=1.3.2\n${base}`, "x.txt").keys[0]!.zisk).toBe("1.3.2");
+  });
+
+  it("refuses a later range that names no ZisK release, whatever the first range says: the release is never guessed", () => {
+    const later = `programVK@100=${VK2}\nrootC@100=${ROOT2}\n`;
+    for (const head of [base, `zisk=1.3.1\n${base}`, `zisk=1.3.2-alpha\n${base}`]) {
+      expect(() => parsePins(head + later, "x.txt"), head).toThrow(/the key from block 100 needs zisk@100= .*release/);
+    }
+    // The second later range is the one that is missing it.
+    expect(() => parsePins(`${base}zisk@100=1.3.2\n${later}programVK@200=${VK3}\nrootC@200=${ROOT3}\n`, "x.txt")).toThrow(/block 200 needs zisk@200=/);
+    // The first range alone, with a switch to 1.4.0 that forgot its release, is the case the switch day must not reach.
+    expect(() => load({}, `zisk=1.3.2\n${base}${later}`)).toThrow(ConfigError);
+  });
+
+  it("reads DevNet's live shape, base on 1.3.1 and key B on 1.3.2 from block 15573, and the coming switch to 1.4.0 on top of it", () => {
+    const B = `zisk=1.3.1\n${base}zisk@15573=1.3.2-alpha\nprogramVK@15573=${VK2}\nrootC@15573=${ROOT2}\n`;
+    expect(parsePins(B, "x.txt").keys.map((k) => [k.fromBlock, k.zisk])).toEqual([[0, "1.3.1"], [15573, "1.3.2"]]);
+    const C = `${B}zisk@20000=1.4.0-alpha\nprogramVK@20000=${VK3}\nrootC@20000=${ROOT3}\n`;
+    const p = parsePins(C, "x.txt");
+    expect(p.keys.map((k) => [k.fromBlock, k.zisk])).toEqual([[0, "1.3.1"], [15573, "1.3.2"], [20000, "1.4.0"]]);
+    expect(p).toMatchObject({ programVK: VK3, rootC: ROOT3 });
   });
 
   it("refuses a release it does not know, a release given twice, and a release for a range that has no key", () => {
@@ -266,7 +286,7 @@ describe("pin key ranges", () => {
   });
 
   it("refuses at startup, naming the file", () => {
-    expect(() => load({}, `${base}programVK@100=${VK2}\n`)).toThrow(ConfigError);
+    expect(() => load({}, `${base}zisk@100=1.3.1\nprogramVK@100=${VK2}\n`)).toThrow(ConfigError);
     expect(load({}, two).pins.keys).toHaveLength(2);
   });
 });

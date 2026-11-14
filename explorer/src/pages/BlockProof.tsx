@@ -25,7 +25,7 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
 }
 
 /** The release the block's key range is under, as the pins name it. */
-const release = (pins: { zisk: string } | undefined) => `ZisK ${pins?.zisk ?? FIRST_ZISK_RELEASE}`;
+const release = (pins: { zisk: string | undefined } | undefined) => (pins && pins.zisk === undefined ? "ZisK release not named by the pins" : `ZisK ${pins?.zisk ?? FIRST_ZISK_RELEASE}`);
 
 /** The compact form of a transaction's page: the three facts as rows of the card, value and verdict on one line, with nothing around them. */
 function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ReturnType<typeof pinsAt> | undefined; block: number }) {
