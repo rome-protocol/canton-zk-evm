@@ -15,6 +15,7 @@ DEFAULT_TIMEOUT = 1800.0       # seconds a prove command may take: the limit pro
 COOLDOWN_START = 30.0          # a prover that went down gets no job for this long, then tries the next one
 COOLDOWN_MAX = 300.0           # the cool-down doubles after each new fault, up to this
 BUSY_RETRY_WAIT = 3.0          # seconds a job waits before it asks a coordinator again that said its workers are busy (a timed-out or abandoned job may still be finishing there)
+NO_WORKER_RETRY_MAX = 30.0     # with one prover: the longest wait before it is asked again after "no ready worker" (--no-worker-retry-seconds); the waits start at the cool-down start and double up to this
 BUSY_RETRIES = 5               # how many times in a row a job asks again before the prover counts as unavailable (a cool-down, like a capacity refusal)
 PROOF_HEX_LENGTH = 2688        # a wrapped proof: 1,344 bytes as lowercase hex
 # What cargo-zisk and the tools under it print when the coordinator cannot be reached (as opposed to refusing or failing a proof).
@@ -57,9 +58,10 @@ class Prover:
     busy: bool = False
     jobs: int = 0
     failures: int = 0
+    no_worker: bool = False         # one prover only: its coordinator last said it has no ready worker (the status file shows it down; state and cool-down are for two or more provers)
 
     def status(self) -> dict:
-        return {"name": self.name, "url": self.url, "state": self.state, "busy": self.busy, "jobs": self.jobs, "failures": self.failures}
+        return {"name": self.name, "url": self.url, "state": "down" if self.no_worker else self.state, "busy": self.busy, "jobs": self.jobs, "failures": self.failures}
 
 
 def parse_provers(specs: list, default_name: str, default_url: str | None = None) -> list:
@@ -161,12 +163,14 @@ class Ticket:
 class Pool:
     def __init__(self, provers: list, timeout: float = DEFAULT_TIMEOUT, clock=time.monotonic, run=run_command,
                  cooldown_start: float = COOLDOWN_START, cooldown_max: float = COOLDOWN_MAX,
-                 busy_wait: float = BUSY_RETRY_WAIT, busy_retries: int = BUSY_RETRIES, stop: threading.Event | None = None):
+                 busy_wait: float = BUSY_RETRY_WAIT, busy_retries: int = BUSY_RETRIES, stop: threading.Event | None = None,
+                 no_worker_retry_max: float = NO_WORKER_RETRY_MAX):
         if not provers:
             raise ValueError("a pool needs at least one prover")
         self.provers, self.timeout, self.clock, self.run = list(provers), timeout, clock, run
         self.cooldown_start, self.cooldown_max = cooldown_start, cooldown_max
         self.busy_wait, self.busy_retries = busy_wait, busy_retries
+        self.no_worker_retry_max = no_worker_retry_max
         self.stop = stop    # set by a stop signal: the waits that follow a coordinator's refusal end (the block is given up, its transactions kept)
         for p in self.provers:
             p.cooldown = cooldown_start
@@ -184,9 +188,12 @@ class Pool:
         return out
 
     def status(self) -> list | None:
-        """The status file's `provers` list; None with one prover, which has no health to report."""
+        """The status file's `provers` list. With one prover it has no health to report (None), except while that prover's coordinator has no
+        ready worker: then the list holds that prover, state down, so a watcher of the status file sees it."""
         with self.cond:
-            return [p.status() for p in self.provers] if self.managed else None
+            if self.managed or any(p.no_worker for p in self.provers):
+                return [p.status() for p in self.provers]
+            return None
 
     def any_up(self) -> bool:
         """True when a job could go to a prover now or when a cool-down is over. With two or more provers the producer cuts nothing while this is False."""
@@ -225,7 +232,7 @@ class Pool:
         avoid_now: list = []  # a prover that just said its workers are busy, while another is free
         busy_asked = 0       # refusals "workers are busy" in a row
         refused = False      # a coordinator refused this job at least once: its later waits end on a stop and it keeps its place in the queue
-        single_wait = self.cooldown_start   # the wait before a lone prover is asked again after "no ready worker"; it doubles
+        single_wait = min(self.cooldown_start, self.no_worker_retry_max)   # the wait before a lone prover is asked again after "no ready worker"; it doubles, up to no_worker_retry_max
         while True:
             prover = self._take(ticket, [t[0] for t in tried] + avoid_now, front=refused, stoppable=refused)
             avoid_now = []
@@ -235,6 +242,8 @@ class Pool:
             try:
                 proof = self._try(prover, job, out)
             except JobError as e:
+                if not self.managed and not (e.unavailable == "capacity" and not e.connection):
+                    self._lone_state(prover, False)   # any answer but "no ready worker": its worker is there
                 if e.unavailable and not e.connection:   # a refusal at once: the prover is unavailable, no proof was tried; the block is not blamed and the failure count does not grow
                     self._release(prover, None, failed=None)
                     if ticket.cancelled:
@@ -256,9 +265,11 @@ class Pool:
                             err.tried = [t[0].name for t in tried]
                             raise err
                     else:              # one prover: wait, then ask again, rather than fail the block over and over
+                        if e.unavailable == "capacity":
+                            self._lone_state(prover, True)   # the status file says so while it waits
                         self._note(f"{prover.name} refused the job ({reason}); asking again in {single_wait:g} s")
                         self._pause(ticket, single_wait)
-                        single_wait = min(single_wait * 2, self.cooldown_max)
+                        single_wait = min(single_wait * 2, self.no_worker_retry_max)
                     continue
                 self._release(prover, e if e.connection and not ticket.cancelled else None, failed=True)   # a cancelled job has no effect on health
                 tried.append((prover, e))
@@ -271,6 +282,8 @@ class Pool:
                 self._release(prover, None, failed=True)
                 raise
             self._release(prover, None, failed=False)
+            if not self.managed:
+                self._lone_state(prover, False)
             if not ticket.cancelled:
                 for earlier, e in tried:   # it failed on one prover and then succeeded on another: that prover is at fault
                     self._down(earlier, f"{e.outcome} on a block that then succeeded on {prover.name}: {str(e)[:120]}")
@@ -382,6 +395,11 @@ class Pool:
             if connection_error is not None and self.managed:   # down in the same step as free, so no waiting job is sent to it
                 self._down(prover, f"connection error: {str(connection_error)[:150]}")
             self.cond.notify_all()
+
+    def _lone_state(self, prover: Prover, no_worker: bool) -> None:
+        """Whether the only prover is down for want of a ready worker, kept for the status file (nothing else reads it: no cool-down, no event, no journal line)."""
+        with self.cond:
+            prover.no_worker = no_worker
 
     def _down(self, prover: Prover, reason: str) -> None:
         if not self.managed:
