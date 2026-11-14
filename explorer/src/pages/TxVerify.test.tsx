@@ -12,6 +12,20 @@ afterEach(cleanup);
 const AA = "0x" + "aa".repeat(32), CD = "0x" + "cd".repeat(32);
 const pins = { programVK: CD, rootC: CD, file: "p.txt", keys: [{ fromBlock: 0, programVK: AA, rootC: AA, zisk: "1.3.1" }, { fromBlock: 500, programVK: CD, rootC: CD, zisk: "1.3.2" }] };
 
+// The program switch to ZisK 1.4.0: key B (1.3.2) for the blocks before the switch block, key C (1.4.0) from it.
+const BB = "0x" + "bb".repeat(32), CC = "0x" + "cc".repeat(32);
+const switchPins = { programVK: CC, rootC: CC, file: "p.txt", keys: [{ fromBlock: 0, programVK: BB, rootC: BB, zisk: "1.3.2" }, { fromBlock: 1000, programVK: CC, rootC: CC, zisk: "1.4.0" }] };
+
+describe("Verify across the switch to ZisK 1.4.0", () => {
+  it.each([[999, BB, "1.3.2"], [1000, CC, "1.4.0"], [1001, CC, "1.4.0"]])("hands the check the key and the ZisK release for block %i", async (number, key, zisk) => {
+    const verify = vi.fn<Verifier>(() => "fail the proof does not verify");
+    render(<TxVerify number={number} blockHash="0x00" pins={switchPins} final proofBytes={1344} load={async () => ({ verify, bytes: 1 })} />);
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(`Verify block ${number}`) }));
+    await vi.waitFor(() => expect(verify).toHaveBeenCalled());
+    expect(verify.mock.calls[0]![1]).toEqual({ programVK: key, rootC: key, zisk });
+  });
+});
+
 describe("Verify on a transaction's page with more than one program key", () => {
   it.each([[499, AA, "1.3.1"], [500, CD, "1.3.2"]])("hands the check the key and the ZisK release for block %i", async (number, key, zisk) => {
     const verify = vi.fn<Verifier>(() => "fail the proof does not verify");

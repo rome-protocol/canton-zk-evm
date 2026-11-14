@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Starts the prover and leaves it running: the coordinator and one GPU worker with the PLONK
-# key loaded, so that each proof does not pay for the start-up. Does nothing if both run already.
+# Starts the prover and leaves it running: the coordinator and one GPU worker with the final SNARK key (our PLONK key) loaded,
+# so that each proof does not pay for the start-up. ZisK 1.4.0 names the flags --snark and --preload-snark; --plonk and --preload-plonk are
+# deprecated aliases of them. Does nothing if both run already.
 #
 # Logs and pid files go to the prover state folder (see common.sh).
 set -euo pipefail
@@ -16,7 +17,7 @@ fi
 nohup zisk-coordinator > "$STATE/logs/coordinator.log" 2>&1 < /dev/null &
 echo $! > "$STATE/coordinator.pid"
 # The worker joins the coordinator on its own port (50051); proofs are requested on ZISK_COORDINATOR_URL.
-nohup zisk-worker --coordinator-url http://127.0.0.1:50051 --gpu --plonk --preload-plonk \
+nohup zisk-worker --coordinator-url http://127.0.0.1:50051 --gpu --snark --preload-snark \
   > "$STATE/logs/worker.log" 2>&1 < /dev/null &
 echo $! > "$STATE/worker.pid"
 

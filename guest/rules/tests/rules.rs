@@ -78,3 +78,30 @@ fn the_hash_survives_the_encoding_the_guest_reads() {
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
     assert!(check(&back.config).is_ok());
 }
+
+// TestNet's chain: the same settings under chain id 770102. A guest is built for one of them, from the genesis file it is given.
+const TESTNET_GENESIS: &str = include_str!("../../../network/genesis-770102.json");
+
+fn testnet_config() -> ChainConfig {
+    #[derive(Deserialize)]
+    struct G {
+        config: ChainConfig,
+    }
+    serde_json::from_str::<G>(TESTNET_GENESIS).unwrap().config
+}
+
+#[test]
+fn testnet_differs_from_devnet_only_in_the_chain_id() {
+    let testnet = testnet_config();
+    assert_eq!(testnet.chain_id, 770102);
+    let mut as_devnet = testnet.clone();
+    as_devnet.chain_id = 770101;
+    assert_eq!(canonical_encoding(&as_devnet), canonical_encoding(&chain_config()));
+    assert_ne!(rules_hash(&testnet), rules_hash(&chain_config()));
+}
+
+#[test]
+fn each_chain_refuses_the_other() {
+    assert!(check(&testnet_config()).is_err());
+    assert!(check(&chain_config()).is_ok());
+}

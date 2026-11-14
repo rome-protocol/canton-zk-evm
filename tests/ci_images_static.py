@@ -17,6 +17,7 @@ NO_PULL = {
     "tests/static.sh", "tests/network_static.sh", "tests/demo_static.sh", "tests/demo_explorer_static.sh", "tests/ci_images_static.py",
     "tests/persist_scripts.sh", "tests/network_checks.sh", "tests/refuses_missing_flag.sh", "tests/pinned_images.sh",
     "tests/demo_sidecar.py",   # a stand-in server: it names tests/demo_rehearsal.sh in its text, and pulls nothing
+    "network/sync_reth.py",   # talks to reth and Canton over HTTP; it names network/restart.sh, which runs it, in its text, and pulls nothing
 }
 SKIP_DIRS = {".git", "node_modules", "target", "dist", ".github"}
 IMAGE = r"[A-Z][A-Z0-9_]*_IMAGE"

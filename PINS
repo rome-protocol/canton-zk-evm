@@ -1,11 +1,15 @@
 # Pinned versions. Plain key=value, read by the scripts and checked by CI.
 CHAIN_ID=770101
+# TestNet's chain id. CHAIN_ID is DevNet's and stays the default; a TestNet build is made from network/genesis-770102.json (its guest, prover/build-guest.sh network/genesis-770102.json), with the Bridge page built with VITE_CHAIN_ID=770102 and the Permit2 hash pinned in network/standard-contracts/contracts.json. tests/static.sh checks that they agree.
+TESTNET_CHAIN_ID=770102
 # The chain's gas limit and block gas cap: genesis gasLimit 0x1c9c380. tests/static.sh checks they agree. This is the cap a new chain starts with:
 # the cap can be raised on a live chain (setup.py --gas-cap-step), and the setup's chain check accepts a chain whose cap is this or higher.
 GAS_CAP=30000000
 RETH_VERSION=2.5.2
 # Each *_IMAGE has a *_IMAGE_ID next to it: the image ID (the config digest of its linux/amd64 manifest, which `docker image inspect --format '{{.Id}}'`
-# prints on the classic image store). The pinned-images action requires an image loaded from the Actions cache to have exactly that ID before it
+# prints on the classic image store). On the containerd image store, which the runners have had since ubuntu-26.04, that command prints the digest of the
+# image itself (the one in *_IMAGE) instead, and the pinned-images action accepts that as the pinned ID there: both name the same content.
+# The action requires an image loaded from the Actions cache to have exactly that ID before it
 # gives it the pinned name, so no cache entry, whoever wrote it, can make a job run anything but the pinned image. To move an image pin, change both
 # lines (the ID is in the registry's manifest for that digest); tests/static.sh checks that every *_IMAGE has its *_IMAGE_ID.
 RETH_IMAGE=ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1
@@ -15,14 +19,47 @@ BUSYBOX_IMAGE_ID=sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db49
 # The image the verifier's compiles run in: it has glibc's shared libraries, which the official linux-amd64 solc builds need (libdl.so.2 and the others; busybox has none). Debian bookworm-slim, by its index digest.
 SOLC_SANDBOX_IMAGE=public.ecr.aws/docker/library/debian@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 SOLC_SANDBOX_IMAGE_ID=sha256:8da84df25d28176be84164040cd45e128c6b4c6a80b7d7cbe17fe2b9f198efc2
-ZISK_VERSION=1.3.2-alpha
-ZISK_COMMIT=1e22630bb7e143c30705a1603ed87cfd3da8c6ec
-ZISK_ETH_CLIENT_VERSION=0.13.1
-ZISK_ETH_CLIENT_COMMIT=edf8adcda75c015f4225abe3aabb3bed03e21beb
-ZISKUP_SHA256=a2d1781f64f31719ef251f55a48c664ab35cdb7431d42167894f94b5fbec64e1
+ZISK_VERSION=1.4.0-alpha
+ZISK_COMMIT=64a1f1664184e76053686745d50c6b9aaa51b034
+ZISK_ETH_CLIENT_VERSION=0.14.0
+ZISK_ETH_CLIENT_COMMIT=dfa27ff2e3544fb3c7467499415830d20de2218d
+ZISKUP_SHA256=82035c8bc4f334e19dfe4edac1e29fc29950100bc2a0cb4f88f39e35367c07ba
+# SHA-256 of the files prover/install.sh installs for ZISK_VERSION: the release binaries (cargo_zisk_linux_amd64.tar.gz of the GitHub release;
+# GitHub shows the same digest) and the Poseidon1 proving key (zisk-provingkey-<version>-poseidon1.tar.gz) from ZisK's setup bucket, which publishes
+# only an md5 of it. ZisK 1.4.0 publishes no PLONK key, and its default final proof (pilfflonk, from the blake3 key) is one our verifier does not check,
+# so our PLONK key is built by prover/build-plonk-key.sh from the Poseidon1 key and the ptau below. install.sh checks both downloads before it
+# installs them; prover/zisk-<version>-keys.sha256 lists every file the Poseidon1 key unpacks to, which install.sh checks after the install.
+ZISK_RELEASE_SHA256=10ebf127e7cb40d46f9c4c5b380cf7a36c6970b4b22ade1118078047ffc97433
+ZISK_STARK_SETUP_SHA256=e839a4453d3571ae01843809e7e313b04b612695159e566cf73904a3abbdab33
+# The five files of our PLONK key that the verifier and the sidecars depend on (under provingKeySnark/: final/final.zkey, final/final.verkey.json, final/PlonkVerifier.sol, vadcop_final.verkey.json, recursivef/recursivef.verkey.json): the proving key and its verification key, the
+# Solidity verifier whose eight commitments are verifier/src/vk.rs ZISK_1_4_0, and the two verification keys of ZisK's final circuits (vadcop_final's is
+# the rootC of every proof). The setup is deterministic: two machines built byte-identical files. build-plonk-key.sh checks what it built against these,
+# and install.sh checks the installed files.
+ZISK_PLONK_FINAL_ZK_SHA256=c2953b148ec4f57343dd8d86c92cbfa398904b82e71cfe134f51cf4ddaae7480
+ZISK_PLONK_FINAL_VK_SHA256=907f675ac645cc0933d749a507c48056cb2c6fd6305bf708705b1827d72e93ae
+ZISK_PLONK_VERIFIER_SHA256=12a7aef80b86860d731185bb092caf65d9c8fd3f27e92a40dae413500d6a9bb1
+ZISK_VADCOP_FINAL_VK_SHA256=65c22b03963919d3183397a110fb728b3143260933392df62bf9351efd815587
+ZISK_RECURSIVEF_VK_SHA256=93aa5969187c7aff85fd3393cc817747510fcd2043b42360113e6a05950d9f70
+# SHA-256 of the node_modules tree that prover/plonk-key/package-lock.json installs (npm ci, install scripts off): every file by its SHA-256 and every
+# link by its target, by name in byte order (node_tree_digest in prover/zisk-artifacts.sh). The lock pins pil2-compiler to a commit.
+PLONK_NODE_TREE_SHA256=1a42799b25925662857a08c0c7613b721551a93104c90ad13321bfb2ac9187ba
+# SHA-256 of prover/plonk-key/publics.json: state-machines/publics.json of ZisK at ZISK_COMMIT, the layout of the final circuit's public inputs, which setup-snark takes.
+ZISK_PUBLICS_INFO_SHA256=1a6ae04d3c3593efe097501e643f58c1f4eee1ed6822141d28a1a7f25775e0de
+# The powers-of-tau file the PLONK key is built on: Hermez's final_24 (54 contributions and a beacon), 19,327,435,928 bytes. build-plonk-key.sh
+# downloads it when it is not in ZISK_ARTIFACTS_DIR and checks both digests. Its blake2b-512 is the one snarkjs's README publishes; the SHA-256 was taken from a copy
+# that matched it. The addresses in ZisK's docs answer 403; https://circom.info/powersOfTau28_hez_final_24.ptau serves it.
+ZISK_PTAU_BLAKE2B=fa404d140d5819d39984833ca5ec3632cd4995f81e82db402371a4de7c2eae8687c62bc632a95b0c6aadba3fb02680a94e09174b7233ccd26d78baca2647c733
+ZISK_PTAU_SHA256=032647abe127f4562f8118dd5f866ab595c1f2bbd03d0a85ff3739a4a967d9be
 # The Rust toolchain the guest is built with: a release of 0xPolygonHermez/rust and the checksum of its linux-x86_64 archive. Without this pin ZisK's installer takes the highest zisk-4.x.y release there is.
-ZISK_TOOLCHAIN=zisk-4.0.0
-ZISK_TOOLCHAIN_SHA256=c4c44b5612dd025f630c2f984ae5f8a862b885c4b14bfc57c980eb8073b8cf62
+ZISK_TOOLCHAIN=zisk-4.1.0
+ZISK_TOOLCHAIN_SHA256=9a9921a558ca652dfc46e5043a92aa70a8ef8ec1be1bbb0f3c392dd7c0b5cfe1
+# The guest this build makes (prover/build-guest.sh, from network/genesis.json): zisk-eth-client v0.14.0 with our chain rules, built with the ZISK_TOOLCHAIN
+# toolchain, under ZisK ZISK_VERSION. Its program key, the root of ZisK's final circuit (the one every proof carries) and the SHA-256 of its ELF were
+# the same on two machines. tests/static.sh checks that they are the ones recorded in prover/fixtures/session.txt, which the sidecars and the explorer
+# are pinned to. The rules hash is guest/fixtures/rules-hash.txt: it did not change with the move to v0.14.0.
+GUEST_PROGRAM_VK=0xce6eccb4ad4809d565267c86e0f70052fb3bdf8fec203dffa5634df52d4298fe
+GUEST_ROOT_C=0xe9414e134bb6945a148a79d44c8e850e5ef582a2b0e8dbfb2428ff0a515a6e66
+GUEST_ELF_SHA256=2473f2bedae8a569046a0691400883755f2b5d116222004810ba797692463f59
 NODE_VERSION=20.20.2
 NODE_SHA256=df770b2a6f130ed8627c9782c988fda9669fa23898329a61a871e32f965e007d
 # The Docker command-line program (the static linux x86_64 build), which the verifier's sandbox tests mount into the pinned Node image (alpine, where the
@@ -42,12 +79,12 @@ EXPLORER_RUST_IMAGE_ID=sha256:3611cb0cae75965ac77adad12783922a7ae75a480ab7bf45dd
 # playwright-core 1.64.1 (mcr.microsoft.com/playwright:v1.64.1-noble, pinned by digest, the multi-arch index).
 EXPLORER_BROWSER_IMAGE=mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
 EXPLORER_BROWSER_IMAGE_ID=sha256:9cfdc77dc3be5a94cd5da6bbfae76431a80fd05ed3e49f3f6c04407efb270d71
-# Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.7.2
-# (GitHub release digital-asset/canton v3.7.2, 2026-11-04, the version Splice 0.10.1 ships; DevNet's validator runs Canton 3.7.2 from Splice 0.10.1) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
+# Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.7.3
+# (GitHub release digital-asset/canton v3.7.3, 2026-11-12; the Canton Network's TestNet runs Canton 3.7.3 from 2026-11-23, and DevNet's validator runs Canton 3.7.2) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
 # from Digital Asset's public registry. DPM_REGISTRY is where the SDK and the compiler are; dpm 1.0.22 is the released one.
 # network/canton/fetch.sh checks every SHA-256 below. The Canton jar comes from the release tarball (one file for every
 # platform) and is checked by the tarball's SHA-256 and by its own. The SDK manifest lists the exact version of each
-# component; its own Canton (3.6.1) is not the one that runs: the network runs the 3.7.2 jar. The registry also has a Daml SDK 3.6.2
+# component; its own Canton (3.6.1) is not the one that runs: the network runs the 3.7.3 jar. The registry also has a Daml SDK 3.6.2
 # (2026-10-20) whose compiler is the same damlc 3.6.2, pinned by content below; moving the SDK pin would change nothing the network uses, so the SDK and compiler pins stay.
 DPM_REGISTRY=europe-docker.pkg.dev/da-images/public
 DPM_VERSION=1.0.22
@@ -59,10 +96,10 @@ DAMLC_VERSION=3.6.2
 # SHA-256 of the registry's manifest for that damlc (Linux x86-64): it lists every file of the compiler by digest, so a
 # tag that was pushed again with other contents is refused (network/canton/check-damlc.sh).
 DAMLC_LINUX_AMD64_MANIFEST_SHA256=87bfc536992de2a79a229cbf432e0de688964f4dfe3170e406b5cd6f39edcedb
-CANTON_VERSION=3.7.2
-CANTON_TARBALL_URL=https://github.com/digital-asset/canton/releases/download/v3.7.2/canton-open-source-3.7.2.tar.gz
-CANTON_TARBALL_SHA256=dc90cb3497f8cddc86298e1d8c6f1c2a5c4bf6c9e4b35b2c641f0d94fa732092
-CANTON_JAR_SHA256=2098d4ab8488ac6e978af5f899b5169f37f1e26d5262ad22a2a5c7666c9664b5
+CANTON_VERSION=3.7.3
+CANTON_TARBALL_URL=https://github.com/digital-asset/canton/releases/download/v3.7.3/canton-open-source-3.7.3.tar.gz
+CANTON_TARBALL_SHA256=366277df57096edc690ebe4bae11c66ff2d9a9d7ad8660493b6da2f62cfd622e
+CANTON_JAR_SHA256=3824a19207b7be4aed3120006e0d48bbd5452196ef1d8b77b2d5ec2f086a9528
 # Canton 3.7 refuses to make a synchronizer on a CI machine unless the protocol version is named. The network runs this one: 37 is the version Canton 3.7 introduces and the one the Canton Network moves to
 # (network/canton/bootstrap.canton refuses another, and the tests check the log says so). 36 ran the same checks on Canton 3.7.1 (PR 147, commit 471abb4).
 export CANTON_PROTOCOL_VERSION=37

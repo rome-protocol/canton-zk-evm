@@ -8,7 +8,7 @@ use zk_explorer_verify::{alloc, answer, answer_ptr, dealloc, verify_block};
 use zk_sidecar::Release;
 
 /// The release the recorded session was made with.
-const RELEASE: Release = Release::V1_3_2;
+const RELEASE: Release = Release::V1_4_0;
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -48,6 +48,14 @@ fn session() -> Session {
         root_c: pin("rootC"),
         proof: unhex(proof.trim()),
     }
+}
+
+/// The block the session proof is for, as `prover/fixtures/block1.json` records it: its header and its transactions.
+fn session_block() -> (Vec<u8>, Vec<u8>) {
+    let text = std::fs::read(format!("{ROOT}/../../prover/fixtures/block1.json")).unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&text).unwrap();
+    let field = |k: &str| unhex(j[k].as_str().unwrap());
+    (field("header"), field("txs"))
 }
 
 /// A real block, but not the one the session proof is for: the sidecar's own test block.
@@ -156,10 +164,24 @@ fn lines_that_are_not_well_formed_are_malformed_input() {
 }
 
 #[test]
+fn the_session_proof_with_its_own_block_passes_in_the_browser_build_too() {
+    let s = session();
+    let (header, txs) = session_block();
+    let l = line(&s.proof, &header, &txs);
+    let expected = answer(s.program_vk, s.root_c, RELEASE, l.as_bytes());
+    assert!(expected.starts_with("ok "), "{expected}");
+    // Through the exported functions with the release byte 2 (ZisK 1.4.0), as the page calls them.
+    let pins = [s.program_vk.as_slice(), s.root_c.as_slice(), &[2]].concat();
+    assert_eq!(exported(&pins, &l), expected);
+    assert_eq!(sidecar(&s, &l), expected);
+}
+
+#[test]
 fn the_exported_functions_answer_the_same() {
     let s = session();
     let (header, txs) = other_block();
-    let pins = [s.program_vk.as_slice(), s.root_c.as_slice(), &[1]].concat();
+    // The release byte 2 is ZisK 1.4.0, the release the session was made with.
+    let pins = [s.program_vk.as_slice(), s.root_c.as_slice(), &[2]].concat();
     for line in [
         line(&s.proof, &header, &txs),
         "nonsense".to_string(),
@@ -206,7 +228,19 @@ fn the_release_byte_picks_the_release_and_an_unknown_one_is_refused() {
             &l,
         )
     };
-    // Releases 1.3.1 and 1.3.2 share one wrapping circuit, so the proof is good under both codes.
+    // ZisK 1.4.0 has its own wrapping key: the session proof is good under code 2 only, and the other
+    // two releases' key refuses it.
+    assert_eq!(
+        with(2),
+        answer(s.program_vk, s.root_c, Release::V1_4_0, l.as_bytes())
+    );
+    assert_eq!(
+        with(2),
+        "no the header does not hash to the proven block hash"
+    );
+    for code in [0, 1] {
+        assert_eq!(with(code), "no the proof does not verify", "code {code}");
+    }
     assert_eq!(
         with(1),
         answer(s.program_vk, s.root_c, Release::V1_3_2, l.as_bytes())
@@ -215,6 +249,6 @@ fn the_release_byte_picks_the_release_and_an_unknown_one_is_refused() {
         with(0),
         answer(s.program_vk, s.root_c, Release::V1_3_1, l.as_bytes())
     );
-    assert_eq!(with(2), "no unknown ZisK release");
+    assert_eq!(with(3), "no unknown ZisK release");
     assert_eq!(with(255), "no unknown ZisK release");
 }

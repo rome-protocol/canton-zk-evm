@@ -12,7 +12,7 @@ We will acknowledge a report within a few working days and tell you what we plan
 
 Ostia is early code. Please read the Status section of the [README](README.md) first:
 
-- the code, and ZisK 1.3.2-alpha that it builds on, have not been audited;
+- the code, and ZisK 1.4.0-alpha that it builds on, have not been audited;
 - it runs on Canton Network DevNet, with a public RPC, explorer, API and faucet at `ostia.devnet.romeprotocol.xyz`, and tROME is a test coin with no value;
 - the gateway party, which holds the Canton tokens locked for their wrapped forms, is hosted on the operator's participant, so whoever runs that participant can move the locked tokens; on DevNet that one participant hosts every Ostia party, and its one sidecar is the only confirmer (threshold 1). A second participant is up with its own sidecar but hosts no party, and a 2-of-2 confirmation is not switched on, so the confirmer is still a single point of trust;
 - there is no bug bounty, and nothing here should be used for anything of value.
@@ -26,6 +26,8 @@ ZisK 1.3.1-alpha has a critical soundness flaw, published as the advisory [GHSA-
 Proofs that were made under 1.3.1-alpha are still accepted for the blocks of chains that ran on it, because those blocks are part of those chains. A proof made under 1.3.1 is only as trustworthy as the prover that made it: the check cannot tell an honest 1.3.1 proof from one made by a prover that used the flaw. The 1.3.1 key therefore stays in the code for a chain that already runs on it, and a new chain is set up on 1.3.2. Ostia DevNet is such a chain: its blocks 0 to 15572 (program key A, programVK `0xdb79251d...`) were proven under 1.3.1, and its blocks from 15573 on (key B, programVK `0x424aeb2b...bd69`) are proven under 1.3.2-alpha, since 12:02 UTC on 27 October 2026. DevNet history before block 15573 therefore carries the 1.3.1 caveat above. The sidecar and the explorer choose the key by the ZisK release of the chain (the sidecar's `--zisk-release`, the pins file's `zisk=`), and a chain that names no release is on 1.3.1.
 
 The two releases have one PLONK wrapping circuit, so one verifying key (see [verifier/README.md](verifier/README.md)). What tells their proofs apart is the program key and the root of the final circuit, which every confirmer pins.
+
+ZisK 1.4.0-alpha, the release this code is built on, has soundness fixes that 1.3.2 lacks, and 1.3.2 is no longer patched upstream. It publishes no PLONK key, so the PLONK key our verifier checks is built by us from ZisK's published proving key (`prover/build-plonk-key.sh`, every file pinned in `PINS`). The sidecar needs no default release: it refuses to start without `--zisk-release`, and a key may be limited to a range of blocks so that a chain that switches from 1.3.2 to 1.4.0 accepts each block only under the key of its own release.
 
 ## What is in scope
 

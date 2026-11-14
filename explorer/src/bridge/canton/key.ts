@@ -7,10 +7,11 @@ import type { Eip1193 } from "../../wallet.ts";
 import { bytesFromHex, hex, sameBytes } from "./bytes.ts";
 import { verifyOnboarding, type TopologyAnswer } from "./topology.ts";
 import { PageError } from "../words.ts";
+import { chainIdFromEnv } from "./env.ts";
 
 export { base64, bytesFromHex, fromBase64, hex, sameBytes } from "./bytes.ts";
 
-export const OSTIA_CHAIN_ID = 770101;   // PINS CHAIN_ID: the wallet must be on this chain, or it refuses to sign typed data for it
+export const OSTIA_CHAIN_ID = chainIdFromEnv(import.meta.env);   // the build's chain (PINS CHAIN_ID, 770101, unless VITE_CHAIN_ID says another): the wallet must be on this chain, or it refuses to sign typed data for it
 export const KEY_INFO = "ostia-bridge canton-key v1";
 export const DIFFERENT_SIGNATURES = "this wallet does not sign the same way twice, so it cannot hold a Canton account here";
 

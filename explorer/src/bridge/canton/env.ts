@@ -33,3 +33,12 @@ export function originFromEnv(env: Record<string, string | undefined>): string {
   if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== origin) throw new Error("VITE_SITE_ORIGIN is not set to an origin (the scheme and the host)");
   return origin;
 }
+
+/** The chain id the page signs for (`VITE_CHAIN_ID`): DevNet's, 770101, when the build sets none; TestNet's build sets 770102 (PINS TESTNET_CHAIN_ID). */
+export function chainIdFromEnv(env: Record<string, string | undefined> | undefined): number {
+  const raw = env?.VITE_CHAIN_ID;
+  if (!raw) return 770101;
+  const id = Number(raw);
+  if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(id) || id <= 0) throw new Error("VITE_CHAIN_ID is not a chain id");
+  return id;
+}

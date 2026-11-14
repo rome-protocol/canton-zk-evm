@@ -12,7 +12,8 @@ unset RUNNER_OS RUNNER_ARCH GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
 
 DIGEST=$(printf 'a%.0s' $(seq 64))
 OTHER=$(printf 'b%.0s' $(seq 64))
-# The fake docker gives an image the ID of its digest with a->c and b->d.
+# The fake docker gives an image the ID of its digest with a->c and b->d (the classic image store: the config digest); with FAKE_ID_IS_DIGEST it gives
+# the digest itself (the containerd image store: the digest of the image).
 ID=sha256:$(printf 'c%.0s' $(seq 64))
 OTHER_ID=sha256:$(printf 'd%.0s' $(seq 64))
 STRANGER_ID=sha256:$(printf 'e%.0s' $(seq 64))
@@ -39,7 +40,7 @@ cat > "$WORK/bin/docker" <<'FAKE'
 echo "$*" >> "$FAKE/calls"
 last=${*: -1}
 hex=${last##*@sha256:}
-idof() { echo "sha256:$(echo "$1" | tr 'ab' 'cd')"; }
+idof() { if [ -n "${FAKE_ID_IS_DIGEST:-}" ]; then echo "sha256:$1"; else echo "sha256:$(echo "$1" | tr 'ab' 'cd')"; fi; }
 # Docker names an image name@digest and ignores a tag that comes with the digest.
 base=${last%@*}; case ${base##*/} in *:*) base=${base%:*} ;; esac; norm=$base@sha256:$hex
 case $1 in
@@ -184,6 +185,45 @@ echo "saved $REF" > "$dir/$DIGEST.tar"
 FAKE_DRIVER_STATUS='[[driver-type io.containerd.snapshotter.v1]]' ensure >/dev/null 2>&1
 [ "$(cat "$FAKE/pulls")" = 1 ] || fail "on the containerd store the image should be pulled"
 ! grep -q '^systemctl' "$FAKE/calls" || fail "Docker was restarted on the containerd store"
+
+echo "== the containerd store: an ID that is the pinned digest is the pinned image (cache hit loads, no restart, one pull for the manifest)"
+CONTAINERD='[[driver-type io.containerd.snapshotter.v1]]'
+fresh cdhit
+resolve TOOL_IMAGE
+echo "saved $REF" > "$dir/$DIGEST.tar"
+FAKE_ID_IS_DIGEST=1 FAKE_DRIVER_STATUS=$CONTAINERD ensure > "$FAKE/log" 2>&1 || { cat "$FAKE/log" >&2; fail "a cached image whose ID is its digest was refused on the containerd store"; }
+! grep -q 'not the pinned image' "$FAKE/log" || fail "a cache entry that loads as the pinned digest was dropped on the containerd store"
+! grep -q '^systemctl' "$FAKE/calls" || fail "Docker was restarted on the containerd store"
+echo "== the containerd store: another ID than the pinned digest or PINS' ID is refused, on a load and on a pull"
+fresh cdstrange
+resolve TOOL_IMAGE
+echo "saved $REF" > "$dir/$DIGEST.tar"
+FAKE_LOAD_ID=$STRANGER_ID FAKE_ID_IS_DIGEST=1 FAKE_DRIVER_STATUS=$CONTAINERD ensure > "$FAKE/log" 2>&1 || fail "did not recover from a wrong cache entry on the containerd store"
+grep -q 'not the pinned image' "$FAKE/log" || fail "a wrong ID was accepted on the containerd store"
+fresh cdpulled
+resolve TOOL_IMAGE
+! FAKE_PULL_ID=$STRANGER_ID FAKE_DRIVER_STATUS=$CONTAINERD ensure >/dev/null 2>&1 || fail "a pulled image with a wrong ID was accepted on the containerd store"
+echo "== the classic store: the digest of the image is not an ID (only the config digest is)"
+fresh classicdigest
+resolve TOOL_IMAGE
+! FAKE_PULL_ID=sha256:$DIGEST ensure >/dev/null 2>&1 || fail "the image digest was accepted as the ID on the classic store"
+
+echo "== verify: the image on the machine is the pinned one, on either store"
+fresh verify
+resolve TOOL_IMAGE
+ensure >/dev/null 2>&1
+runs verify "$WORK/PINS" "TOOL_IMAGE" >/dev/null 2>&1 || fail "verify refused the pinned image"
+fresh verifycd
+resolve TOOL_IMAGE
+FAKE_ID_IS_DIGEST=1 FAKE_DRIVER_STATUS=$CONTAINERD ensure >/dev/null 2>&1
+FAKE_ID_IS_DIGEST=1 FAKE_DRIVER_STATUS=$CONTAINERD runs verify "$WORK/PINS" "TOOL_IMAGE" >/dev/null 2>&1 || fail "verify refused the pinned image on the containerd store"
+! runs verify "$WORK/PINS" "OTHER_IMAGE" >/dev/null 2>&1 || fail "verify accepted an image that is not on the machine"
+fresh verifyid
+resolve TOOL_IMAGE
+FAKE_PULL_ID=$ID ensure >/dev/null 2>&1
+echo "$STRANGER_ID" > "$FAKE/ids/$DIGEST"
+! runs verify "$WORK/PINS" "TOOL_IMAGE" >/dev/null 2>&1 || fail "verify accepted an image with another ID"
+! runs verify "$WORK/PINS" "MISSING_IMAGE" >/dev/null 2>&1 || fail "verify accepted a name that is not in PINS"
 
 echo "== a pull limit: short waits, then the other home of the official image at the same digest"
 fresh mirror

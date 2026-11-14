@@ -250,7 +250,7 @@ describe.skipIf(!process.env.VERIFY_WASM)("the panel with the built module", () 
   const other = JSON.parse(fixture("sidecar/tests/fixtures/block.json").toString()) as { header: string; txs: string };
   // The server's own reader of this file cannot load in a page-like environment, so the two lines are read here.
   const line = (key: string) => new RegExp(`^${key}=(.*)$`, "m").exec(fixture("prover/fixtures/session.txt").toString())![1]!.trim();
-  const pins = { programVK: line("programVK"), rootC: line("rootC"), file: "prover/fixtures/session.txt" };
+  const pins = { programVK: line("programVK"), rootC: line("rootC"), file: "prover/fixtures/session.txt", zisk: "1.4.0" };
 
   it("downloads the file, runs the check on a block that is not the proof's, and shows the check's own reason, the time and the size", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(wasm, { headers: { "content-type": "application/wasm" } })));

@@ -22,6 +22,11 @@ fact() { grep -E "^$1=" "$F/session.txt" | cut -d= -f2-; }
 # shellcheck disable=SC1091
 ZISK_VERSION=$(. "$ROOT/PINS"; echo "$ZISK_VERSION")
 [ "$(fact zisk)" = "$ZISK_VERSION" ] || fail "session.txt is for another ZisK release than PINS"
+# block1.json is the block the proof is for: its hash, number and gas are the session's.
+[ "0x$(jq -r .hash "$F/block1.json")" = "$(fact block_hash)" ] || fail "block1.json is not the block of session.txt (hash)"
+[ "$(jq -r .number "$F/block1.json")" = "$(fact block)" ] || fail "block1.json is not the block of session.txt (number)"
+[ "$(jq -r .gasUsed "$F/block1.json")" = "$(fact gas_used)" ] || fail "block1.json is not the block of session.txt (gas used)"
+[ "$(jq -r .txCount "$F/block1.json")" = "$(fact transactions)" ] || fail "block1.json is not the block of session.txt (transactions)"
 for k in elf_sha256 input_sha256; do
   [[ $(fact $k) =~ ^[0-9a-f]{64}$ ]] || fail "$k in session.txt is not a SHA-256"
 done

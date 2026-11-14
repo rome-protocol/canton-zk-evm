@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use sha2::{Digest, Sha256};
-use zk_sidecar::{verify, verify2, Config};
+use zk_sidecar::{verify, verify2, Config, Key, Release};
 
 fn line(abi: &[u8], header: &[u8], txs: &[u8]) -> String {
     format!("{},{},{}", hex(abi), hex(header), hex(txs))
@@ -34,11 +34,59 @@ fn a_proven_block_is_answered_in_the_readmes_form() {
     assert_eq!(answer, expected);
 }
 
+/// A full pass with the real ZisK 1.4.0 proof and the real block it is for: the proof verifies under the 1.4.0 key and the pins, commits to the
+/// block's hash, and the header and the transactions are that block's.
+#[test]
+fn the_session_proof_with_its_own_block_passes_every_check() {
+    let s = session();
+    let b = session_block();
+    assert_eq!(b.hash, s.block_hash, "the recorded block is the session's");
+    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_4_0);
+    let answer = verify(&cfg, &line(&s.abi, &b.header, &b.txs));
+    let expected = format!(
+        "ok {} {} {} {} {} {} {} {} {} {}",
+        hex(&s.program_vk),
+        hex(&s.root_c),
+        hex(&b.hash),
+        hex(&b.parent),
+        b.number,
+        hex(&b.state_root),
+        b.timestamp,
+        b.gas_limit,
+        b.gas_used,
+        b.tx_count
+    );
+    assert_eq!(answer, expected);
+}
+
+/// The program switch at a block, on the real proof of block 1: the 1.4.0 key is accepted for blocks from the switch block and refused before it.
+#[test]
+fn the_real_1_4_0_proof_is_accepted_from_the_switch_block_and_refused_before_it() {
+    let s = session();
+    let b = session_block();
+    assert_eq!(b.number, 1);
+    let l = line(&s.abi, &b.header, &b.txs);
+    let key = Key::new(s.program_vk, s.root_c, Release::V1_4_0);
+    let refused = "no the proof's key is not valid for this block number";
+    // Switch at block 1: this is the first block under the new key.
+    let cfg = Config::with_keys(vec![key.from_block(1)]).unwrap();
+    assert!(verify(&cfg, &l).starts_with("ok "));
+    // Switch at block 2: block 1 is the last block under the old key, so the new key refuses it.
+    let cfg = Config::with_keys(vec![key.from_block(2)]).unwrap();
+    assert_eq!(verify(&cfg, &l), refused);
+    // The key ends before block 1: the same.
+    let cfg = Config::with_keys(vec![key.before_block(1)]).unwrap();
+    assert_eq!(verify(&cfg, &l), refused);
+    // The key ends after block 1: accepted.
+    let cfg = Config::with_keys(vec![key.before_block(2)]).unwrap();
+    assert!(verify(&cfg, &l).starts_with("ok "));
+}
+
 #[test]
 fn the_session_proof_with_a_header_that_is_not_its_block_is_refused() {
     let s = session();
     let b = reth_block();
-    let cfg = Config::new(s.program_vk, s.root_c);
+    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_4_0);
     assert_eq!(
         verify(&cfg, &line(&s.abi, &b.header, &b.txs)),
         "no the header does not hash to the proven block hash"
@@ -51,7 +99,7 @@ fn a_flipped_proof_byte_is_refused_before_anything_else() {
     let b = reth_block();
     let mut abi = s.abi.clone();
     abi[10] ^= 1;
-    let cfg = Config::new(s.program_vk, s.root_c);
+    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_4_0);
     assert_eq!(
         verify(&cfg, &line(&abi, &b.header, &b.txs)),
         "no the proof does not verify"
@@ -233,7 +281,7 @@ fn verify2_gives_verifys_refusals_for_the_same_fields() {
 fn verify2_gives_verifys_answers_under_the_real_proof_check() {
     let s = session();
     let b = reth_block();
-    let cfg = Config::new(s.program_vk, s.root_c);
+    let cfg = Config::for_release(s.program_vk, s.root_c, Release::V1_4_0);
     let mut flipped = s.abi.clone();
     flipped[10] ^= 1;
     for (abi, want) in [

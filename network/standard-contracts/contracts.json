@@ -165,7 +165,8 @@
    ],
    "runtimeCodeHash": null,
    "knownRuntimeCodeHashes": {
-    "770101": "0x8a0e0f62855880e9ee1cc2460cd0c12c4764e55d97cf0e3b5e4e583d90943ae6"
+    "770101": "0x8a0e0f62855880e9ee1cc2460cd0c12c4764e55d97cf0e3b5e4e583d90943ae6",
+    "770102": "0xd214ab8670d9ff9a6718684279faa078e186df0646c83cfda7f0fd1a6b8f3f58"
    },
    "source": "Uniswap/permit2: the salt is SALT in script/DeployPermit2.s.sol (at the tag 0x000000000022D473030F116dDEE9F6B43aC78BA3, commit cc306b601f172c51bc04334a109e98340456620b, the commit the repository tags with the address). The init code is the 193-byte constructor of that source compiled with solc 0.8.17 (via IR, optimizer 1,000,000 runs, no metadata hash) followed by the runtime of Uniswap's own precompiled helper, test/utils/DeployPermit2.sol at commit cc56ad0f3439c502c246fc5cfcc3db92bb8b7219, with the two 'immutable' slots (chain id, cached domain separator) zeroed and the constructor's two slot offsets set to match. It is the canonical init code because CREATE2 from the deployer above with this salt gives the canonical address: the script checks that on every run, before it sends anything. Permit2 writes the chain id and the domain separator into its runtime code, so its runtime code hash depends on the chain id; the script works the hash out for the chain it runs against."
   }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Rome Protocol
-//! The verifying key of ZisK's final PLONK wrapping circuit for releases 1.3.1 and 1.3.2, and the
-//! curve and circuit constants every release shares. The key is read from ZisK's own generated
-//! `PlonkVerifier.sol`. The 1.2.0 key is here too, but only for the tests; the shared constants are
-//! identical in all the releases' files.
+//! The verifying key of ZisK's final PLONK wrapping circuit for releases 1.3.1, 1.3.2 and 1.4.0, and the
+//! curve and circuit constants every release shares. The 1.3.x key is read from ZisK's own generated
+//! `PlonkVerifier.sol`; the 1.4.0 key from the one our own PLONK setup generates (ZisK 1.4.0 publishes none).
+//! The 1.2.0 key is here too, but only for the tests; the shared constants are identical in all the releases' files.
 
 /// Parses a hex string (no prefix) into bytes, at compile time.
 const fn hex<const N: usize>(s: &str) -> [u8; N] {
@@ -201,6 +201,52 @@ pub const ZISK_1_3_1: VerifyingKey = VerifyingKey::new(
 /// circuit (see above). It has its own name so that a caller picks its key by release, and does not
 /// have to know that two releases share one.
 pub const ZISK_1_3_2: VerifyingKey = ZISK_1_3_1;
+
+/// ZisK 1.4.0-alpha (commit 64a1f1664184e76053686745d50c6b9aaa51b034): our own PLONK key. ZisK 1.4.0 publishes no PLONK
+/// key (its default final proof is pilfflonk), so the key is made by `prover/build-plonk-key.sh`: ZisK's `setup-snark
+/// --final-snark plonk` on ZisK's published Poseidon1 proving key and the Hermez powers-of-tau file, with the Node
+/// packages pinned. These sixteen numbers (constants `Qm`..`Qc` and `S1`..`S3`, as x then y) are read from the
+/// `PlonkVerifier.sol` that setup generates (`provingKeySnark/final/PlonkVerifier.sol`, SHA-256
+/// 12a7aef80b86860d731185bb092caf65d9c8fd3f27e92a40dae413500d6a9bb1, pinned as `ZISK_PLONK_VERIFIER_SHA256` in `PINS`).
+/// The file was built twice on two machines and was byte-identical. It differs from the 1.3.x file in these sixteen
+/// numbers only; the domain, the coset shifts, the G2 points and the field constants are the same (`tests/solidity.rs`
+/// checks all of them against the file). The wrapping circuit is the same shape as 1.3.x's, but over another final
+/// circuit (the Poseidon1 key's), so it has its own commitments: a 1.3.x proof is refused under this key and a 1.4.0
+/// proof under the 1.3.x key.
+pub const ZISK_1_4_0: VerifyingKey = VerifyingKey::new(
+    point(
+        "13f571482c082da88606b054ad55c87e33a75aa12866b02679c5ce34b5790edf",
+        "084a85ac1029e41526d093c748d53fa66f67cb982e321e3c86528dfc4a743018",
+    ),
+    point(
+        "15b8d2c08f7d6d81e9f7ceb3233d3182b929f8358faeeec1d8fbf62f03b8de03",
+        "25fbd822a12db59bb4cf44f6907164e82d60075e32d94cdfd21de60b1a9872e5",
+    ),
+    point(
+        "0dee2b7137cc1f56c61d5b4ccc7efa7b39114b76b75f1fa254740cf9fc0df557",
+        "19ba0955095e7a0f1c701596d7f9ff24b3b140a2d6a73882008f86e986241921",
+    ),
+    point(
+        "27855b6753c6a2e8ff6a9e0d6099ce8fb39fad2793e49f9fca0c563aa4f34f19",
+        "10bcd8911629e0d950d3ca73bef81a1a7b1695d73a7cff2033a97677a6d07bde",
+    ),
+    point(
+        "080193a0355f5596c123e38bb0141258d99501dd5ac6d3286023a338445b2b37",
+        "277589198980a00e862a313498c8b2852c2e0bb7b4b05705db8d7561d1c2ba42",
+    ),
+    point(
+        "1344401d04bc5fd5d8890d16e5ce4850f796725aff13920ac7302f77e37e14f7",
+        "1f7f48123a0146c6d959a508591ce6a472bb255f1b9b06fe9896f4c10f90a9a0",
+    ),
+    point(
+        "077dfb7f61676e90ad4b8068891571138cd6acddcaccc7d19991f390c8e20c5c",
+        "0efb1ec5df65651a5d40e26e7e5528e3ebe26193cefc13ff802f950fbc61b946",
+    ),
+    point(
+        "17af0df08c1f188f8829d228dd9095b48321260393eebcffce70f7dc7d429e08",
+        "00c74cf00465bef8e81dc257171a4705741bfab978f9fcbfd5b966d23830d6b0",
+    ),
+);
 
 /// [1]_1, the G1 generator (1, 2).
 pub const G1_GENERATOR: [u8; 64] = {
