@@ -371,6 +371,17 @@ class Faucet:
         raise HttpError(502, "the validator's wallet did not make the transfer")
 
 
+def keep_relay_token_apart(registries: dict, faucet_token_file) -> None:
+    """SystemExit when a registry's token is the faucet's. The registry relay answers any client with its token (the public relay needs no account), so that token must be a
+    user's own that the registry accepts and that can do no more, never the faucet's admin-level one: a file with the faucet's token, the same file or another, is refused."""
+    if not faucet_token_file:
+        return
+    faucet_token = read_token(faucet_token_file).encode()
+    for admin, (_, path) in registries.items():
+        if path and hmac.compare_digest(read_token(path).encode(), faucet_token):
+            sys.exit(f"--registry-token-file for {admin!r} holds the faucet's token ({faucet_token_file}): the registry relay is open to anyone, so give it a token of its own, of a user with no admin right")
+
+
 def faucet_from(amount, url, bearer_file, per_day: int):
     """The faucet the options ask for, or None when --faucet-amount is not given. SystemExit when it is not right, or the token file can be read by others."""
     if amount is None:
@@ -1322,7 +1333,7 @@ def main(argv=None):
     p.add_argument("--human-check-secret-file", help="the human check's secret: a file with mode 0600, read again for each check")
     p.add_argument("--registry", action="append", metavar="ADMIN=URL", help="the token registry of an instrument admin (https, or a server on this machine): its allocation factory and accept choice contexts "
                    "are relayed to the accounts; the root of its token standard API, for Canton Coin the validator's scan proxy; repeat")
-    p.add_argument("--registry-token-file", action="append", metavar="ADMIN=FILE", help="the file with the bearer token that registry wants, read again for each request; repeat")
+    p.add_argument("--registry-token-file", action="append", metavar="ADMIN=FILE", help="the file with the bearer token that registry wants, read again for each request; repeat. The relay is open to anyone, so this is a token of a user with no admin right, never the one of --faucet-token-file (the service refuses to start when they are the same)")
     p.add_argument("--faucet-amount", help="DevNet ONLY: Canton Coin that the validator's party sends an account when it asks (once a day each); off when not given")
     p.add_argument("--faucet-url", help="the validator's API root for the faucet (https, or a server on this machine), such as https://validator/api/validator")
     p.add_argument("--faucet-token-file", help="the validator's admin-level token for the faucet: a file with mode 0600, read again for each grant")
@@ -1358,6 +1369,7 @@ def main(argv=None):
         sys.exit(f"OSTIA_SHARED_NETWORKS: {e}")
     registries = parse_registries(a.registry, a.registry_token_file)
     faucet = faucet_from(a.faucet_amount, a.faucet_url, a.faucet_token_file, a.faucet_per_day)
+    keep_relay_token_apart(registries, faucet.bearer_file if faucet else None)
     if bool(a.human_check_url) != bool(a.human_check_secret_file):
         sys.exit("--human-check-url and --human-check-secret-file go together")
     if a.account_cap < 1:
