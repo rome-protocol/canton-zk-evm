@@ -544,15 +544,40 @@ class Unavailable(Case):
         self.assertEqual(self.result(ticket, 10).prover, "gpu0")
         self.assertIsNone(pool.status())      # a proof: its worker is there
 
+    def wait_for_calls(self, n, what, wait=5):
+        deadline = time.monotonic() + wait
+        while len(self.calls()) < n and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertGreaterEqual(len(self.calls()), n, f"the prover was not asked {what} in {wait} s: {self.calls()}")
+
     def test_one_prover_that_answers_busy_after_no_ready_worker_is_up_again(self):
         pool = self.pool([A], busy_wait=0.05, busy_retries=0, no_worker_retry_max=2.0)
-        self.script(A, "capacity", "sleep 0", "ok")
+        self.script(A, "capacity", "busy", "ok")
         ticket = pool.submit(self.job())
         deadline = time.monotonic() + 5
         while pool.status() is None and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertEqual(pool.status()[0]["state"], "down")
-        self.result(ticket, 10)
+        self.wait_for_calls(2, "again, with a busy answer")   # waits 0.4 s after the capacity refusal, then 0.8 s after the busy one
+        self.assertEqual(self.calls(), [f"{tag(A)} capacity", f"{tag(A)} busy"])
+        for _ in range(10):   # the busy answer came from its coordinator: its worker is there
+            self.assertIsNone(pool.status())
+            time.sleep(0.03)
+        self.assertEqual(self.result(ticket, 10).prover, "gpu0")
+        self.assertEqual(self.calls(), [f"{tag(A)} capacity", f"{tag(A)} busy", f"{tag(A)} ok"])
+        self.assertIsNone(pool.status())
+
+    def test_a_lone_prover_that_stays_busy_past_the_retries_is_not_shown_down(self):
+        pool = self.pool([A], busy_wait=0.05, busy_retries=1, no_worker_retry_max=2.0)
+        self.script(A, "busy", "busy", "ok")   # busy_retries + 1 busy answers: the job leaves the quick retries and waits the single-prover wait (0.4 s)
+        ticket = pool.submit(self.job())
+        self.wait_for_calls(2, "twice, with a busy answer each time")
+        self.assertEqual(self.calls(), [f"{tag(A)} busy", f"{tag(A)} busy"])
+        for _ in range(10):
+            self.assertIsNone(pool.status())
+            time.sleep(0.03)
+        self.assertEqual(self.result(ticket, 10).prover, "gpu0")
+        self.assertEqual(self.calls(), [f"{tag(A)} busy", f"{tag(A)} busy", f"{tag(A)} ok"])
         self.assertIsNone(pool.status())
 
     def test_a_busy_refusal_alone_never_shows_a_lone_prover_down(self):
