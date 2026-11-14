@@ -1,6 +1,6 @@
 """The prover pool in the builder's loop: --prover and --prove-timeout, the `prover` journal lines and the status file's `provers` list with two
 or more provers, and nothing of them with one. The stand-in prover's answers are set per job (fake-prove.sh, FAKE_PROVER_PLAN)."""
-import contextlib, io, json, os, re, sys, tempfile, threading, unittest
+import contextlib, io, json, os, re, sys, tempfile, threading, time, unittest
 from unittest import mock
 from pathlib import Path
 
@@ -123,6 +123,32 @@ class Wiring(Loop):
         self.assertEqual(self.lines(s, "proof_ended")[-1]["prover"], "fake-prove.sh")
         self.assertIn(tag(A), (self.plan / "log").read_text())   # the one prover's URL still reached the prove command
 
+    def test_one_prover_without_a_ready_worker_is_down_in_the_status_file_while_the_loop_waits(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        self.script(A, "capacity", "capacity", "ok")
+        s.cfg.pool = b.new_pool(pv.parse_provers([f"local={A}"], "fake-prove.sh"), 60, no_worker_retry_max=0.6)
+        p = self.producer(s, status_tick=0.01)
+        done = threading.Event()
+        t = threading.Thread(target=p.tick_status, args=(done,), daemon=True)
+        p.write_status()
+        self.assertNotIn("provers", self.status())
+        t.start()
+        stepper = threading.Thread(target=p.step, daemon=True)   # one step: the block waits for its prover
+        stepper.start()
+        deadline = time.time() + 20
+        seen = None
+        while time.time() < deadline and not seen:
+            seen = [(x["name"], x["state"]) for x in self.status().get("provers", [])]
+            time.sleep(0.01)
+        self.assertEqual(seen, [("local", "down")])   # a watcher of the status file sees it
+        stepper.join(60)
+        self.assertFalse(stepper.is_alive())
+        self.assertTrue(self.reports[-1]["committed"])
+        p.write_status()
+        self.assertNotIn("provers", self.status())    # its worker came back and proved
+        done.set()
+        t.join(5)
+
     def test_the_ok_end_keeps_its_old_key_order_with_one_prover(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         p = self.producer_with(s, [f"a={A}"])
@@ -150,7 +176,12 @@ class Wiring(Loop):
         a = ap.parse_args(["run", "--prover", f"a={A}", "--prover", f"b={B_}", "--prove-timeout", "90", "--prover-input-dir", "/x"])
         self.assertEqual((a.prover, a.prove_timeout, a.prover_input_dir), ([f"a={A}", f"b={B_}"], 90, "/x"))
         d = ap.parse_args(["run"])
-        self.assertEqual((d.prover, d.prove_timeout), ([], pv.DEFAULT_TIMEOUT))
+        self.assertEqual((d.prover, d.prove_timeout, d.no_worker_retry_seconds), ([], pv.DEFAULT_TIMEOUT, 30.0))
+        self.assertEqual(ap.parse_args(["run", "--no-worker-retry-seconds", "10"]).no_worker_retry_seconds, 10)
+        for bad in ("0", "0.5", "-3", "nan"):
+            with mock.patch.object(sys, "argv", ["builder", "run", "--no-worker-retry-seconds", bad]), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(b.main(), 1)
+            self.assertIn("--no-worker-retry-seconds must be at least 1", out.getvalue())
         with self.assertRaises(ValueError):
             pv.parse_provers(["a=nonsense"], "x")
         for bad in ("0", "0.5", "-3", "nan", "inf"):   # the prove command reads whole seconds, and 0 means no limit there
