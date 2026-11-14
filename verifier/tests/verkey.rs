@@ -52,6 +52,13 @@ fn decimal(v: &serde_json::Value) -> [u8; 32] {
     out
 }
 
+/// A small number as 32 big-endian bytes, so that all 32 bytes of the file's number are compared, not its last one.
+fn small(n: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..].copy_from_slice(&n.to_be_bytes());
+    out
+}
+
 /// A G1 point, `[x, y, "1"]`, as x then y.
 fn g1(v: &serde_json::Value) -> Vec<u8> {
     let p = v.as_array().unwrap();
@@ -87,8 +94,8 @@ fn everything_else_the_check_shares_is_the_same_in_the_pinned_verification_key()
     assert_eq!(j["curve"], "bn128");
     assert_eq!(j["nPublic"], 1);
     assert_eq!(j["power"], vk::POWER);
-    assert_eq!(decimal(&j["k1"])[31], vk::K1 as u8);
-    assert_eq!(decimal(&j["k2"])[31], vk::K2 as u8);
+    assert_eq!(decimal(&j["k1"]), small(vk::K1));
+    assert_eq!(decimal(&j["k2"]), small(vk::K2));
     assert_eq!(decimal(&j["w"]), vk::OMEGA);
     // [x]_2 as x1 || x0 || y1 || y0 (the file has each coordinate as [x0, x1]).
     let x2 = &j["X_2"];

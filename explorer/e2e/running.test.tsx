@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { ApiStatus } from "../src/api.ts";
+import { pinsAt } from "../src/pins.ts";
 import { renderApp } from "../src/test-utils.tsx";
 import { loadVerifier } from "../src/verify/verifier.ts";
 
@@ -84,8 +86,8 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
   it("gives the same no from the check itself, run through the pages' own loader on the block's record and the explorer's pins", async () => {
     const get = async (path: string) => (await fetch(new URL(path, explorer))) as Response;
     const { canton } = await (await get(`/api/block/${run1.get("block")}`)).json() as { canton: { proofHex: string; headerHex: string; txsHex: string } };
-    const { pins } = await (await get("/api/status")).json() as { pins: { programVK: string; rootC: string } };
+    const { pins } = await (await get("/api/status")).json() as { pins: ApiStatus["pins"] };
     const verify = await loadVerifier(await get("/verify/zk_explorer_verify.wasm"));
-    expect(verify({ proofHex: canton.proofHex, headerHex: canton.headerHex, txsHex: canton.txsHex }, pins)).toBe("no the proof does not verify");
+    expect(verify({ proofHex: canton.proofHex, headerHex: canton.headerHex, txsHex: canton.txsHex }, pinsAt(pins, Number(run1.get("block"))))).toBe("no the proof does not verify");
   }, 90_000);
 });
