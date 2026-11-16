@@ -112,7 +112,7 @@ const MOVE_SENTENCES: [RegExp, string][] = [
   [/another wallet account or Canton party/, "This move was started with another account. Switch back to it to continue, or give it up."],
   [/earlier move of this account is kept/, "An earlier move is not finished. Continue it, or give it up, before starting another."],
   [/could not be given an id/, GENERIC],
-  [/has not accepted twins/, "Your Canton account has not accepted this token yet. Open your Canton account first."],
+  [/has not accepted twins/, "Your Canton account has not accepted this token yet. Accept it with your Canton wallet first."],
   [/twin registry/, "The bridge could not be reached right now. Try again in a moment."],
   [/approval did not give/, "The approval did not cover the amount. Continue to try again."],
   [/Your (?:lock|redeem|deposit|withdrawal) is saved\. Continue to sign it on Canton/, "Your move is saved. Continue to sign it on Canton."],

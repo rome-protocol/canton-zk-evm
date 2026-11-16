@@ -1,6 +1,6 @@
 // What the Bridge page is built with, read from the build's environment (`VITE_*`). Kept apart from the signing code so that the page can read its settings without loading it.
 
-/** Whether the build has the Bridge account made from a wallet signature (`VITE_BRIDGE_ACCOUNT`): only the exact value `on` turns it on. Unset, empty or anything else is off, which is the default and the TestNet build. */
+/** Whether the build has the Bridge account made from a wallet signature (`VITE_BRIDGE_ACCOUNT`): only the value `on` (any letter case) turns it on. Unset, empty or anything else is off, which is the default and the TestNet build. */
 export function bridgeAccountFromEnv(env: Record<string, string | undefined>): boolean {
   return (env.VITE_BRIDGE_ACCOUNT ?? "").trim().toLowerCase() === "on";
 }
