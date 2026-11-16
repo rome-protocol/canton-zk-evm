@@ -243,7 +243,7 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
       });
     });
 
-    it("lists the newest transactions that are not final in /api/in-flight, as waiting or being proven, and leaves out the final, replaced and dropped ones", async () => {
+    it("lists the newest transactions that are not final in /api/in-flight, as waiting or being proven, and leaves out the final, replaced and dropped ones, and those not touched for an hour", async () => {
       await withDatabase(async (pool) => {
         const { get } = await served(pool, [{ txs: 1 }]);
         const h = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32);
@@ -252,6 +252,9 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
         const t = Date.now() - 60_000;
         await row(0xa1, "pending", t + 3000); await row(0xa2, "proving", t + 2000); await row(0xa3, "pending", t + 1000);
         await row(0xa4, "final", t + 4000); await row(0xa5, "dropped", t + 5000); await row(0xa6, "replaced", t + 6000); await row(0xa7, "lost", t + 7000);
+        const old = Date.now() - 2 * 3_600_000; // an hour old and more: it left the pool without a close, so it is not waiting any more
+        await row(0xb1, "pending", old); await row(0xb2, "proving", old);
+        await pool.query("insert into tx_lifecycle (tx_hash, state, accepted_at, updated_at) values (decode($1, 'hex'), 'pending', null, $2)", [h(0xb3).slice(2), new Date(old)]); // held back: no accepted_at
         const body = (await get("/api/in-flight")).body as { transactions: Array<Record<string, unknown>> };
         expect(body.transactions).toEqual([
           { hash: h(0xa1), stage: "waiting", at: iso(t + 3000) }, { hash: h(0xa2), stage: "proving", at: iso(t + 2000) }, { hash: h(0xa3), stage: "waiting", at: iso(t + 1000) },

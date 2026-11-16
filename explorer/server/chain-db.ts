@@ -231,9 +231,10 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
       };
     });
     const [p] = await query(`select waiting, ${MS("at")} as at from pool_samples order by at desc limit 1`);
-    // The newest not-final transactions, by the journal's state. Replaced, dropped and lost ones will not be in a block, so they are not in flight.
+    // The newest not-final transactions, by the journal's state, from the last hour like the attempts. Replaced, dropped and lost ones will not be in a block, so they are not in flight,
+    // and one that left the pool without a close (a producer restart, a held-back one) would otherwise stay waiting for ever.
     const txs = await query(
-      `select tx_hash, state, ${MS("coalesce(accepted_at, updated_at)")} as at from tx_lifecycle where state in ('pending', 'proving') order by coalesce(accepted_at, updated_at) desc, tx_hash limit $1`,
+      `select tx_hash, state, ${MS("coalesce(accepted_at, updated_at)")} as at from tx_lifecycle where state in ('pending', 'proving') and coalesce(accepted_at, updated_at) > now() - interval '1 hour' order by coalesce(accepted_at, updated_at) desc, tx_hash limit $1`,
       [TXS_IN_FLIGHT],
     );
     const transactions = txs.map((r): InFlightTx => ({ hash: hex(r.tx_hash), stage: r.state === "proving" ? "proving" : "waiting", at: r.at }));
