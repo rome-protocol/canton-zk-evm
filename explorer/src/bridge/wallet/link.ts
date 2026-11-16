@@ -1,7 +1,7 @@
 // A connected Canton wallet, as the Bridge uses it: the account it holds (a party id), what it is called, the one call that has it show, sign and send a command, and the one call that reads the ledger as
 // that party. The wallet speaks the dApp standard (CIP-0103: `request({ method, params })` and events), so any provider of that shape fits: the SDK's, Loop's, or a fake one in a test.
 // The page never signs here: the wallet decides what it signs, and shows it to its person first. Nothing in this file imports the wallet libraries.
-import { AccountsError, Unanswered } from "../canton/accounts.ts";
+import { AccountsError, Unanswered } from "../canton/answers.ts";
 import type { Built } from "../canton/commands.ts";
 import { PROVISIONAL_RECORD_MS, Refused } from "../moves/moves.ts";
 

@@ -3,6 +3,7 @@ import { chainFromEnv, originFromEnv, participantFromEnv, partyHintFromEnv, type
 
 export interface Settings {
   chain: Chain;
+  /** The participant that hosts the accounts (`VITE_CANTON_PARTICIPANT`); "" in a build without the Bridge account, which has no account to host. */
   participant: string;
   /** The name an account is given before its key's fingerprint (`VITE_PARTY_HINT`, `rome` by default). */
   partyHint: string;
@@ -19,9 +20,14 @@ export function accountsBase(url = "/accounts"): string {
   return "";
 }
 
-/** Throws when a setting the page needs is missing: the page then says the bridge is not set up here. */
-export function settingsFromEnv(env: Record<string, string | undefined>): Settings {
-  return { chain: chainFromEnv(env), participant: participantFromEnv(env), partyHint: partyHintFromEnv(env), accountsBase: accountsBase(env.VITE_ACCOUNTS_URL || undefined), origin: originFromEnv(env) };
+/**
+ * Throws when a setting the page needs is missing: the page then says the bridge is not set up here. The participant, the party hint and the service's path are the Bridge account's (`account`, this build's
+ * VITE_BRIDGE_ACCOUNT): a build without it needs and reads none of them.
+ */
+export function settingsFromEnv(env: Record<string, string | undefined>, account: boolean = __BRIDGE_ACCOUNT__): Settings {
+  const chain = chainFromEnv(env), origin = originFromEnv(env);
+  if (!account) return { chain, participant: "", partyHint: "", accountsBase: "", origin };
+  return { chain, participant: participantFromEnv(env), partyHint: partyHintFromEnv(env), accountsBase: accountsBase(env.VITE_ACCOUNTS_URL || undefined), origin };
 }
 /** The settings of this build, or null when the bridge is not set up in it. */
 export function buildSettings(): Settings | null {

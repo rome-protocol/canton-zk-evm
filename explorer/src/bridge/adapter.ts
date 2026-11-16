@@ -1,7 +1,8 @@
 // The Canton side of a move, on the account service: what `createMove` asks of `CantonAdapter`, built from the account library. Every call looks at the ledger first and does
 // nothing again for a ref, a label or a deposit id that is already there: a reload may come before or after a command reached the ledger, and the move cannot tell which.
 import type { Address, Hex } from "viem";
-import { AccountsError, factoryChoice, withdrawChoice, type AccountsClient, type Holding } from "./canton/accounts.ts";
+import { AccountsError, factoryChoice, withdrawChoice, type Holding } from "./canton/answers.ts";
+import type { AccountsClient } from "./canton/accounts.ts";
 import { allocate, archiveDepositRequest, archiveRedeemRequest, depositRequest, redeemRequest, withdrawAllocation, type Allocation, type Built, type Chain } from "./canton/commands.ts";
 import type { CantonKey } from "./canton/key.ts";
 import { permanent, Refused, Waited, type CantonAdapter } from "./moves/moves.ts";

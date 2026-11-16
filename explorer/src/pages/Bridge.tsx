@@ -12,7 +12,8 @@ import { useStatus } from "../useStatus.ts";
 import { injected, noWalletWords, onPhone, useWallet } from "../wallet.ts";
 import { HelpLine, OutLink, StillStuck } from "../components/Help.tsx";
 import { MOVES_ARE_PUBLIC, SIGN_IN_NO_RECOVERY, SIGN_IN_SAME_ACCOUNT, TRUST_MODEL_URL } from "../copy.ts";
-import { browserKeyStore } from "../bridge/canton/keystore.ts";
+import { forgetKeptKeys } from "../bridge/retired.ts";
+import { accountCode, keystoreCode, senderCode } from "../bridge/derived.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
 import { walletsFromEnv } from "../bridge/wallet/wallets.ts";
@@ -52,8 +53,13 @@ async function coinAdmin(): Promise<string> {
   return admin;
 }
 
-/** The Bridge route: the account sheet, the Canton account opened from the wallet, with the test coins. */
+/**
+ * The Bridge route: the account sheet, the Canton account, with the test coins. In a build with the Bridge account made from a wallet signature (`__BRIDGE_ACCOUNT__`) the account is opened from the wallet's signature
+ * or is a connected Canton wallet's; in every other build it is the person's own Canton wallet's alone, and the page has no sign-in, no key and no Canton Coin faucet.
+ */
 export function Bridge() {
+  /** This build has the Bridge account (VITE_BRIDGE_ACCOUNT=on). Its code is loaded through src/bridge/derived.ts, which is empty in a build without it. */
+  const accountOn = __BRIDGE_ACCOUNT__;
   const st = useStatus();
   const settings = useMemo(buildSettings, []);
   /** The Canton wallets this build offers (VITE_CANTON_WALLETS): none, and the page is the Bridge as it was. */
@@ -93,6 +99,8 @@ export function Bridge() {
   /** True while a kept account is being looked for and reopened: a sign-in started now would ask the wallet for a signature the reopen does not need. */
   const reopening = useRef(false);
   const [closeNote, setCloseNote] = useState<string | null>(null);
+  // A build without the Bridge account deletes the key store that an earlier build of this site made in this browser (once: retired.ts).
+  useEffect(() => { if (!accountOn) void forgetKeptKeys(); }, [accountOn]);
   const clear = () => { setPhase({ s: "idle" }); setCoin({ s: "idle" }); setRome({ s: "idle" }); setComing(false); setCopied(false); setSheet(false); setEvm(null); setSession(null); setSender(null); setGas(null); setHeld({}); setCloseNote(null); };
   useEffect(() => {
     epoch.current++;
@@ -103,17 +111,19 @@ export function Bridge() {
     // An account this browser kept for this wallet address opens again without a signature (a reload, or the wallet coming back to an address it opened before). Nothing kept, or any
     // failure, leaves the sign-in as it was.
     const address = wallet.account;
-    if (!address || !settings || location.origin !== settings.origin) return;
+    if (!accountOn || !address || !settings || location.origin !== settings.origin) return;
     const mine = epoch.current, same = () => epoch.current === mine;
     reopening.current = true;
     (async () => {
       // The signing code is fetched only when this browser keeps a key for this address; otherwise it is fetched when the person signs in.
-      const store = browserKeyStore();
-      if (!(await store.load(address))) return;
+      const kept = await keystoreCode();
+      const store = kept?.browserKeyStore();
+      if (!store || !(await store.load(address))) return;
       // From here the page is busy with the reopen: the sign-in button is off and a sign-in started by other means returns at once.
       if (same()) setPhase({ s: "working", note: "Opening your account." });
-      const { reopenAccount } = await import("../bridge/account.ts");
-      const account = await reopenAccount(address, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same, store);
+      const code = await accountCode();
+      if (!code) return setPhase({ s: "idle" });
+      const account = await code.reopenAccount(address, settings, (note) => { if (same()) setPhase({ s: "working", note }); }, undefined, same, store);
       if (!same()) return account?.close();
       if (!account) return setPhase({ s: "idle" });
       holding.current = account;
@@ -159,7 +169,7 @@ export function Bridge() {
     // Sending and accepting are the Bridge account's: a connected wallet does them in the wallet itself.
     if (!derived || canton.link) { setSender(null); return; }
     let live = true;
-    import("../bridge/send.ts").then((m) => { if (live) setSender(m.createSender(derived)); }, () => {});
+    senderCode().then((m) => { if (live && m) setSender(m.createSender(derived)); }, () => {});
     return () => { live = false; };
   }, [derived, canton.link]);
 
@@ -180,7 +190,7 @@ export function Bridge() {
   const chain = st.data!;
   const sym = chain.coin.symbol;
   const here = location.origin;
-  const wrongSite = settings !== null && here !== settings.origin;
+  const wrongSite = accountOn && settings !== null && here !== settings.origin;
   const amount = info ? `${formatCoin(info.amount, chain.coin.decimals)} ${sym}` : `test ${sym}`;
 
   async function signIn() {
@@ -194,8 +204,9 @@ export function Bridge() {
       const on = await ensureOstia(w, chain);
       if (!same()) return;
       if (!on.ok) return setPhase({ s: "failed", message: plainText(on.message) ?? "Your wallet is not on " + chain.chainName + " yet." });
-      const { openAccount } = await import("../bridge/account.ts");
-      const account = await openAccount(w, wallet.account, settings, (note, warning) => { if (same()) setPhase({ s: "working", note, warning }); }, undefined, same);
+      const code = await accountCode();
+      if (!code) return setPhase({ s: "idle" });
+      const account = await code.openAccount(w, wallet.account, settings, (note, warning) => { if (same()) setPhase({ s: "working", note, warning }); }, undefined, same);
       if (!same()) return account.close();
       holding.current = account;
       setPhase({ s: "ready", account });
@@ -205,8 +216,9 @@ export function Bridge() {
   async function closeHere(account: Account) {
     if (!wallet.account) return;
     try {
-      const { closeAccount } = await import("../bridge/account.ts");
-      await closeAccount(account, wallet.account);
+      const code = await accountCode();
+      if (!code) return;
+      await code.closeAccount(account, wallet.account);
       epoch.current++;
       holding.current = null;
       clear();
@@ -216,8 +228,9 @@ export function Bridge() {
     const mine = epoch.current, same = () => epoch.current === mine;
     setCoin({ s: "working" });
     try {
-      const { getTestCoin } = await import("../bridge/account.ts");
-      const done = await getTestCoin(account, await coinAdmin());
+      const code = await accountCode();
+      if (!code) return setCoin({ s: "off" });
+      const done = await code.getTestCoin(account, await coinAdmin());
       if (same()) { setCoin(done === "off" ? { s: "off" } : { s: "done", message: "Test Canton Coin is in your account." }); setRefresh((n) => n + 1); }
     } catch (e) { if (same()) setCoin({ s: "failed", message: plainWords(e) }); }
   }
@@ -239,7 +252,9 @@ export function Bridge() {
   const openSheet = () => { setSheet(true); setNudge((n) => n + 1); };
   const showSheet = sheet || phase.s !== "idle" || (wrongSite && connected) || canton.state.s !== "idle";
   /** The sheet is the Canton wallet's while one is being connected or is connected, and at first when the build offers wallets (the Bridge account from MetaMask is one click away). */
-  const walletSheet = canton.on && !bridgeAccount && (canton.state.s !== "idle" || phase.s !== "ready");
+  const walletSheet = !accountOn || (canton.on && !bridgeAccount && (canton.state.s !== "idle" || phase.s !== "ready"));
+  /** What the card's button and an Activity row say when the Canton account is not there yet: a build without the Bridge account sends the person to their own wallet; a build with it says what it always said. */
+  const openLabel = canton.link ? "Opt in with your wallet" : accountOn ? undefined : "Connect your Canton wallet";
   /** "Use a Bridge account from your wallet": the person's choice decides the sheet, whatever the wallet's connection was doing. */
   const toBridgeAccount = () => { canton.reset(); setBridgeAccount(true); setSheet(true); };
   /** "Connect your Canton wallet" from any sheet: the wallet sheet comes back and the connection starts. */
@@ -262,7 +277,7 @@ export function Bridge() {
       {settings && (
         <div className="panel" role="tabpanel" id="bridge-panel-move" aria-labelledby="bridge-tab-move" hidden={tab !== "move"}>
           <MoveCard
-            config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} openLabel={canton.link ? "Opt in with your wallet" : undefined} cantonWallet={canton.link?.name ?? null} chainName={chain.chainName}
+            config={config} configState={cfg.s} gateway={settings.chain.gateway} account={wallet.account} evm={evm} session={session} accountOpen={opened !== null} openLabel={openLabel} cantonWallet={canton.link?.name ?? null} chainName={chain.chainName}
             onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain}
             faucet={faucetOn ? { label: `Get ${amount}`, busy: rome.s === "working", coming, onGet: getRome, extra: <BuilderGrant info={info} address={wallet.account} coin={chain.coin} /> } : null} onGas={setGas} refresh={refresh} poll={poll} onCanton={setHeld} onMoved={() => setRefresh((n) => n + 1)}
           />
@@ -271,7 +286,7 @@ export function Bridge() {
       )}
       {settings && tab === "activity" && (
         <div className="panel" role="tabpanel" id="bridge-panel-activity" aria-labelledby="bridge-tab-activity">
-          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} ensureChain={ensureChain} />
+          <Activity account={wallet.account} session={session} store={store} pairs={pairs} chainName={chain.chainName} onConnect={connect} connectNote={walletNote} onOpenAccount={openSheet} openLabel={accountOn ? undefined : openLabel} ensureChain={ensureChain} />
         </div>
       )}
       {!ready && note(rome)}
@@ -280,7 +295,7 @@ export function Bridge() {
         <section className="card account" aria-label="Your Canton account" ref={sheetRef}>
           <CardHead title="Your Canton account" as="h2" />
           {walletSheet ? (
-            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => { setSheet(true); void canton.disconnect(); }} onBridgeAccount={toBridgeAccount} />
+            <CantonWalletSheet state={canton.state} onConnect={() => void canton.connect()} onPick={(id) => void canton.pick(id)} onOptIn={() => void canton.optIn()} onDisconnect={() => { setSheet(true); void canton.disconnect(); }} onBridgeAccount={accountOn ? toBridgeAccount : undefined} available={canton.on} />
           ) : phase.s === "ready" ? (
             <>
               <p className="ready"><span className="sd ok"><i /><b>Ready</b></span> <span className="mono" title={phase.account.party}>{short(phase.account.party, 16, 6)}</span>

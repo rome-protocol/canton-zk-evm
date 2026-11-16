@@ -14,6 +14,7 @@ describe("copy that must match the trust model", () => {
     expect(ACCOUNT_KEY_WORDS).toMatch(/Rome runs the node that hosts this account/);
     expect(ACCOUNT_KEY_WORDS).toMatch(/you trust Rome/);
     expect(TWINS_HOLDERS).toMatch(/Rome's participants/);
+    expect(TWINS_HOLDERS).not.toMatch(/Bridge account/);   // the account made from a wallet signature is not offered in every build
   });
   it("names no one wallet where any wallet works", () => {
     expect(NO_WALLET).toMatch(/wallet extension/);

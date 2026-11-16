@@ -99,6 +99,8 @@ Anyone with a browser wallet can move tokens between Ostia and Canton on their o
 3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's participant allows up to 1000 accounts.
 4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; your wallet asks only for the Ostia steps. A line under the button says about how long the move takes and how many wallet pop-ups it needs; open it to see each step.
 
+These steps are for a build of the explorer with the Bridge account, the Canton account made from a wallet signature (`VITE_BRIDGE_ACCOUNT=on`). A build without it, which is the default and the shape TestNet takes, has no sign-in, no key made from a signature and no Canton Coin faucet button: the card's button says Connect your Canton wallet, the Canton account is the one in the wallet a person already has, and until a build lists a wallet the button is disabled and says Coming soon. The tROME faucet and the builder grant are the explorer's own and work in both.
+
 The four moves:
 
 | Move | Wallet pop-ups | Measured |

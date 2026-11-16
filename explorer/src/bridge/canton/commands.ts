@@ -2,7 +2,7 @@
 // arguments are the intent, in the order of the Daml fields) and what its transaction may be. Fields are in the order the Daml declares them.
 import type { Command, DisclosedContract } from "./accounts.ts";
 import type { Chain } from "./env.ts";
-import { hex } from "./key.ts";
+import { hex } from "./bytes.ts";
 
 export interface Intent {
   party: string;                                                  // the account: the only actor, and the only signatory of a create

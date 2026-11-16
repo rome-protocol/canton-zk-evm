@@ -5,8 +5,7 @@ import { timeoutSignal } from "../../timeout.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
 import { approveCall, claimCall, definitelyNotSent, payCall, releaseCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
-import { UnexpectedTransaction } from "../canton/sign.ts";
-import { Unanswered } from "../canton/accounts.ts";
+import { UnexpectedTransaction, Unanswered } from "../canton/answers.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
   clearCheckpoint, depositIdOf, keptMoves, loadCheckpoint, lockIdOf, releaseIdOf, sameId, saveCheckpoint, TAKE_BACK_STAGES, transition,

@@ -2,7 +2,7 @@
 // come from the wallet's ledger and the public registry route (ledger.ts), and each command goes to the wallet, which shows it to its person, signs it and sends it (link.ts). So every rule of that adapter holds
 // here too: each call looks at the ledger first and does nothing again for a ref, a label or a deposit id that is already there, and nothing is signed twice after a reload. The page's own check of a
 // prepared transaction (canton/sign.ts) does not run on this path: the wallet prepares the transaction itself, and it is the wallet that shows it.
-import { AccountsError } from "../canton/accounts.ts";
+import { AccountsError } from "../canton/answers.ts";
 import { twinAcceptance, withdrawalAcceptance, type Built, type Chain } from "../canton/commands.ts";
 import type { CantonKey } from "../canton/key.ts";
 import { PageError } from "../words.ts";
