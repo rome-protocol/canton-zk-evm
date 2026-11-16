@@ -24,7 +24,7 @@ ZisK 1.2.0 has its own key, so a 1.2.0 proof is refused under the 1.3 key. ZisK 
 
 The root of the final circuit that each release pins (`rootC`) is the `vadcop_final` root in ZisK's own published `zisk-verifykey-<release>.tar.gz` (`vadcop_final.verkey.bin`, four little-endian 64-bit words), for 1.3.1-alpha and for 1.3.2-alpha, so the pins have a second source besides the installed setup.
 
-ZisK 1.3.1 has a soundness advisory that 1.3.2 fixes (see [SECURITY.md](../SECURITY.md)). The 1.3.1 key stays for the blocks that chains proved under 1.3.1; new proofs are 1.3.2's.
+ZisK 1.3.1 has a soundness advisory that 1.3.2 fixes (see [SECURITY.md](../SECURITY.md)). The 1.3.1 key stays for the blocks that chains proved under 1.3.1, and the 1.3.2 key for those proved under 1.3.2; new proofs are 1.4.0's.
 
 The ZisK 1.2.0 key is in the source too, but only for the tests: it sits behind the `zisk-1-2-0-test-key` feature, which the crate's own dev-dependency switches on. It lets the tests check that a 1.2.0 proof is refused under the 1.3 key and the other way round. A crate that depends on `zk-verifier` does not get it unless it turns the feature on by name.
 

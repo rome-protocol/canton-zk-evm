@@ -36,7 +36,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 
 | What | Version | Source |
 |---|---|---|
-| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release the benchmark and the 2026-10-25, 2026-10-26 and 2026-10-27 runs used; `PINS` now pins 1.3.2-alpha, commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`, and DevNet has proved under it since block 15573 on 2026-10-27 at 12:02 UTC; the benchmark itself was not run again on it) | `PINS` at the time |
+| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release the benchmark and the 2026-10-25, 2026-10-26 and 2026-10-27 runs used; `PINS` now pins 1.4.0-alpha, commit `64a1f1664184e76053686745d50c6b9aaa51b034`; DevNet proved under 1.3.2-alpha from block 15573 (2026-10-27) and has proved under 1.4.0 since block 71864 (2026-11-16, 13:31 UTC); the benchmark itself was not run again on either) | `PINS` at the time |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
 | Canton | 3.7.3, the open-source release of 2026-11-12, as pinned for the local network and CI (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f). DevNet's validator has run Splice 0.10.1 with Canton 3.7.2 since 2026-11-07 (Splice 0.10.0 with Canton 3.7.1 from 2026-11-04 23:59 UTC); its synchronizer is on protocol version 36 until 2026-11-18, then 37 | `PINS`; DevNet |
@@ -106,7 +106,7 @@ The wrap takes 1.7 s in the running prover. It forces a reload of constant data 
 
 The GPU peak says little about what is required: the prover takes one large buffer sized to the card, so the reading is about the same for a 1-transfer block and a 5,000-transfer block.
 
-**The older release, ZisK 1.2.0-alpha,** was measured as a baseline on the same machine and the same blocks. The guest it used was the one from zisk-eth-client v0.12.0, not v0.13.1. A fresh process took 6.0, 9.2 and 23.8 s for the proof with the wrap, and 18.4, 21.8 and 36.9 s for the whole process, for the three block sizes. A prover that stays running could not produce a wrapped proof at all: each request failed to wrap and returned the 414 KB STARK proof, with the error `Failed to wrap Plonk proof ... Error generating witness for instance id 0 [0:0] of type RecursiveF` in the worker log. 1.3.1-alpha is the release this repository uses. Its authors mark it as still in security and correctness audit.
+**The older release, ZisK 1.2.0-alpha,** was measured as a baseline on the same machine and the same blocks. The guest it used was the one from zisk-eth-client v0.12.0, not v0.13.1. A fresh process took 6.0, 9.2 and 23.8 s for the proof with the wrap, and 18.4, 21.8 and 36.9 s for the whole process, for the three block sizes. A prover that stays running could not produce a wrapped proof at all: each request failed to wrap and returned the 414 KB STARK proof, with the error `Failed to wrap Plonk proof ... Error generating witness for instance id 0 [0:0] of type RecursiveF` in the worker log. 1.4.0-alpha is the release this repository uses (this measurement used 1.3.1-alpha). Its authors mark the ZisK alpha releases as still in security and correctness audit.
 
 ## The largest block the prover was given
 
