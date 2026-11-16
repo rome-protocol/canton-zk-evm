@@ -1,7 +1,7 @@
 // What the Bridge reads for a connected wallet's account, in the shapes the account service gives for a Bridge account (canton/accounts.ts): the holdings, the allocations, the open requests and the two
 // acceptances come from the wallet's own view of the ledger (its active contracts, for its party), and the token registries' answers come from the account service's public registry route, which needs
 // no signature and keeps no account. Nothing here signs.
-import { AccountsError, retryAfterSeconds, type AllocationView, type ChoiceContext, type FactoryAnswer, type Holding, type OpenRequest, type OpenState, type TransferFactoryAnswer } from "../canton/accounts.ts";
+import { AccountsError, retryAfterSeconds, type AllocationView, type ChoiceContext, type FactoryAnswer, type Holding, type OpenRequest, type OpenState, type TransferFactoryAnswer } from "../canton/answers.ts";
 import type { Chain } from "../canton/commands.ts";
 import { Refused } from "../moves/moves.ts";
 import { timeoutSignal } from "../../timeout.ts";

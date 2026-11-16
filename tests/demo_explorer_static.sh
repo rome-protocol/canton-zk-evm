@@ -52,10 +52,12 @@ has "$rpc" " -e RPC_HEAVY_CONCURRENCY=6" "the heavy-call cap is passed on"
 has "$rpc" " -e RPC_HEAVY_QUEUE=10" "the heavy-call queue is passed on"
 has "$rpc" " -e TRACKER_MAX=500" "the tracker's size is passed on"
 # The Bridge page's build settings reach the build when they are set, and only then.
-bridge=$(VITE_CHAIN_ID=770101 VITE_ACCOUNTS_URL=/accounts dry start)
+bridge=$(VITE_CHAIN_ID=770101 VITE_ACCOUNTS_URL=/accounts VITE_BRIDGE_ACCOUNT=on dry start)
 has "$bridge" "--build-arg VITE_CHAIN_ID=770101" "a Bridge build setting is passed on"
 has "$bridge" "--build-arg VITE_ACCOUNTS_URL=/accounts" "the account service's address is passed on"
+has "$bridge" "--build-arg VITE_BRIDGE_ACCOUNT=on" "the switch of the Bridge account is passed on"
 lacks "$bridge" "VITE_CHAIN_GATEWAY" "a Bridge build setting that is not set"
+lacks "$(dry start)" "VITE_BRIDGE_ACCOUNT" "the Bridge account is off unless the build says on"
 has "$start" "docker build" "start builds the image"
 has "$start" "--build-arg EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" "the build takes the Node image from PINS"
 has "$start" "--build-arg EXPLORER_RUST_IMAGE=$EXPLORER_RUST_IMAGE" "the build takes the Rust image from PINS"

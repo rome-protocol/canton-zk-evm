@@ -1,5 +1,10 @@
 // What the Bridge page is built with, read from the build's environment (`VITE_*`). Kept apart from the signing code so that the page can read its settings without loading it.
 
+/** Whether the build has the Bridge account made from a wallet signature (`VITE_BRIDGE_ACCOUNT`): only the exact value `on` turns it on. Unset, empty or anything else is off, which is the default and the TestNet build. */
+export function bridgeAccountFromEnv(env: Record<string, string | undefined>): boolean {
+  return (env.VITE_BRIDGE_ACCOUNT ?? "").trim().toLowerCase() === "on";
+}
+
 /** The participant that hosts every account (`VITE_CANTON_PARTICIPANT`: its id as the Ledger API says it, PAR::name::fingerprint): an account is onboarded only onto it. */
 export function participantFromEnv(env: Record<string, string | undefined>): string {
   const participant = env.VITE_CANTON_PARTICIPANT;

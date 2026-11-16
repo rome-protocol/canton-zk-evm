@@ -6,14 +6,12 @@ import type { DamlTransaction_Node, PreparedTransaction, Value } from "@canton-n
 import type { AccountsClient, Prepared } from "./accounts.ts";
 import type { Built, Intent } from "./commands.ts";
 import { fromBase64, signVerifiedTransaction, type CantonKey } from "./key.ts";
+import { UnexpectedTransaction } from "./answers.ts";
 
 export const HASHING_SCHEME = "HASHING_SCHEME_VERSION_V2";
 export const PREPARATION_WINDOW_MS = 5 * 60 * 1000;   // a prepared transaction is made within this long of the page's clock
 
-/** The transaction is not what the page asked for (or could not be checked): nothing is signed. */
-export class UnexpectedTransaction extends Error {
-  constructor(why: string) { super(`The prepared transaction is not what was asked for: ${why}`); this.name = "UnexpectedTransaction"; }
-}
+export { UnexpectedTransaction };   // defined in answers.ts, which holds no key: a move's code reads it without loading this file
 const refuse = (why: string): never => { throw new UnexpectedTransaction(why); };
 
 const trimmed = (s: string) => (s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s);   // a numeric as Canton writes it (10 decimals) and as the page does

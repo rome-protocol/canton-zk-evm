@@ -5,10 +5,11 @@ import { inWallet } from "../bridge/wallet/wallets.ts";
 import type { WalletState } from "./useCantonWallet.ts";
 
 /**
- * The Canton side of the sheet when the build offers Canton wallets: "Connect your Canton wallet" (the wallet asks to approve), the way to the Bridge account from MetaMask, and once a wallet is
- * connected its address and name, the opt-in the first time, and Disconnect. Moves are approved in the wallet, which shows each Canton step before it signs.
+ * The Canton side of the sheet: "Connect your Canton wallet" (the wallet asks to approve), and once a wallet is connected its address and name, the opt-in the first time, and Disconnect. Moves are approved in
+ * the wallet, which shows each Canton step before it signs. A build that offers no wallet yet (`available` false) has the same button, disabled and tagged "Coming soon". The way to the Bridge account from
+ * MetaMask (`onBridgeAccount`) and the word about its faucet are there only in a build that has the Bridge account.
  */
-export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconnect, onBridgeAccount }: { state: WalletState; onConnect(): void; onPick(id: string): void; onOptIn(): void; onDisconnect(): void; onBridgeAccount(): void }) {
+export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconnect, onBridgeAccount, available = true }: { state: WalletState; onConnect(): void; onPick(id: string): void; onOptIn(): void; onDisconnect(): void; onBridgeAccount?: () => void; available?: boolean }) {
   const [copied, setCopied] = useState(false);
   const party = state.s === "ready" ? state.link.party : "";
   useEffect(() => setCopied(false), [party]);
@@ -32,7 +33,7 @@ export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconn
             {state.note && <p className="small bad" role="alert">{state.note}</p>}
           </>
         )}
-        <p className="small muted">The Canton Coin faucet on this page is for Bridge accounts only. Get test Canton Coin in {where}.</p>
+        {onBridgeAccount && <p className="small muted">The Canton Coin faucet on this page is for Bridge accounts only. Get test Canton Coin in {where}.</p>}
         <div className="actions"><button type="button" className="btn ghost" onClick={onDisconnect}>Disconnect</button></div>
       </>
     );
@@ -42,15 +43,15 @@ export function CantonWalletSheet({ state, onConnect, onPick, onOptIn, onDisconn
       <>
         <p className="lead">Which wallet?</p>
         <div className="actions">{state.choices.map((c) => <button key={c.id} type="button" className="btn" onClick={() => onPick(c.id)}>{c.name}</button>)}</div>
-        <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>
+        {onBridgeAccount && <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>}
       </>
     );
   }
   return (
     <>
       <p className="lead">Use the Canton wallet you already have. It shows each Canton step of a move and you approve it there.</p>
-      <button type="button" className="btn" disabled={state.s === "working"} onClick={onConnect}>{state.s === "working" ? state.note : "Connect your Canton wallet"}</button>
-      <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>
+      <button type="button" className="btn" disabled={!available || state.s === "working"} onClick={onConnect}>{state.s === "working" ? state.note : <>Connect your Canton wallet{!available && <> <span className="tag">Coming soon</span></>}</>}</button>
+      {onBridgeAccount && <p className="small muted">No Canton wallet? <button type="button" className="link-b" onClick={onBridgeAccount}>Use a Bridge account from your wallet</button></p>}
       {state.s === "failed" && <p className="small bad" role="alert">{state.message}</p>}
     </>
   );

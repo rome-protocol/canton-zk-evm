@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bridgeAccountFromEnv } from "./canton/env.ts";
 import { accountsBase, settingsFromEnv } from "./settings.ts";
 
 const env = { VITE_CHAIN_OPERATOR: "o", VITE_CHAIN_CONFIRMER: "c", VITE_CHAIN_GATEWAY: "g", VITE_CHAIN_BUILDER: "b", VITE_CHAIN_ID: "770101", VITE_CANTON_PARTICIPANT: "PAR::p", VITE_SITE_ORIGIN: "https://ostia.example" };
@@ -24,5 +25,19 @@ describe("the Bridge page's settings", () => {
   });
   it("throws, naming the setting, when one the page needs is missing", () => {
     for (const name of Object.keys(env)) expect(() => settingsFromEnv({ ...env, [name]: undefined }), name).toThrow(name);
+  });
+  it("turns the Bridge account on only when VITE_BRIDGE_ACCOUNT is on: unset, empty and any other word are off", () => {
+    expect(bridgeAccountFromEnv({})).toBe(false);
+    for (const v of ["", "off", "0", "1", "true", "yes", "onn"]) expect(bridgeAccountFromEnv({ VITE_BRIDGE_ACCOUNT: v }), v).toBe(false);
+    for (const v of ["on", "ON", " on "]) expect(bridgeAccountFromEnv({ VITE_BRIDGE_ACCOUNT: v }), v).toBe(true);
+  });
+  it("needs the participant and the party hint only when the build has the Bridge account", () => {
+    const { VITE_CANTON_PARTICIPANT: _drop, ...bare } = env;
+    expect(() => settingsFromEnv(bare, true)).toThrow("VITE_CANTON_PARTICIPANT");
+    expect(() => settingsFromEnv({ ...env, VITE_PARTY_HINT: "a b" }, true)).toThrow("VITE_PARTY_HINT");
+    // Off: no participant, no hint and no service, and a bad value of those is not read. The chain and the origin are still needed.
+    expect(settingsFromEnv(bare, false)).toEqual({ chain: { operator: "o", confirmer: "c", gateway: "g", builder: "b", chainId: 770101 }, participant: "", partyHint: "", accountsBase: "", origin: "https://ostia.example" });
+    expect(settingsFromEnv({ ...bare, VITE_PARTY_HINT: "a b", VITE_ACCOUNTS_URL: "/other" }, false).partyHint).toBe("");
+    for (const name of ["VITE_CHAIN_OPERATOR", "VITE_SITE_ORIGIN"]) expect(() => settingsFromEnv({ ...bare, [name]: undefined }, false), name).toThrow(name);
   });
 });

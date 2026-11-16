@@ -31,8 +31,8 @@ describe("themes", () => {
   });
 
   it("has no switch of its own: nothing reads or stores a theme choice", () => {
-    // The bridge's moves keep their own progress in local storage (moves/state.ts, no secret in it), and the page remembers that a Canton wallet was connected (bridge/wallet/wallets.ts, one flag); neither is a theme choice.
-    const keeps = (f: string) => f.endsWith("/src/bridge/moves/state.ts") || f.endsWith("/src/bridge/wallet/wallets.ts");
+    // The bridge's moves keep their own progress in local storage (moves/state.ts, no secret in it), and the page remembers that a Canton wallet was connected (bridge/wallet/wallets.ts, one flag), and a build without the Bridge account marks in one flag that it deleted the old key store (bridge/retired.ts); none is a theme choice.
+    const keeps = (f: string) => f.endsWith("/src/bridge/moves/state.ts") || f.endsWith("/src/bridge/wallet/wallets.ts") || f.endsWith("/src/bridge/retired.ts");
     for (const f of sources(join(root, "src"))) expect(readFileSync(f, "utf8"), f).not.toMatch(keeps(f) ? /data-theme|sessionStorage/ : /data-theme|localStorage|sessionStorage/);
   });
 });

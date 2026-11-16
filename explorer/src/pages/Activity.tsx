@@ -26,6 +26,8 @@ export interface ActivityProps {
   chainName: string;
   onConnect(): void;
   onOpenAccount(): void;
+  /** The words of the button that goes with `onOpenAccount` ("Open my Canton account" unless the page says another way to the account), which Activity follows with " to continue". */
+  openLabel?: string;
   /** What the wallet or the page says of connecting, in plain words. */
   connectNote?: string | null;
   /** Puts the wallet on Ostia; says why not, in words, when it cannot. */
@@ -64,7 +66,7 @@ function Row({ e, props, state, live, onCanton, busy, onContinue, canContinue = 
       )}
       {!e.done && !running && canContinue && (mine
         ? <button type="button" className="btn ghost" disabled={busy} onClick={() => onContinue(e)}>{continueWords(e, props.chainName, onCanton)}</button>
-        : <button type="button" className="btn ghost" onClick={props.onOpenAccount}>Open my Canton account to continue</button>)}
+        : <button type="button" className="btn ghost" onClick={props.onOpenAccount}>{props.openLabel ?? "Open my Canton account"} to continue</button>)}
       {!e.done && !running && mine && e.elsewhere && onRemove && <button type="button" className="btn ghost" disabled={busy} onClick={() => onRemove(e)}>Remove</button>}
     </li>
   );

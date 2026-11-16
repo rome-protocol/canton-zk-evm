@@ -2,6 +2,8 @@
 
 A Canton account that a person holds with a key of their own, made and used from a web page. The account is an external party: its Ed25519 key is made by its owner (the page derives it from one wallet signature), the party is hosted on the operator's participant, and only that key can sign for it. This service sits between the page and the participant's JSON Ledger API (Canton 3.7). It holds a Ledger API token and never a key of any account. One Python file; the standard library and the `cryptography` package, which a deployment must install (it checks the signatures). The service has a pure-Python check for when the package is missing (about 5 ms for each signature), and then logs a loud warning at start: use it for tests only. The tests (`unittest`, which `pytest` collects too) run against a fake Ledger API, and one test runs against the real, pinned Canton. The service has been deployed on DevNet since commit c350f87 (8 November 2026), behind the explorer's Bridge page.
 
+**Status.** The page offers these accounts only in a build with `VITE_BRIDGE_ACCOUNT=on`. The default build, and the TestNet build, has no sign-in and does not run this service for the page. The one part a Canton wallet that a person connects needs is the public registry relay (`/accounts/v1/public-registry/...`, below), which takes no signature and no account: a site that offers wallets and no Bridge account runs the service as that relay alone (no `--faucet-amount`, `--accounts-per-network-day 0` so that no account is made, and a reverse proxy that passes only that path).
+
 ```
 LEDGER_TOKEN=<token> accounts.py --ledger-url http://participant:7575 --user-id <ledger user of the token> --state-file accounts.jsonl [--listen 127.0.0.1:8081]
 ```

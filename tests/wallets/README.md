@@ -2,6 +2,8 @@
 
 The Bridge makes a person's Canton account key from one wallet signature (`explorer/src/bridge/canton/key.ts`): the page asks the wallet for an EIP-712 signature of a fixed message (`KEY_TYPED_DATA`), puts the signature in its normal form (`normaliseSignature`), and derives an Ed25519 key from it with HKDF (`seedFromSignature`). The same typed data always has the same signing digest, but the signature bytes are the same only if the wallet signs deterministically (RFC 6979 nonces) and in the same form. A wallet that signs a different way would make a different key, and so a different account.
 
+The live check needs a site whose Bridge is built with the Bridge account (`VITE_BRIDGE_ACCOUNT=on`); a site built without it offers no sign-in, and the check cannot run there.
+
 This folder is a harness that checks that, wallet by wallet, and the results it made. It is **opt-in**: it downloads third-party browser extensions and opens the live DevNet site, so it is in no CI job. Run it by hand, on a machine you can throw away.
 
 - Results: [`results/wallets.md`](results/wallets.md) (the table) and [`results/wallets.json`](results/wallets.json) (the same, for machines).

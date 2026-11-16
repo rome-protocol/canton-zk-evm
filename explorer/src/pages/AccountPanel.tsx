@@ -24,7 +24,7 @@ function Address({ label, value, copyLabel, lead, tail }: { label: string; value
 
 /**
  * The Bridge page's account panel: the wallet's address on Ostia and the Canton account's, side by side, and what the Canton account holds of each token this build lists.
- * Before the Canton account is open it is the short version: the wallet's address, and a word that the account is not open yet.
+ * Before the Canton account is open it is the short version: the wallet's address, and a word that the account is not open yet (not connected, in a build without the Bridge account).
  * It reads nothing itself: the balances are the move card's read of the account's holdings (`held`, by token key), so a page with the panel asks the account service for no more than before.
  */
 export function AccountPanel({ wallet, party, pairs, held, chainName, sender = null, refresh = 0, onChanged = () => {}, kept = null, cantonWallet = null }: {
@@ -43,17 +43,17 @@ export function AccountPanel({ wallet, party, pairs, held, chainName, sender = n
         {party ? (
           <Address label="Your account on Canton" value={party} copyLabel="Copy your account address on Canton" lead={16} tail={6} />
         ) : (
-          <div className="addr"><span className="lbl">Your account on Canton</span><span className="muted">Not opened yet</span></div>
+          <div className="addr"><span className="lbl">Your account on Canton</span><span className="muted">{__BRIDGE_ACCOUNT__ ? "Not opened yet" : "Not connected"}</span></div>
         )}
       </div>
       {party && (
         <>
           {cantonWallet ? (
             <p className="small muted">This is your address on Canton. Sending and accepting are done in {inWallet(cantonWallet)} itself.</p>
-          ) : (
+          ) : __BRIDGE_ACCOUNT__ ? (
             <p className="small muted">{ACCOUNT_KEY_WORDS} <OutLink href={TRUST_MODEL_URL}>Limits</OutLink></p>
-          )}
-          {kept && (
+          ) : null}
+          {__BRIDGE_ACCOUNT__ && kept && (
             <>
               <p className="small muted">This browser keeps your account's key: a reload does not ask your wallet again. The key is stored here and cannot be read out, but a script running on this page could still sign with it while it is kept. Removing it here does not close the account on Canton.</p>
               <button type="button" className="btn ghost" onClick={kept.onClose}>Remove my Canton key from this browser</button>

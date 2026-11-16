@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Unanswered } from "../bridge/canton/accounts.ts";
+import { Unanswered } from "../bridge/canton/answers.ts";
 import type { Chain } from "../bridge/canton/env.ts";
 import { Refused } from "../bridge/moves/moves.ts";
 import { forgetWallet, inWallet, rememberWallet, wasConnected, type WalletConfig } from "../bridge/wallet/wallets.ts";

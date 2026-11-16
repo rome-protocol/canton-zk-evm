@@ -10,8 +10,8 @@ import { lockIdOf } from "../src/bridge/moves/state.ts";
 import { allocationFactory, CC_ADMIN, freshChain, GATEWAY, rpcResult, sendTransaction, twinsOverview, txAnswer, VAULT, WCC } from "./bridge-fakes.ts";
 
 /**
- * A move through the Bridge page's card with a connected Canton wallet, in a real browser at 360 px: the pages built with VITE_CANTON_WALLETS=extension (BRIDGE_E2E_DIST names that build, as the other
- * browser tests', which are built without the switch), a fake wallet that announces itself in the page and speaks the dApp standard over the window's messages as a browser extension does (so the real SDK
+ * A move through the Bridge page's card with a connected Canton wallet, in a real browser at 360 px: the pages built with VITE_CANTON_WALLETS=extension and without the Bridge account (VITE_BRIDGE_ACCOUNT unset: the TestNet
+ * shape; BRIDGE_E2E_DIST names that build, as the other browser tests', which are built without the wallet switch), a fake wallet that announces itself in the page and speaks the dApp standard over the window's messages as a browser extension does (so the real SDK
  * connects it), a fake chain (e2e/bridge-fakes.ts) and a fake account service that has only the public registry route. Canton Coin goes to Ostia: the page opts the wallet's account in, the wallet
  * approves the allocation and the deposit request, and the claim is made in MetaMask. The page asks the account service for nothing signed and the browser wallet for no signature. Runs only when
  * BRIDGE_E2E_DIST is set (the `bridge-page` job of .github/workflows/explorer.yml builds the pages again for this test, with the switch on).
@@ -120,8 +120,8 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
   async function connected(page: any) {
     await page.getByRole("textbox", { name: "Amount to move" }).waitFor();
     await page.getByRole("button", { name: "Connect wallet" }).click();
-    await page.getByRole("button", { name: "Open my Canton account" }).click();
-    await page.getByRole("button", { name: "Connect your Canton wallet" }).click();
+    await page.getByRole("region", { name: "Move tokens" }).getByRole("button", { name: "Connect your Canton wallet" }).click();   // the card's button opens the sheet, which has its own
+    await page.getByRole("region", { name: "Your Canton account" }).getByRole("button", { name: "Connect your Canton wallet" }).click();
     await page.getByText("Connected", { exact: true }).waitFor({ timeout: 30_000 }).catch(async (e: Error) => { throw new Error(`${e.message}\nThe sheet says: ${(await page.locator(".account").innerText()).slice(0, 400)}\nThe page logged: ${logs.slice(0, 8).join(" | ")}`); });
   }
 
@@ -132,7 +132,8 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     expect(await sheet.innerText()).toContain("Fake Canton Wallet");
     expect(await page.getByTitle(WALLET_PARTY).first().innerText()).toBe("alice::1220a1a1a…a1a1a1");
     expect(await page.getByRole("region", { name: "Your addresses" }).innerText()).toContain("Sending and accepting are done in Fake Canton Wallet itself.");
-    expect(await page.getByRole("button", { name: "Get test Canton Coin" }).count()).toBe(0);   // the page's faucet is for Bridge accounts only
+    expect(await page.getByRole("button", { name: "Get test Canton Coin" }).count()).toBe(0);   // the page has no Canton Coin faucet: the wallet gets its own
+    expect(await sheet.innerText()).not.toMatch(/Bridge account|Sign in/);
     await page.getByRole("button", { name: "Opt in", exact: true }).click();
     await page.getByText(/Each Canton step of a move opens in Fake Canton Wallet/).waitFor({ timeout: 30_000 });
     expect(canton.commands().map((c) => c.CreateCommand.templateId)).toEqual(["#ostia-twin:Twin.Twin:TwinAcceptance", "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"]);
@@ -152,7 +153,7 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     expect(seen.factoryBody).not.toHaveProperty("party");
     expect(seen.signedHeader).toBe(false);   // the public route takes no account signature
     expect(seen.accountService).toBe(0);   // nothing else of the account service was asked for
-    expect(seen.signRequests).toBe(0);   // MetaMask was not asked for a signature: no Bridge account was made
+    expect(seen.signRequests).toBe(0);   // MetaMask was not asked for a signature: this build has no Bridge account
     const sent = [...chain.sent.values()];
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to.toLowerCase()).toBe(GATEWAY.toLowerCase());   // the claim
@@ -170,13 +171,14 @@ describe.skipIf(!dist)("the Bridge page's move with a connected Canton wallet, i
     const before = canton.commands().length;
     await page.reload({ waitUntil: "load" });
     await page.getByRole("button", { name: "Connect wallet" }).waitFor({ state: "detached" });
-    await page.getByRole("button", { name: "Open my Canton account" }).or(page.getByText("Connected", { exact: true })).first().waitFor({ timeout: 30_000 });
-    if (await page.getByText("Connected", { exact: true }).count() === 0) await page.getByRole("button", { name: "Open my Canton account" }).click();
+    const cardButton = page.getByRole("region", { name: "Move tokens" }).getByRole("button", { name: "Connect your Canton wallet" });
+    await cardButton.or(page.getByText("Connected", { exact: true })).first().waitFor({ timeout: 30_000 });
+    if (await page.getByText("Connected", { exact: true }).count() === 0) await cardButton.click();
     await page.getByText(/Each Canton step of a move opens in/).waitFor({ timeout: 30_000 });
     expect(canton.commands().length).toBe(before);   // nothing was asked of the wallet again
     expect(await noSideways(page)).toBe(true);
     await page.getByRole("button", { name: "Disconnect" }).click();
-    await page.getByRole("button", { name: "Connect your Canton wallet" }).waitFor();
+    await page.getByRole("region", { name: "Your Canton account" }).getByRole("button", { name: "Connect your Canton wallet" }).waitFor();
     await page.close();
   }, 120_000);
 });

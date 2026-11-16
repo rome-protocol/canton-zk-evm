@@ -162,6 +162,14 @@ describe("the Activity list", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open my Canton account to continue" }));
     expect(props.onOpenAccount).toHaveBeenCalled();
   });
+  it("says the page's own way to the Canton account on that button: a build without the Bridge account says to connect the wallet", async () => {
+    const store = memoryStore();
+    saveCheckpoint(store, ck({ input: redeem, stage: "evm" }));
+    const props = show({ store, openLabel: "Connect your Canton wallet" });
+    expect(screen.queryByRole("button", { name: "Open my Canton account to continue" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Connect your Canton wallet to continue" }));
+    expect(props.onOpenAccount).toHaveBeenCalled();
+  });
 
   it("is rebuilt on load from the kept records and what Canton says is open: the account service's list moves a move on", async () => {
     const store = memoryStore();

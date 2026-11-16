@@ -32,4 +32,4 @@ export const ACCOUNT_KEY_WORDS = "This is your address on Canton. Canton Coin ca
 /** The tokens that cross are public on Ostia, and who sees what. */
 export const MOVES_ARE_PUBLIC = "Moves are public on Ostia. A move back to Canton shows your Canton account next to your Ostia address.";
 /** Twins: who can hold them today. */
-export const TWINS_HOLDERS = "A twin can be held only by an account on Rome's participants today, such as a Bridge account. Canton Coin goes to any Canton address.";
+export const TWINS_HOLDERS = "A twin can be held only by an account on Rome's participants today. Canton Coin goes to any Canton address.";
