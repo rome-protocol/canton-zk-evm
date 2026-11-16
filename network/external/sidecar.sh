@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs one sidecar on its own, without a local Canton, the way network/up.sh builds and starts it: the release build of sidecar/, pinned
 # to the program key, root key and ZisK release of a record: CZE_SESSION_FILE if set, else prover/fixtures/session.txt, which is a NEW
-# chain's record (ZisK 1.3.2). For a chain that already runs, set CZE_SESSION_FILE to a copy of that chain's state/net/guest.txt
+# chain's record (ZisK 1.4.0). For a chain that already runs, set CZE_SESSION_FILE to a copy of that chain's state/net/guest.txt
 # (network/restart.sh does this); a record with no zisk= line is refused.
 #   sidecar.sh start [address:port]   builds, starts and waits until it answers; default CZE_SIDECAR_LISTEN, else 127.0.0.1:8085.
 #                                     One that runs already with the same keys on the same address is left as it is (success).

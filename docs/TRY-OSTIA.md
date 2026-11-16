@@ -118,7 +118,7 @@ The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14
 
 ## Canton twins and Canton Coin on DevNet
 
-Since 29 October 2026 an ERC-20 on Ostia can stand on Canton as a twin, and Canton Coin can move onto Ostia and back. The twins went live in commit 4b4f63c, deployed at 10:33 UTC that day, under Daml package 0.5.0. DevNet has run commit c350f87 since 8 November 2026, with the same twin flows, the twin acceptance below and the Bridge page.
+Since 29 October 2026 an ERC-20 on Ostia can stand on Canton as a twin, and Canton Coin can move onto Ostia and back. The twins went live in commit 4b4f63c, deployed at 10:33 UTC that day, under Daml package 0.5.0. DevNet runs commit 734b316 since 16 November 2026 (c350f87 from 8 November), with the same twin flows, the twin acceptance below and the Bridge page.
 
 How these flows work on DevNet (the Bridge page above makes the Canton steps for you; `demo/twin.py` and `demo/cc.py` show them one by one):
 
