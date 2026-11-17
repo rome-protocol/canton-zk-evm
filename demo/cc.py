@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Canton Coin on Ostia, for the demo: the real Canton asset (the instrument {admin: the DSO party, id: "Amulet"}) whose registry is the validator's scan proxy. See demo/README.md.
 
-  cc.py register                        the gateway's wrapped ERC-20 for Canton Coin on Ostia (as evm.py register makes the one of TKB) and its GatewayToken on Canton (as canton.py
+  cc.py register [--name NAME] [--symbol SYMBOL]
+                                        the gateway's wrapped ERC-20 for Canton Coin on Ostia (as evm.py register makes the one of TKB) and its GatewayToken on Canton (as canton.py
                                         register-token does, through network/canton/propose.py token), for the instrument {the DSO party, which the scan proxy names, "Amulet"} and with the
                                         transfer factory that the scan proxy names. A second run changes nothing and prints what exists (and whether the factory is still the scan proxy's).
-                                        Prints the EVM address and the GatewayToken's contract id
+                                        Prints the EVM address and the GatewayToken's contract id. The token's name and symbol are NAME and SYMBOL, "Canton Coin (Ostia)" and "CC" without the
+                                        options; they are the metadata of the wrapped token for good (it has no setter), so they matter only for a token that this run makes: a token that
+                                        exists already keeps its own, and a second run does not change it
   cc.py balances [u|v|<party id> ...] [--token-file FILE]
                                         each party's Canton Coin (U and V if none is named): the token standard's Holding views of the instrument Amulet of the DSO, unlocked and locked;
                                         the gateway's Canton Coin custody; and the wrapped token's total supply on Ostia (finalized block). A party that is not u or v is read with the token in
@@ -37,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canton, evm, twin
 
 AMULET = "Amulet"
-WRAPPED_NAME, WRAPPED_SYMBOL = "Canton Coin", "CC"
+WRAPPED_NAME, WRAPPED_SYMBOL = "Canton Coin (Ostia)", "CC"   # the defaults of `register --name --symbol`
 USER_AGENT = "Rome Protocol rome@romeprotocol.com"
 SCAN_PROXY_URL = "CZE_SCAN_PROXY_URL"
 SCAN_TOKEN_FILE = "CZE_SCAN_TOKEN_FILE"
@@ -172,7 +175,7 @@ def state_file(net: canton.Network) -> Path:
     return net.state / "cc.json"
 
 
-def wrapped_token(net: canton.Network) -> tuple:
+def wrapped_token(net: canton.Network, name: str = WRAPPED_NAME, symbol: str = WRAPPED_SYMBOL) -> tuple:
     """(the wrapped ERC-20 of Canton Coin, 40 hex digits; the transaction that made it, or None). A token that an earlier run made and recorded in the state directory, and that the
     gateway still shows as its own, is used again: a run that stopped between Ostia and Canton does not make a second one."""
     gateway = evm.gateway_address()
@@ -183,7 +186,7 @@ def wrapped_token(net: canton.Network) -> tuple:
     if isinstance(saved, dict) and saved.get("gateway") == gateway and isinstance(saved.get("evmToken"), str) and re.fullmatch(r"[0-9a-f]{40}", saved["evmToken"]) \
             and wrapped_at(gateway, saved["evmToken"]):
         return saved["evmToken"], None
-    made = evm.main(["register", "u", WRAPPED_NAME, WRAPPED_SYMBOL])
+    made = evm.main(["register", "u", name, symbol])
     receipt = evm.wait_finalized(made["tx"], evm.WAIT_SECONDS)   # the gateway's token is registered with Canton at the finalized block
     token = canton.evm_address(made["token"])
     if receipt["status"] != 1 or not wrapped_at(gateway, token):
@@ -192,7 +195,7 @@ def wrapped_token(net: canton.Network) -> tuple:
     return token, made["tx"]
 
 
-def register(net: canton.Network, scan: Scan) -> dict:
+def register(net: canton.Network, scan: Scan, name: str = WRAPPED_NAME, symbol: str = WRAPPED_SYMBOL) -> dict:
     dso, validator = scan.dso_party(), scan.validator_party()
     instrument = {"admin": dso, "id": AMULET}
     asked = scan.factory(transfer_of(validator, validator, "1.0", dso, []), dso)   # the factory of a transfer of the validator's party to itself
@@ -206,7 +209,7 @@ def register(net: canton.Network, scan: Scan) -> dict:
     left = gateway_tokens(net, "GatewayTokenProposal", instrument)
     if len(left) > 1:
         raise canton.Fail(f"the operator sees {len(left)} proposals for Canton Coin: there must be one")
-    token, tx = (left[0]["createArgument"]["evmToken"], None) if left else wrapped_token(net)
+    token, tx = (left[0]["createArgument"]["evmToken"], None) if left else wrapped_token(net, name, symbol)
     done = canton.register_token(net, token, instrument, asked["factory"])
     return {"created": True, "evmToken": "0x" + done["evmToken"], "gatewayToken": done["contractId"], "instrumentId": done["instrumentId"], "factory": asked["factory"],
             "factoryIsScanProxys": True, "registerTx": tx}
@@ -442,7 +445,7 @@ def main(argv: list) -> dict:
 def run(argv: list, options: dict) -> dict:
     cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
-        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",)}.get(cmd[0], ())
+        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",), "register": ("--name", "--symbol")}.get(cmd[0], ())
         args, found = twin.split_options(argv[1:], names, __doc__)
         options.update(found)
         shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options,
@@ -451,9 +454,11 @@ def run(argv: list, options: dict) -> dict:
             raise SystemExit(__doc__)
         net = canton.Network()
         if cmd == ["register"]:
+            if any(not options.get(o, "x").strip() for o in ("--name", "--symbol")):
+                raise SystemExit(__doc__)
             if net.external:
                 net.check_roles(COMMAND_ROLES["register"])
-            return register(net, scan_of(options))
+            return register(net, scan_of(options), options.get("--name", WRAPPED_NAME), options.get("--symbol", WRAPPED_SYMBOL))
         if cmd == ["balances"]:
             if "--token-file" in options:
                 os.environ[TOKEN_FILE_VARIABLE + OTHER_ROLE.upper()] = options["--token-file"]   # the role that reads a party that is not u or v
