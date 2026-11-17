@@ -66,22 +66,27 @@ CZE_RESUME=1 "$ROOT/network/reth/launch.sh"; wait_for_reth
 [ "$(rpc eth_chainId | jq -r .result)" = "$want" ] || { echo "FAIL: wrong chain id after the restart" >&2; exit 1; }
 "$ROOT/network/reth/stop.sh" --wipe-persistent
 [ ! -e "$CZE_STATE_DIR/reth-data" ] || { echo "FAIL: --wipe-persistent left reth-data" >&2; exit 1; }
-# Data that root wrote into a folder of mode 0700 (what network/up.sh makes under umask 077): launch.sh refuses with the one command that hands the data over,
-# that command runs as printed (a throwaway root container that needs DAC_READ_SEARCH as well as CHOWN to open the folder), and then reth starts and passes check.sh.
+# Real data that root owns in a folder of mode 0700 (the DevNet case: network/up.sh makes the state under umask 077, and an older reth ran as root): launch.sh refuses
+# with the one command that hands the data over, that command runs as printed (a throwaway root container needs DAC_READ_SEARCH as well as CHOWN to open a folder
+# of mode 0700 that another user owns), and then reth starts on the same chain and passes check.sh.
 STATE2=$(mktemp -d)
 CZE_STATE_DIR=$STATE2 "$ROOT/network/make-state.sh"
 export CZE_STATE_DIR=$STATE2
 (umask 077; mkdir "$STATE2/reth-data")
-[ "$(stat -c %a "$STATE2/reth-data" 2>/dev/null || stat -f %Lp "$STATE2/reth-data")" = 700 ] || { echo "FAIL: reth-data is not mode 0700" >&2; exit 1; }
-docker run --rm --network none --security-opt no-new-privileges --read-only -v "$STATE2/reth-data:/d" "$BUSYBOX_IMAGE" sh -c 'echo x > /d/db; mkdir /d/static; echo y > /d/static/f'
-if CZE_RESUME=1 "$ROOT/network/reth/launch.sh" >"$STATE2/out" 2>"$STATE2/err"; then echo "FAIL: launch.sh started on root-written data" >&2; exit 1; fi
-grep -q "does not own" "$STATE2/err" || { echo "FAIL: no refusal for root-written data: $(cat "$STATE2/err")" >&2; exit 1; }
+"$ROOT/network/reth/launch.sh"; wait_for_reth
+genesis2=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)
+"$ROOT/network/reth/stop.sh" --keep-data
+docker run --rm --network none --security-opt no-new-privileges --read-only -v "$STATE2/reth-data:/d" "$BUSYBOX_IMAGE" sh -c 'chown -R 0:0 /d && chmod 700 /d'
+[ ! -r "$STATE2/reth-data" ] || { echo "FAIL: the test could not make reth-data unreadable to this user" >&2; exit 1; }
+if CZE_RESUME=1 "$ROOT/network/reth/launch.sh" >"$STATE2/out" 2>"$STATE2/err"; then echo "FAIL: launch.sh started on root-owned data" >&2; exit 1; fi
+grep -q "does not own" "$STATE2/err" || { echo "FAIL: no refusal for root-owned data: $(cat "$STATE2/err")" >&2; exit 1; }
 fix=$(sed -n 's/^.*run once: //p' "$STATE2/err")
 [[ $fix == *"--cap-add DAC_READ_SEARCH"* ]] || { echo "FAIL: the printed command does not carry DAC_READ_SEARCH: $fix" >&2; exit 1; }
 eval "$fix"
 CZE_RESUME=1 "$ROOT/network/reth/launch.sh"; wait_for_reth
 "$ROOT/network/reth/check.sh" "$RETH_CONTAINER"
+[ "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)" = "$genesis2" ] || { echo "FAIL: another chain after the hand-over" >&2; exit 1; }
 "$ROOT/network/reth/stop.sh" --wipe-persistent
-echo "ok: root-written data in a 0700 folder is refused, handed over with the printed command, and reth starts on it"
+echo "ok: root-owned data in a 0700 folder is refused, handed over with the printed command, and reth starts on it"
 rm -rf "$STATE2"
 echo "discovery test passed"
