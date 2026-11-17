@@ -205,8 +205,9 @@ if [ "${LAUNCH_DRY_RUN:-0}" = 1 ]; then
 fi
 
 # The data belongs to the user the container runs as. A folder this script makes does, and a new Docker volume (root's) is handed over by a throwaway container with
-# one capability. Data that an older, root-run reth wrote is not touched here: the script stops, and says the one command that hands it over (the same container).
-CHOWN_DOCKER="docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --read-only -v"
+# two capabilities: CHOWN, and DAC_READ_SEARCH to open a data folder that is mode 0700 and owned by another user (network/up.sh runs with umask 077). Data that an older,
+# root-run reth wrote is not touched here: the script stops, and says the one command that hands it over (the same container).
+CHOWN_DOCKER="docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH --read-only -v"
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   mkdir -p "$DATA_MOUNT"
   foreign=$(find "$DATA_MOUNT" ! -uid "$RUN_UID" 2>/dev/null | head -n 1 || true)

@@ -181,7 +181,7 @@ echo "ok: refused to run as root"
 mkdir -p "$WORK/owned/reth-data"; echo x > "$WORK/owned/genesis.json"; echo x > "$WORK/owned/jwt.hex"; touch "$WORK/owned/reth-data/db"
 fake_id 4242 4243
 if PATH="$WORK/idbin:$WORK/bin:$PATH" CZE_STATE_DIR="$WORK/owned" CZE_PERSIST=1 CZE_RESUME=1 "$WORK/repo/network/reth/launch.sh" >"$WORK/out" 2>"$WORK/err"; then echo "FAIL: launch.sh started on data of another owner" >&2; exit 1; fi
-for n in "does not own" "chown -R 4242:4243 /d" "--cap-add CHOWN" "$WORK/owned/reth-data:/d"; do
+for n in "does not own" "chown -R 4242:4243 /d" "--cap-add CHOWN" "--cap-add DAC_READ_SEARCH" "$WORK/owned/reth-data:/d"; do
   grep -qF -- "$n" "$WORK/err" || { echo "FAIL: refusal does not name '$n': $(cat "$WORK/err")" >&2; exit 1; }
 done
 ! grep -q "docker was called" "$WORK/err" || { echo "FAIL: Docker was reached on data of another owner" >&2; exit 1; }
