@@ -241,12 +241,28 @@ class RegisterTests(RegisterCase):
                                "factoryIsScanProxys": True, "registerTx": "0x" + "cd" * 32})
         [sent] = self.ostia.sent   # as evm.py register: U calls register(name, symbol) on the gateway
         self.assertEqual((sent["who"], sent["to"].lower()), ("u", GATEWAY.lower()))
-        self.assertEqual(sent["data"], evm.call_data("register(string,string)", ["Canton Coin", "CC"]))
+        self.assertEqual(sent["data"], evm.call_data("register(string,string)", ["Canton Coin (Ostia)", "CC"]))
         [argv] = self.proposed()
         self.assertEqual(argv[:1], ["token"])
         self.assertEqual({argv[i]: argv[i + 1] for i in range(1, len(argv), 2)}, {"--evm-token": WRAPPED, "--instrument-admin": DSO, "--instrument-id": "Amulet", "--factory": FACTORY})
         self.assertEqual(json.loads((self.state / "demo" / "cc.json").read_text())["evmToken"], WRAPPED)
         self.assertNoSecrets(out, err, json.dumps(got), *map(json.dumps, self.proposed()))
+
+    def test_the_name_and_symbol_options_set_what_the_gateway_registers(self):
+        self.run_cc("register", "--name", "Canton Coin (Test)", "--symbol", "TCC")
+        [sent] = self.ostia.sent
+        self.assertEqual(sent["data"], evm.call_data("register(string,string)", ["Canton Coin (Test)", "TCC"]))
+
+    def test_one_option_alone_keeps_the_default_of_the_other(self):
+        self.run_cc("register", "--symbol", "TCC")
+        [sent] = self.ostia.sent
+        self.assertEqual(sent["data"], evm.call_data("register(string,string)", ["Canton Coin (Ostia)", "TCC"]))
+
+    def test_an_empty_name_or_symbol_stops_the_command_before_any_request(self):
+        for options in (("--name", ""), ("--symbol", "  ")):
+            with self.assertRaises(SystemExit):
+                self.run_cc("register", *options)
+        self.assertEqual((FakeScan.seen, self.ostia.sent), ([], []))
 
     def test_the_scan_proxy_is_asked_for_the_dso_the_validator_and_a_self_transfer_with_the_token_and_the_contact(self):
         self.run_cc("register")
