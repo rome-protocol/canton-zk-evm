@@ -68,9 +68,9 @@ DOCKER_CLI_VERSION=29.3.1
 DOCKER_CLI_SHA256=653965a027971307147c1164d44ca96e61c714e7a924a2a9fcba22ca037728cf
 SNARKJS_VERSION=0.7.6
 # The explorer (explorer/) runs on the current Node LTS, 24 (Krypton). NODE_VERSION above is for snarkjs and stays on 20.
-# This is node:24-alpine, pinned by digest (the multi-arch index, the same digest on Docker Hub and on ECR Public).
-EXPLORER_NODE_IMAGE=public.ecr.aws/docker/library/node@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
-EXPLORER_NODE_IMAGE_ID=sha256:c10884952bb8c37122fcc3fe6f97af3ab0a80e5eb02ee5df707406b4e11a7e3e
+# This is node:24.22.3-alpine3.24 (Node 24.22.3 on Alpine 3.24.4), pinned by digest (the multi-arch index, the same digest on Docker Hub and on ECR Public).
+EXPLORER_NODE_IMAGE=public.ecr.aws/docker/library/node@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+EXPLORER_NODE_IMAGE_ID=sha256:b791832e17c3a8a5897bdb5087381ffbc07b77bc634d204bf603b5f63c1ffe57
 # The explorer's image builds the Verify check for WebAssembly with the toolchain rust-toolchain.toml pins (Rust 1.94.1): this is rust:1.94.1-slim,
 # pinned by digest (the multi-arch index). tests/demo_explorer_static.sh checks that its version is the one rust-toolchain.toml names.
 EXPLORER_RUST_IMAGE=public.ecr.aws/docker/library/rust:1.94.1-slim@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f199b0c142c53fef3e1a
@@ -115,10 +115,10 @@ SOLC_IMAGE_ID=sha256:2c814b81cef52e49a3e13bb16f10e5fd8beaa9b3c0b2912f2d5e73f2702
 # both built by gateway/build.sh with the solc image above and checked in CI.
 # The address is far from the low addresses Ethereum uses for precompiles and system contracts.
 GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000
-# The database of the persistent network (network/postgres.sh, CZE_PERSIST=1): postgres 16.10 on Alpine, pinned by digest (the multi-arch
+# The databases of the persistent network (network/postgres.sh for Canton, network/explorer-db.sh for the explorer; CZE_PERSIST=1), both this one image: postgres:16.16-alpine (PostgreSQL 16.16 on Alpine 3.24.4), pinned by digest (the multi-arch
 # index). tests/network_static.sh checks it is pinned by digest.
-POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
-POSTGRES_IMAGE_ID=sha256:aab18c983342019900e3a4a617c63432fd5e34449323ab04187a8e8c1ee3dbad
+POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
+POSTGRES_IMAGE_ID=sha256:3cbd775daa28461ef484ed88ca1e5a5a72ff126e196deeebce6fec764edf1200
 # The chain package 0.5.0 is live (DevNet pins it) and was built against ostia-twin 0.1.0, so daml/build.sh builds that twin from this commit
 # (the last one whose apps/twin is 0.1.0) while the chain package is 0.5.0. The daml workflow rebuilds both on the pinned toolchain and checks
 # that the package ids are these: Canton refuses a second package of the same name and version with another id.
