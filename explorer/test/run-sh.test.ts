@@ -200,3 +200,20 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh stop", () => {
     expect(stop().stdout).not.toContain("explorer-db.sh wipe");
   });
 });
+
+describe.skipIf(!HAS_BASH)("explorer/run.sh build", () => {
+  const build = (env: Record<string, string> = {}) => {
+    const r = spawnSync("bash", [RUN, "build"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, ...env },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    return r.stdout.split("\n").find((l) => l.startsWith("docker build")) ?? "";
+  };
+
+  it("builds the pages with the network the server is told it runs on, unless the build is given its own name", () => {
+    expect(build()).not.toContain("VITE_NETWORK_NAME");
+    expect(build({ NETWORK_NAME: "TestNet", VITE_SITE_ORIGIN: "https://ostia.testnet.romeprotocol.xyz" })).toContain("--build-arg VITE_NETWORK_NAME=TestNet");
+    expect(build({ NETWORK_NAME: "TestNet", VITE_NETWORK_NAME: "Other" })).toContain("--build-arg VITE_NETWORK_NAME=Other");
+  });
+});

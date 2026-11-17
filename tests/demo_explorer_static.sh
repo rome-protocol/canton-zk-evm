@@ -58,6 +58,10 @@ has "$bridge" "--build-arg VITE_ACCOUNTS_URL=/accounts" "the account service's a
 has "$bridge" "--build-arg VITE_BRIDGE_ACCOUNT=on" "the switch of the Bridge account is passed on"
 lacks "$bridge" "VITE_CHAIN_GATEWAY" "a Bridge build setting that is not set"
 lacks "$(dry start)" "VITE_BRIDGE_ACCOUNT" "the Bridge account is off unless the build says on"
+# The pages take their network name from the server's NETWORK_NAME unless the build names its own.
+has "$(NETWORK_NAME=TestNet VITE_SITE_ORIGIN=https://ostia.testnet.romeprotocol.xyz dry build)" "--build-arg VITE_NETWORK_NAME=TestNet" "the server's network names the pages"
+has "$(NETWORK_NAME=TestNet VITE_NETWORK_NAME=Other dry build)" "--build-arg VITE_NETWORK_NAME=Other" "the build's own name wins"
+lacks "$(dry build)" "VITE_NETWORK_NAME" "no name is passed when none is set"
 has "$start" "docker build" "start builds the image"
 has "$start" "--build-arg EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" "the build takes the Node image from PINS"
 has "$start" "--build-arg EXPLORER_RUST_IMAGE=$EXPLORER_RUST_IMAGE" "the build takes the Rust image from PINS"

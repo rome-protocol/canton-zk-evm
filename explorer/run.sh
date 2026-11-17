@@ -79,9 +79,11 @@ docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else doc
 quietly() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@" > /dev/null; fi; }
 
 # The Bridge page's build settings (explorer/README.md), each built into the page when it is set: BRIDGE_WTROME_ADDRESS is this deployment's wrapped coin (without it the page does not wrap).
-BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL)
+BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_NETWORK_NAME VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL)
 build() {
   local bridge=() name
+  # The page's title and card name the network the server's NETWORK_NAME names, unless the build is given its own VITE_NETWORK_NAME (explorer/site-meta.ts).
+  : "${VITE_NETWORK_NAME:=${NETWORK_NAME:-}}"
   for name in "${BRIDGE_BUILD_SETTINGS[@]}"; do
     if [ -n "${!name:-}" ]; then bridge+=(--build-arg "$name=${!name}"); fi
   done
