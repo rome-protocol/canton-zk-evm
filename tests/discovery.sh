@@ -21,6 +21,7 @@ cleanup() {
   [ "$status" = 0 ] || docker logs --tail 40 "$RETH_CONTAINER" >&2 2>&1 || true
   "$ROOT/network/reth/stop.sh" || true
   [ "$OWN_STATE" = 1 ] && rm -rf "$CZE_STATE_DIR"
+  [ -z "${STATE2:-}" ] || rm -rf "$STATE2" 2>/dev/null || true
   return 0
 }
 trap cleanup EXIT
@@ -65,4 +66,27 @@ CZE_RESUME=1 "$ROOT/network/reth/launch.sh"; wait_for_reth
 [ "$(rpc eth_chainId | jq -r .result)" = "$want" ] || { echo "FAIL: wrong chain id after the restart" >&2; exit 1; }
 "$ROOT/network/reth/stop.sh" --wipe-persistent
 [ ! -e "$CZE_STATE_DIR/reth-data" ] || { echo "FAIL: --wipe-persistent left reth-data" >&2; exit 1; }
+# Real data that root owns, in a data folder of mode 0700 that the running user owns (the DevNet case: network/up.sh makes the state under umask 077, and an older reth ran as root): launch.sh refuses
+# with the one command that hands the data over, that command runs as printed (a throwaway root container needs DAC_READ_SEARCH as well as CHOWN to open a folder
+# of mode 0700 that another user owns), and then reth starts on the same chain and passes check.sh.
+STATE2=$(mktemp -d)
+CZE_STATE_DIR=$STATE2 "$ROOT/network/make-state.sh"
+export CZE_STATE_DIR=$STATE2
+(umask 077; mkdir "$STATE2/reth-data")
+"$ROOT/network/reth/launch.sh"; wait_for_reth
+genesis2=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)
+"$ROOT/network/reth/stop.sh" --keep-data
+docker run --rm --network none --security-opt no-new-privileges --read-only -e "U=$(id -u):$(id -g)" -v "$STATE2/reth-data:/d" "$BUSYBOX_IMAGE" sh -c 'chown -R 0:0 /d && chown "$U" /d && chmod 700 /d'
+[ -z "$(find "$STATE2/reth-data" -mindepth 1 -maxdepth 1 -uid "$(id -u)")" ] || { echo "FAIL: the test could not hand the data to root" >&2; exit 1; }
+if CZE_RESUME=1 "$ROOT/network/reth/launch.sh" >"$STATE2/out" 2>"$STATE2/err"; then echo "FAIL: launch.sh started on root-owned data" >&2; exit 1; fi
+grep -q "does not own" "$STATE2/err" || { echo "FAIL: no refusal for root-owned data: $(cat "$STATE2/err")" >&2; exit 1; }
+fix=$(sed -n 's/^.*run once: //p' "$STATE2/err")
+[[ $fix == *"--cap-add DAC_READ_SEARCH"* ]] || { echo "FAIL: the printed command does not carry DAC_READ_SEARCH: $fix" >&2; exit 1; }
+eval "$fix"
+CZE_RESUME=1 "$ROOT/network/reth/launch.sh"; wait_for_reth
+"$ROOT/network/reth/check.sh" "$RETH_CONTAINER"
+[ "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)" = "$genesis2" ] || { echo "FAIL: another chain after the hand-over" >&2; exit 1; }
+"$ROOT/network/reth/stop.sh" --wipe-persistent
+echo "ok: root-owned data in a 0700 folder is refused, handed over with the printed command, and reth starts on it"
+rm -rf "$STATE2"
 echo "discovery test passed"
