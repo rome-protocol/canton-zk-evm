@@ -42,7 +42,20 @@ done
 cmd=" $(docker exec "$NAME" cat /proc/1/cmdline | tr '\0' ' ')"
 for f in --disable-discovery "--nat none" "--max-outbound-peers 0" "--max-inbound-peers 0" "--addr 127.0.0.1" --ipcdisable \
          --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header \
-         --testing.skip-invalid-transactions "--builder.gaslimit $GAS_CAP" "--rpc.eth-proof-window 1" "--rpc.gascap $GAS_CAP" "--http.api eth,net,web3,trace"; do
+         --testing.skip-invalid-transactions "--builder.gaslimit $GAS_CAP" "--rpc.eth-proof-window 1" "--rpc.gascap $GAS_CAP" "--http.api eth,net,web3,trace" "--log.file.max-files 0"; do
   [[ $cmd == *" $f "* ]] || fail "the command line lacks: $f"
 done
-echo "ok: $NAME has no peers, no UDP sockets, no p2p port published, and the discovery and builder flags are set"
+# 6. The container is hardened: not root (the container's setting and the running process), no capabilities, no new privileges, a read-only root filesystem,
+#    and limits on processes and memory.
+insp() { docker inspect -f "$1" "$NAME"; }
+user=$(insp '{{.Config.User}}')
+[ -n "$user" ] && [ "${user%%:*}" != 0 ] && [ "${user%%:*}" != root ] || fail "the container's user is '$user', expected a non-root user"
+uid=$(docker exec "$NAME" cat /proc/1/status | awk '$1 == "Uid:" { print $2 }')
+[ -n "$uid" ] && [ "$uid" != 0 ] || fail "reth runs as uid '$uid', expected a non-root user"
+[ "$(insp '{{range .HostConfig.CapDrop}}{{.}} {{end}}')" = "ALL " ] || fail "the container does not drop every capability"
+[ -z "$(insp '{{range .HostConfig.CapAdd}}{{.}} {{end}}')" ] || fail "the container adds capabilities"
+[ "$(insp '{{.HostConfig.ReadonlyRootfs}}')" = true ] || fail "the container's root filesystem is not read-only"
+[[ $(insp '{{range .HostConfig.SecurityOpt}}{{.}} {{end}}') == *no-new-privileges* ]] || fail "the container allows new privileges"
+[ "$(insp '{{.HostConfig.PidsLimit}}')" -gt 0 ] 2>/dev/null || fail "the container has no limit on processes"
+[ "$(insp '{{.HostConfig.Memory}}')" -gt 0 ] 2>/dev/null || fail "the container has no memory limit"
+echo "ok: $NAME has no peers, no UDP sockets, no p2p port published, and the discovery and builder flags are set; it runs as a non-root user with no capabilities, a read-only filesystem and limits"

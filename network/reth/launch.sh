@@ -11,12 +11,18 @@
 # different value, or if the command line carries an option that would let peers in or
 # find peers (--trusted-peers, --bootnodes, --max-peers, --network host, -P).
 #
+# The container is hardened: it runs as the user that runs this script (never root), with every capability dropped, no new privileges, a read-only root
+# filesystem (the data folder is the only writable mount, and /tmp is a tmpfs), and limits on processes and memory. The script refuses to start without them.
+# The data folder must belong to that user. A folder written by an older, root-run reth does not: the script then refuses and prints the one command that fixes it.
+#
 # Settings come from the environment (all optional):
 #   CZE_STATE_DIR      per-run state folder          (default: ./state, ignored by git)
 #   RETH_CONTAINER     container name                (default: cze-reth)
 #   RETH_HTTP_PORT     host port for HTTP RPC        (default: 8545)
 #   RETH_WS_PORT       host port for the builder WS  (default: 8546)
 #   RETH_ENGINE_PORT   host port for the Engine API  (default: 8551)
+#   CZE_RETH_MEMORY    the container's memory limit, swap included (default: 32g)
+#   CZE_RETH_PIDS      the container's limit on processes and threads (default: 4096)
 #   LAUNCH_DRY_RUN=1   print the Docker command and stop
 #   CZE_PERSIST=1      keep reth's data in $CZE_STATE_DIR/reth-data (not in a Docker volume that stop.sh removes), so the chain survives
 #                      a restart. Discovery stays off and every check below still runs.
@@ -28,6 +34,10 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 . "$ROOT/PINS"
 STATE=${CZE_STATE_DIR:-$ROOT/state}
 NAME=${RETH_CONTAINER:-cze-reth}
+RUN_UID=$(id -u)
+RUN_GID=$(id -g)
+RETH_MEMORY=${CZE_RETH_MEMORY:-32g}
+RETH_PIDS=${CZE_RETH_PIDS:-4096}
 
 RETH_ARGS=(
   node
@@ -57,6 +67,7 @@ RETH_ARGS=(
   --testing.skip-invalid-transactions
   --rpc.eth-proof-window 1
   --rpc.gascap "$GAS_CAP"
+  --log.file.max-files 0
 )
 
 # In the persistent mode every block is written to disk as soon as it is imported. With reth's default (the newest ~7 blocks stay in
@@ -104,6 +115,8 @@ require --rpc.gascap "$GAS_CAP"
 # The explorer's indexer reads each final block's traces (trace_replayBlockTransactions) on this port. It listens on the machine only, and the
 # public RPC forwards no trace_ or debug_ method. Nothing that can build or change blocks, and no debug, is ever served on it.
 require --http.api "eth,net,web3,trace"
+# The root filesystem is read-only, and by default reth writes log files under its user's home (there is none). Its log is on standard output: docker logs.
+require --log.file.max-files 0
 
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   require --engine.persistence-threshold 0
@@ -127,7 +140,15 @@ else
 fi
 
 DOCKER_CMD=(
-  docker run -d --name "$NAME" --security-opt no-new-privileges
+  docker run -d --name "$NAME"
+  --security-opt no-new-privileges
+  --user "$RUN_UID:$RUN_GID"
+  --cap-drop ALL
+  --read-only
+  --tmpfs /tmp
+  --pids-limit "$RETH_PIDS"
+  --memory "$RETH_MEMORY"
+  --memory-swap "$RETH_MEMORY"
   -p "127.0.0.1:${RETH_HTTP_PORT:-8545}:8545"
   -p "127.0.0.1:${RETH_WS_PORT:-8546}:8546"
   -p "127.0.0.1:${RETH_ENGINE_PORT:-8551}:8551"
@@ -146,6 +167,7 @@ for a in "${RETH_ARGS[@]}"; do
 done
 for ((i = 0; i < ${#DOCKER_CMD[@]}; i++)); do
   case ${DOCKER_CMD[i]} in
+    --privileged | --cap-add | --cap-add=*) refuse "the Docker command must not carry ${DOCKER_CMD[i]%%=*}" ;;
     -P | --publish-all) refuse "the Docker command must not carry ${DOCKER_CMD[i]}" ;;
     --network=host | --net=host) refuse "the Docker command must not carry --network host" ;;
     --network | --net)
@@ -153,12 +175,45 @@ for ((i = 0; i < ${#DOCKER_CMD[@]}; i++)); do
   esac
 done
 
+# The container's hardening: not root, no capabilities, no new privileges, a read-only root filesystem with a tmpfs for /tmp, and limits on processes and memory.
+# Like reth's flags above, each one is required, so a change to the command above that drops one is refused before Docker is called.
+docker_has() {
+  local i
+  for ((i = 0; i < ${#DOCKER_CMD[@]}; i++)); do
+    if [ "${DOCKER_CMD[i]}" = "$1" ]; then
+      [ $# -eq 1 ] && return 0
+      [ "${DOCKER_CMD[i + 1]:-}" = "$2" ] && return 0
+    fi
+  done
+  refuse "its Docker command is missing or has the wrong value for: $*"
+}
+[ "$RUN_UID" != 0 ] || refuse "reth must not run as root: run this script as another user"
+[[ $RETH_PIDS =~ ^[1-9][0-9]*$ ]] || refuse "CZE_RETH_PIDS must be a positive number, not '$RETH_PIDS'"
+[[ $RETH_MEMORY =~ ^[1-9][0-9]*[bkmg]?$ ]] || refuse "CZE_RETH_MEMORY must be a positive size such as 32g, not '$RETH_MEMORY'"
+docker_has --security-opt no-new-privileges
+docker_has --user "$RUN_UID:$RUN_GID"
+docker_has --cap-drop ALL
+docker_has --read-only
+docker_has --tmpfs /tmp
+docker_has --pids-limit "$RETH_PIDS"
+docker_has --memory "$RETH_MEMORY"
+docker_has --memory-swap "$RETH_MEMORY"
+
 if [ "${LAUNCH_DRY_RUN:-0}" = 1 ]; then
   echo "${DOCKER_CMD[*]}"
   exit 0
 fi
 
-[ "${CZE_PERSIST:-0}" != 1 ] || mkdir -p "$DATA_MOUNT"
+# The data belongs to the user the container runs as. A folder this script makes does, and a new Docker volume (root's) is handed over by a throwaway container with
+# one capability. Data that an older, root-run reth wrote is not touched here: the script stops, and says the one command that hands it over (the same container).
+CHOWN_DOCKER="docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --read-only -v"
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  mkdir -p "$DATA_MOUNT"
+  foreign=$(find "$DATA_MOUNT" ! -uid "$RUN_UID" 2>/dev/null | head -n 1 || true)
+  [ -z "$foreign" ] || refuse "$DATA_MOUNT has files that user $RUN_UID does not own ($foreign), so reth cannot write them as a non-root user. With reth stopped, run once: $CHOWN_DOCKER \"$DATA_MOUNT:/d\" \"$BUSYBOX_IMAGE\" chown -R $RUN_UID:$RUN_GID /d"
+else
+  $CHOWN_DOCKER "$DATA_MOUNT:/d" "$BUSYBOX_IMAGE" chown -R "$RUN_UID:$RUN_GID" /d >/dev/null
+fi
 if [ "${CZE_PERSIST:-0}" = 1 ] && [ "${CZE_RESUME:-0}" = 1 ]; then
   : # the genesis and the Engine secret are the ones the chain was made with
 else
