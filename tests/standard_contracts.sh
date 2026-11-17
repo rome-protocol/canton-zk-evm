@@ -48,7 +48,7 @@ start_reth() {   # $1: state folder, $2...: arguments of the helper's genesis co
 }
 deploy() { "$PY" "$DEPLOY" --rpc "http://127.0.0.1:$RETH_HTTP_PORT" --funding-key-file "$1/funding.key" --wait-seconds 60 "${@:2}"; }
 
-# What reth 2.5.2 offers: no flag that allows or forbids unprotected (pre-EIP-155) transactions.
+# What the pinned reth offers: no flag that allows or forbids unprotected (pre-EIP-155) transactions.
 help=$(docker run --rm --network none "$RETH_IMAGE" node --help)
 ! grep -qi 'unprotected' <<<"$help" || fail "the pinned reth has a flag about unprotected transactions: the README's finding has to be revisited"
 echo "reth $RETH_VERSION: no flag about unprotected transactions in 'node --help'"
