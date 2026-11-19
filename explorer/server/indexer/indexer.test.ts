@@ -5,6 +5,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { RethError } from "../reth.ts";
 import { createIndexer, type DeriveShape, type Indexer, type Timing } from "./indexer.ts";
+import { setHealth } from "./health.ts";
 import { reindexRange } from "./reindex.ts";
 import { dictionary } from "./stage1.ts";
 
@@ -439,6 +440,38 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       await until("ok");
       await halt();
       expect((await counts(pool)).blocks).toBe(1);
+      await indexer.close();
+    });
+  });
+
+  it("sets reth_reads back to ok after the first good turn of a new indexer when an earlier process left it degraded", async () => {
+    await inDb(async (pool) => {
+      const { indexer } = await setup(pool, [{ txs: 1 }], "inline", { pollMs: 20, readErrorsBeforeDegraded: 2 });
+      await setHealth(pool, [{ id: "reth_reads", status: "degraded", detail: "trace_replayBlockTransactions: reth was stopped" }]);
+      expect((await health(pool, "reth_reads")).status).toBe("degraded");
+      const halt = indexer.start();
+      for (let i = 0; i < 100 && (await health(pool, "reth_reads")).status !== "ok"; i++) await new Promise((ok) => setTimeout(ok, 30));
+      expect((await health(pool, "reth_reads")).status).toBe("ok");
+      await halt();
+      await indexer.close();
+    });
+  });
+
+  it("keeps reth_reads degraded in a new indexer whose reads still fail, over a row an earlier process left degraded", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }], "behind", { pollMs: 10, readErrorsBeforeDegraded: 2 });
+      await setHealth(pool, [{ id: "reth_reads", status: "degraded", detail: "an earlier process's report" }]);
+      chain.reads.traces = async () => { throw new RethError("trace_replayBlockTransactions: the replay timed out", true); };
+      const halt = indexer.start();
+      const wait = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
+      for (let i = 0; i < 100 && (await health(pool, "reth_reads")).detail !== "trace_replayBlockTransactions: the replay timed out"; i++) await wait(20);
+      expect((await health(pool, "reth_reads")).detail).toBe("trace_replayBlockTransactions: the replay timed out");
+      // Stage 1's good looks go by; the row never turns ok while stage 2 keeps failing.
+      for (let i = 0; i < 15; i++) {
+        await wait(15);
+        expect((await health(pool, "reth_reads")).status).toBe("degraded");
+      }
+      await halt();
       await indexer.close();
     });
   });

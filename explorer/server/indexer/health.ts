@@ -23,3 +23,8 @@ export async function setHealth(db: Pool | PoolClient, rows: HealthRow[]): Promi
 export async function clearStops(db: Pool | PoolClient, ids: string[]): Promise<void> {
   await db.query("update health_checks set status = 'ok', value = null, threshold = null, detail = null, changed_at = now(), checked_at = now() where check_id = any($1::text[]) and status = 'down'", [ids]);
 }
+
+/** Sets back to `ok` the rows among `ids` that an earlier process left `degraded`, in the caller's transaction when given a client. A row that does not exist stays absent. */
+export async function clearDegraded(db: Pool | PoolClient, ids: string[]): Promise<void> {
+  await db.query("update health_checks set status = 'ok', value = null, threshold = null, detail = null, changed_at = now(), checked_at = now() where check_id = any($1::text[]) and status = 'degraded'", [ids]);
+}
