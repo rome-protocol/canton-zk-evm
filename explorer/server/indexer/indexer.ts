@@ -15,7 +15,7 @@ import { venueOnce } from "./venue.ts";
 import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
 import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
-import { clearStops, setHealth, type HealthRow } from "./health.ts";
+import { clearDegraded, clearStops, setHealth, type HealthRow } from "./health.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
 import { checkIds } from "./db-ids.ts";
@@ -467,11 +467,18 @@ export function createIndexer(o: IndexerOptions) {
     const errorLimit = o.readErrorsBeforeDegraded ?? 3;
     // The row `reth_reads` is degraded while any loop reports a problem and goes back to ok only when the last one clears it, so the walk and
     // the derive loops, which poll on their own, do not hide each other's report or make the row flap.
+    // A row that an earlier process left degraded (it was stopped while reth was) is set back to ok at the first good turn, when no loop of this one reports a problem.
     const reporting = new Map<string, string>();
+    let earlierCleared = false;
     async function report(loop: string, detail: string | null): Promise<void> {
       try {
         if (detail === null) {
-          if (reporting.delete(loop) && reporting.size === 0) await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]);
+          const raised = reporting.delete(loop);
+          if (reporting.size === 0) {
+            if (raised) await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]);
+            else if (!earlierCleared) await clearDegraded(o.pool, ["reth_reads"]);
+          }
+          earlierCleared = true;
         } else if (!reporting.has(loop)) {
           reporting.set(loop, detail);
           await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail }]);
