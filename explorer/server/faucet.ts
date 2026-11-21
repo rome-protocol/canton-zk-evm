@@ -24,7 +24,7 @@ export interface FaucetOptions {
   perIpSeconds: number;
   /** At most this many requests from one IPv6 /48 in the same `perIpSeconds`, on top of the one per /64 (a /48 holds 65,536 /64s). Counted in memory by each instance, so a restart empties it. Default 10. */
   perNetMax?: number;
-  /** The most requests accepted in any hour, from everyone. */
+  /** The most plain requests accepted in any hour, from everyone; builder grants are not counted. */
   maxPerHour: number;
   /** The most transfers sent in one batch. */
   batch: number;

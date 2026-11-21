@@ -7,7 +7,7 @@ import { ConfigError } from "./config.ts";
 import type { Ticket, TicketStatus } from "./faucet.ts";
 import { CLAIM_LOCK, LOCK_CLASS, READ_BACK_SECONDS } from "./leader.ts";
 
-/** What the faucet keeps: each address's last request, each client's, the requests of the last hour, and the tickets. */
+/** What the faucet keeps: each address's last request, each client's, the plain requests of the last hour (builder grants are not counted), and the tickets. */
 export interface FaucetState {
   addresses: [string, number][];
   ips: [string, number][];

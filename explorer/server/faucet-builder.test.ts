@@ -482,6 +482,16 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       expect((await r.f.request(addr(6), { ip: "2.2.6.1" })).status).toBe(429);
     });
 
+    it("keeps builder grants out of the hour's count across a restart", async () => {
+      const file = join(dir, "faucet.json");
+      const one = await rig({ maxPerHour: 2 }, {}, useDatabase, useDatabase ? null : file);
+      for (const n of [1, 2, 3]) expect(await grant(one, addr(n), `c${n}`, n, 90, `1.1.${n}.1`)).toMatchObject({ builder: "queued" });
+      await one.f.flush();
+      const two = await rig({ maxPerHour: 2 }, {}, useDatabase, useDatabase ? null : file);
+      for (const n of [4, 5]) expect((await two.f.request(addr(n), { ip: `2.2.${n}.1` })).status).toBe(202);
+      expect(await two.f.request(addr(6), { ip: "2.2.6.1" })).toMatchObject({ status: 429, body: { reason: "hour" } });
+    });
+
     it("still stops a builder grant at its own daily cap when the hour is full", async () => {
       const r = await make({ maxPerHour: 1 }, { maxPerDay: 1 });
       expect((await r.f.request(addr(1), { ip: "2.2.1.1" })).status).toBe(202);
