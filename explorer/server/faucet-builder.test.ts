@@ -459,13 +459,34 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       expect(await grant(r, addr(3), "c4", 3, 90, "1.1.1.3")).toMatchObject({ builder: "queued" });
     });
 
-    it("keeps the per-network limit and the hourly cap of the plain faucet", async () => {
+    it("keeps the per-network limit and the hourly cap of the plain faucet for plain requests", async () => {
       const r = await make({ maxPerHour: 3 });
       expect(await grant(r, addr(1), "c1", 1, 90, "1.1.1.1")).toMatchObject({ builder: "queued" });
       expect(await grant(r, addr(2), "c2", 2, 90, "1.1.1.1")).toMatchObject({ builder: "ip", wait: "600" });
       expect(await grant(r, addr(2), "c2b", 2, 90, "1.1.1.2")).toMatchObject({ builder: "queued" });
-      expect((await r.f.request(addr(9), { ip: "1.1.1.3" })).status).toBe(202);
-      expect(await grant(r, addr(3), "c3", 3, 90, "1.1.1.4")).toMatchObject({ builder: "hour" });
+      for (const n of [3, 4, 5]) expect((await r.f.request(addr(n), { ip: `2.2.${n}.1` })).status).toBe(202);
+      expect((await r.f.request(addr(6), { ip: "2.2.6.1" })).status).toBe(429);
+    });
+
+    it("does not refuse a builder grant when the hour is full of plain requests", async () => {
+      const r = await make({ maxPerHour: 2 });
+      for (const n of [1, 2]) expect((await r.f.request(addr(n), { ip: `2.2.${n}.1` })).status).toBe(202);
+      expect((await r.f.request(addr(3), { ip: "2.2.3.1" })).status).toBe(429);
+      expect(await grant(r, addr(4), "c4", 4, 90, "1.1.1.4")).toMatchObject({ builder: "queued" });
+    });
+
+    it("does not use up the hourly room of plain requests with builder grants", async () => {
+      const r = await make({ maxPerHour: 2 });
+      for (const n of [1, 2, 3]) expect(await grant(r, addr(n), `c${n}`, n, 90, `1.1.${n}.1`)).toMatchObject({ builder: "queued" });
+      for (const n of [4, 5]) expect((await r.f.request(addr(n), { ip: `2.2.${n}.1` })).status).toBe(202);
+      expect((await r.f.request(addr(6), { ip: "2.2.6.1" })).status).toBe(429);
+    });
+
+    it("still stops a builder grant at its own daily cap when the hour is full", async () => {
+      const r = await make({ maxPerHour: 1 }, { maxPerDay: 1 });
+      expect((await r.f.request(addr(1), { ip: "2.2.1.1" })).status).toBe(202);
+      expect(await grant(r, addr(2), "c2", 2, 90, "1.1.2.1")).toMatchObject({ builder: "queued" });
+      expect(await grant(r, addr(3), "c3", 3, 90, "1.1.3.1")).toMatchObject({ builder: "day" });
     });
 
     it("keeps the full line's refusal", async () => {
