@@ -7,7 +7,7 @@ import { ConfigError } from "./config.ts";
 import type { Ticket, TicketStatus } from "./faucet.ts";
 import { CLAIM_LOCK, LOCK_CLASS, READ_BACK_SECONDS } from "./leader.ts";
 
-/** What the faucet keeps: each address's last request, each client's, the requests of the last hour, and the tickets. */
+/** What the faucet keeps: each address's last request, each client's, the plain requests of the last hour (builder grants are not counted), and the tickets. */
 export interface FaucetState {
   addresses: [string, number][];
   ips: [string, number][];
@@ -225,7 +225,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
         if (t.status === "failed") continue;
         if (t.at + w.addressMs > w.now && !t.account) addresses.set(t.to, t.at);
         if (t.ip !== null && t.at + w.ipMs > w.now) ips.set(t.ip, t.at);
-        if (t.at + 3600_000 > w.now) hourly.push(t.at);
+        if (t.at + 3600_000 > w.now && !t.account) hourly.push(t.at);
       }
       return { addresses: [...addresses], ips: [...ips], hourly, tickets };
     },
@@ -253,7 +253,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
           `select exists (select 1 from faucet_requests where address = $1 and counts and (builder_account is not null) = $6::boolean and requested_at > $2) as address,
                   ($7::bytea is not null and exists (select 1 from faucet_requests where builder_account = $7 and counts and requested_at > $2)) as account,
                   ($3::bytea <> ''::bytea and exists (select 1 from faucet_requests where client_key = $3 and counts and requested_at > $4)) as ip,
-                  (select count(*) from faucet_requests where counts and requested_at > $5) as hour,
+                  (select count(*) from faucet_requests where counts and builder_account is null and requested_at > $5) as hour,
                   (select count(*) from faucet_requests where $6::boolean and counts and builder_account is not null and requested_at > $8) as day`,
           [bytes(t.to), new Date(t.at - (r.builder?.accountMs ?? r.addressMs)), bytes(t.ip) ?? Buffer.alloc(0), new Date(t.at - r.ipMs), new Date(t.at - 3600_000), r.builder !== undefined, r.builder ? bytes(t.account) : null, new Date(t.at - 86400_000)],
         );
@@ -261,7 +261,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
         if (s.account) return "account";
         if (s.address) return r.builder ? "builder-address" : "address";
         if (s.ip) return "ip";
-        if (Number(s.hour) >= r.maxPerHour) return "hour";
+        if (!r.builder && Number(s.hour) >= r.maxPerHour) return "hour";
         if (r.builder && Number(s.day) >= r.builder.maxPerDay) return "day";
         wrote = await put(c, copy);
         return null;

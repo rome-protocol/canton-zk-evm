@@ -24,7 +24,7 @@ export interface FaucetOptions {
   perIpSeconds: number;
   /** At most this many requests from one IPv6 /48 in the same `perIpSeconds`, on top of the one per /64 (a /48 holds 65,536 /64s). Counted in memory by each instance, so a restart empties it. Default 10. */
   perNetMax?: number;
-  /** The most requests accepted in any hour, from everyone. */
+  /** The most plain requests accepted in any hour, from everyone; builder grants are not counted. */
   maxPerHour: number;
   /** The most transfers sent in one batch. */
   batch: number;
@@ -472,7 +472,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (i !== undefined) return turnedAway("ip", i + ipMs - t);
     const n = net === undefined ? undefined : nets.get(net);
     if (n !== undefined && n.length >= netMax) return turnedAway("net", n[0]! + ipMs - t);
-    if (hourly.length >= o.maxPerHour) return turnedAway("hour", hourly[0]! + HOUR - t);
+    if (account === undefined && hourly.length >= o.maxPerHour) return turnedAway("hour", hourly[0]! + HOUR - t);
     if (account !== undefined && builderDaily.length >= (builder?.maxPerDay ?? 0)) return turnedAway("day", builderDaily[0]! + DAY - t);
     if (queue.length >= o.queueMax) {
       return answer(503, "The faucet's line is full, so this request was turned away, not lost: nothing was taken from you. Try again in a little while.", { "Retry-After": String(Math.max(5, Math.ceil(queue.length / o.batch) * BLOCK_SECONDS)) }, "queue");
@@ -499,8 +499,10 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (t.ip !== null && ips.get(t.ip) === t.at) ips.delete(t.ip);
     const times = t.net ? nets.get(t.net) : undefined;
     if (t.net && times) { const j = times.indexOf(t.at); if (j >= 0) times.splice(j, 1); if (!times.length) nets.delete(t.net); }
-    const i = hourly.indexOf(t.at);
-    if (i >= 0) hourly.splice(i, 1);
+    if (!t.account) {
+      const i = hourly.indexOf(t.at);
+      if (i >= 0) hourly.splice(i, 1);
+    }
   }
 
   const fail = (t: Ticket, reason: string): void => {
@@ -805,8 +807,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
   /**
    * Takes a request for coin. A plain request (no `account`) asks for the faucet's amount and passes the human check. A builder grant (`account` is the keyed
-   * hash of the GitHub account) asks for the builder amount, and GitHub's sign-in stands in for the human check. The queue, the batch, the per-client and the
-   * hourly limits are the same for both.
+   * hash of the GitHub account) asks for the builder amount, and GitHub's sign-in stands in for the human check. The queue, the batch and the
+   * per-client limits are the same for both. The hourly limit counts plain requests only: a builder grant is not refused by it and does not use it up.
    */
   async function submit(raw: unknown, caller: FaucetCaller, grantee?: string): Promise<FaucetAnswer> {
     if (!address) return answer(503, "The faucet is off.");
@@ -833,7 +835,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (grantee !== undefined) { builderAccounts.set(grantee, t); builderAddresses.set(to, t); builderDaily.push(t); } else addresses.set(to, t);
     if (ip !== undefined) ips.set(ip, t);
     if (net !== undefined) nets.set(net, [...(nets.get(net) ?? []), t]);
-    hourly.push(t);
+    if (grantee === undefined) hourly.push(t);
     if (store?.claim) {
       // With a database, other instances take requests too. The limits are checked against all of them as the request is written. Until then
       // the worker leaves the request alone, and if the store turns it away, the request is taken back as if it had never been made.
