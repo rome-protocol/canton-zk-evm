@@ -48,7 +48,7 @@ describe.skipIf(!dist)("the Bridge page's way back to Canton, in a browser", () 
       if (path === "/api/canton-route/moves") return json(200, movesInBody(world.events));
       if (path === "/api/canton-route/address" && req.method === "POST") { world.posts.push(JSON.parse(await body())); return json(200, { asked: true }); }
       if (path === "/api/canton-route/address") return json(200, world.address);
-      if (path === "/api/agglayer/deposit") return json(200, { network: 0, count: 7, destinationNetwork: 75, stage: world.stage, sentAt: "2026-11-22T21:41:00Z", confirmedAt: "2026-11-22T21:50:00Z", readyAt: world.stage === "ready" ? new Date(Date.now() - 60_000).toISOString() : null, leaf: null });
+      if (path === "/api/agglayer/deposit") return json(200, { network: 0, count: 7, destinationNetwork: 75, stage: world.stage, sentAt: "2026-11-22T21:41:00Z", confirmedAt: "2026-11-22T21:50:00Z", readyAt: world.stage === "ready" ? new Date(Date.now() - 20 * 60_000).toISOString() : null, leaf: null });
       if (path === "/api/agglayer/claim") return json(200, { network: 0, count: 7, claimed: false, destinationNetwork: 75, chainId: OSTIA_ID, to: OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: claimData(75, INBOX, cc(4.8), 7), args: ARGS });
       if (path === "/rpc") {
         const call = JSON.parse(await body());
