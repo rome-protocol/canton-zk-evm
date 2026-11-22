@@ -71,7 +71,7 @@ describe("words for the waits and the names", () => {
     expect(waitWords(86_400)).toBe("1 day");
     expect(waitWords(7_200)).toBe("2 hours");
     expect(waitWords(300)).toBe("5 minutes");
-    expect(dayTime("2026-11-25T21:45:00Z")).toBe("Wed 25 Nov 21:45");
+    expect(dayTime("2026-11-25T21:45:00Z")).toBe("Wed 25 Nov 21:45 UTC");
   });
   it("shortens an address and a party id", () => {
     expect(short(ME)).toBe("0xe3e3…e3e3");

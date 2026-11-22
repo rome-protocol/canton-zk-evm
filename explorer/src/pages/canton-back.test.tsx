@@ -22,8 +22,8 @@ const ARGS = { smtProofLocalExitRoot: proof, smtProofRollupExitRoot: proof, glob
 
 interface Sent { chainId: number; tx: any } // eslint-disable-line @typescript-eslint/no-explicit-any
 const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true,
-  connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10) };
-const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10) });
+  connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10), hold: null as Promise<void> | null };
+const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null });
 
 beforeEach(() => {
   reset();
@@ -37,7 +37,12 @@ beforeEach(() => {
     if (input === "/api/canton-route/setup") return json(200, world.route);
     if (input.startsWith("/api/canton-route/moves")) return json(200, movesInBody(world.events, world.accepts));
     if (input === "/api/canton-route/address") { world.posts.push(JSON.parse(init!.body!)); return world.intake === 200 ? json(200, { asked: true }) : json(world.intake, { error: "no" }); }
-    if (input.startsWith("/api/canton-route/address?")) return json(200, world.address);
+    if (input.startsWith("/api/canton-route/address?")) {
+      const q = new URL(input, "http://x").searchParams;
+      const body = { ...(world.address as object), party: q.get("party"), refundAddress: q.get("refundAddress") };
+      if (world.hold && q.get("party") === PARTY) await world.hold;   // a slow answer for the first account
+      return json(200, body);
+    }
     if (input.startsWith("/api/agglayer/deposit")) return json(200, { network: 0, count: 7, destinationNetwork: 75, ...stage(world.stage as never), readyAt: world.stage === "ready" || world.stage === "claimed" ? world.readyAt : null });
     if (input.startsWith("/api/agglayer/claim?network=75")) return json(200, { network: 75, count: 9, claimed: world.claimed, destinationNetwork: 0, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, l1InfoTreeIndex: 1, data: claimData(0, ME, cc(4.6), 9), args: null });
     if (input.startsWith("/api/agglayer/claim")) return json(200, { network: 0, count: 7, claimed: world.claimed, destinationNetwork: 75, chainId: OSTIA_ID, to: OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(75, INBOX, cc(4.8), 7), args: world.claimed ? null : ARGS });
@@ -159,13 +164,38 @@ describe("setting up the account's Ostia address", () => {
     await new Promise((r) => setTimeout(r, 150));
     expect(world.posts).toEqual([]);
   });
-  it("ends as not available when the set time passes with no Sent mark", async () => {
+  it("asks again, on a later visit, when an old ask has no opening after the set time", async () => {
+    world.address = addressBody();
     localStorage.setItem(`ostia-in-asked:${PARTY}:${ME}`, String(Date.now() - 2_000_000));
     renderPage();
     await openRoute();
     await connect();
     await userEvent.type(within(await card()).getByLabelText("Canton account"), PARTY);
-    expect(await screen.findByText("Sending to Canton is not available right now. Nothing is lost.")).toBeInTheDocument();
+    expect(await screen.findByText("Setting up this Canton account's Ostia address")).toBeInTheDocument();
+    await waitFor(() => expect(world.posts).toHaveLength(1));
+  });
+  it("never shows a late answer about the account that was typed before, for the one typed now", async () => {
+    const BOB = "bob::1220" + "ab".repeat(16);
+    world.address = addressBody({ opened: true, openedAt: minutes(-10) });
+    renderPage();
+    await openRoute();
+    await connect();
+    const c = await card();
+    const field = within(c).getByLabelText("Canton account");
+    await userEvent.type(field, PARTY);
+    await within(c).findByText("Takes transfers from Ostia: yes");
+    let release!: () => void;
+    world.hold = new Promise<void>((r) => { release = r; });
+    await new Promise((r) => setTimeout(r, 100));   // a look at the first account is now waiting on the server
+    world.address = addressBody();
+    await userEvent.clear(field);
+    await userEvent.type(field, BOB);
+    expect(await within(c).findByText("Setting up this Canton account's Ostia address")).toBeInTheDocument();
+    release();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(within(c).queryByText("Takes transfers from Ostia: yes")).toBeNull();
+    expect(within(c).queryByText("0x1b1b…1b1b")).toBeNull();
+    expect(within(c).getByText("Setting up this Canton account's Ostia address")).toBeInTheDocument();
   });
   it("says not available when the intake does not take the ask, and that the account takes no transfers when it has no acceptance", async () => {
     world.intake = 503;
@@ -200,6 +230,7 @@ describe("the send", () => {
     const c = await readyToSend("4.8");
     expect(within(c).getByText("Fee 0.1000000000 CC, taken from the amount. It covers the cost on Ostia.")).toBeInTheDocument();
     expect(within(c).getByText("The account gets 4.7000000000 CC")).toBeInTheDocument();
+    expect(within(c).getByText("Send with an ordinary bridge send only: a bridge-and-call send to this address loses the token.")).toBeInTheDocument();
     expect(within(c).getByText("Canton can pay out 6.2 CC more today. That renews at 14:05 UTC.")).toBeInTheDocument();
     expect(within(c).getByText("If Canton cannot pay it within 3 days, you can send it back to 0xe3e3…e3e3 on Ethereum Sepolia, less a 0.2 CC fee.")).toBeInTheDocument();
     expect(within(c).getByText(/Bring your own Sepolia ETH/)).toBeInTheDocument();
@@ -302,7 +333,7 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     world.route = setupInBody({ payout: { paused: false, pausedUntil: null, assets: { [CC]: { left: 0n, renewsAt: "2026-11-22T14:05:00.000Z" } } } });
     await open();
     const row = await screen.findByRole("listitem", { name: "4.8 CC is held on Ostia for Canton account alice::1220…9f9f" });
-    expect(within(row).getByText(/^Canton cannot pay this account right now: today's limit is reached\. Canton can pay out again from 14:05 UTC\. From \w{3} \d+ \w{3} \d\d:\d\d you can send it back\.$/)).toBeInTheDocument();
+    expect(within(row).getByText(/^Canton cannot pay this account right now: today's limit is reached\. Canton can pay out again from 14:05 UTC\. From \w{3} \d+ \w{3} \d\d:\d\d UTC you can send it back\.$/)).toBeInTheDocument();
     expect(within(row).getByLabelText("Held on Ostia: now")).toBeInTheDocument();
     expect(world.asked).toContain(`/api/canton-route/moves?evm=${encodeURIComponent(ME)}`);
   });
@@ -321,7 +352,7 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     await open();
     const button = await screen.findByRole("button", { name: "Send back to Ethereum Sepolia" });
     expect(screen.getByText(/^Goes back to 0xe3e3…e3e3\. The 0\.2 CC fee is still taken from the amount\.$/)).toBeInTheDocument();
-    expect(screen.getByText(/^Held on Ostia since \w{3} \d+ \w{3} \d\d:\d\d\. It can go back now\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Held on Ostia since \w{3} \d+ \w{3} \d\d:\d\d UTC\. It can go back now\.$/)).toBeInTheDocument();
     await userEvent.click(button);
     await waitFor(() => expect(world.sent).toHaveLength(1));
     expect(decodeFunctionData({ abi: routerAbi, data: world.sent[0]!.tx.data }).functionName).toBe("refund");

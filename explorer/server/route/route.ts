@@ -169,14 +169,17 @@ export function createCantonRoute({ settings, reth, pool, canton, bridge, fetche
     const { rows } = await pool.query(
       `select l.topic0, l.topic1, l.topic2, l.topic3, l.data, l.block_number, t.hash, extract(epoch from b.timestamp)::bigint as ts
        from logs l join transactions t on t.block_number = l.block_number and t.tx_index = l.tx_index join blocks b on b.number = l.block_number
-       where l.address = $1 and l.topic0 = any($2) and l.topic1 in (select o.topic1 from logs o where o.address = $1 and o.topic0 = $3 and ${column} = $4 order by o.block_number desc, o.log_index desc limit $5)
+       where l.address = $1 and l.topic0 = any($2) and l.topic1 in (select o.topic1 from logs o where o.address = $1 and o.topic0 = $3 and ${column} = $4 group by o.topic1 order by max(o.block_number) desc, max(o.log_index) desc limit $5)
        order by l.block_number desc, l.log_index desc limit $6`,
       [bytes(settings.router), topics, bytes(INBOX_OPENED_TOPIC), key, INBOXES_MAX, BACK_MAX],
     );
+    // Anyone may put another coin into an inbox and call the router's mark: only the book's listed assets are shown as a holding.
+    const known = new Set(await listed());
     return rows.flatMap((r) => {
       const e = decodeBack(hex(r.topic0), hex(r.data));
       if (!e) return [];
       const opened = e.kind === "opened";
+      if (!opened && !known.has(word(hex(r.topic2)))) return [];
       return [pick({
         kind: e.kind, inbox: word(hex(r.topic1)), erc20: opened ? null : word(hex(r.topic2)), party: opened ? e.party : null, refundNetwork: opened ? e.refundNetwork : null, refundAddress: opened ? word(hex(r.topic3)) : null,
         balance: e.kind === "held" ? e.balance.toString() : null, refundAt: e.kind === "held" ? iso(Number(e.refundAt)) : null,

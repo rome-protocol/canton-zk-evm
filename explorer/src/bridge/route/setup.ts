@@ -155,11 +155,11 @@ export function parseMoves(body: unknown): Moves | null {
 }
 
 /** An account's Ostia address as the server works it out, and where its opening stands. */
-export interface AddressRead { inbox: string; accepts: boolean | null; opened: boolean; openedAt: string | null; openTx: string | null }
+export interface AddressRead { party: string; refundAddress: string; inbox: string; accepts: boolean | null; opened: boolean; openedAt: string | null; openTx: string | null }
 export function parseAddress(body: unknown): AddressRead | null {
   const b = obj(body);
-  if (!b || !address(b.inbox) || typeof b.opened !== "boolean" || (b.accepts !== null && typeof b.accepts !== "boolean")) return null;
-  return { inbox: b.inbox.toLowerCase(), accepts: b.accepts, opened: b.opened, openedAt: time(b.openedAt), openTx: /^0x[0-9a-f]{64}$/.test(String(b.openTx)) ? (b.openTx as string) : null };
+  if (!b || typeof b.party !== "string" || !address(b.refundAddress) || !address(b.inbox) || typeof b.opened !== "boolean" || (b.accepts !== null && typeof b.accepts !== "boolean")) return null;
+  return { party: b.party, refundAddress: b.refundAddress.toLowerCase(), inbox: b.inbox.toLowerCase(), accepts: b.accepts, opened: b.opened, openedAt: time(b.openedAt), openTx: /^0x[0-9a-f]{64}$/.test(String(b.openTx)) ? (b.openTx as string) : null };
 }
 
 async function get(path: string, signal?: AbortSignal): Promise<unknown> {

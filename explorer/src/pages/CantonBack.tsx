@@ -5,7 +5,7 @@ import { parseBase } from "../bridge/other/amount.ts";
 import { readBalances } from "../bridge/other/balances.ts";
 import type { Asset, OpenRow } from "../bridge/other/setup.ts";
 import { BRING_YOUR_OWN, otherWords, timeWords } from "../bridge/other/words.ts";
-import { BACK_NAME, FROM, NO_ACCEPTANCE, NOT_AVAILABLE_BACK, payoutLine, quoteIn, SETTING_UP, short, smallestIn, wayBackLine } from "../bridge/route/in.ts";
+import { BACK_NAME, FROM, NO_ACCEPTANCE, NOT_AVAILABLE_BACK, payoutLine, quoteIn, SETTING_UP, short, smallestIn, WARN_BRIDGE_AND_CALL, wayBackLine } from "../bridge/route/in.ts";
 import { exact } from "../bridge/route/words.ts";
 import type { RouteAsset, RouteOn } from "../bridge/route/setup.ts";
 import { CardHead } from "../components/Cards.tsx";
@@ -95,6 +95,7 @@ export function CantonBack({ setup, asset, sepolia, account, walletChainId, back
               <>
                 <p className="small">Takes transfers from Ostia: yes</p>
                 <p className="small">Its Ostia address <span className="mono" title={state.inbox}>{short(state.inbox)}</span>, checked on Ostia</p>
+                <p className="small muted">{WARN_BRIDGE_AND_CALL}</p>
                 <label className="field"><span className="lbl">Amount of {asset.symbol}</span><input inputMode="decimal" autoComplete="off" spellCheck={false} placeholder="0" value={text} disabled={sending} onChange={(e) => setText(e.target.value.replace(/\s/g, ""))} /></label>
                 <p className="small muted">Balance {bal === null ? "–" : showBalance(bal, asset.decimals)}{bal !== null && bal > 0n && <> · <button type="button" className="link-b" onClick={() => setText(showUnits(bal, asset.decimals))}>Max</button></>}</p>
                 {checked.state === "bad" && <p className="small bad" role="status">{checked.why}</p>}

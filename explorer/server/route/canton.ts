@@ -97,8 +97,10 @@ export function payoutFrom(acceptanceItems: unknown[], chainItems: unknown[], as
   const chain = chains[0]!;
   const until = chain.pausedUntil === null || chain.pausedUntil === undefined ? null : instant(chain.pausedUntil);
   if (chain.pausedUntil !== null && chain.pausedUntil !== undefined && until === null) bad("a pause that is not a time");
-  const quota = chain.withdrawalQuota === null || chain.withdrawalQuota === undefined ? null : decimal(chain.withdrawalQuota);
-  if (chain.withdrawalQuota !== null && chain.withdrawalQuota !== undefined && quota === null) bad("a quota that is not a decimal");
+  // A quota with no window is not enforced (`takeAgainstQuota` needs both), so it is read as no quota.
+  const windowed = chain.quotaWindow !== null && chain.quotaWindow !== undefined;
+  const quota = chain.withdrawalQuota === null || chain.withdrawalQuota === undefined || !windowed ? null : decimal(chain.withdrawalQuota);
+  if (chain.withdrawalQuota !== null && chain.withdrawalQuota !== undefined && windowed && quota === null) bad("a quota that is not a decimal");
   const counted = chain.withdrawn === null || chain.withdrawn === undefined ? [] : Array.isArray(chain.withdrawn) ? chain.withdrawn.map(obj) : bad("withdrawals that are not a list");
   const assets = new Map<string, { left: bigint | null; renewsAt: string | null }>();
   for (const t of registeredFrom(assetItems)) {

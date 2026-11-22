@@ -1,6 +1,7 @@
 // The way back to Canton, as the Canton route's page lives it: the browser's records of the sends it made, the router's events for the wallet's way back, the bridge's stage of each deposit, and the person's own
 // steps on Ostia. The page reads and the wallet signs: a step that signs is a call the person asked for, and nothing here signs on its own.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Hex } from "viem";
 import type { ApiStatus } from "../api.ts";
 import { checkInRead, claimCall, holdCall, isClaimInto } from "../bridge/route/in.ts";
 import { rowsOf, viewOfRow, type InRow, type InView } from "../bridge/route/back.ts";
@@ -13,7 +14,7 @@ import type { OpenRow, OstiaChain } from "../bridge/other/setup.ts";
 import { advance, resendSend, startSend, Stop, watchAsking, readStop, type SendInput } from "../bridge/other/transfer.ts";
 import { createEnv } from "../bridge/other/wire.ts";
 import { otherWords } from "../bridge/other/words.ts";
-import type { LocksLike } from "../bridge/moves/moves.ts";
+import { explorerTx, type LocksLike } from "../bridge/moves/moves.ts";
 import { ethCall, finalBlock, rpc } from "../rpc.ts";
 import { timeoutSignal } from "../timeout.ts";
 import { injected } from "../wallet.ts";
@@ -49,13 +50,17 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
   const [events, setEvents] = useState<BackEvent[]>([]);
   const [acceptsBy, setAccepts] = useState<Record<string, boolean> | null>(null);
   const [deposits, setDeposits] = useState<Record<string, Deposit>>({});
+  const [inBlock, setInBlock] = useState<Record<string, true>>({});
   const [checkIn, setCheckIn] = useState<boolean | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const seen = useRef<Record<string, Deposit>>({});
+  const inBlockSeen = useRef<Record<string, true>>({});
   const looking = useRef(false);
   const eventsNow = useRef<BackEvent[]>([]);
+  /** Only the listed coin's events: anyone may put another coin into an address and call the router's mark, and that must not show as a holding of this one. */
+  const listed = useCallback((all: BackEvent[]) => all.filter((e) => e.erc20 === null || (asset !== null && e.erc20 === asset.erc20)), [asset]);
   eventsNow.current = events;
 
   const plan = useMemo(() => ({ ostia, other: sepolia, topic0 }), [ostia, sepolia, topic0]);
@@ -73,7 +78,7 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
     looking.current = true;
     try {
       const found = await readMoves("evm", account, timeoutSignal());
-      if (found) { setEvents(found.back); setAccepts(found.accepts); }
+      if (found) { setEvents(listed(found.back)); setAccepts(found.accepts); }
       const mine = keptTransfers(store, account).filter((t) => t.route === BACK_ROUTE);
       // One look at each send that is not paid out yet: it reads the send's block and the deposit's stage, and never signs.
       if (env) for (const t of mine.filter((x) => x.done === undefined)) {
@@ -81,9 +86,15 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
         if (r.live.deposit) seen.current = { ...seen.current, [t.id]: r.live.deposit };
       }
       // A way back is a deposit on Ostia: its stage is read for the newest ones that have not arrived.
-      const back = rowsOf(mine, found?.back ?? eventsNow.current);
-      const refunds = back.filter((r) => r.episode?.state === "refunded" && r.episode.depositCount !== null && seen.current[r.id]?.stage !== "claimed").slice(0, LOOKS_MAX);
+      const back = rowsOf(mine, listed(found?.back ?? eventsNow.current));
+      const refunds = back.filter((r) => r.episode?.state === "refunded" && r.episode.amount !== 0n && r.episode.depositCount !== null && seen.current[r.id]?.stage !== "claimed").slice(0, LOOKS_MAX);
       for (const r of refunds) { try { seen.current = { ...seen.current, [r.id]: await readDeposit(ostia.networkId, r.episode!.depositCount!, timeoutSignal()) }; } catch { /* the stage stays as it was */ } }
+      // A step of the person's own that is in an Ostia block is not a left-out transaction, whatever the time.
+      for (const r of back) {
+        const k = keptAct(store, r.id, Date.now());
+        if (k && !inBlockSeen.current[k.hash]) { try { if (await explorerTx(k.hash as Hex)) inBlockSeen.current = { ...inBlockSeen.current, [k.hash]: true }; } catch { /* looked at again next time */ } }
+      }
+      setInBlock(inBlockSeen.current);
       // A send whose coin was paid on or sent back is finished: it is no longer looked at.
       for (const r of back) if (r.record && r.record.done === undefined && (r.episode?.state === "arrived" || r.episode?.state === "refunded")) saveTransfer(store, { ...r.record, done: Date.now() });
       if (asset && mine.some((t) => seen.current[t.id]?.stage === "ready" || seen.current[t.id]?.stage === "claimed")) {
@@ -93,16 +104,16 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
       }
       setDeposits(seen.current);
     } catch { /* a read that failed is made again at the next look */ } finally { looking.current = false; reload(); }
-  }, [account, flow, env, store, ostia.networkId, asset, reload]);
+  }, [account, flow, env, store, ostia.networkId, asset, reload, listed]);
   useEffect(() => { void look(); const id = setInterval(() => void look(), pollMs); return () => clearInterval(id); }, [look, pollMs]);
 
   const rows: BackRow[] = useMemo(() => {
     if (!flow || !asset || !account) return [];
     return rowsOf(records, events).map((row) => ({
       row,
-      view: viewOfRow(row, { setup, asset, wallet: account, deposit: deposits[row.id] ?? null, accepts: row.party !== null && acceptsBy ? acceptsBy[row.party] ?? null : null, checkIn, kept: keptAct(store, row.id, now), coin: status?.coin.symbol ?? "tROME", now }),
+      view: viewOfRow(row, { setup, asset, wallet: account, deposit: deposits[row.id] ?? null, accepts: row.party !== null && acceptsBy ? acceptsBy[row.party] ?? null : null, checkIn, kept: keptAct(store, row.id, now), keptSeen: (() => { const k = keptAct(store, row.id, now); return k !== null && inBlock[k.hash] === true; })(), coin: status?.coin.symbol ?? "tROME", now }),
     }));
-  }, [flow, asset, account, records, events, deposits, acceptsBy, checkIn, store, now, setup, status?.coin.symbol]);
+  }, [flow, asset, account, records, events, deposits, inBlock, acceptsBy, checkIn, store, now, setup, status?.coin.symbol]);
 
   const send = useCallback(async (input: SendInput) => {
     if (!env) throw new Stop("Connect your wallet first.");

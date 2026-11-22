@@ -65,10 +65,10 @@ export function waitWords(seconds: number): string {
   const unit = (size: number, name: string) => { const v = Math.round(seconds / size); return `${v} ${v === 1 ? name : `${name}s`}`; };
   return seconds % 86_400 === 0 ? unit(86_400, "day") : seconds % 3_600 === 0 ? unit(3_600, "hour") : unit(60, "minute");
 }
-/** "Wed 25 Nov 21:45": a date and time of day in UTC. */
+/** "Wed 25 Nov 21:45 UTC": a date and time of day in UTC. */
 export function dayTime(iso: string): string {
   const d = new Date(iso);
-  return `${d.toUTCString().slice(0, 11).replace(",", "")} ${d.toISOString().slice(11, 16)}`;
+  return `${d.toUTCString().slice(0, 11).replace(",", "")} ${d.toISOString().slice(11, 16)} UTC`;
 }
 export const short = (v: string): string => (v.length > 14 ? `${v.slice(0, 6)}…${v.slice(-4)}` : v);
 /** `alice::1220…9f3c`: the start of the party id and the end of its fingerprint. */

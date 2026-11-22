@@ -54,7 +54,7 @@ describe("a send that is not yet a deposit", () => {
   const row = (t: Partial<Transfer>) => rowsOf([record(t)], [])[0]!;
   it("offers the send again when the wallet was never asked", () => {
     const v = viewOfRow(row({ send: null, count: null }), ctx());
-    expect(v).toMatchObject({ phase: "unsent", open: true, claimable: true });
+    expect(v).toMatchObject({ phase: "unsent", open: true, claimable: false });
     expect(v.actions.map((x) => x.kind)).toEqual(["send-again"]);
   });
   it("says the wallet did not answer, and that the send did not go through, without any button", () => {
@@ -109,6 +109,17 @@ describe("a deposit on its way into Ostia", () => {
     expect(lost.actions.map((x) => x.kind)).toEqual(["claim"]);
     expect(lost.claimPays).toBe(false);
   });
+  it("keeps showing the marks of a claim that is in a block, and never the left-out line for it", () => {
+    const seen = viewOfRow(row, ctx({ deposit: dep("ready", iso(T0)), kept: kept("claim", T0 + 30_000), keptSeen: true, now: T0 + 30_000 + 1_201_000 }));
+    expect(seen).toMatchObject({ phase: "claiming", actions: [], marksOf: hash });
+    expect(JSON.stringify(seen.notes)).not.toContain("did not pay");
+  });
+  it("offers no claim at Claimed when no router event is there, and no send again in the claim count", () => {
+    expect(viewOfRow(row, ctx({ deposit: dep("claimed", iso(T0)), now: T0 + 900_000 })).actions).toEqual([]);
+    const unsent = viewOfRow(rowsOf([record({ send: null, count: null })], [])[0]!, ctx());
+    expect(unsent.actions.map((x) => x.kind)).toEqual(["send-again"]);
+    expect(unsent.claimable).toBe(false);
+  });
 });
 
 describe("a coin held on Ostia", () => {
@@ -119,7 +130,7 @@ describe("a coin held on Ostia", () => {
     const v = held5({ setup: on({ in: inFlow({ payout: { ...p, assets: { [CC]: { left: 0n, renewsAt: "2026-11-22T14:05:00.000Z" } } } }) }) });
     expect(v).toMatchObject({ phase: "held", word: "Held on Ostia", open: true });
     expect(v.steps[2]).toMatchObject({ label: "Held on Ostia", state: "now" });
-    expect(v.notes[0]!.text).toBe("Canton cannot pay this account right now: today's limit is reached. Canton can pay out again from 14:05 UTC. From Wed 25 Nov 21:45 you can send it back.");
+    expect(v.notes[0]!.text).toBe("Canton cannot pay this account right now: today's limit is reached. Canton can pay out again from 14:05 UTC. From Wed 25 Nov 21:45 UTC you can send it back.");
     expect(v.actions).toEqual([]);
   });
   it("gives the other two reasons in words", () => {
@@ -138,7 +149,7 @@ describe("a coin held on Ostia", () => {
     const before = held5({ accepts: false, now: Date.parse("2026-11-25T21:44:59Z") });
     expect(before.actions).toEqual([]);
     const after = held5({ accepts: false, now: Date.parse("2026-11-25T21:45:01Z") });
-    expect(after.notes.map((n) => n.text)).toContain("Held on Ostia since Sun 22 Nov 21:45. It can go back now.");
+    expect(after.notes.map((n) => n.text)).toContain("Held on Ostia since Sun 22 Nov 21:45 UTC. It can go back now.");
     expect(after.actions).toEqual([{ kind: "refund", label: "Send back to Ethereum Sepolia", notes: [`Goes back to ${ME.slice(0, 6)}…${ME.slice(-4)}. The 0.2 CC fee is still taken from the amount.`, "Your wallet signs on Ostia (a little tROME)."] }]);
     const switchOff = held5({ accepts: false, now: Date.parse("2026-11-25T21:45:01Z"), setup: on({ in: inFlow({ claimOstia: null }) }) });
     expect(switchOff.actions.map((x) => x.kind)).toEqual(["refund"]);   // a held coin can always go home
@@ -152,6 +163,17 @@ describe("a coin held on Ostia", () => {
     const out = held5({ now, kept: kept("forward", now - 1_300_000) });
     expect(out.notes).toContainEqual({ text: "Canton did not pay this out. It is still held on Ostia. Cancel that transaction in your wallet, or use another EVM wallet.", bad: true });
     expect(out.actions.map((x) => x.kind)).toEqual(["forward"]);
+  });
+  it("leaves out Send on to Canton while the router would not take a claim-and-pay", () => {
+    expect(held5({ now: minutes(5) + 601_000, checkIn: false }).actions).toEqual([]);
+    expect(held5({ now: minutes(5) + 601_000, checkIn: null }).actions.map((x) => x.kind)).toEqual(["forward"]);
+  });
+  it("keeps showing the marks of a move on that is in a block, and never the left-out line for it", () => {
+    const now = minutes(5) + 700_000;
+    const v = held5({ now, kept: kept("forward", now - 1_300_000), keptSeen: true });
+    expect(v.marksOf).toBe(hash);
+    expect(JSON.stringify(v.notes)).not.toContain("did not pay");
+    expect(v.actions.map((x) => x.kind)).not.toContain("forward");
   });
   it("is a row of its own, named by the account, when this browser made no send", () => {
     const v = viewOfRow(rowsOf([], [opened(), held({ at: iso(minutes(5)) })])[0]!, ctx({ now: minutes(6) }));
@@ -178,6 +200,11 @@ describe("a coin paid on or sent back", () => {
     const done = viewOfRow(r, ctx({ deposit: dep("claimed", readyAt) }));
     expect(done).toMatchObject({ phase: "back-arrived", open: false });
     expect(done.title).toBe("Arrived back. 4.6 CC is in your wallet on Ethereum Sepolia.");
+  });
+  it("is finished when the whole balance went to the fee, and reads no deposit for it", () => {
+    const v = viewOfRow(rowsOf([], [opened(), refunded({ amount: 0n })])[0]!, ctx({ deposit: dep("ready", iso(T0)), now: minutes(5000) }));
+    expect(v).toMatchObject({ phase: "refunded", open: false, actions: [] });
+    expect(v.title).toContain("nothing goes back");
   });
   it("does not say who sent the coin back", () => {
     const text = JSON.stringify(viewOfRow(rowsOf([], [opened(), refunded()])[0]!, ctx({ deposit: dep("sent") })));

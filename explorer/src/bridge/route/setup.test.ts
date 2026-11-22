@@ -92,7 +92,7 @@ describe("the way back, as the page reads it", () => {
   });
   it("reads an account's address, and asks for it to be opened, never reading the address from the ask", async () => {
     answer(200, addressBody({ opened: true, openedAt: "2026-11-22T21:30:00Z", openTx: "0x" + "ab".repeat(32) }));
-    expect(await readAddress(PARTY, ME)).toEqual({ inbox: INBOX, accepts: true, opened: true, openedAt: "2026-11-22T21:30:00Z", openTx: "0x" + "ab".repeat(32) });
+    expect(await readAddress(PARTY, ME)).toEqual({ party: PARTY, refundAddress: ME, inbox: INBOX, accepts: true, opened: true, openedAt: "2026-11-22T21:30:00Z", openTx: "0x" + "ab".repeat(32) });
     expect((fetch as unknown as { mock: { calls: string[][] } }).mock.calls[0]![0]).toBe(`/api/canton-route/address?party=alice%3A%3A1220${"9f".repeat(16)}&refundNetwork=0&refundAddress=${ME}`);
     answer(200, addressBody({ inbox: "0x12" }));
     expect(await readAddress(PARTY, ME)).toBeNull();

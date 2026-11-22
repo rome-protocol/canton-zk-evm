@@ -27,19 +27,33 @@ export function useAddress(o: { party: string; wallet: string | null; router: st
   const [askFailed, setAskFailed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const asking = useRef(false);
+  /** The pair now typed: an answer that comes back for another pair is dropped. */
+  const current = useRef("");
+  current.current = valid ? `${party}|${wallet!.toLowerCase()}` : "";
 
-  useEffect(() => { setRead("unread"); setMine(null); setAskFailed(false); setAskedAt(valid ? kept(party, wallet!) : null); }, [party, wallet, valid]);
+  useEffect(() => {
+    setRead("unread"); setMine(null); setAskFailed(false);
+    // An ask that went out longer ago than the set time, with no opening since, is expired: a later visit asks again.
+    const at = valid ? kept(party, wallet!) : null;
+    if (valid && at !== null && Date.now() - at >= setupSeconds * 1000) { keep(party, wallet!, null); setAskedAt(null); } else setAskedAt(at);
+  }, [party, wallet, valid, setupSeconds]);
 
   const look = useCallback(async () => {
     if (!valid) return;
+    const me = `${party}|${wallet!.toLowerCase()}`;
     const r = await readAddress(party, wallet!, timeoutSignal());
+    if (current.current !== me) return;
     setRead(r);
     setNow(Date.now());
     if (!r || r.accepts !== true) return;
     if (r.opened) {
       keep(party, wallet!, null);
       if (mine === null) {
-        try { const read = inboxRead(router, party, wallet!); setMine(inboxFrom((await ethCall(read.to, read.data, await finalBlock())).result)); } catch { /* looked at again next time */ }
+        try {
+          const read = inboxRead(router, party, wallet!);
+          const found = inboxFrom((await ethCall(read.to, read.data, await finalBlock())).result);
+          if (current.current === me) setMine(found);
+        } catch { /* looked at again next time */ }
       }
       return;
     }
@@ -47,10 +61,13 @@ export function useAddress(o: { party: string; wallet: string | null; router: st
       asking.current = true;
       const ok = await askAddress(party, wallet!, timeoutSignal());
       asking.current = false;
-      if (ok) { const at = Date.now(); keep(party, wallet!, at); setAskedAt(at); } else setAskFailed(true);
+      const at = Date.now();
+      if (ok) keep(party, wallet!, at);
+      if (current.current !== me) return;
+      if (ok) setAskedAt(at); else setAskFailed(true);
     }
   }, [valid, party, wallet, router, mine]);
   useEffect(() => { void look(); const id = setInterval(() => void look(), pollMs); return () => clearInterval(id); }, [look, pollMs]);
 
-  return valid ? addressState({ read, mine, askedAt, askFailed, now, setupSeconds }) : { kind: "idle" };
+  return valid ? addressState({ party, wallet: wallet!, read, mine, askedAt, askFailed, now, setupSeconds }) : { kind: "idle" };
 }

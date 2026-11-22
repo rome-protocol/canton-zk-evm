@@ -14,6 +14,9 @@ export type AddressState =
 export const PARTY = /^[A-Za-z0-9_.-]{1,200}::[A-Za-z0-9_.-]{1,98}$/;
 
 export function addressState(i: {
+  /** The account and wallet now typed and connected: an answer about any other pair is not this account's. */
+  party: string;
+  wallet: string;
   /** `"unread"` before the first answer; null when the server could not be read. */
   read: AddressRead | null | "unread";
   /** The address the page worked out itself, null until it has. */
@@ -26,6 +29,7 @@ export function addressState(i: {
 }): AddressState {
   const { read } = i;
   if (read === "unread") return { kind: "reading" };
+  if (read !== null && (read.party !== i.party || read.refundAddress !== i.wallet.toLowerCase())) return { kind: "reading" };
   if (read === null || read.accepts === null) return { kind: "unavailable" };
   if (read.accepts === false) return { kind: "no-acceptance" };
   if (read.opened) return i.mine === null ? { kind: "reading" } : i.mine === read.inbox ? { kind: "ready", inbox: read.inbox } : { kind: "unavailable" };

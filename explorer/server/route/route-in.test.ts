@@ -72,6 +72,9 @@ describe("what Canton can pay out", () => {
     expect(payoutFrom([], [chain({ pausedUntil: "2026-11-22T12:30:00Z" })], [registered()], 770101, NOW)).toMatchObject({ paused: true, pausedUntil: "2026-11-22T12:30:00.000Z" });
     expect(payoutFrom([], [chain({ pausedUntil: "2026-11-22T11:30:00Z" })], [registered()], 770101, NOW)).toMatchObject({ paused: false, pausedUntil: null });
   });
+  it("reads a quota with no window as no quota, because the ledger enforces both or neither", () => {
+    expect(payoutFrom([], [chain({ quotaWindow: null })], [registered()], 770101, NOW).assets.get(CC)).toEqual({ left: null, renewsAt: null });
+  });
   it("fails on a chain record that is missing or twice there, and on a quota or tally that does not read", () => {
     expect(() => payoutFrom([], [], [registered()], 770101, NOW)).toThrow("not valid");
     expect(() => payoutFrom([], [chain(), chain()], [registered()], 770101, NOW)).toThrow("not valid");
@@ -226,6 +229,14 @@ describe("the way back's events", () => {
     const s = w.queries.find((x) => x.sql.includes("l.topic0 = any"))!;
     expect(s.sql).toContain("o.topic3 = $4");
     expect(s.values[3]).toEqual(Buffer.concat([Buffer.alloc(12), bytes(ME)]));
+  });
+  it("shows a coin as held only when the book lists it, and picks the newest distinct inboxes", async () => {
+    const stranger = { ...held(9n, 1_700_259_000n), topic2: word("0x" + "99".repeat(20)) };
+    const w = build({ rows: [stranger, held(5n * CC_UNITS, 1_700_259_000n), opened()] });
+    const body = (await w.get("/api/canton-route/moves", `evm=${ME}`))!.body as { back: { kind: string; erc20: string | null }[] };
+    expect(body.back.map((e) => e.kind)).toEqual(["held", "opened"]);
+    expect(body.back[0]!.erc20).toBe(CC);
+    expect(w.queries.find((x) => x.sql.includes("l.topic0 = any"))!.sql).toContain("group by o.topic1");
   });
   it("finds the inboxes by the hash of the party, or by an inbox's own address, and reads no moves out for the address", async () => {
     const byParty = build({ rows: [opened()] });

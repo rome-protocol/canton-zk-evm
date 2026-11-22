@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { addressState, PARTY } from "./address.ts";
-import { addressBody, INBOX } from "./fakes.ts";
+import { addressBody, INBOX, ME, PARTY as ALICE } from "./fakes.ts";
 import { parseAddress } from "./setup.ts";
 
 const read = (over: Record<string, unknown> = {}) => parseAddress(addressBody(over))!;
-const base = { mine: null, askedAt: null, askFailed: false, now: 1_000_000, setupSeconds: 900 };
+const base = { party: ALICE, wallet: ME, mine: null, askedAt: null, askFailed: false, now: 1_000_000, setupSeconds: 900 };
 
 describe("where an account's Ostia address stands", () => {
   it("is reading until the first answer, and not available when the server cannot be read or Canton does not say", () => {
@@ -31,6 +31,12 @@ describe("where an account's Ostia address stands", () => {
     expect(addressState({ ...base, read: read(), askedAt: 100_000 })).toEqual({ kind: "unavailable" });
     expect(addressState({ ...base, read: read({ openTx: "0x" + "ab".repeat(32) }), askedAt: 100_000 })).toMatchObject({ kind: "setting-up" });
     expect(addressState({ ...base, read: read(), askedAt: 999_000, askFailed: true })).toEqual({ kind: "unavailable" });
+  });
+  it("is still reading when the answer is about another account or wallet than the one typed", () => {
+    const final = read({ opened: true });
+    expect(addressState({ ...base, read: final, mine: INBOX, party: "bob::1220" + "ab".repeat(16) })).toEqual({ kind: "reading" });
+    expect(addressState({ ...base, read: final, mine: INBOX, wallet: "0x" + "44".repeat(20) })).toEqual({ kind: "reading" });
+    expect(addressState({ ...base, read: final, mine: INBOX, wallet: ME.toUpperCase().replace("0X", "0x") })).toEqual({ kind: "ready", inbox: INBOX });
   });
   it("takes a party id of the server's shape only", () => {
     expect(PARTY.test("alice::1220ab")).toBe(true);

@@ -100,6 +100,8 @@ export interface InCtx {
   /** Whether the router would take a claim-and-pay now (the book's `checkIn` did not revert); null when not read. */
   checkIn: boolean | null;
   kept: KeptAct | null;
+  /** Whether the kept transaction is in an Ostia block (it has a Sent mark): the left-out line is for one that is in none. */
+  keptSeen?: boolean;
   coin: string;
   now: number;
 }
@@ -115,9 +117,9 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
   const who = row.party === null ? "the Canton account" : `Canton account ${shortParty(row.party)}`;
   const stage = c.deposit?.stage ?? "unknown";
   const readyIn = ep !== null || stage === "ready" || stage === "claimed";
-  const ofKept = (kind: KeptAct["kind"], windowSeconds: number) => (c.kept?.kind === kind && c.now - c.kept.at < windowSeconds * 1000 ? c.kept : null);
+  const ofKept = (kind: KeptAct["kind"], windowSeconds: number) => (c.kept?.kind === kind && (c.keptSeen === true || c.now - c.kept.at < windowSeconds * 1000) ? c.kept : null);
   const leftOutSeconds = flow.claimOstia?.leftOutSeconds ?? 0;
-  const staleKept = (kind: KeptAct["kind"]) => c.kept?.kind === kind && flow.claimOstia !== null && c.now - c.kept.at >= leftOutSeconds * 1000;
+  const staleKept = (kind: KeptAct["kind"]) => c.kept?.kind === kind && flow.claimOstia !== null && c.keptSeen !== true && c.now - c.kept.at >= leftOutSeconds * 1000;
   const sent = t === null || t.count !== null;
   const sentAt = c.deposit?.sentAt ?? (t ? new Date(t.at).toISOString() : null);
   const steps = (third: StepView, fourth: boolean): StepView[] => [
@@ -126,7 +128,7 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
     third,
     { key: "arrived", label: "Arrived in the Canton account", state: fourth ? "done" : "todo", detail: null },
   ];
-  const view = (v: Partial<Omit<InView, "claimable">> & Pick<InView, "phase" | "title" | "word" | "steps">): InView => ({ notes: [], actions: [], open: true, marksOf: null, claimPays: false, ...v, claimable: (v.actions?.length ?? 0) > 0 });
+  const view = (v: Partial<Omit<InView, "claimable">> & Pick<InView, "phase" | "title" | "word" | "steps">): InView => ({ notes: [], actions: [], open: true, marksOf: null, claimPays: false, ...v, claimable: (v.actions ?? []).some((x) => x.kind !== "send-again") });
 
   // A send that is not yet a deposit: the wallet was not asked, was not heard from, or the send did not go through.
   if (t !== null && ep === null && (t.lost || t.send === null || t.send.tx === null || t.count === null)) {
@@ -146,6 +148,13 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
 
   // The coin was sent back to the way back's address.
   if (ep?.state === "refunded") {
+    if (ep.amount === 0n) {
+      const where0 = row.refundAddress === null ? "your wallet" : short(row.refundAddress);
+      return view({
+        phase: "refunded", title: `Sent back. The whole balance went to the fee, so nothing goes back to ${where0}.`, word: "Done", open: false,
+        steps: [{ key: "back", label: "Sent back from Ostia", state: "done", detail: clock(ep.lastAt) }],
+      });
+    }
     const amount = n(ep.amount), arrived = stage === "claimed";
     const readyAt = c.deposit?.readyAt ? Date.parse(c.deposit.readyAt) : null;
     const offered = stage === "ready" && readyAt !== null && c.now - readyAt > c.setup.ownClaimSeconds * 1000;
@@ -178,7 +187,7 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
     if (pays.ok === false) notes.push(NOTE(`Canton cannot pay this account right now: ${REASON_WORDS[pays.reason]}.${pays.reason === "limit" && renews ? ` Canton can pay out again from ${clock(renews)}.` : ""}${canGoBack ? "" : ` From ${dayTime(new Date(backAt).toISOString())} you can send it back.`}`));
     else if (pays.ok === true) notes.push(NOTE("Canton can pay this account again."));
     if (canGoBack) notes.push(NOTE(`Held on Ostia since ${dayTime(new Date(ep.heldAt ?? ep.lastAt).toISOString())}. It can go back now.`));
-    const moveOn = flow.claimOstia !== null && pays.ok === true && ep.heldAt !== null && c.now - ep.heldAt > flow.claimOstia.afterSeconds * 1000 && ofKept("forward", leftOutSeconds) === null;
+    const moveOn = flow.claimOstia !== null && pays.ok === true && c.checkIn !== false && ep.heldAt !== null && c.now - ep.heldAt > flow.claimOstia.afterSeconds * 1000 && ofKept("forward", leftOutSeconds) === null;
     if (ofKept("forward", leftOutSeconds)) notes.push(NOTE("Sending on to Canton…"));
     else if (staleKept("forward")) notes.push(BAD(LEFT_OUT_ON));
     const actions: Action[] = [];
@@ -196,7 +205,7 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
   const readyAt = c.deposit?.readyAt ? Date.parse(c.deposit.readyAt) : null;
   const claiming = ofKept("claim", leftOutSeconds);
   const ready = stage === "ready" || stage === "claimed";
-  const offered = ready && flow.claimOstia !== null && claiming === null && (stage === "claimed" || (readyAt !== null && c.now - readyAt > claimWait * 1000));
+  const offered = stage === "ready" && flow.claimOstia !== null && claiming === null && readyAt !== null && c.now - readyAt > claimWait * 1000;
   const rest = BigInt(t!.amount) > a.feeIn ? BigInt(t!.amount) - a.feeIn : 0n;
   const pays = canPay(flow.payout, c.accepts, a.erc20, rest);
   const claimPays = c.checkIn === true && pays.ok === true && !staleKept("claim");
