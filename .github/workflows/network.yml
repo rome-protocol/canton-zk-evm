@@ -46,7 +46,7 @@ jobs:
   # network/external/setup.py twice (the second changes nothing), the users' rights, one Advance against one stand-in sidecar, and the custody cases
   # of tests/custody_cases.py (an Advance that names 50 inputs; the custody read at two offsets).
   canton-external:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # the Python 3.12 the builder's dependency is installed for
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
