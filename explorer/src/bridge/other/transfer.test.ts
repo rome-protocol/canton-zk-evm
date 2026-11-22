@@ -264,6 +264,21 @@ describe("one look at a transfer", () => {
     expect(w.sent).toHaveLength(1);   // and nothing was sent
     expect((await advance(env, "t1")).live.deposit).toBeNull();   // a finished transfer is not looked at again
   });
+  it("for a send to a Canton account's address: sends to that address, reads the deposit made to it, and is not done when the deposit is claimed (the router says when it arrived)", async () => {
+    const w = world(), INBOX = "0x" + "1b".repeat(20);
+    const env = fakeEnv(w);
+    const t = await startSend(env, { dir: "in", asset: ETH, amount: AMOUNT, to: { receiver: INBOX.toUpperCase().replace("0X", "0x"), party: "alice::1220ab", route: "canton-in" } });
+    expect(t).toMatchObject({ route: "canton-in", receiver: INBOX, party: "alice::1220ab", account: ME });
+    expect(w.sent[0]!.call.data.toLowerCase()).toContain(INBOX.slice(2));   // the deposit's receiver is the address, not the wallet
+    expect(w.sent[0]!.call.data.toLowerCase()).not.toContain(ME.slice(2));
+    const bridge = SEPOLIA_BRIDGE, dest = 75;
+    w.receipts.set(t.send!.tx!, { ok: true, logs: [eventLog({ bridge, dest, to: INBOX, amount: AMOUNT, count: 5 })] });
+    w.deposit = stage("claimed");
+    const r = await advance(env, "t1");
+    expect(r.transfer).toMatchObject({ count: 5 });
+    expect(r.transfer!.done).toBeUndefined();
+    expect(r.live.deposit!.stage).toBe("claimed");
+  });
   it("reports a read that failed, and tries again next time", async () => {
     const { w, env, t, bridge, dest } = await started();
     w.receipts.set(t.send!.tx!, { ok: true, logs: [eventLog({ bridge, dest, amount: AMOUNT, count: 1 })] });

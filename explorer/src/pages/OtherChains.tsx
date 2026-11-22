@@ -186,7 +186,7 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
         </ul>
       </section>
       {onCanton && cantonOn.route.on && (
-        <CantonRoute setup={cantonOn.route} ostia={chain} sepolia={cantonOn.sepolia} account={account} connectNote={messages.wallet ?? connectNote} onConnect={connect} pollMs={pollMs} />
+        <CantonRoute setup={cantonOn.route} ostia={chain} sepolia={cantonOn.sepolia} account={account} connectNote={messages.wallet ?? connectNote} onConnect={connect} pollMs={pollMs} topic0={setup.bridgeEvent.topic0} walletChainId={wallet.chainId} faucet={faucetOn ? { label: `Get ${amount}`, busy: coin.busy, coming: coin.coming, onGet: () => void getCoin() } : null} />
       )}
       {!onCanton && row && names && (
         <>

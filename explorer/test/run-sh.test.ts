@@ -144,6 +144,15 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(start()).not.toContain("OSTIA_ROUTE");
   });
 
+  it("passes the way back to Canton's settings to the explorer only", () => {
+    const back = { OSTIA_ROUTE_IN: "1", OSTIA_INTAKE_URL: "http://127.0.0.1:7791/open", OSTIA_ROUTE_SETUP_SECONDS: "900", OSTIA_ROUTE_SETUP_TIME: '{"minSeconds":1,"maxSeconds":2}', OSTIA_CLAIM_OSTIA: "1", OSTIA_ROUTE_CLAIM_OSTIA_SECONDS: "600", OSTIA_ROUTE_LEFT_OUT_SECONDS: "1200" };
+    const cmd = start(back);
+    for (const [name, value] of Object.entries(back)) expect(cmd).toContain(` -e ${name}=${value}`);
+    expect(indexerCommand(back).cmd).not.toContain("OSTIA_");
+    expect(start()).not.toContain("OSTIA_ROUTE_IN");
+    expect(start()).not.toContain("OSTIA_INTAKE_URL");
+  });
+
   it("keeps the filesystem read-only and gives the tracker one writable folder in the state, with TRACKER_FILE inside it", () => {
     const cmd = start();
     expect(cmd).toContain("--read-only");

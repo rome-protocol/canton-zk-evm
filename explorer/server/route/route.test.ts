@@ -7,7 +7,7 @@ import type { RouteSettings } from "./settings.ts";
 
 const ROUTER = "0x" + "a1".repeat(20), BOOK = "0x" + "b2".repeat(20), CC = "0x" + "cc".repeat(20), ME = "0x" + "e3".repeat(20), OTHER = "0x" + "e4".repeat(20);
 const PARTY = "alice::1220" + "9f".repeat(16);
-const settings: RouteSettings = { router: ROUTER, book: BOOK, notTakenSeconds: 600, ownClaimSeconds: 300, time: { minSeconds: 480, maxSeconds: 960 }, gateway: null };
+const settings: RouteSettings = { router: ROUTER, book: BOOK, notTakenSeconds: 600, ownClaimSeconds: 300, time: { minSeconds: 480, maxSeconds: 960 }, gateway: null, in: null };
 const bookAbi = parseAbi(["function assets(address) view returns ((uint8 state, bytes32 instrument, uint256 feeOut, uint256 feeIn, uint256 feeRefund, uint256 minAmount, uint256 lockCap))", "function destinations(uint32) view returns ((bool open, uint256 unit))", "function claimFee(address, uint32) view returns (uint256)", "function outOpen() view returns (bool)"]);
 const erc20 = parseAbi(["function symbol() view returns (string)", "function name() view returns (string)", "function decimals() view returns (uint8)"]);
 const router = parseAbi(["function lockRoom(address) view returns (uint256)"]);
@@ -42,7 +42,7 @@ function build(w: World = {}) {
       return { rows: (w.rows ?? []) as never[] };
     },
   };
-  const canton: Canton | null = w.requests === undefined ? null : { requests: async () => { if (w.requests === null) throw new Error("canton is down"); return w.requests!; } };
+  const canton: Canton | null = w.requests === undefined ? null : { requests: async () => { if (w.requests === null) throw new Error("canton is down"); return w.requests!; }, payout: async () => { throw new Error("not read"); } };
   const now = { t: 1_700_000_000_000 };
   const route = createCantonRoute({ settings, agglayer: { ostiaBridge: "0x" + "53".repeat(20) }, bridge: { status: async () => ({ available: w.available ?? true }) as never }, reth: reth as never, pool, canton, now: () => now.t });
   const get = async (path: string, q = "", ip = "1.2.3.4") => {
@@ -152,7 +152,7 @@ describe("the Canton route's moves", () => {
   it("reads Canton once for a few seconds, however many ask", async () => {
     let n = 0;
     const w = build({ requests: [] });
-    const canton = { requests: async () => { n++; return []; } };
+    const canton = { requests: async () => { n++; return []; }, payout: async () => { throw new Error("not read"); } };
     const route = createCantonRoute({ settings, agglayer: { ostiaBridge: "0x" }, bridge: { status: async () => ({}) as never }, reth: { block: async () => ({ number: 1 }) as never, callAt: async () => "0x" }, pool: { query: async () => ({ rows: [] }) }, canton, now: () => w.now.t });
     const ask = () => route.routes(["api", "canton-route", "moves"], new URLSearchParams(`evm=${ME}`), "9.9.9.9")!();
     await Promise.all([ask(), ask(), ask()]);
@@ -186,8 +186,9 @@ describe("the routes while the switch is off", () => {
   it("answers {on: false} for the setup and 404 for the moves, and nothing for other paths", async () => {
     expect(await off(["api", "canton-route", "setup"], new URLSearchParams(), undefined)!()).toEqual({ status: 200, body: { on: false } });
     expect(await off(["api", "canton-route", "moves"], new URLSearchParams(), undefined)!()).toEqual({ status: 404, body: { error: "The Canton route is off on this explorer." } });
+    expect(await off(["api", "canton-route", "address"], new URLSearchParams(), undefined)!()).toEqual({ status: 404, body: { error: "The Canton route is off on this explorer." } });
     expect(off(["api", "canton-route", "other"], new URLSearchParams(), undefined)).toBeUndefined();
     expect(off(["api", "agglayer", "setup"], new URLSearchParams(), undefined)).toBeUndefined();
   });
-  it("names its two paths for the API description", () => expect(ROUTE_PATHS).toEqual(["/api/canton-route/setup", "/api/canton-route/moves"]));
+  it("names its paths for the API description", () => expect(ROUTE_PATHS).toEqual(["/api/canton-route/setup", "/api/canton-route/moves", "/api/canton-route/address"]));
 });

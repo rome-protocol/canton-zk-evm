@@ -27,7 +27,7 @@ describe("the deposit read", () => {
 describe("the claim read", () => {
   it("returns what the wallet needs", async () => {
     answer(200, { network: 0, count: 7, claimed: false, destinationNetwork: 75, chainId: 770101, to: "0x" + "53".repeat(20), l1InfoTreeIndex: 4, data: "0x1234", args: {} });
-    expect(await readClaim(0, 7)).toEqual({ claimed: false, chainId: 770101, to: "0x" + "53".repeat(20), destinationNetwork: 75, data: "0x1234" });
+    expect(await readClaim(0, 7)).toEqual({ claimed: false, chainId: 770101, to: "0x" + "53".repeat(20), destinationNetwork: 75, data: "0x1234", args: null });
     expect(fetch).toHaveBeenCalledWith("/api/agglayer/claim?network=0&count=7", expect.anything());
   });
   it("has no data for a deposit that is paid out, and fails when the answer is not one", async () => {
