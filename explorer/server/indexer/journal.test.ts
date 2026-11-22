@@ -32,7 +32,8 @@ const hb = (h: string) => Buffer.from(h.slice(2), "hex");
 const one = async (pool: Pool, sql: string, args: unknown[] = []) => (await pool.query(sql, args)).rows[0];
 const count = async (pool: Pool, table: string) => Number((await one(pool, `select count(*) as n from ${table}`)).n);
 const health = async (pool: Pool, id: string) => one(pool, "select status, value, detail from health_checks where check_id = $1", [id]);
-const T0 = Date.UTC(2026, 9, 21, 0, 0, 0);
+// Midnight (UTC) two days ago. The loader deletes pool samples older than 30 days by the database clock, so a fixed date would age out of the test; two days is also well past the hour in which a gap or an odd line still counts as recent.
+const T0 = Math.floor(Date.now() / 86_400_000) * 86_400_000 - 2 * 86_400_000;
 const loader = (pool: Pool, folder: string | null) => createJournal({ pool, folder });
 const lifecycle = (pool: Pool, hash: string) => one(pool, "select * from tx_lifecycle where tx_hash = $1", [hb(hash)]);
 
