@@ -137,6 +137,15 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(off).not.toContain("AGGKIT");
   });
 
+  it("passes the message routes' settings to the explorer only, and leaves them out when not set", () => {
+    const messages = { AGGLAYER_MESSAGES: "1", AGGLAYER_NOTE_BOARDS: '{"ostia":"0x' + "33".repeat(20) + '"}', AGGLAYER_MESSAGE_MAX_BYTES: "280", AGGLAYER_MESSAGE_READ_MAX_BYTES: "4096" };
+    const cmd = start(messages);
+    for (const [name, value] of Object.entries(messages)) expect(cmd).toContain(` -e ${name}=${value}`);
+    expect(indexerCommand(messages).cmd).not.toContain("AGGLAYER");
+    expect(start()).not.toContain("AGGLAYER_MESSAGE");
+    expect(start()).not.toContain("AGGLAYER_NOTE_BOARDS");
+  });
+
   it("passes the Canton route's settings to the explorer only, and gives it the gateway party's token only with the route on", () => {
     const file = join(state, "gw-auth");
     writeFileSync(file, "t\n", { mode: 0o600 });

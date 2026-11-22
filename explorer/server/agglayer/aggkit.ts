@@ -26,7 +26,11 @@ export const AGGKIT_MISSING_MS = 1000;
 const MAX_ENTRIES = 500;
 /** The longest answer read, in bytes. */
 const MAX_BYTES = 1024 * 1024;
-const MAX_METADATA_BYTES = 4096;
+/** The longest metadata read when the settings give no other. */
+export const MAX_METADATA_BYTES = 4096;
+/** What the list of a wallet's messages asks for: the service's largest page, and at most this many pages (so 1,000 sends are looked through). */
+export const LIST_PAGE_SIZE = 200;
+export const LIST_MAX_PAGES = 5;
 
 export class AggkitError extends Error {}
 
@@ -43,6 +47,8 @@ export interface BridgeLeaf {
   destinationAddress: string;
   amount: string;
   metadata: string;
+  /** Set on a message whose metadata is longer than the reader takes: `metadata` is then `0x`. */
+  tooLarge?: true;
 }
 /** An L1 info tree leaf; `injectedAt` is when a layer two took its root in (seconds), for a layer two's network id only. */
 export interface InfoLeaf { index: number; blockNumber: number; timestamp: number; injectedAt: number | undefined }
@@ -57,6 +63,8 @@ export interface AggkitOptions {
   fetch?: typeof fetch;
   now?: () => number;
   maxEntries?: number;
+  /** The longest metadata of a deposit taken, in bytes; a message over it is flagged `tooLarge`, a token deposit over it is an error. */
+  maxMetadataBytes?: number;
 }
 
 const record = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -65,7 +73,18 @@ const whole = (v: unknown, what: string): number => (typeof v === "number" && Nu
 const dec = (v: unknown, what: string): string => (typeof v === "string" && /^\d{1,78}$/.test(v) ? v : bad(what));
 const hash = (v: unknown, what: string): string => (typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v) ? v.toLowerCase() : bad(what));
 const address = (v: unknown, what: string): string => (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) ? v.toLowerCase() : bad(what));
-const bytes = (v: unknown, what: string): string => (typeof v === "string" && /^0x([0-9a-fA-F]{2})*$/.test(v) && v.length <= 2 + 2 * MAX_METADATA_BYTES ? v.toLowerCase() : bad(what));
+const bytes = (v: unknown, what: string, max: number): string => (typeof v === "string" && /^0x([0-9a-fA-F]{2})*$/.test(v) && v.length <= 2 + 2 * max ? v.toLowerCase() : bad(what));
+/** A deposit as the service lists it; a message whose metadata is over `max` bytes is flagged instead of read. */
+function leafOf(raw: Record<string, unknown>, depositCount: number, max: number): BridgeLeaf {
+  const meta = raw["metadata"];
+  const tooLarge = raw["leaf_type"] === 1 && typeof meta === "string" && meta.length > 2 + 2 * max;
+  return {
+    depositCount, txHash: hash(raw["tx_hash"], "deposit"), blockTimestamp: whole(raw["block_timestamp"], "deposit"), leafType: whole(raw["leaf_type"], "deposit"),
+    globalIndex: dec(raw["global_index"], "deposit"), originNetwork: whole(raw["origin_network"], "deposit"), originAddress: address(raw["origin_address"], "deposit"),
+    destinationNetwork: whole(raw["destination_network"], "deposit"), destinationAddress: address(raw["destination_address"], "deposit"), amount: dec(raw["amount"], "deposit"),
+    metadata: tooLarge ? "0x" : bytes(meta, "deposit", max), ...(tooLarge ? { tooLarge: true as const } : {}),
+  };
+}
 const hashes32 = (v: unknown, what: string): string[] => (Array.isArray(v) && v.length === 32 ? v.map((x) => hash(x, what)) : bad(what));
 
 /** A number that goes into a request: whole and at most the bridge's uint32. */
@@ -109,6 +128,7 @@ export function createAggkitReader(opts: AggkitOptions) {
   const timeoutMs = opts.timeoutMs ?? AGGKIT_TIMEOUT_MS;
   const now = opts.now ?? Date.now;
   const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
+  const maxMetadata = opts.maxMetadataBytes ?? MAX_METADATA_BYTES;
   const kept = new Map<string, { at: number; reply: Promise<Reply> }>();
   const missing = new WeakSet<Promise<Reply>>();
 
@@ -135,7 +155,7 @@ export function createAggkitReader(opts: AggkitOptions) {
   }
 
   /** One GET, kept for a few seconds. A 404 or a 503 is "not ready yet" (kept for one second); anything else that is not a success is an error and is not kept. */
-  function get(path: string, params: [string, number][], notReadyIs404 = true): Promise<Reply> {
+  function get(path: string, params: [string, number | string][], notReadyIs404 = true): Promise<Reply> {
     const url = `${root}${path}${params.length ? "?" + params.map(([k, v]) => `${k}=${v}`).join("&") : ""}`;
     const t = now();
     const had = kept.get(url);
@@ -155,13 +175,26 @@ export function createAggkitReader(opts: AggkitOptions) {
       if (!r.found) return undefined;
       const list = record(r.json)?.["bridges"];
       const raw = (Array.isArray(list) ? list : []).map(record).find((b) => b?.["deposit_count"] === depositCount);
-      if (!raw) return undefined;
-      return {
-        depositCount, txHash: hash(raw["tx_hash"], "deposit"), blockTimestamp: whole(raw["block_timestamp"], "deposit"), leafType: whole(raw["leaf_type"], "deposit"),
-        globalIndex: dec(raw["global_index"], "deposit"), originNetwork: whole(raw["origin_network"], "deposit"), originAddress: address(raw["origin_address"], "deposit"),
-        destinationNetwork: whole(raw["destination_network"], "deposit"), destinationAddress: address(raw["destination_address"], "deposit"), amount: dec(raw["amount"], "deposit"),
-        metadata: bytes(raw["metadata"], "deposit"),
-      };
+      return raw ? leafOf(raw, depositCount, maxMetadata) : undefined;
+    },
+    /**
+     * The messages (leaf type 1) a wallet sent from `network` to `to`, newest first, at most `want`. The service has no filter on the leaf type, so this pages through the wallet's sends to `to`
+     * (a page is its 200 newest: tokens too) until `want` messages are found, the sends run out or `LIST_MAX_PAGES` pages are read. A wallet's send of another kind is skipped unread.
+     */
+    async messagesFrom(network: number, wallet: string, to: number, want: number): Promise<BridgeLeaf[]> {
+      if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) throw new TypeError("a wallet is 0x and 40 hex digits");
+      const found: BridgeLeaf[] = [];
+      for (let page = 1; page <= LIST_MAX_PAGES && found.length < want; page++) {
+        const r = await get(AGGKIT_PATHS.bridges, [["network_id", uint32(network, "network")], ["network_ids", uint32(to, "network")], ["from_address", wallet.toLowerCase()], ["page_number", page], ["page_size", LIST_PAGE_SIZE]], false);
+        const body = record(r.found ? r.json : undefined) ?? bad("deposit list");
+        const list = Array.isArray(body["bridges"]) ? body["bridges"] : bad("deposit list");
+        for (const v of list) {
+          const b = record(v) ?? bad("deposit list");
+          if (b["leaf_type"] === 1 && found.length < want) found.push(leafOf(b, whole(b["deposit_count"], "deposit"), maxMetadata));
+        }
+        if (list.length < LIST_PAGE_SIZE || page * LIST_PAGE_SIZE >= whole(body["count"], "deposit list")) break;
+      }
+      return found;
     },
     /** The first L1 info tree index after the deposit: it exists once the deposit is settled on Ethereum. */
     async l1InfoTreeIndex(network: number, depositCount: number): Promise<number | undefined> {

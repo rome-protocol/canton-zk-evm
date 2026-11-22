@@ -159,7 +159,7 @@ export const REST_FIELDS = {
   twinLeg: ["block", "txHash", "legId", "twin", "token", "symbol", "amount", "updateId"],
   /** The AggLayer bridge page's setup: the chain, the bridge event to look for in a receipt, and the route rows. A row that is not open has only its name. Off, the answer is `{on: false}`. */
   agglayerOff: ["on"],
-  agglayerSetup: ["on", "chain", "bridgeEvent", "routes"],
+  agglayerSetup: ["on", "chain", "bridgeEvent", "routes", "messages"],
   agglayerChain: ["chainId", "name", "networkId", "bridge"],
   agglayerBridgeEvent: ["signature", "topic0"],
   agglayerRouteClosed: ["id", "name", "open"],
@@ -173,6 +173,14 @@ export const REST_FIELDS = {
   /** A deposit's stage (unknown, sent, confirmed, ready or claimed), and the deposit as the bridge service indexed it. */
   agglayerDeposit: ["network", "count", "stage", "destinationNetwork", "sentAt", "confirmedAt", "readyAt", "leaf"],
   agglayerLeaf: ["txHash", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount"],
+  /** A message deposit: its sender (the caller of `bridgeMessage`), the ETH it carries (`value`), its bytes and their hash (null, with `tooLarge`, when longer than the page takes). */
+  agglayerMessageLeaf: ["kind", "txHash", "originNetwork", "sender", "destinationNetwork", "destinationAddress", "value", "dataHash", "data", "tooLarge"],
+  /** The messages route (a wallet's messages, newest first), the note route (what a note board keeps for a sender) and the setup's `messages`. */
+  agglayerMessageList: ["wallet", "items"],
+  agglayerMessage: ["network", "count", "txHash", "destinationNetwork", "receiver", "sentAt", "dataHash", "data", "tooLarge"],
+  agglayerNote: ["network", "sender", "board", "found", "data", "tooLarge", "at", "number"],
+  agglayerMessages: ["on", "maxBytes", "noteBoards"],
+  agglayerNoteBoards: ["ostia", "sepolia"],
   /** What a wallet needs to claim a deposit: where to send it (`to` on `chainId`), the calldata, and the arguments it is made of. */
   agglayerClaim: ["network", "count", "claimed", "destinationNetwork", "chainId", "to", "l1InfoTreeIndex", "data", "args"],
   agglayerClaimArgs: ["smtProofLocalExitRoot", "smtProofRollupExitRoot", "globalIndex", "mainnetExitRoot", "rollupExitRoot", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount", "metadata"],
