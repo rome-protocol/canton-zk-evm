@@ -1,7 +1,7 @@
 """Tests for worker/ (the Canton router's out-relayer and Sepolia claimer) against stand-ins only: a fake chain behind chain.Rpc (answers by selector, keeps the transactions it is sent), a fake
 ledger snapshot, and a local HTTP server for the bridge service. No real endpoint is used.
 Run: python3 -W error::ResourceWarning -m unittest tests/test_worker.py"""
-import contextlib, hashlib, http.server, io, json, os, sys, tempfile, threading, unittest
+import contextlib, hashlib, http.server, io, json, os, sys, tempfile, threading, time, unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "worker"))
 sys.path.insert(0, str(ROOT / "demo"))
 import canton, chain, claim_sepolia, main as worker_main, relay_out
-from records import Records
+from records import Records, over_caps
 
 SECRET_URL = "http://127.0.0.1:1/secret-key-xyz"
 ROUTER, BOOK, GATEWAY, SEPOLIA_BRIDGE = ("0x" + c * 20 for c in "a1 b2 c3 f6".split())
@@ -39,6 +39,7 @@ class FakeChain(chain.Rpc):
         super().__init__(label, SECRET_URL)
         self.views, self.sent, self.hashes, self.receipts, self.logs = {}, [], [], {}, []
         self.balance, self.price, self.head, self.final, self.count = 10**18, 10**9, 100, 100, 0
+        self.dropped, self.refuse, self.lose_answer, self.on_send = set(), None, False, None
 
     def mine(self, i, status=1, logs=(), block=100):
         """Gives the i-th transaction that was sent a receipt."""
@@ -56,10 +57,18 @@ class FakeChain(chain.Rpc):
             except Revert:
                 raise chain.ChainError(f"{self.label}: eth_call was refused: execution reverted") from None
         if method == "eth_sendRawTransaction":
+            if self.on_send:
+                self.on_send()
+            if self.refuse:
+                raise chain.Refused(f"{self.label}: eth_sendRawTransaction was refused: {self.refuse}")
             raw = bytes.fromhex(params[0][2:])
             self.sent.append({**TypedTransaction.from_bytes(HexBytes(raw)).as_dict(), "from": Account.recover_transaction(raw)})
             self.hashes.append("0x" + keccak(raw).hex())
+            if self.lose_answer:   # the node took it, the answer never came
+                raise chain.ChainError(f"{self.label}: eth_sendRawTransaction failed (TimeoutError)")
             return self.hashes[-1]
+        if method == "eth_getTransactionByHash":
+            return {"hash": params[0]} if params[0] in self.hashes and params[0] not in self.dropped else None
         if method == "eth_getLogs":
             lo, hi = int(params[0]["fromBlock"], 16), int(params[0]["toBlock"], 16)
             return [e for e in self.logs if lo <= int(e["blockNumber"], 16) <= hi and e["topics"][0] == params[0]["topics"][0]]
@@ -227,6 +236,81 @@ class RelayOutTests(Base):
         self.run_once()
         self.assertEqual(len(self.rpc.sent), 3)
 
+    def test_a_label_with_a_huge_most_fee_is_one_bad_request_and_never_stops_the_queue(self):
+        for digits in (79, 5000):
+            self.add(label=f"r1:0:{DEST}:{'9' * digits}:1")
+        good = self.add(nonce=2)
+        self.run_once()
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.assertEqual(self.sent_args()[5:], (105, 2))
+        self.assertEqual(self.records.get(good["depositId"])["state"], "sent")
+        self.rpc.mine(0)
+        self.run_once()   # the queue goes on past the bad ones, whichever side of the good one they sort on
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.assertEqual(self.records.get(good["depositId"])["state"], "done")
+        self.assertEqual(sum(1 for v in self.records.data["items"].values() if v.get("permanent")), 2)
+        self.assertIsNone(canton.route_parts(f"r1:0:{DEST}:{'9' * 5000}:1"))
+        self.assertIsNotNone(canton.route_parts(f"r1:0:{DEST}:{2**256 - 1}:1"))
+
+    def test_an_unexpected_failure_on_one_request_skips_that_request_only(self):
+        first, second = self.add(nonce=1), self.add(nonce=2)
+        first_id = min(first["depositId"], second["depositId"])
+        real = relay_out.decide
+        def decide(r, *a):
+            if r["depositId"] == first_id:
+                raise ZeroDivisionError("boom")
+            return real(r, *a)
+        with mock.patch.object(relay_out, "decide", decide):
+            self.run_once()
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.assertEqual(self.records.get(first_id)["state"], "skipped")
+        self.assertFalse(self.records.get(first_id)["permanent"])
+        self.assertIn("unexpected (ZeroDivisionError)", "\n".join(self.logs))
+
+    def test_a_send_whose_answer_is_lost_is_found_again_and_a_refused_one_leaves_no_trace(self):
+        r = self.add()
+        self.rpc.lose_answer = True
+        self.run_once()
+        item = self.records.get(r["depositId"])
+        self.assertEqual((item["state"], item["tx"]), ("sent", self.rpc.hashes[0]))   # recorded before it went out
+        self.rpc.lose_answer = False
+        self.records = Records(self.records.path)
+        self.run_once()
+        self.assertEqual(len(self.rpc.sent), 1)   # one at a time: the lost one is found, not sent again
+        self.records.get(r["depositId"])["at"] -= 10_000
+        self.run_once()
+        self.assertEqual((len(self.rpc.sent), self.records.get(r["depositId"])["state"]), (2, "replaced"))   # the nonce is cleared
+        seen = []
+        self.rpc.on_send = lambda: seen.append(self.records.get(self.add_id)["state"])
+        self.rpc.refuse = "nonce too low"
+        r = self.add(nonce=2)
+        self.add_id = r["depositId"]
+        self.run_once()
+        self.assertEqual(seen, ["sent"])
+        item = self.records.get(r["depositId"])
+        self.assertEqual((item["state"], item["tx"], item["at"]), ("skipped", None, None))
+        self.assertIsNone(over_caps(self.records, DEST, CFG["caps"], time.time()))
+        self.assertEqual(sum(1 for v in self.records.data["items"].values() if v.get("at") is not None), 1)   # the refused one cost nothing and does not count
+
+    def test_a_replacement_is_capped_at_the_gas_price_limit_and_a_stuck_one_that_cannot_be_beaten_waits_or_is_let_go(self):
+        self.rpc.price = 45 * 10**9   # sent at 90 gwei; twice that is over the 100 gwei limit
+        r = self.add()
+        self.run_once()
+        self.records.get(r["depositId"])["at"] -= 10_000
+        self.run_once()
+        self.assertEqual(self.rpc.sent[1]["maxFeePerGas"], 100 * 10**9)
+        self.assertEqual(self.records.get(r["depositId"])["state"], "replaced")
+        self.rpc.price = 50 * 10**9   # sent at the limit itself: nothing can beat it
+        r = self.add(nonce=2)
+        self.run_once()
+        self.records.get(r["depositId"])["at"] -= 10_000
+        self.run_once()
+        self.assertEqual((len(self.rpc.sent), self.records.get(r["depositId"])["state"]), (3, "sent"))   # still in the pool: it waits, and says so
+        self.assertIn("would pass the gas price limit", "\n".join(self.logs))
+        self.rpc.dropped.add(self.rpc.hashes[2])
+        self.run_once()
+        self.assertEqual((len(self.rpc.sent), self.records.get(r["depositId"])["state"]), (3, "replaced"))   # the pool dropped it: the nonce is free
+
     def test_a_restart_finds_the_sent_transaction_again_and_a_reverted_one_is_failed_for_good(self):
         r = self.add()
         self.run_once()
@@ -378,6 +462,25 @@ class MainTests(Base):
             with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(chain, "Rpc", side_effect=AssertionError), contextlib.redirect_stdout(io.StringIO()) as out:
                 worker_main.run([kind, "--once"])
             self.assertIn("is not 1", out.getvalue())
+
+    def test_the_endpoints_must_be_the_chains_they_should_be(self):
+        ostia = FakeChain("Ostia")
+        chain.expect_chain(ostia, 770101)
+        with self.assertRaises(SystemExit) as why:
+            chain.expect_chain(ostia, 1)
+        self.assertEqual(str(why.exception), "the Ostia endpoint is chain 770101, not 1")
+        env = {"OSTIA_RELAY_OUT": "1", "OSTIA_CLAIM_SEPOLIA": "1", "OSTIA_RPC_URL": SECRET_URL, "OSTIA_ROUTER": ROUTER, "OSTIA_WORKER_STATE_DIR": self.dir.name,
+               "OSTIA_RELAY_KEY_FILE": key_file(self.dir.name), "OSTIA_CLAIM_KEY_FILE": key_file(self.dir.name), "OSTIA_CLAIM_SEPOLIA_RPC_URL": SECRET_URL,
+               "OSTIA_CLAIM_SEPOLIA_BRIDGE": SEPOLIA_BRIDGE}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(chain, "Rpc", lambda label, url: FakeChain(label)), mock.patch.object(canton, "Network"), \
+                mock.patch.object(canton, "chain_record", lambda net: {"chainId": 5}):
+            with self.assertRaises(SystemExit) as why:   # the ledger says chain 5, the endpoint answers 770101: it stops before it reads the router
+                worker_main.run(["out", "--once"])
+            self.assertIn("is chain 770101, not 5", str(why.exception))
+            with self.assertRaises(SystemExit) as why:   # a Sepolia endpoint that answers 770101
+                worker_main.run(["claim", "--once"])
+            self.assertIn("is chain 770101, not 11155111", str(why.exception))
+            self.assertNotIn("secret-key-xyz", str(why.exception))
 
     def test_a_key_file_that_others_can_read_and_an_endpoint_in_the_clear_are_refused(self):
         path = Path(self.dir.name) / "open.key"

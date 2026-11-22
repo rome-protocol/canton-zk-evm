@@ -13,6 +13,7 @@ Two small services for flow A of the [Canton router](../router/README.md): a Can
 
 A request that fails a check is left alone: it lapses on Canton at its `settleBefore` and the depositor keeps the coin.
 
+- At start, the endpoint's chain id must equal the ledger chain record's (and the Sepolia endpoint's must be 11155111), or the worker exits.
 - The request names this chain (operator, confirmer, gateway, builder, chain id).
 - The label matches `r1:<network>:0x<40 lowercase hex>:<max fee>:<nonce>` as a whole string, each part fits its type, and the destination is not zero. Then the router rebuilds the label (`routeLabel`) and the deposit id (`depositId`) by `eth_call`, and both must equal the ledger's byte for byte. The relayer keeps no copy of the format of its own.
 - The allocation is active, from the depositor to the gateway with the operator as executor, and outlives the relay by the settle margin.
@@ -20,7 +21,7 @@ A request that fails a check is left alone: it lapses on Canton at its `settleBe
 - The fee that is finally charged is at most the label's most fee: `amount - send <= maxFee`, with `send` cut down to a multiple of the destination's unit, so the cut is part of the fee.
 - The caps and the balance allow it, and the gas and gas price stay under their limits.
 
-A request that waits on something that can change (the route is closed, the fee is above the most fee, the cap is reached) is tried again on every pass; one that can never pass (a bad label, another chain) is recorded and not looked at again. Only one transaction is out at a time, because a transaction that the builder leaves out stays in the pool and holds the later ones. It counts as done only in a block at or under Ostia's finalized block. When it has no receipt after `OSTIA_RELAY_WAIT_SECONDS`, its nonce goes to a transfer of nothing to the key itself at twice the fees, and the request is let go.
+A request that fails in an unexpected way is skipped and tried again on the next pass; it never stops the requests after it. A request that waits on something that can change (the route is closed, the fee is above the most fee, the cap is reached) is tried again on every pass; one that can never pass (a bad label, another chain) is recorded and not looked at again. Only one transaction is out at a time, because a transaction that the builder leaves out stays in the pool and holds the later ones. It counts as done only in a block at or under Ostia's finalized block. When it has no receipt after `OSTIA_RELAY_WAIT_SECONDS`, its nonce goes to a transfer of nothing to the key itself at twice the fees (never over the gas price limit, and at least a tenth over the stuck transaction's; if that cannot be met the worker logs that it waits, and when the pool has dropped the transaction it lets the request go at once), and the request is let go. A transaction is recorded before it is sent, so one whose answer was lost (a timeout) or whose sender died is still found again and replaced.
 
 ## What the claimer checks
 
@@ -38,9 +39,10 @@ Names only; values come from the environment. A key file holds one hex key and m
 | `OSTIA_WORKER_STATE_DIR` | Where the records are kept (`relay-out.json`, `claim-sepolia.json`) |
 | `OSTIA_WORKER_INTERVAL_SECONDS` | Seconds between passes (15) |
 | `OSTIA_RELAY_KEY_FILE` | The relayer's key: tROME only |
-| `CZE_CANTON`, `CZE_LEDGER_URL`, `CZE_TOKEN_FILE_OPERATOR`, `CZE_STATE_DIR` | The ledger, as `demo/canton.py` reads them |
+| `CZE_CANTON`, `CZE_LEDGER_URL`, `CZE_TOKEN_FILE_OPERATOR`, `CZE_STATE_DIR` | The ledger, as `demo/canton.py` reads them. The operator's token needs read-as rights for the operator only: the relayer never submits a command on Canton |
 | `OSTIA_CLAIM_KEY_FILE` | The claimer's key: Sepolia ETH only |
 | `OSTIA_CLAIM_SEPOLIA_RPC_URL` | The claimer's own Sepolia endpoint (a secret) |
+| `OSTIA_CLAIM_SEPOLIA_CHAIN_ID` | The chain id the Sepolia endpoint must answer (11155111) |
 | `OSTIA_CLAIM_SEPOLIA_BRIDGE` | The bridge's address on Sepolia |
 | `AGGKIT_BRIDGE_URL` | The bridge service, http on this machine only (`http://127.0.0.1:5578`) |
 

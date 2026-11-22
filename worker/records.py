@@ -38,7 +38,7 @@ def whole_setting(name: str, default: int) -> int:
 def over_caps(records: Records, recipient: str, caps: dict, now: float = None) -> "str | None":
     """Why one more send is not allowed, or None. Every record with a send time `at` counts, whatever became of it: a transaction that failed still cost gas. A cap of 0 is no sends."""
     now = time.time() if now is None else now
-    sent = [v for v in records.data["items"].values() if "at" in v]
+    sent = [v for v in records.data["items"].values() if v.get("at") is not None]
     day = [v for v in sent if now - v["at"] < 86400]
     if len(day) >= caps["day"]:
         return "the day's cap is reached"

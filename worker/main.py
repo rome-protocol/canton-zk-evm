@@ -53,7 +53,9 @@ def run(argv: list) -> None:
         import canton
         cfg = {**settings("OSTIA_RELAY_"), "margin": whole_setting("OSTIA_RELAY_SETTLE_MARGIN_SECONDS", 600)}
         signer, records = chain.load_signer(need("OSTIA_RELAY_KEY_FILE")), Records(state / "relay-out.json")
-        ledger, handle = relay_out.Ledger(canton.Network()), relay_out.Router(ostia, router)
+        net = canton.Network()
+        chain.expect_chain(ostia, int(canton.chain_record(net)["chainId"]))   # the ledger's chain record names the Ostia chain id
+        ledger, handle = relay_out.Ledger(net), relay_out.Router(ostia, router)
         step = lambda: relay_out.run_once(ledger, handle, ostia, signer, records, cfg, print)
         errors = (chain.ChainError, canton.Fail, OSError, KeyError, ValueError)
     else:
@@ -61,6 +63,7 @@ def run(argv: list) -> None:
                "chunk": max(1, whole_setting("OSTIA_CLAIM_CHUNK_BLOCKS", 2000))}
         signer, records = chain.load_signer(need("OSTIA_CLAIM_KEY_FILE")), Records(state / "claim-sepolia.json")
         sepolia, bridge = chain.Rpc("Sepolia", need("OSTIA_CLAIM_SEPOLIA_RPC_URL")), address("OSTIA_CLAIM_SEPOLIA_BRIDGE")
+        chain.expect_chain(sepolia, whole_setting("OSTIA_CLAIM_SEPOLIA_CHAIN_ID", 11155111))
         aggkit = claim_sepolia.Aggkit(os.environ.get("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"))
         ostia_bridge = ostia.view(router, "bridge()", [], [], ["address"])[0]
         network = ostia.view(ostia_bridge, "networkID()", [], [], ["uint32"])[0]

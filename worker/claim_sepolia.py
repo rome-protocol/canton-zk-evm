@@ -136,7 +136,8 @@ def claim_one(aggkit: Aggkit, sepolia: chain.Rpc, signer, bridge: str, ostia_net
     h = lambda xs: [bytes.fromhex(x[2:]) for x in xs]
     args = [h(proof["local"]), h(proof["rollup"]), int(leaf["global_index"]), bytes.fromhex(proof["mainnet"][2:]), bytes.fromhex(proof["rollupRoot"][2:]), ostia_network,
             item["asset"], cfg["network"], dest, int(item["send"]), bytes.fromhex(leaf["metadata"][2:])]
-    records.put(str(count), state="sent", recipient=dest, **chain.send(sepolia, signer, bridge, chain.call_data(CLAIM, CLAIM_TYPES, args), cfg["limits"]))
+    note = lambda sent: records.put(str(count), state="sent", recipient=dest, **sent) if sent else records.put(str(count), at=None, tx=None)
+    chain.send(sepolia, signer, bridge, chain.call_data(CLAIM, CLAIM_TYPES, args), cfg["limits"], record=note)
     return None
 
 
@@ -150,6 +151,9 @@ def run_once(aggkit: Aggkit, ostia: chain.Rpc, sepolia: chain.Rpc, router: str, 
         try:
             why = claim_one(aggkit, sepolia, signer, bridge, ostia_network, item, records, cfg, now)
         except chain.ChainError as e:
+            if records.get(key).get("state") == "sent":   # a timeout after the send: the record finds it again
+                log(f"claim-sepolia: {key} sent, the node's answer is unknown")
+                return
             why = str(e)
         if why is None:
             log(f"claim-sepolia: {key} sent")

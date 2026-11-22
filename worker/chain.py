@@ -17,6 +17,10 @@ class ChainError(Exception):
     pass
 
 
+class Refused(ChainError):
+    """The node answered with an error: unlike a timeout, it is certain that the call had no effect."""
+
+
 def selector(signature: str) -> bytes:
     return keccak(text=signature)[:4]
 
@@ -40,7 +44,7 @@ class Rpc:
         except (OSError, ValueError) as e:   # urllib's own text can name the URL: say only the kind
             raise ChainError(f"{self.label}: {method} failed ({type(e).__name__})") from None
         if not isinstance(reply, dict) or "error" in reply:
-            raise ChainError(f"{self.label}: {method} was refused: {str((reply.get('error') if isinstance(reply, dict) else reply))[:200]}")
+            raise Refused(f"{self.label}: {method} was refused: {str((reply.get('error') if isinstance(reply, dict) else reply))[:200]}")
         return reply.get("result")
 
     def view(self, to: str, signature: str, types: list, values: list, out: list, block: str = "latest"):
@@ -67,6 +71,16 @@ class Rpc:
         return int(block["number"], 16)
 
 
+def expect_chain(rpc: Rpc, wanted: int) -> None:
+    """Exits unless the endpoint is the chain it should be: another network with a contract at the same address would get transactions that never land."""
+    try:
+        found = rpc.chain_id()
+    except (ChainError, TypeError, ValueError) as e:
+        raise SystemExit(f"the {rpc.label} endpoint cannot be asked for its chain id ({type(e).__name__})") from None
+    if found != wanted:
+        raise SystemExit(f"the {rpc.label} endpoint is chain {found}, not {wanted}")
+
+
 def load_signer(path: str) -> "Account":
     """The hot key in a file that only its owner can read (one hex key). The error names the file and what is wrong, never the key."""
     try:
@@ -80,9 +94,10 @@ def load_signer(path: str) -> "Account":
     return Account.from_key("0x" + text.removeprefix("0x"))
 
 
-def send(rpc: Rpc, signer, to: str, data: str, limits: dict, nonce: int = None, fees: tuple = None, gas: int = None) -> dict:
+def send(rpc: Rpc, signer, to: str, data: str, limits: dict, nonce: int = None, fees: tuple = None, gas: int = None, record=None) -> dict:
     """Signs and sends one transaction; returns what the record keeps to find it again (tx, nonce, fees, time). The gas is the estimate plus a third and must stay under
-    limits['gas']; the fee per gas must stay under limits['gas_price']."""
+    limits['gas']; the fee per gas must stay under limits['gas_price']. With `record`, it is called with that dict BEFORE the transaction goes out, so a call that times out after the
+    node took the transaction, or a crash in that window, still leaves a record that finds it again; if the node refuses the transaction, `record(None)` is called (it never was out)."""
     price = rpc.number("eth_gasPrice")
     max_fee, tip = fees or (2 * price, min(price, 10**9))
     if max_fee > limits["gas_price"]:
@@ -94,7 +109,16 @@ def send(rpc: Rpc, signer, to: str, data: str, limits: dict, nonce: int = None, 
     nonce = rpc.number("eth_getTransactionCount", [signer.address, "latest"]) if nonce is None else nonce
     tx = {"type": 2, "chainId": rpc.chain_id(), "nonce": nonce, "to": to_checksum_address(to), "value": 0, "data": data, "gas": gas, "maxFeePerGas": max_fee, "maxPriorityFeePerGas": tip}
     raw = signer.sign_transaction(tx).raw_transaction
-    return {"tx": rpc.call("eth_sendRawTransaction", ["0x" + raw.hex()]), "nonce": nonce, "fees": [max_fee, tip], "at": int(time.time())}
+    sent = {"tx": "0x" + keccak(raw).hex(), "nonce": nonce, "fees": [max_fee, tip], "at": int(time.time())}
+    if record:
+        record(sent)
+    try:
+        rpc.call("eth_sendRawTransaction", ["0x" + raw.hex()])
+    except Refused as e:
+        if record and "already known" not in str(e):
+            record(None)
+        raise
+    return sent
 
 
 def settle(rpc: Rpc, signer, sent: dict, limits: dict, wait: int, final: bool) -> tuple:
@@ -107,5 +131,10 @@ def settle(rpc: Rpc, signer, sent: dict, limits: dict, wait: int, final: bool) -
     if receipt or time.time() - sent["at"] < wait:
         return "waiting", None
     if rpc.number("eth_getTransactionCount", [signer.address, "latest"]) <= sent["nonce"]:
-        send(rpc, signer, signer.address, "0x", limits, sent["nonce"], (2 * sent["fees"][0], 2 * sent["fees"][1]), 21000)
+        # twice the fees, but never over the gas price limit; the pool wants at least a tenth more than the transaction it replaces
+        top, tip = min(2 * sent["fees"][0], limits["gas_price"]), 2 * sent["fees"][1]
+        if top * 10 >= sent["fees"][0] * 11:
+            send(rpc, signer, signer.address, "0x", limits, sent["nonce"], (top, min(tip, top)), 21000)
+        elif rpc.call("eth_getTransactionByHash", [sent["tx"]]):
+            raise ChainError(f"{rpc.label}: a transaction is stuck and a replacement would pass the gas price limit: waiting for it")
     return "replaced", None

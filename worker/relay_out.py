@@ -154,13 +154,17 @@ def run_once(ledger: Ledger, router: Router, rpc: chain.Rpc, signer, records, cf
                 raise Skip(capped)
             if rpc.number("eth_getBalance", [signer.address, "latest"]) < cfg["min_balance"]:
                 raise Skip("the relayer's balance is under its floor")
-            sent = chain.send(rpc, signer, router.address, chain.call_data(CLAIM, CLAIM_TYPES, args), cfg["limits"])
-        except (Skip, chain.ChainError) as e:
-            reason, permanent = getattr(e, "reason", str(e)), getattr(e, "permanent", False)
+            note = lambda sent, key=key, args=args: records.put(key, state="sent", recipient=args[4], router=router.address.lower(), amount=str(args[2]), **sent) if sent else records.put(key, state="skipped", at=None, tx=None)
+            chain.send(rpc, signer, router.address, chain.call_data(CLAIM, CLAIM_TYPES, args), cfg["limits"], record=note)
+        except Exception as e:   # one request, whatever is wrong with it, never stops the ones after it
+            if records.get(key).get("state") == "sent":   # the send may have gone out (a timeout): its record finds it again
+                log(f"relay-out: {key[:12]} sent, the node's answer is unknown ({type(e).__name__})")
+                return
+            known = isinstance(e, (Skip, chain.ChainError))
+            reason, permanent = (getattr(e, "reason", str(e)), getattr(e, "permanent", False)) if known else (f"unexpected ({type(e).__name__})", False)
             if seen.get("reason") != reason:
                 log(f"relay-out: {key[:12]} left alone: {reason}")
             records.put(key, state="skipped", reason=reason, permanent=permanent)
             continue
-        records.put(key, state="sent", recipient=args[4], router=router.address.lower(), amount=str(args[2]), **sent)
         log(f"relay-out: {key[:12]} sent")
         return

@@ -452,7 +452,7 @@ def deposit_id_of(depositor: str, label: str) -> str:
     return hashlib.sha256(f"deposit,{depositor},{label}".encode("utf-8")).hexdigest()
 
 
-ROUTE_LABEL = re.compile(r"r1:(0|[1-9][0-9]{0,9}):0x([0-9a-f]{40}):(0|[1-9][0-9]*):(0|[1-9][0-9]{0,19})")   # matched whole (fullmatch): router/src/Labels.sol's form r1
+ROUTE_LABEL = re.compile(r"r1:(0|[1-9][0-9]{0,9}):0x([0-9a-f]{40}):(0|[1-9][0-9]{0,77}):(0|[1-9][0-9]{0,19})")   # matched whole (fullmatch): router/src/Labels.sol's form r1; every number has a length limit (2**256 has 78 digits), so int() never meets a digit string that Python refuses
 
 
 def route_label(network: int, address: str, max_fee: int, nonce: int) -> str:
