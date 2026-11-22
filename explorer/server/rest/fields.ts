@@ -174,6 +174,14 @@ export const REST_FIELDS = {
   /** What a wallet needs to claim a deposit: where to send it (`to` on `chainId`), the calldata, and the arguments it is made of. */
   agglayerClaim: ["network", "count", "claimed", "destinationNetwork", "chainId", "to", "l1InfoTreeIndex", "data", "args"],
   agglayerClaimArgs: ["smtProofLocalExitRoot", "smtProofRollupExitRoot", "globalIndex", "mainnetExitRoot", "rollupExitRoot", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount", "metadata"],
+  /** The Canton route's setup (moves from Canton to Ethereum Sepolia through Ostia's router): off is `{on: false}`. `route` is closed (never opened), open, or stopped (was open). */
+  routeOff: ["on"],
+  routeSetup: ["on", "route", "available", "destination", "assets", "time", "notTakenSeconds", "ownClaimSeconds"],
+  routeDestination: ["network", "unit"],
+  routeAsset: ["erc20", "symbol", "name", "decimals", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom"],
+  /** One account's or one wallet's moves: the ones Ostia took (`taken`, from the router's event) and the open requests it has not (`requested`, from Canton). */
+  routeMoves: ["moves", "requestsRead"],
+  routeMove: ["id", "state", "party", "destAddress", "erc20", "amount", "send", "fee", "depositCount", "txHash", "block", "at", "maxFee", "settleBefore"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
   legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "gateway", "twin", "legId", "token", "account", "amount", "party"],

@@ -28,6 +28,7 @@ import { httpStatusOf } from "./health.ts";
 import { createMinimums } from "./minimums.ts";
 import { createNotices, type Notice } from "./notice.ts";
 import { AGGLAYER_PATHS, agglayerRoutes, type AgglayerBridge } from "./agglayer/bridge.ts";
+import { cantonRouteRoutes, ROUTE_PATHS, type CantonRoute } from "./route/route.ts";
 
 export { FIELDS };
 
@@ -61,7 +62,9 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   /** The verification routes: a submission and where one is. Without it they are off. */
   verify?: VerifyApi;
   /** The AggLayer bridge routes. Without it (AGGLAYER_BRIDGE is off) the setup answers `{on: false}` and the other two routes 404. */
-  agglayer?: AgglayerBridge }
+  agglayer?: AgglayerBridge;
+  /** The Canton route routes. Without it (OSTIA_ROUTE_OUT is off) the setup answers `{on: false}` and the moves route 404. */
+  cantonRoute?: CantonRoute }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
 type ApiTxState = TxState | "unindexed";
@@ -76,7 +79,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, rpc, stats, live, verify, agglayer, health: apiHealth, faucet = createFaucet({ ...config.faucet, builder: null, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, rpc, stats, live, verify, agglayer, cantonRoute, health: apiHealth, faucet = createFaucet({ ...config.faucet, builder: null, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -324,6 +327,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search, twinRegistryUrl: config.twinRegistryUrl });
   const statsRestRoutes = stats && statsRoutes({ stats, now });
   const agglayerRouted = agglayerRoutes(agglayer ?? null);
+  const cantonRouted = cantonRouteRoutes(cantonRoute ?? null);
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };
   const legacy = router([
@@ -340,7 +344,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
   // Every route this API answers (the AggLayer ones only while the bridge is on, so the description shows nothing of a switch that is off). `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...(agglayer ? AGGLAYER_PATHS : []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...(agglayer ? AGGLAYER_PATHS : []), ...(cantonRoute ? ROUTE_PATHS : []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
   const api: Api = async (method, target, body, ip, cookie, site, mode) => {
@@ -362,7 +366,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         return await etherscanDoor(url.searchParams, method === "POST" ? body : undefined, ip);
       }
       if (root !== "api") return fail(404, "No such route.");
-      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams) ?? agglayerRouted(parts, url.searchParams, ip);
+      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams) ?? agglayerRouted(parts, url.searchParams, ip) ?? cantonRouted(parts, url.searchParams, ip);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
       // The builder grant's two browser routes: GitHub's sign-in starts at one and returns to the other, and each answers with a redirect. They are not described in
       // the API's own description, as they are for a browser and not for a program. The return's address holds a one-time code, so it is never sent on as a referrer.
