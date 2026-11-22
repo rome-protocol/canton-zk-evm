@@ -89,10 +89,10 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
       const back = rowsOf(mine, listed(found?.back ?? eventsNow.current));
       const refunds = back.filter((r) => r.episode?.state === "refunded" && r.episode.amount !== 0n && r.episode.depositCount !== null && seen.current[r.id]?.stage !== "claimed").slice(0, LOOKS_MAX);
       for (const r of refunds) { try { seen.current = { ...seen.current, [r.id]: await readDeposit(ostia.networkId, r.episode!.depositCount!, timeoutSignal()) }; } catch { /* the stage stays as it was */ } }
-      // A step of the person's own that is in an Ostia block is not a left-out transaction, whatever the time.
+      // A step of the person's own that is in an Ostia block is not a left-out transaction, whatever the time. One that waits in the pool, or that was replaced or dropped, is in no block: it is left out.
       for (const r of back) {
         const k = keptAct(store, r.id, Date.now());
-        if (k && !inBlockSeen.current[k.hash]) { try { if (await explorerTx(k.hash as Hex)) inBlockSeen.current = { ...inBlockSeen.current, [k.hash]: true }; } catch { /* looked at again next time */ } }
+        if (k && !inBlockSeen.current[k.hash]) { try { const tx = await explorerTx(k.hash as Hex); if (tx !== null && tx.block !== null) inBlockSeen.current = { ...inBlockSeen.current, [k.hash]: true }; } catch { /* looked at again next time */ } }
       }
       setInBlock(inBlockSeen.current);
       // A send whose coin was paid on or sent back is finished: it is no longer looked at.

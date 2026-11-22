@@ -3,7 +3,9 @@
 import type { Range } from "../other/setup.ts";
 
 /** `feeIn` and `feeRefund` are what the way back to Canton takes (zero where the server's answer has none). */
-export interface RouteAsset { erc20: string; symbol: string; name: string; decimals: number; feeOut: bigint; claimFee: bigint; minAmount: bigint; lockCap: bigint; lockRoom: bigint; feeIn: bigint; feeRefund: bigint }
+export interface RouteAsset { erc20: string; symbol: string; name: string; decimals: number;
+  /** Whether the book takes new sends of it now; a coin that is not open is listed only so that a held coin can go back. */
+  open: boolean; feeOut: bigint; claimFee: bigint; minAmount: bigint; lockCap: bigint; lockRoom: bigint; feeIn: bigint; feeRefund: bigint }
 /** What Canton can pay out now, by asset: `left` in the asset's base units (null: no quota) and when some of it comes back. */
 export interface Payout { paused: boolean; pausedUntil: string | null; assets: Record<string, { left: bigint | null; renewsAt: string | null }> }
 /** The way back to Canton (flow C), when the server has it on. */
@@ -85,7 +87,7 @@ function asset(v: unknown): RouteAsset | null {
   if (feeOut === null || claimFee === null || minAmount === null || lockCap === null || lockRoom === null) return null;
   const [feeIn, feeRefund] = [a.feeIn, a.feeRefund].map((v) => (v === undefined || v === null ? 0n : units(v)));
   if (feeIn === null || feeRefund === null) return null;
-  return { erc20: a.erc20.toLowerCase(), symbol: a.symbol, name: a.name, decimals: a.decimals, feeOut: feeOut!, claimFee: claimFee!, minAmount: minAmount!, lockCap: lockCap!, lockRoom: lockRoom!, feeIn: feeIn!, feeRefund: feeRefund! };
+  return { erc20: a.erc20.toLowerCase(), symbol: a.symbol, name: a.name, decimals: a.decimals, open: a.open !== false, feeOut: feeOut!, claimFee: claimFee!, minAmount: minAmount!, lockCap: lockCap!, lockRoom: lockRoom!, feeIn: feeIn!, feeRefund: feeRefund! };
 }
 
 function payout(v: unknown): Payout | null {

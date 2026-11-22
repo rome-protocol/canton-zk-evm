@@ -22,8 +22,8 @@ const ARGS = { smtProofLocalExitRoot: proof, smtProofRollupExitRoot: proof, glob
 
 interface Sent { chainId: number; tx: any } // eslint-disable-line @typescript-eslint/no-explicit-any
 const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true,
-  connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10), hold: null as Promise<void> | null };
-const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null });
+  connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10), hold: null as Promise<void> | null, tx: null as unknown };
+const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null, tx: null });
 
 beforeEach(() => {
   reset();
@@ -46,6 +46,7 @@ beforeEach(() => {
     if (input.startsWith("/api/agglayer/deposit")) return json(200, { network: 0, count: 7, destinationNetwork: 75, ...stage(world.stage as never), readyAt: world.stage === "ready" || world.stage === "claimed" ? world.readyAt : null });
     if (input.startsWith("/api/agglayer/claim?network=75")) return json(200, { network: 75, count: 9, claimed: world.claimed, destinationNetwork: 0, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, l1InfoTreeIndex: 1, data: claimData(0, ME, cc(4.6), 9), args: null });
     if (input.startsWith("/api/agglayer/claim")) return json(200, { network: 0, count: 7, claimed: world.claimed, destinationNetwork: 75, chainId: OSTIA_ID, to: OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(75, INBOX, cc(4.8), 7), args: world.claimed ? null : ARGS });
+    if (input.startsWith("/api/tx/")) return world.tx === null ? json(404, { error: "Not found." }) : json(200, world.tx);
     if (input === "/api/faucet") return json(200, { on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0, balanceBlock: 1 });
     if (input === "/rpc") {
       const call = JSON.parse(init!.body!) as { id: number; method: string; params: any[] }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -353,6 +354,40 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     const button = await screen.findByRole("button", { name: "Send back to Ethereum Sepolia" });
     expect(screen.getByText(/^Goes back to 0xe3e3…e3e3\. The 0\.2 CC fee is still taken from the amount\.$/)).toBeInTheDocument();
     expect(screen.getByText(/^Held on Ostia since \w{3} \d+ \w{3} \d\d:\d\d UTC\. It can go back now\.$/)).toBeInTheDocument();
+    await userEvent.click(button);
+    await waitFor(() => expect(world.sent).toHaveLength(1));
+    expect(decodeFunctionData({ abi: routerAbi, data: world.sent[0]!.tx.data }).functionName).toBe("refund");
+  });
+  it.each([
+    ["waits in the pool", { status: "waiting", state: "pending", block: null }, true],
+    ["was replaced", { status: "replaced", state: "replaced", block: null }, true],
+    ["is in a block", { status: "proving", state: "proving", block: { number: 5, hash: "0x" + "bb".repeat(32), updateId: null } }, false],
+  ])("a Send on to Canton that %s past the set time: the left-out line shows only when it is in no block", async (_name, tx, leftOut) => {
+    world.route = setupInBody({ claimOstia: { afterSeconds: 600, leftOutSeconds: 1 } });
+    world.events = [held({ at: minutes(-30), refundAt: minutes(60 * 24 * 3 - 30) }), opened()];
+    world.tx = tx;
+    await open();
+    await userEvent.click(await screen.findByRole("button", { name: "Send on to Canton" }));
+    await waitFor(() => expect(world.sent).toHaveLength(1));
+    await screen.findByText("Sending on to Canton…");
+    if (leftOut) {
+      expect(await screen.findByText(/^Canton did not pay this out\. It is still held on Ostia\./, undefined, { timeout: 3000 })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Send on to Canton" })).toBeEnabled();
+    } else {
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(screen.queryByText(/^Canton did not pay this out/)).toBeNull();
+      expect(screen.getByText("Sending on to Canton…")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Send on to Canton" })).toBeNull();
+    }
+  });
+  it.each([
+    ["the coin's asset is stopped", { route: "stopped" as const }, { open: false }],
+    ["both directions are off", { route: "stopped" as const }, {}],
+  ])("still offers Send back for a held coin past the set time when %s", async (_name, flow, asset) => {
+    world.route = { ...(setupInBody(flow, asset) as object), route: "stopped" };
+    world.events = [held({ at: minutes(-60 * 24 * 3 - 30), refundAt: minutes(-30) }), opened()];
+    await open();
+    const button = await screen.findByRole("button", { name: "Send back to Ethereum Sepolia" });
     await userEvent.click(button);
     await waitFor(() => expect(world.sent).toHaveLength(1));
     expect(decodeFunctionData({ abi: routerAbi, data: world.sent[0]!.tx.data }).functionName).toBe("refund");

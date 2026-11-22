@@ -67,7 +67,7 @@ describe("the Canton route's setup", () => {
     expect(a.status).toBe(200);
     expect(a.body).toEqual({
       on: true, route: "open", available: true, destination: { network: 0, unit: "1" },
-      assets: [{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, feeOut: "500000000", claimFee: "1500000000", minAmount: "10000000000", lockCap: "100000000000", lockRoom: "25000000000" }],
+      assets: [{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, open: true, feeOut: "500000000", claimFee: "1500000000", minAmount: "10000000000", lockCap: "100000000000", lockRoom: "25000000000" }],
       time: { minSeconds: 480, maxSeconds: 960 }, notTakenSeconds: 600, ownClaimSeconds: 300,
     });
     expect(a.headers?.["cache-control"]).toBe("public, max-age=3");

@@ -53,7 +53,7 @@ export interface InRow {
   at: number;
 }
 
-/** A send is joined to the first later episode of its address that no earlier send took; an episode with no send of this browser is a row of its own. Newest first. */
+/** A send is joined to the first later episode of its address that no earlier send took, or, when a held coin's clock was joined by a later send, to that send's episode; an episode with no send of this browser is a row of its own. Newest first. */
 export function rowsOf(records: Transfer[], events: BackEvent[]): InRow[] {
   const opened = new Map(events.filter((e) => e.kind === "opened").map((e) => [e.inbox, e]));
   const free = episodes(events).reverse();
@@ -61,7 +61,8 @@ export function rowsOf(records: Transfer[], events: BackEvent[]): InRow[] {
   for (const r of [...records].sort((a, b) => a.at - b.at)) {
     const inbox = r.receiver ?? "";
     const i = free.findIndex((x) => x.inbox === inbox && x.lastAt >= r.at - 120_000);
-    const episode = i < 0 ? null : free.splice(i, 1)[0]!;
+    // A second send into an address whose coin is held joins the running clock (one Held for the total): it shares the first send's episode, so that it ends with it.
+    const episode = i >= 0 ? free.splice(i, 1)[0]! : rows.find((x) => x.inbox === inbox && x.episode !== null && x.episode.heldAt !== null && x.episode.lastAt >= r.at - 120_000)?.episode ?? null;
     rows.push({ id: r.id, record: r, episode, inbox, party: r.party ?? opened.get(inbox)?.party ?? null, refundAddress: opened.get(inbox)?.refundAddress ?? r.account, at: r.at });
   }
   for (const x of free) rows.push({ id: `${x.inbox}:${x.erc20}:${x.block}`, record: null, episode: x, inbox: x.inbox, party: opened.get(x.inbox)?.party ?? null, refundAddress: opened.get(x.inbox)?.refundAddress ?? null, at: x.lastAt });

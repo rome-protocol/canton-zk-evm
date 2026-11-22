@@ -9,7 +9,7 @@ describe("the Canton route's setup, as the page reads it", () => {
   it("reads the documented answer, with amounts in base units", () => {
     const s = parseRouteSetup(setupBody({ time: { minSeconds: 480, maxSeconds: 960 } }));
     expect(s).toMatchObject({ on: true, route: "open", available: true, unit: 1n, time: { minSeconds: 480, maxSeconds: 960 }, notTakenSeconds: 600, ownClaimSeconds: 300 });
-    expect(s.on && s.assets).toEqual([{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10), feeIn: 0n, feeRefund: 0n }]);
+    expect(s.on && s.assets).toEqual([{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, open: true, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10), feeIn: 0n, feeRefund: 0n }]);
   });
   it("reads anything else as off", () => {
     const good = setupBody();

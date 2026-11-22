@@ -113,6 +113,7 @@ export function payoutFrom(acceptanceItems: unknown[], chainItems: unknown[], as
   return { acceptances, paused: until !== null && until > nowMs, pausedUntil: until !== null && until > nowMs ? iso(until) : null, assets };
 }
 
+// The reads take the gateway's whole list of a template (`limit`, 500 by default) and fail at it rather than count part of it: past that many acceptances the page says sending is not available. TestNet is far under it; a party filter is the change when it is not.
 export function createCanton({ reader, gateway, chainId = 0, limit = 500, now = Date.now }: { reader: Pick<Ledger, "ledgerEnd">; gateway: Pick<Ledger, "call"> & { party: string }; chainId?: number; limit?: number; now?: () => number }): Canton {
   const lists = (offset: number) => async (what: string, identifierFilter: unknown): Promise<unknown[]> => {
     const items = await gateway.call("POST", `/v2/state/active-contracts?limit=${limit}`, {

@@ -106,16 +106,18 @@ export function createCantonRoute({ settings, reth, pool, canton, bridge, fetche
       flow ? everOpened(false) : false, flow ? read(settings.book, inOpenCall(), at, readFlag("inOpen")) : false, flow ? read(settings.book, refundWaitCall(), at, (o) => readNumber("refundWait", o)) : 0n, flow ? payout() : null,
     ]);
     const outLive = outOpen && dest.open, inLive = flow !== null && inOpen;
-    const addresses = outLive || inLive ? await listed() : [];
+    // With the way back on, the listed coins are kept whatever the switches and the asset's state: a coin held in an address can always be sent back, and the page needs its fees and decimals for that.
+    const addresses = outLive || inLive || flow ? await listed() : [];
     const assets = (await Promise.all(addresses.map(async (token) => {
       const a = await read(settings.book, assetsCall(token), at, readAsset);
-      if (a.state !== 1) return null;
+      const open = a.state === 1;
+      if (!open && !flow) return null;
       const [claim, room, m] = await Promise.all([read(settings.book, claimFeeCall(token, ETHEREUM), at, (o) => readNumber("claimFee", o)), read(settings.router, lockRoomCall(token), at, readRoom), tokenMeta(token, at)]);
-      return pick({ erc20: token, ...m, feeOut: a.feeOut.toString(), claimFee: claim.toString(), minAmount: a.minAmount.toString(), lockCap: a.lockCap.toString(), lockRoom: room.toString(), ...(flow ? { feeIn: a.feeIn.toString(), feeRefund: a.feeRefund.toString() } : {}) }, F.routeAsset);
+      return pick({ erc20: token, ...m, open, feeOut: a.feeOut.toString(), claimFee: claim.toString(), minAmount: a.minAmount.toString(), lockCap: a.lockCap.toString(), lockRoom: room.toString(), ...(flow ? { feeIn: a.feeIn.toString(), feeRefund: a.feeRefund.toString() } : {}) }, F.routeAsset);
     }))).filter((a) => a !== null);
-    const route = outLive && assets.length > 0 ? "open" : everOn ? "stopped" : "closed";
+    const route = outLive && assets.some((a) => a.open) ? "open" : everOn ? "stopped" : "closed";
     const back = flow && pick({
-      route: inLive && assets.length > 0 ? "open" : everIn ? "stopped" : "closed", refundNetwork: BACK_NETWORK, refundWaitSeconds: Number(wait), router: settings.router, book: settings.book, setupSeconds: flow.setupSeconds, setupTime: flow.setupTime && pick(flow.setupTime, F.agglayerRange),
+      route: inLive && assets.some((a) => a.open) ? "open" : everIn ? "stopped" : "closed", refundNetwork: BACK_NETWORK, refundWaitSeconds: Number(wait), router: settings.router, book: settings.book, setupSeconds: flow.setupSeconds, setupTime: flow.setupTime && pick(flow.setupTime, F.agglayerRange),
       claimOstia: flow.claimOstia && pick(flow.claimOstia, F.routeClaimOstia), payout: pay && pick({ paused: pay.paused, pausedUntil: pay.pausedUntil, assets: [...pay.assets].map(([erc20, t]) => pick({ erc20, left: t.left === null ? null : t.left.toString(), renewsAt: t.renewsAt }, F.routePayoutAsset)) }, F.routePayout),
     }, F.routeIn);
     return ok(pick({

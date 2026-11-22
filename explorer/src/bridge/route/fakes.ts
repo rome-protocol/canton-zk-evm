@@ -7,7 +7,7 @@ export { ME, OSTIA_BRIDGE, OSTIA_ID, SEPOLIA_BRIDGE, SEPOLIA_ID, row };
 export const CC = "0x" + "cc".repeat(20);
 const CC10 = 10n ** 10n;
 export const cc = (n: number): bigint => BigInt(Math.round(n * 1e4)) * (CC10 / 10_000n);
-export const asset = (over: Partial<RouteAsset> = {}): RouteAsset => ({ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10), feeIn: 0n, feeRefund: 0n, ...over });
+export const asset = (over: Partial<RouteAsset> = {}): RouteAsset => ({ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, open: true, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10), feeIn: 0n, feeRefund: 0n, ...over });
 export const on = (over: Partial<RouteOn> = {}, a: Partial<RouteAsset> = {}): RouteOn => ({ on: true, route: "open", available: true, unit: 1n, assets: [asset(a)], time: null, notTakenSeconds: 600, ownClaimSeconds: 300, in: null, ...over });
 const text = (v: bigint | null) => (v === null ? null : v.toString());
 /** The setup as the server's JSON. */
@@ -15,7 +15,7 @@ export const setupBody = (over: Partial<RouteOn> = {}, a: Partial<RouteAsset> = 
   const s = on(over, a);
   return {
     on: true, route: s.route, available: s.available, destination: { network: 0, unit: s.unit.toString() }, time: s.time, notTakenSeconds: s.notTakenSeconds, ownClaimSeconds: s.ownClaimSeconds,
-    assets: s.assets.map((x) => ({ erc20: x.erc20, symbol: x.symbol, name: x.name, decimals: x.decimals, feeOut: text(x.feeOut), claimFee: text(x.claimFee), minAmount: text(x.minAmount), lockCap: text(x.lockCap), lockRoom: text(x.lockRoom) })),
+    assets: s.assets.map((x) => ({ erc20: x.erc20, symbol: x.symbol, name: x.name, decimals: x.decimals, open: x.open, feeOut: text(x.feeOut), claimFee: text(x.claimFee), minAmount: text(x.minAmount), lockCap: text(x.lockCap), lockRoom: text(x.lockRoom) })),
   };
 };
 export const parsed = (over: Partial<RouteOn> = {}) => parseRouteSetup(setupBody(over)) as RouteOn;

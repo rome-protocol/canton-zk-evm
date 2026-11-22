@@ -43,9 +43,11 @@ export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onCon
   const [busy, setBusy] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const store = useMemo(transferStore, []);
-  const asset = setup.assets[0] ?? null;
+  /** The coin new sends use (open); the way back also needs a coin that is not open, to send a held one home. */
+  const asset = setup.assets.find((a) => a.open) ?? null;
+  const held = asset ?? setup.assets[0] ?? null;
   const st = useStatus();
-  const back = useBack({ setup, asset, ostia, status: st.data, sepolia, topic0, account, pollMs });
+  const back = useBack({ setup, asset: held, ostia, status: st.data, sepolia, topic0, account, pollMs });
   const backShown = back.rows.filter((r) => r.view.open || (r.row.episode !== null && now - r.row.episode.lastAt < JUST_ARRIVED_MS));
   const backClaimable = back.rows.filter((r) => r.view.claimable);
   const looking = useRef(false);

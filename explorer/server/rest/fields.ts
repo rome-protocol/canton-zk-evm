@@ -183,7 +183,7 @@ export const REST_FIELDS = {
   routePayout: ["paused", "pausedUntil", "assets"],
   routePayoutAsset: ["erc20", "left", "renewsAt"],
   routeDestination: ["network", "unit"],
-  routeAsset: ["erc20", "symbol", "name", "decimals", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom", "feeIn", "feeRefund"],
+  routeAsset: ["erc20", "symbol", "name", "decimals", "open", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom", "feeIn", "feeRefund"],
   /** One account's or one wallet's moves: the ones Ostia took (`taken`, from the router's event) and the open requests it has not (`requested`, from Canton). */
   routeMoves: ["moves", "requestsRead", "back", "accepts"],
   /** One event of flow C (`kind`: opened, held, forwarded or refunded) for an inbox, with the fields of its kind and null in the rest. */

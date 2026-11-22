@@ -97,7 +97,7 @@ const erc20 = parseAbi(["function symbol() view returns (string)", "function nam
 const routerAbi = parseAbi(["function lockRoom(address) view returns (uint256)", "function inboxOf(string, uint32, address) view returns (address)"]);
 const settings: RouteSettings = routeSettings(good, ag, fail)!;
 
-interface World { inOpen?: boolean; everIn?: boolean; payout?: Payout | null; rows?: Record<string, unknown>[]; opened?: Record<string, unknown>[]; logs?: { txHash: string; block: number }[] | "fail"; intake?: number | "throws"; head?: number }
+interface World { outOpen?: boolean; assetState?: number; inOpen?: boolean; everIn?: boolean; payout?: Payout | null; rows?: Record<string, unknown>[]; opened?: Record<string, unknown>[]; logs?: { txHash: string; block: number }[] | "fail"; intake?: number | "throws"; head?: number }
 const pay = (over: Partial<Payout> = {}): Payout => ({ acceptances: new Set([PARTY]), paused: false, pausedUntil: null, assets: new Map([[CC, { left: 62n * CC_UNITS / 10n, renewsAt: "2026-11-22T14:05:00.000Z" }]]), ...over });
 function build(w: World = {}) {
   const queries: { sql: string; values: unknown[] }[] = [];
@@ -106,11 +106,11 @@ function build(w: World = {}) {
   const reth = {
     block: async () => ({ number: w.head ?? 900 }),
     callAt: async (_to: string, input: string): Promise<string> => {
-      if (input === outOpenCall()) return encodeFunctionResult({ abi: bookAbi, functionName: "outOpen", result: true });
+      if (input === outOpenCall()) return encodeFunctionResult({ abi: bookAbi, functionName: "outOpen", result: w.outOpen ?? true });
       if (input === inOpenCall()) return encodeFunctionResult({ abi: bookAbi, functionName: "inOpen", result: w.inOpen ?? true });
       if (input === refundWaitCall()) return encodeFunctionResult({ abi: bookAbi, functionName: "refundWait", result: 259200n });
       if (input === destinationCall(0)) return encodeFunctionResult({ abi: bookAbi, functionName: "destinations", result: { open: true, unit: 1n } });
-      if (input === assetsCall(CC)) return encodeFunctionResult({ abi: bookAbi, functionName: "assets", result: { state: 1, instrument: ("0x" + "11".repeat(32)) as Hex, feeOut: CC_UNITS / 20n, feeIn: CC_UNITS / 10n, feeRefund: CC_UNITS / 20n, minAmount: CC_UNITS, lockCap: 10n * CC_UNITS } });
+      if (input === assetsCall(CC)) return encodeFunctionResult({ abi: bookAbi, functionName: "assets", result: { state: w.assetState ?? 1, instrument: ("0x" + "11".repeat(32)) as Hex, feeOut: CC_UNITS / 20n, feeIn: CC_UNITS / 10n, feeRefund: CC_UNITS / 20n, minAmount: CC_UNITS, lockCap: 10n * CC_UNITS } });
       if (input === claimFeeCall(CC, 0)) return encodeFunctionResult({ abi: bookAbi, functionName: "claimFee", result: (CC_UNITS * 15n) / 100n });
       if (input === lockRoomCall(CC)) return encodeFunctionResult({ abi: routerAbi, functionName: "lockRoom", result: 10n * CC_UNITS });
       if (input === symbolCall()) return encodeFunctionResult({ abi: erc20, functionName: "symbol", result: "CC" });
@@ -168,6 +168,18 @@ describe("the way back in the setup", () => {
   it("is closed until its switch was ever turned on, and stopped once it was and is not now", async () => {
     expect(((await build({ inOpen: false, everIn: false }).get("/api/canton-route/setup"))!.body as any).in.route).toBe("closed"); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(((await build({ inOpen: false }).get("/api/canton-route/setup"))!.body as any).in.route).toBe("stopped"); // eslint-disable-line @typescript-eslint/no-explicit-any
+  });
+  it("keeps the listed coin, marked open or not, while its asset is stopped or both directions are off, so that a held coin can go back", async () => {
+    const stopped = (await build({ assetState: 2 }).get("/api/canton-route/setup"))!.body as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(stopped.assets).toHaveLength(1);
+    expect(stopped.assets[0]).toMatchObject({ erc20: CC, open: false, decimals: 10, feeRefund: "500000000" });
+    expect(stopped.route).toBe("stopped");
+    expect(stopped.in.route).toBe("stopped");
+    const off = (await build({ outOpen: false, inOpen: false }).get("/api/canton-route/setup"))!.body as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(off.assets).toHaveLength(1);
+    expect(off.assets[0]).toMatchObject({ erc20: CC, open: true });
+    expect(off.in.route).toBe("stopped");
+    expect(((await build().get("/api/canton-route/setup"))!.body as any).assets[0].open).toBe(true); // eslint-disable-line @typescript-eslint/no-explicit-any
   });
   it("gives no payout while Canton cannot be read, and the rest as it is", async () => {
     const body = (await build({ payout: null }).get("/api/canton-route/setup"))!.body as any; // eslint-disable-line @typescript-eslint/no-explicit-any

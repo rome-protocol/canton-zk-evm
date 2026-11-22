@@ -44,6 +44,12 @@ describe("the rows", () => {
     const rows = rowsOf([record(), record({ id: "r2", at: minutes(60) })], [held({ at: iso(minutes(80)) }), forwarded({ at: iso(minutes(10)) })]);
     expect(rows.map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "arrived"]]);
   });
+  it("lets two sends into one address share the one episode that Canton's not paying made, so that both end with it", () => {
+    const held1 = [held({ at: iso(minutes(10)) })];
+    const two = [record(), record({ id: "r2", at: minutes(5) })];
+    expect(rowsOf(two, held1).map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "held"]]);
+    expect(rowsOf(two, [forwarded({ at: iso(minutes(30)) }), ...held1]).map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "arrived"], ["r1", "arrived"]]);
+  });
   it("names the party and the way back from the opening, or from the send", () => {
     expect(rowsOf([], [held(), opened()])[0]).toMatchObject({ party: PARTY, refundAddress: ME });
     expect(rowsOf([record()], [])[0]).toMatchObject({ party: PARTY, refundAddress: ME });
