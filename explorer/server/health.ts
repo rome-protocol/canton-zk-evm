@@ -67,6 +67,8 @@ const SPECS: Record<string, CheckSpec> = {
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   // How full the account service's shared ceilings and the participant's account cap are (written by every instance that is given the service's address): degraded from 60%, down from 90%.
   accounts: { role: "api", worst: "down", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded", advisory: true },
+  // The AggLayer bridge routes (written by every instance when AGGLAYER_BRIDGE is on): degraded when AggKit's bridge service or Ostia's attachment is not right, never down.
+  agglayer: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
 };
 const API_INSTANCE: CheckSpec = { role: "api", worst: "down", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" };
 const VERIFIER: CheckSpec = { role: "verifier", worst: "degraded", intervalSeconds: 15, stale: "degraded" };

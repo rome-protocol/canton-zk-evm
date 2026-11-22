@@ -31,10 +31,11 @@ const body = async (api: RoutedApi, path: string) => (await api("GET", path)).bo
 describe("the API description", () => {
   it("describes every route the API registers, and only those", () => {
     const api = full();
-    // The public RPC is a route only where it is on.
-    expect([...api.routes].sort()).toEqual(Object.keys(DOCS).filter((p) => p !== "/rpc").sort());
+    // The public RPC and the AggLayer routes are routes only where they are on (the AggLayer ones are tested in server/agglayer/api.test.ts).
+    const described = Object.keys(DOCS).filter((p) => !p.startsWith("/api/agglayer/"));
+    expect([...api.routes].sort()).toEqual(described.filter((p) => p !== "/rpc").sort());
     expect(new Set(api.routes).size).toBe(api.routes.length);
-    expect([...full(withRpc).routes].sort()).toEqual(Object.keys(DOCS).sort());
+    expect([...full(withRpc).routes].sort()).toEqual(described.sort());
     expect(api.routes).toContain("/healthz");
   });
 

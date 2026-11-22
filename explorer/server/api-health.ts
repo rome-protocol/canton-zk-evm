@@ -23,6 +23,8 @@ export interface ApiHealthDeps {
   faucet?: Pick<Faucet, "on" | "isLeading" | "info" | "oldestQueued">; tracker?: Pick<Tracker, "isLeading" | "stats">;
   /** The account service's `/healthz` (on this machine): its shared ceilings are read into the `accounts` row. Absent: no such row. */
   accounts?: { url: string; fetch?: typeof fetch };
+  /** The AggLayer bridge (AGGLAYER_BRIDGE on): its row is written beside the others. Absent: no such row. */
+  agglayer?: { healthRow: () => Promise<HealthRow> };
   now?: () => number; probeTimeoutMs?: number;
 }
 
@@ -32,7 +34,7 @@ export interface ApiHealthDeps {
  * every few seconds from a timer, in the background; `/api/health` only reads them, so it answers at once even when reth or Canton hang, and a timer that has
  * stopped shows as stale rows. The probes run side by side, each with its own short timeout.
  */
-export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker, accounts, now = Date.now, probeTimeoutMs = PROBE_TIMEOUT_MS }: ApiHealthDeps) {
+export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker, accounts, agglayer, now = Date.now, probeTimeoutMs = PROBE_TIMEOUT_MS }: ApiHealthDeps) {
   let last = -Infinity;
   let running: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -76,6 +78,7 @@ export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker,
       // The row is shared by the instances: each writes what it read, and the last write stands. A service that cannot be read is a degraded row, never a failed probe of this instance.
       out.push(accountsRow(await probe(readUsage(accounts.url, accounts.fetch, probeTimeoutMs)).then((r) => r, (e) => ({ error: reason(e) }))));
     }
+    if (agglayer) out.push(await probe(agglayer.healthRow()).then((r) => r, (e) => ({ id: "agglayer", status: "degraded", value: null, detail: `the bridge's checks cannot be read: ${reason(e)}` } as HealthRow)));
     if (tracker?.isLeading()) {
       const s = tracker.stats();
       out.push({
@@ -98,6 +101,8 @@ export function createApiHealth({ pool, instance, reth, ledger, faucet, tracker,
         if (faucet && !faucet.on) await pool.query("delete from health_checks where check_id = 'faucet'");
         // And one for the account service that is no longer named.
         if (!accounts) await pool.query("delete from health_checks where check_id = 'accounts'");
+        // And one for the AggLayer bridge once it is switched off.
+        if (!agglayer) await pool.query("delete from health_checks where check_id = 'agglayer'");
         last = now();
       } catch (e) {
         console.error(`health: cannot write this instance's checks: ${reason(e)}`);
