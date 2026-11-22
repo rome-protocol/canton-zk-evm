@@ -395,6 +395,45 @@ class ClaimTests(Base):
         self.run_once()
         self.assertEqual(self.records.get("7")["state"], "claimed")
 
+    def refund_chain(self, back=800, net=0, view=None, count=11, token="0x" + "11" * 20):
+        """Ostia with an inbox that was opened for DEST on `net` and a refund from it."""
+        party = DEPOSITOR
+        inbox = "0x" + keccak(encode(["string", "uint32", "address"], [party, net, DEST]))[12:].hex()
+        self.ostia.on(ROUTER, claim_sepolia.INBOX_OF, ["string", "uint32", "address"], ["address"], view or (lambda p, n, a: ("0x" + keccak(encode(["string", "uint32", "address"], [p, n, a]))[12:].hex(),)))
+        opened = {"address": ROUTER, "blockNumber": hex(5), "topics": [claim_sepolia.INBOX_OPENED, "0x" + "00" * 12 + inbox[2:], "0x" + "00" * 32, "0x" + "00" * 12 + DEST[2:]], "data": "0x" + encode(["string", "uint32"], [party, net]).hex()}
+        refunded = {"address": ROUTER, "blockNumber": hex(10), "topics": [claim_sepolia.REFUNDED, "0x" + "00" * 12 + inbox[2:], "0x" + "00" * 12 + token[2:]], "data": "0x" + encode(["uint256", "uint256", "uint256"], [back, 100, count]).hex()}
+        self.ostia.logs = [opened, refunded]
+        self.routes["bridges"] = {"bridges": [{**LEAF, "deposit_count": count, "amount": str(back), "origin_address": token}]}
+
+    def test_a_refund_to_sepolia_is_claimed_with_the_leaf_of_the_service_from_the_inboxs_refund_address(self):
+        self.refund_chain()
+        self.run_once()
+        self.assertEqual(self.records.get("11")["kind"], "refund")
+        [tx] = self.sepolia.sent
+        a = decode(claim_sepolia.CLAIM_TYPES, bytes(tx["data"])[4:])
+        self.assertEqual(a[5:], (75, "0x" + "11" * 20, 0, DEST, 800, b"\x01"))
+        self.sepolia.mine(0)
+        self.run_once()
+        self.assertEqual(self.records.get("11")["state"], "claimed")
+
+    def test_a_refund_that_sent_nothing_back_or_goes_to_another_network_or_has_no_matching_inbox_is_never_recorded(self):
+        for name, args in (("nothing back", {"back": 0}), ("another network", {"net": 74}), ("the router works out another inbox", {"view": lambda p, n, a: ("0x" + "99" * 20,)})):
+            with self.subTest(name):
+                self.setUp()
+                self.refund_chain(**args)
+                self.run_once()
+                self.assertEqual((self.records.data["items"], self.sepolia.sent), ({}, []))
+                self.assertEqual(self.records.data["cursor"], 100)
+
+    def test_a_refund_whose_leaf_is_not_what_the_event_describes_is_never_claimed(self):
+        for name, change in (("amount", {"amount": "801"}), ("destination", {"destination_address": "0x" + "77" * 20}), ("token", {"origin_address": "0x" + "22" * 20}), ("network", {"destination_network": 74})):
+            with self.subTest(name):
+                self.setUp()
+                self.refund_chain()
+                self.routes["bridges"]["bridges"][0].update(change)
+                self.run_once()
+                self.assertEqual((self.sepolia.sent, self.records.get("11")["state"]), ([], "mismatch"))
+
     def test_only_the_routers_sends_to_this_destination_in_final_blocks_are_read(self):
         self.ostia.logs = [routed_log(7), routed_log(8, network=74), routed_log(9, block=150)]
         self.ostia.final = 100

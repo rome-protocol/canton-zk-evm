@@ -351,6 +351,19 @@ class SweepTests(InBase):
         self.run_once()
         self.assertEqual(self.selector(), chain.selector(REFUND_SIG))
 
+    def test_flow_c_closed_still_starts_the_clock_of_a_held_coin(self):
+        self.b["in_open"] = False
+        self.run_once()
+        self.assertEqual(self.selector(), chain.selector(MARK))
+
+    def test_the_pay_check_of_a_new_send_counts_what_the_inbox_holds_already(self):
+        self.snap.chain["withdrawn"] = [{"tallyToken": "dso::1/Amulet", "tallyAmount": "9.9999999000", "countedUntil": iso(3600)}]   # room for 1000: the new 800 fits alone, with the held coin it does not
+        self.records.put(f"cool:{INBOX}:{TOKEN}", until=NOW + 300, job="mark")   # the held coin's own step is cooling, so the claim is looked at
+        self.serve()
+        self.add_leaf()
+        self.run_once()
+        self.assertEqual(self.selector(), chain.selector(relay_in.CLAIM_HOLD))
+
     def test_a_forward_that_is_left_out_is_not_tried_again_for_the_cooldown_and_the_coin_is_marked_meanwhile(self):
         self.run_once()
         self.stick()
@@ -373,6 +386,73 @@ class SweepTests(InBase):
         self.b["at"].update({INBOX: int(NOW) - 10, other: int(NOW) - 500})
         self.run_once()
         self.assertEqual((self.selector(), self.args()[0]), (chain.selector(REFUND_SIG), "bob::1"))
+
+
+    def other_inbox(self, bal=1000, clock=0):
+        other = inbox_of("bob::1", 0, REFUND)
+        self.records.put("inbox:" + other, kind="inbox", party="bob::1", net=0, refund=REFUND)
+        self.b["bal"][other], self.b["bal"][INBOX] = bal, 0
+        self.snap.accepted = {PARTY, "bob::1"}
+        self.b["at"][other] = clock
+        self.serve()
+        self.add_leaf()
+        return other
+
+    def test_a_held_coin_is_served_before_a_new_send_that_would_take_the_quota(self):
+        self.other_inbox()
+        self.run_once()
+        self.assertEqual((self.selector(), self.args()[0]), (chain.selector(FORWARD), "bob::1"))
+        self.assertEqual(self.records.get("leaf:7")["state"], "pending")
+
+    def test_a_new_send_is_claimed_into_its_inbox_only_while_an_older_inbox_waits_for_canton_to_take_the_same_coin(self):
+        self.snap.chain["withdrawn"] = [{"tallyToken": "dso::1/Amulet", "tallyAmount": "9.9999999150", "countedUntil": iso(3600)}]   # room for 850: the held 900 cannot be paid, the new 800 could
+        self.other_inbox(clock=int(NOW) + 100)
+        self.run_once()
+        self.assertEqual(self.selector(), chain.selector(relay_in.CLAIM_HOLD))
+        self.setUp()
+        self.snap.chain["withdrawn"] = [{"tallyToken": "dso::1/Amulet", "tallyAmount": "9.9999999150", "countedUntil": iso(3600)}]
+        self.serve()
+        self.add_leaf()
+        self.b["bal"][INBOX] = 0
+        self.run_once()
+        self.assertEqual(self.selector(), chain.selector(relay_in.CLAIM_PAY))   # nobody else waits: it is paid
+
+
+class CantonSnapshotTests(unittest.TestCase):
+    def test_only_an_acceptance_that_names_this_chains_operator_confirmer_and_gateway_counts(self):
+        good = {"party": "a::1", **{k: tw.CHAIN[k] for k in ("chainId", "operator", "confirmer", "gateway")}}
+        rows = [good, {**good, "party": "b::1", "operator": "x::1"}, {**good, "party": "c::1", "confirmer": "x::1"}, {**good, "party": "d::1", "gateway": "x::1"}, {**good, "party": "e::1", "chainId": 1}]
+        net = SimpleNamespace(template=lambda node, party, template: [{"createArgument": r} for r in rows] if template == canton.ACCEPTANCE else [])
+        with mock.patch.object(canton, "chain_record", lambda n: tw.CHAIN):
+            self.assertEqual(relay_in.Canton(net).snapshot().accepted, {"a::1"})
+
+
+class SignatureTests(unittest.TestCase):
+    """The signatures the worker sends and reads against the router's, the book's and the interface's source, so a wrong one does not pass because the test repeats it."""
+    def shapes(self, text: str, name: str, kind: str = "function") -> list:
+        line = next(l for l in text.splitlines() if f"{kind} {name}(" in l)
+        params = line.split(f"{name}(", 1)[1].split(")")[0]
+        return [t.split()[0] for t in params.split(",")] if params.strip() else []
+
+    def test_every_function_the_in_relayer_calls_has_the_signature_of_the_sources(self):
+        router, book, face = (tw.ROOT / f"router/src/{n}.sol" for n in ("CantonRouter", "CantonBook", "Interfaces"))
+        router, book, face = router.read_text(), book.read_text(), face.read_text()
+        struct = face.split("struct ClaimArgs {")[1].split("}")[0]
+        claim = "(" + ",".join(l.split()[0] for l in struct.splitlines() if l.strip()) + ")"
+        self.assertEqual(claim, relay_in.CLAIM_ARGS)   # the field order of ClaimArgs
+        sig = lambda text, signature: (signature.split("(")[0], signature.split("(", 1)[1].rstrip(")"))
+        for text, signature in ((router, relay_in.OPEN), (router, relay_in.INBOX_OF), (router, relay_in.REFUND_AT), (book, relay_in.UNIT_OF), (book, relay_in.IN_OPEN), (book, relay_in.CHECK_IN), (book, relay_in.ASSETS),
+                                (router, relay_in.SWEEP.format("forward")), (router, relay_in.SWEEP.format("mark")), (router, relay_in.SWEEP.format("refund"))):
+            name, types = sig(text, signature)
+            self.assertEqual(",".join(self.shapes(text, name)), types, signature)
+        for signature in (relay_in.CLAIM_PAY, relay_in.CLAIM_HOLD):
+            name = signature.split("(")[0]
+            self.assertEqual(",".join(self.shapes(router, name)).replace("ClaimArgs", relay_in.CLAIM_ARGS), signature.split("(", 1)[1].rstrip(")"), signature)
+
+    def test_the_event_topics_are_those_of_the_routers_events(self):
+        router = (tw.ROOT / "router/src/CantonRouter.sol").read_text()
+        topic = lambda name: "0x" + keccak(text=f"{name}({','.join(self.shapes(router, name, 'event'))})").hex()
+        self.assertEqual((relay_in.INBOX_OPENED, claim_sepolia.INBOX_OPENED, claim_sepolia.REFUNDED, relay_out.ROUTED_OUT), (topic("InboxOpened"), topic("InboxOpened"), topic("Refunded"), topic("RoutedOut")))
 
 
 class CantonReasonTests(unittest.TestCase):
@@ -400,7 +480,12 @@ class MainTests(tw.Base):
 
     def test_the_tokens_and_both_endpoints_are_checked_before_anything_is_sent_and_nothing_secret_is_named(self):
         env = {"OSTIA_RELAY_IN": "1", "OSTIA_RPC_URL": tw.SECRET_URL, "OSTIA_ROUTER": ROUTER, "OSTIA_WORKER_STATE_DIR": self.dir.name, "OSTIA_RELAY_IN_KEY_FILE": tw.key_file(self.dir.name),
-               "OSTIA_RELAY_IN_SOURCE_RPC_URL": tw.SECRET_URL, "OSTIA_RELAY_IN_SOURCE_BRIDGE": SOURCE_BRIDGE, "OSTIA_RELAY_IN_TOKENS": TOKEN}
+               "OSTIA_RELAY_IN_SOURCE_RPC_URL": tw.SECRET_URL, "OSTIA_RELAY_IN_SOURCE_BRIDGE": SOURCE_BRIDGE, "OSTIA_RELAY_IN_TOKENS": TOKEN,
+               "OSTIA_RELAY_IN_FROM_BLOCK": "5", "OSTIA_RELAY_IN_OSTIA_FROM_BLOCK": "7"}
+        for name in ("OSTIA_RELAY_IN_FROM_BLOCK", "OSTIA_RELAY_IN_OSTIA_FROM_BLOCK"):   # a scan never starts at a default of block 0
+            with self.subTest(name), mock.patch.dict(os.environ, {k: v for k, v in env.items() if k != name}, clear=True), self.assertRaises(SystemExit) as why:
+                worker_main.run(["in", "--once"])
+            self.assertEqual(str(why.exception), f"{name} is not set")
         with mock.patch.dict(os.environ, {**env, "OSTIA_RELAY_IN_TOKENS": "nope"}, clear=True), self.assertRaises(SystemExit) as why:
             worker_main.run(["in", "--once"])
         self.assertIn("OSTIA_RELAY_IN_TOKENS", str(why.exception))

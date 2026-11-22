@@ -32,6 +32,12 @@ def address(name: str) -> str:
     return value.lower()
 
 
+def first_block(name: str) -> int:
+    """The block a scan starts at is always set, never a default of 0: a first start would read the whole chain."""
+    need(name)
+    return whole_setting(name, 0)
+
+
 def settings(prefix: str) -> dict:
     """The guards and limits of a worker: every one is a setting (README lists them), none a constant of the code."""
     n = lambda name, default: whole_setting(prefix + name, default)
@@ -66,7 +72,7 @@ def run(argv: list) -> None:
         if not all(ADDRESS.fullmatch(t) for t in coins):
             raise SystemExit("OSTIA_RELAY_IN_TOKENS must be a comma-separated list of token addresses")
         n = lambda name, default: whole_setting("OSTIA_RELAY_IN_" + name, default)
-        cfg = {**settings("OSTIA_RELAY_IN_"), "coins": coins, "floor": n("FLOOR", 0), "chunk": max(1, n("CHUNK_BLOCKS", 2000)), "from_block": n("FROM_BLOCK", 0), "ostia_from": n("OSTIA_FROM_BLOCK", 0),
+        cfg = {**settings("OSTIA_RELAY_IN_"), "coins": coins, "floor": n("FLOOR", 0), "chunk": max(1, n("CHUNK_BLOCKS", 2000)), "from_block": first_block("OSTIA_RELAY_IN_FROM_BLOCK"), "ostia_from": first_block("OSTIA_RELAY_IN_OSTIA_FROM_BLOCK"),
                "cooldown": n("COOLDOWN_SECONDS", 300), "open_per_hour": n("OPEN_PER_HOUR", 20), "src_net": n("SOURCE_NETWORK", 0)}
         signer, records = chain.load_signer(need("OSTIA_RELAY_IN_KEY_FILE")), Records(state / "relay-in.json")
         source, bridge = chain.Rpc("source chain", need("OSTIA_RELAY_IN_SOURCE_RPC_URL")), address("OSTIA_RELAY_IN_SOURCE_BRIDGE")

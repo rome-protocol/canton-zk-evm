@@ -1,8 +1,8 @@
 """The in-relayer (flow C): coin sent to an inbox of the Canton router on Ostia, taken on to Canton or, when Canton cannot pay, held and sent back.
 
 In order: finish the transaction that is out; learn the open inboxes from the router's InboxOpened events and the sends to them from the source chain's bridge events (final blocks only); then send the
-first of: an openInbox that the page asked for, the claim of a send (claimAndWithdraw when Canton can pay it now, claimToInbox otherwise), and for each inbox that holds a balance, in order of its
-refund clock, forward (Canton can pay, or the balance is only the fee), mark (starts the clock) or refund (the clock has ended). One transaction at a time, as the out-relayer does. The bridge service is
+first of: an openInbox that the page asked for; for each inbox that holds a balance, in order of its refund clock, forward (Canton can pay, or the balance is only the fee), mark (starts the clock) or
+refund (the clock has ended); and the claim of a send (claimAndWithdraw when Canton can pay it now and no older inbox waits for the same coin, claimToInbox otherwise). One transaction at a time, as the out-relayer does. The bridge service is
 not trusted: its leaf must be the one the event described. Anyone may do each of these steps, so the relayer is a convenience, never a trust point.
 """
 import http.server, json, re, sys, threading, time
@@ -23,6 +23,9 @@ CLAIM_ARGS = "(bytes32[32],bytes32[32],uint256,bytes32,bytes32,uint32,address,ui
 CLAIM_PAY = f"claimAndWithdraw({CLAIM_ARGS},string,uint32,address)"
 CLAIM_HOLD = f"claimToInbox({CLAIM_ARGS},string,uint32,address)"
 OPEN = "openInbox(string,uint32,address)"
+SWEEP = "{}(string,uint32,address,address)"   # forward, mark, refund
+INBOX_OF, REFUND_AT = "inboxOf(string,uint32,address)", "refundAt(address,address)"
+UNIT_OF, IN_OPEN, CHECK_IN, ASSETS = "unitOf(uint32)", "inOpen()", "checkIn(address)", "assets(address)"
 INBOX_OPENED = "0x" + keccak(text="InboxOpened(address,bytes32,address,string,uint32)").hex()
 BRIDGE_EVENT = "0x" + keccak(text="BridgeEvent(uint8,uint32,address,uint32,address,uint256,bytes,uint32)").hex()
 BRIDGE_TYPES = ["uint8", "uint32", "address", "uint32", "address", "uint256", "bytes", "uint32"]
@@ -49,29 +52,29 @@ class InRouter:
         return self.rpc.view(to, signature, types, values, [out])[0]
 
     def inbox_of(self, party, net, refund) -> str:
-        return self.view(self.address, "inboxOf(string,uint32,address)", ["string", "uint32", "address"], [party, net, refund], "address").lower()
+        return self.view(self.address, INBOX_OF, ["string", "uint32", "address"], [party, net, refund], "address").lower()
 
     def unit(self, net) -> int:
-        return self.view(self.book, "unitOf(uint32)", ["uint32"], [net], "uint256")
+        return self.view(self.book, UNIT_OF, ["uint32"], [net], "uint256")
 
     def in_open(self) -> bool:
-        return self.view(self.book, "inOpen()", [], [], "bool")
+        return self.view(self.book, IN_OPEN, [], [], "bool")
 
     def fee_in(self, coin) -> "int | None":
         """The fee of a forward, or None when the book refuses flow C for this coin now (a revert; any other failure is raised)."""
         try:
-            return self.view(self.book, "checkIn(address)", ["address"], [coin], relay_out.ASSET)[3]
+            return self.view(self.book, CHECK_IN, ["address"], [coin], relay_out.ASSET)[3]
         except chain.Refused:
             return None
 
     def listed(self, coin) -> bool:
-        return self.view(self.book, "assets(address)", ["address"], [coin], relay_out.ASSET)[0] != 0
+        return self.view(self.book, ASSETS, ["address"], [coin], relay_out.ASSET)[0] != 0
 
     def balance(self, coin, who) -> int:
         return self.view(coin, "balanceOf(address)", ["address"], [who], "uint256")
 
     def refund_at(self, inbox, coin) -> int:
-        return self.view(self.address, "refundAt(address,address)", ["address", "address"], [inbox, coin], "uint256")
+        return self.view(self.address, REFUND_AT, ["address", "address"], [inbox, coin], "uint256")
 
     def claimed(self, count, source_network) -> bool:
         return self.view(self.bridge, "isClaimed(uint32,uint32)", ["uint32", "uint32"], [count, source_network], "bool")
@@ -84,7 +87,8 @@ class Canton:
 
     def snapshot(self) -> SimpleNamespace:
         net, record = self.net, canton.chain_record(self.net)
-        accepted = {e["createArgument"]["party"] for e in net.template("operator", "operator", canton.ACCEPTANCE) if e["createArgument"].get("chainId") == record["chainId"]}
+        names = lambda a: all(a.get(k) == record.get(k) for k in ("operator", "confirmer", "gateway")) and int(a.get("chainId") or 0) == int(record["chainId"])   # as the builder's names_chain: another party in a role is no acceptance
+        accepted = {e["createArgument"]["party"] for e in net.template("operator", "operator", canton.ACCEPTANCE) if names(e["createArgument"])}
         coins = (e["createArgument"] for e in net.template("operator", "operator", canton.CHAIN + "GatewayToken"))
         return SimpleNamespace(chain=record, accepted=accepted, instrument={"0x" + a["evmToken"].lower(): f"{a['instrumentId']['admin']}/{a['instrumentId']['id']}" for a in coins})
 
@@ -215,7 +219,7 @@ def plan_open(ctx, records, key: str, item: dict) -> dict:
     return job("open", OPEN, ["string", "uint32", "address"], [item["party"], item["net"], item["refund"]], inbox, "queued")
 
 
-def plan_leaf(ctx, records, snap, key: str, item: dict, now: float) -> dict:
+def plan_leaf(ctx, records, snap, waiting: set, key: str, item: dict, now: float) -> dict:
     r, cfg, inbox, coin, count, src = ctx.router, ctx.cfg, item["inbox"], item["coin"], item["count"], ctx.cfg["src_net"]
     where = records.get("inbox:" + inbox)
     if item["origin"] != r.network:
@@ -240,7 +244,7 @@ def plan_leaf(ctx, records, snap, key: str, item: dict, now: float) -> dict:
     if proof is None:
         raise Wait("it is not ready on Ostia yet")
     pay, fee = False, r.fee_in(coin)
-    if fee is not None and not item.get("hold"):
+    if fee is not None and not item.get("hold") and not any(i != inbox and c == coin for i, c in waiting):   # coin of an older inbox is waiting for Canton: it has the quota first
         total = r.balance(coin, inbox) + int(item["amount"])
         pay = canton_reason(snap(), where["party"], coin, total - min(fee, total), datetime.fromtimestamp(now, timezone.utc)) is None
     h = lambda xs: [bytes.fromhex(x[2:]) for x in xs]
@@ -284,7 +288,7 @@ def plan_sweep(ctx, records, snap, entry: tuple, now: float) -> dict:
         name = "refund"
     else:
         raise Wait("the refund clock is running")
-    return job(name, f"{name}(string,uint32,address,address)", ["string", "uint32", "address", "address"], [rec["party"], rec["net"], rec["refund"], coin], inbox, "skipped", pair=f"{inbox}:{coin}")
+    return job(name, SWEEP.format(name), ["string", "uint32", "address", "address"], [rec["party"], rec["net"], rec["refund"], coin], inbox, "skipped", pair=f"{inbox}:{coin}")
 
 
 # ---- the pass ---------------------------------------------------------------------------------------------------------------------------------------
@@ -332,9 +336,11 @@ def run_once(ctx, records, log=print, now: float = None) -> None:
         return   # one at a time: a transaction the builder leaves out would hold the next ones
     cache = {}
     snap = lambda: cache.setdefault("s", ctx.canton.snapshot())   # Canton is read once a pass, and only when a step needs it
+    coins = held(ctx, records, log, now)
+    waiting = {(e[1], e[2]) for e in coins}
     plans = [(k, k, lambda k=k, v=v: plan_open(ctx, records, k, v)) for k, v in sorted(records.where("queued"), key=lambda kv: kv[1]["asked"])]
-    plans += [(k, k, lambda k=k, v=v: plan_leaf(ctx, records, snap, k, v, now)) for k, v in sorted(records.where("pending"), key=lambda kv: kv[1]["count"])]
-    plans += [(f"{e[1][:10]}:{e[2][-4:]}", None, lambda e=e: plan_sweep(ctx, records, snap, e, now)) for e in held(ctx, records, log, now)]
+    plans += [(f"{e[1][:10]}:{e[2][-4:]}", None, lambda e=e: plan_sweep(ctx, records, snap, e, now)) for e in coins]   # held coin first (oldest clock first), then the new sends
+    plans += [(k, k, lambda k=k, v=v: plan_leaf(ctx, records, snap, waiting, k, v, now)) for k, v in sorted(records.where("pending"), key=lambda kv: kv[1]["count"])]
     seen = records.data.setdefault("why", {})
     for label, key, plan in plans:
         try:

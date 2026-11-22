@@ -1,6 +1,6 @@
 """The Sepolia claimer (flow A): claims on Ethereum Sepolia the transfers that the router sent, paid by the fee that the router took on Ostia. The user's own claim stays the fallback.
 
-It reads the router's RoutedOut events from Ostia's finalized blocks, asks AggKit's bridge service (loopback only, not trusted: every answer is checked, and the leaf must be the one the
+It reads the router's RoutedOut events (its sends) and Refunded events (its refunds to a Sepolia address, from flow C) from Ostia's finalized blocks, asks AggKit's bridge service (loopback only, not trusted: every answer is checked, and the leaf must be the one the
 router's event describes) for the leaf and its proof, and sends claimAsset once the transfer is ready and nobody has claimed it. Guards: a floor, caps by the hour, the day and the recipient,
 gas and gas price limits, and the key's balance. Transfers that the router did not send are never claimed.
 """
@@ -14,6 +14,9 @@ from records import over_caps
 
 USER_AGENT = chain.USER_AGENT
 ROUTED_OUT = "0x" + keccak(text="RoutedOut(bytes32,bytes32,address,string,uint32,address,uint256,uint256,uint256)").hex()
+REFUNDED = "0x" + keccak(text="Refunded(address,address,uint256,uint256,uint256)").hex()
+INBOX_OPENED = "0x" + keccak(text="InboxOpened(address,bytes32,address,string,uint32)").hex()
+INBOX_OF = "inboxOf(string,uint32,address)"
 CLAIM = "claimAsset(bytes32[32],bytes32[32],uint256,bytes32,bytes32,uint32,address,uint32,address,uint256,bytes)"
 CLAIM_TYPES = ["bytes32[32]", "bytes32[32]", "uint256", "bytes32", "bytes32", "uint32", "address", "uint32", "address", "uint256", "bytes"]
 LOOPBACK = re.compile(r"http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?")
@@ -76,8 +79,25 @@ class Aggkit:
         return {"local": local, "rollup": rollup, "mainnet": info["mainnet_exit_root"], "rollupRoot": info["rollup_exit_root"]}
 
 
+def refund_address(ostia: chain.Rpc, router: str, inbox: str, upto: int, cfg: dict) -> "tuple | None":
+    """(refund network, refund address) of an inbox, from its InboxOpened event, only when the router works out the same inbox for the event's party, network and address."""
+    start = cfg["from_block"]
+    while start <= upto:
+        end = min(start + cfg["chunk"] - 1, upto)
+        for e in ostia.call("eth_getLogs", [{"address": router, "topics": [INBOX_OPENED, "0x" + "00" * 12 + inbox[2:]], "fromBlock": hex(start), "toBlock": hex(end)}]):
+            if e["topics"][1][-40:] != inbox[2:]:
+                continue
+            party, network = decode(["string", "uint32"], bytes.fromhex(e["data"][2:]))
+            refund = "0x" + e["topics"][3][-40:]
+            if ostia.view(router, INBOX_OF, ["string", "uint32", "address"], [party, network, refund], ["address"])[0].lower() == inbox:
+                return network, refund
+        start = end + 1
+    return None
+
+
 def scan(ostia: chain.Rpc, router: str, records, cfg: dict) -> None:
-    """New RoutedOut events of the router in Ostia's finalized blocks, for this claimer's destination, into the records as pending."""
+    """New RoutedOut and Refunded events of the router in Ostia's finalized blocks, for this claimer's destination, into the records as pending. A refund is the router's own send back to the refund
+    address of its inbox (the Refunded event has the deposit count), and nothing is recorded for one that sent nothing back."""
     head = ostia.finalized()
     start = records.data["cursor"] + 1 if records.data["cursor"] is not None else cfg["from_block"]
     while start <= head:
@@ -86,6 +106,14 @@ def scan(ostia: chain.Rpc, router: str, records, cfg: dict) -> None:
             party, network, coin, send, fee, count = decode(["string", "uint32", "address", "uint256", "uint256", "uint256"], bytes.fromhex(entry["data"][2:]))
             if network == cfg["network"] and not records.get(str(count)):
                 records.put(str(count), state="pending", count=count, asset=coin.lower(), dest="0x" + entry["topics"][3][-40:], send=str(send), tries=0)
+        for entry in ostia.call("eth_getLogs", [{"address": router, "topics": [REFUNDED], "fromBlock": hex(start), "toBlock": hex(end)}]):
+            back, _, count = decode(["uint256", "uint256", "uint256"], bytes.fromhex(entry["data"][2:]))
+            if back == 0 or records.get(str(count)):
+                continue
+            inbox = "0x" + entry["topics"][1][-40:]
+            target = refund_address(ostia, router, inbox, int(entry["blockNumber"], 16), cfg)
+            if target and target[0] == cfg["network"]:
+                records.put(str(count), state="pending", kind="refund", count=count, asset="0x" + entry["topics"][2][-40:], dest=target[1], send=str(back), tries=0)
         records.data["cursor"] = end
         records.save()
         start = end + 1
