@@ -19,3 +19,6 @@
 .other-chains .unsure .btn { align-self: flex-start; }
 .other-chains .transfer .btn { align-self: flex-start; }
 .other-chains .transfer p { margin: 0; overflow-wrap: anywhere; }
+.other-chains .route-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.other-chains .route-form p, .other-chains .route-form ol { margin: 0; overflow-wrap: anywhere; }
+.other-chains .route-form ol { padding-left: 20px; }
