@@ -123,3 +123,12 @@ CODE_OF_CONDUCT.md
     Adapted from the Contributor Covenant, version 2.1
     (https://www.contributor-covenant.org/version/2/1/code_of_conduct.html), licensed under
     CC BY 4.0. The file's Attribution section credits it.
+
+router/artifacts/ and router/src/vendor/ (OpenZeppelin Contracts)
+    router/artifacts/ProxyAdmin.json and router/artifacts/TransparentUpgradeableProxy.json are the compiled
+    OpenZeppelin Contracts 4.8.2 files of the compiled-contracts folder of agglayer-contracts v12.2.3
+    (https://github.com/agglayer/agglayer-contracts, commit 110bda5a03e70ee7331bc06407a8e79226d3e520), unchanged.
+    router/src/vendor/Initializable.sol is OpenZeppelin Contracts' Initializable, unchanged
+    (https://github.com/OpenZeppelin/openzeppelin-contracts, the text of releases 5.0.0 to 5.2.0).
+    Licensed under the MIT licence; its text is router/LICENSE-OPENZEPPELIN, which is the LICENSE file of
+    the OpenZeppelin Contracts repository. router/artifacts/README.md lists the files and their SHA-256 hashes.
