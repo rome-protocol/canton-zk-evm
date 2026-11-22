@@ -164,7 +164,7 @@ So every withdrawal also merges holdings into its change, and the holdings that 
 
 The status file has a `custody` field with this (see "The status file").
 
-**The refresh step.** When no withdrawal comes, the operator merges the holdings with `network/external/setup.py --custody-refresh-step dry-run|run` (see `network/README.md`). It imports this file's code, takes the registry, its token, `--custody-floor-days` and `--max-transfer-inputs` under the same names and defaults, makes one pass over the holdings there at its start (`ceil(M / K)` transfers, each output at least the floor), checks each transfer at the two offsets as a withdrawal is checked, and on a difference writes this stop file and sends nothing more.
+**The refresh step.** When no withdrawal comes, the operator merges the holdings with `network/external/setup.py --custody-refresh-step dry-run|run` (see `network/README.md`). It imports this file's code, takes the registry and its token under the same names, and `--custody-floor-days` and `--max-transfer-inputs` from this status file's `custody` row (the flags override), and refuses without that row, makes one pass over the holdings there at its start (`ceil(M / K)` transfers, each output at least the floor), checks each transfer at the two offsets as a withdrawal is checked, and on a difference writes this stop file and sends nothing more.
 
 ## Which package version Advance runs under
 

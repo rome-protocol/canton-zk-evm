@@ -2,7 +2,8 @@
 usable holdings into new ones, K inputs to a transfer and one pass over the holdings there at its start, checks each transfer at the ledger point before it and
 at it, and writes the builder's stop file on a difference. Against a fake participant (a stateful JSON Ledger API with a history of offsets) and a fake
 registry. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, http.server, io, json, os, sys, tempfile, threading, unittest
+import base64, contextlib, http.server, io, json, os, sys, tempfile, threading, unittest, urllib.error
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
@@ -182,6 +183,7 @@ class Rig(unittest.TestCase):
         parties.parent.mkdir(parents=True)
         parties.write_text(f"OPERATOR_PARTY={OP}\nCONFIRMER_PARTY={CF}\nGATEWAY_PARTY={GW}\n")
         self.work = self.dir / "work"
+        self.status({"readAt": None, "floorDays": 30, "maxInputs": None, "holdings": [], "stopped": None})   # the builder's, as it writes it before its first read
         for name, text in (("operator.token", TOKEN), ("scan.token", SCAN_TOKEN)):
             (self.dir / name).write_text(text + "\n")
             (self.dir / name).chmod(0o600)
@@ -213,6 +215,10 @@ class Rig(unittest.TestCase):
                 err.write(str(e.code) if not isinstance(e.code, int) else "")
         text = out.getvalue().strip()
         return code, (json.loads(text.splitlines()[-1]) if text else None), err.getvalue()
+
+    def status(self, row):
+        self.work.mkdir(parents=True, exist_ok=True)
+        (self.work / "status.json").write_text(json.dumps({"custody": {ADMIN: row} if row is not None else {}}))
 
     def stop(self):
         return b.read_custody_stop(self.cfg())
@@ -302,6 +308,34 @@ class Arguments(Rig):
         self.assertEqual((out["maxInputs"], [t["inputs"] for t in out["transfers"]]), (20, [20, 20, 20]))
         out = self.run_step("dry-run", "--max-transfer-inputs", "7")[1]
         self.assertEqual(out["maxInputs"], 7)
+
+    def test_without_flags_the_floor_days_and_the_cap_are_the_builders_from_its_status_file(self):
+        self.start(*[hold(f"h{i:02}", "2.0") for i in range(30)])
+        self.status({"readAt": "t", "floorDays": 10, "maxInputs": 20, "holdings": [], "stopped": None})
+        out = self.run_step("dry-run")[1]
+        self.assertEqual((out["floorDays"], out["floor"], out["maxInputs"], [t["inputs"] for t in out["transfers"]]), (10, "0.372672", 20, [20, 10]))
+        out = self.run_step("dry-run", "--custody-floor-days", "20", "--max-transfer-inputs", "15")[1]   # the flags win
+        self.assertEqual((out["floorDays"], out["maxInputs"]), (20, 15))
+
+    def test_a_work_folder_that_is_not_the_builders_is_refused_before_anything_is_read_or_sent(self):
+        node = self.start(hold("h1", "3.0"))
+        for row in (None, "x"):
+            with self.subTest(row):
+                self.status(row)
+                code, out, err = self.run_step("run")
+                self.assertNotEqual(code, 0)
+                self.assertIn("no custody row", err)
+        (self.work / "status.json").unlink()
+        self.assertIn("no custody row", self.run_step("dry-run")[2])
+        self.assertEqual((node.reads, node.submits, self.registry.asked), ([], [], []))
+
+    def test_a_floor_in_the_status_file_that_is_not_a_number_above_zero_is_refused_unless_the_flag_is_given(self):
+        self.start(hold("h1", "3.0"))
+        for bad in (0, -1, None, "30", True):
+            with self.subTest(bad):
+                self.status({"floorDays": bad, "maxInputs": None})
+                self.assertIn("floorDays", self.run_step("dry-run")[2])
+                self.assertEqual(self.run_step("dry-run", "--custody-floor-days", "30")[0], 0)
 
     def test_a_cap_under_one_is_refused(self):
         self.start(hold("h1", "3.0"))
@@ -680,6 +714,89 @@ class Failures(Rig):
             code, _, _ = self.run_step("run")
         self.assertEqual(code, 1)
         self.assertIn("could not be read", self.stop()["reason"])
+
+
+class Holes(Rig):
+    """Ends of the process between the submit and the end of the check, and the guards before the submit."""
+
+    def test_the_token_file_emptied_after_the_commit_writes_the_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        login_file = self.dir / "operator.token"
+        node.after[1] = lambda n: login_file.write_text("")   # a re-mint truncates the file in place
+        with mock.patch.object(setup.time, "sleep"):
+            code, out, _ = self.run_step("run")
+        self.assertEqual((code, len(node.submits)), (1, 1))
+        self.assertIsNotNone(self.stop())
+        self.assertFalse(out["ok"])
+
+    def test_an_interrupt_in_the_check_reads_writes_the_stop_and_goes_on_up(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        with mock.patch.object(setup, "read_pair", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertIn("may have committed", self.stop()["reason"])
+        self.assertEqual(len(node.submits), 1)
+
+    def test_an_interrupt_during_the_submit_writes_the_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        real = b.post_json
+        def post(url, body, headers, timeout=120):
+            if url.endswith("/submit-and-wait"):
+                raise KeyboardInterrupt
+            return real(url, body, headers, timeout)
+        with mock.patch.object(b, "post_json", post), self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertIn("may have committed", self.stop()["reason"])
+
+    def test_an_error_reading_the_body_of_a_5xx_does_not_skip_the_lookup_of_the_transfer(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        node.lose_reply_at = {1}
+        class Broken(urllib.error.HTTPError):
+            def read(self, n=-1):
+                raise OSError("reset")
+        def post(url, body, headers, timeout=120):
+            if not url.endswith("/submit-and-wait"):
+                return real(url, body, headers, timeout)
+            try:
+                real(url, body, headers, timeout)   # the commit happens
+            except urllib.error.HTTPError:
+                pass
+            raise Broken(url, 500, "x", {}, None)
+        real = b.post_json
+        with mock.patch.object(b, "post_json", post):
+            code, out, _ = self.run_step("run")
+        self.assertEqual((code, out["transfers"][0]["checked"], self.stop()), (0, True, None))   # found by its command id, then checked
+
+    def test_a_self_transfer_the_registry_says_is_an_offer_is_refused_before_anything_is_sent(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        def post(handler):
+            handler.rfile.read(int(handler.headers.get("content-length", 0)))
+            handler.send(200, {"factoryId": FACTORY, "transferKind": "offer", "choiceContext": CONTEXT})
+        with mock.patch.object(self.registry.server.RequestHandlerClass, "do_POST", post):
+            code, out, _ = self.run_step("run")
+        self.assertEqual((code, node.submits, self.stop()), (1, [], None))
+        self.assertIn("not 'direct'", out["error"])
+
+    def test_a_stop_the_builder_writes_during_the_pass_ends_it_before_the_next_transfer(self):
+        node = self.start(*[hold(f"h{i}", "2.0") for i in range(4)])
+        node.after[1] = lambda n: b.write_json_file(b.custody_stop_path(self.cfg()), {"reason": "the builder's own check"})
+        code, out, _ = self.run_step("run", "--max-transfer-inputs", "2")
+        self.assertEqual((code, len(node.submits)), (1, 1))
+        self.assertIn("nothing more was sent", out["stopped"])
+        self.assertEqual(self.stop(), {"reason": "the builder's own check"})   # not overwritten
+
+    def test_the_transfer_is_requested_a_minute_back_and_executes_a_day_on(self):
+        node = self.start(hold("h1", "2.0"))
+        self.run_step("run")
+        t = node.submits[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["transfer"]
+        fmt = lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        self.assertAlmostEqual((datetime.now(timezone.utc) - fmt(t["requestedAt"])).total_seconds(), setup.REQUESTED_BACK, delta=10)
+        self.assertAlmostEqual((fmt(t["executeBefore"]) - datetime.now(timezone.utc)).total_seconds(), 86400, delta=10)
+
+    def test_each_transfer_asks_the_registry_with_a_reader_of_its_own(self):
+        self.start(*[hold(f"h{i}", "2.0") for i in range(4)])
+        with mock.patch.object(b.ChoiceContexts, "__init__", autospec=True, side_effect=b.ChoiceContexts.__init__) as made:
+            self.run_step("run", "--max-transfer-inputs", "2")
+        self.assertEqual(made.call_count, 3)   # the rounds, then one for each of the two transfers
 
 
 class Secrets(Rig):
