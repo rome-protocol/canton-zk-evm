@@ -90,11 +90,13 @@ describe.skipIf(!dist)("the Bridge as its own site, in a browser", () => {
     await page.close();
   });
 
-  it("leaves the explorer's own /bridge as the page was, with the explorer's header", async () => {
-    const page = await open("/bridge");
+  it("leaves the explorer's own /bridge as the page was, with the explorer's header and a Bridge link that stays in the explorer", async () => {
+    const page = await open("/bridge", 1280);
     await page.getByRole("heading", { level: 1, name: "Bridge" }).waitFor();
-    await page.getByRole("navigation", { name: "Pages" }).waitFor();
-    expect(await page.getByRole("link", { name: "Bridge" }).first().getAttribute("target")).toBeNull();
+    const link = page.locator('nav[aria-label="Pages"] a[href="/bridge"]');
+    await link.waitFor({ state: "attached" });
+    expect(await link.getAttribute("target")).toBeNull();
+    expect(await page.getByRole("searchbox").count()).toBe(1);
     expect(page.url()).toBe(`${ORIGIN}/bridge`);
     await page.close();
   });
