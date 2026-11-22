@@ -46,6 +46,18 @@ describe("the offer", () => {
     expect(screen.queryByText("Enter your address first.")).toBeNull();
   });
 
+  it("starts the sign-in on the explorer's own address, in a new tab, when the page runs as the Bridge's own site", () => {
+    vi.stubEnv("VITE_SITE_ORIGIN", "https://ostia.testnet.romeprotocol.xyz");
+    document.documentElement.setAttribute("data-app", "bridge");
+    render(<BuilderGrant info={info()} address={ADDRESS} coin={coin} />);
+    const link = screen.getByRole("link", { name: "Sign in with GitHub" });
+    expect(link).toHaveAttribute("href", `https://ostia.testnet.romeprotocol.xyz/api/faucet/github/start?address=${ADDRESS.toLowerCase()}`);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
+    vi.unstubAllEnvs();
+    document.documentElement.removeAttribute("data-app");
+  });
+
   it("is nothing when it is off, absent, or the info is not read yet", () => {
     for (const i of [info({ builder: { ...builder, on: false } }), info({ builder: undefined }), info({ builder: { ...builder, amount: null } }), null]) {
       const { container } = render(<BuilderGrant info={i} address={ADDRESS} coin={coin} />);

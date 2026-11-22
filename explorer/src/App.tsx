@@ -3,6 +3,7 @@ import { Route, Routes, useLocation } from "react-router-dom";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { LoadingCard, NoPage } from "./components/Cards.tsx";
 import { Shell } from "./components/Shell.tsx";
+import { BridgeMoved } from "./pages/BridgeMoved.tsx";
 import { Home } from "./pages/Home.tsx";
 
 const loads: (() => Promise<unknown>)[] = [];
@@ -59,7 +60,7 @@ export function App() {
           <Route path="/canton/:updateId" element={<CantonUpdate />} />
           <Route path="/swaps" element={<Swaps />} />
           <Route path="/swap/:id" element={<SwapPage />} />
-          <Route path="/bridge" element={<Bridge />} />
+          <Route path="/bridge" element={<BridgeMoved><Bridge /></BridgeMoved>} />
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/addresses" element={<Addresses />} />
           <Route path="/contracts" element={<Contracts />} />

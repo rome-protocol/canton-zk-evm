@@ -1,4 +1,5 @@
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -217,5 +218,73 @@ describe("the client's address for the faucet", () => {
     expect(await s.ask({ "x-forwarded-for": "6.6.6.6, 203.0.113.9" })).toEqual({ ip: "203.0.113.9" });
     expect(await s.ask()).toEqual({ ip: "127.0.0.1" });
     await s.close();
+  });
+});
+
+describe("the Bridge's own host", () => {
+  const BRIDGE = "https://bridge.ostia.test";
+  let own: ReturnType<typeof createHttpServer>, root: string;
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), "explorer-dist-bridge-"));
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>explorer</html>");
+    writeFileSync(join(root, "bridge.html"), "<html>bridge</html>");
+    writeFileSync(join(root, "assets", "app.js"), "export {}");
+    const api = async (_method: string, target: string) => ({ status: 200, body: { target } });
+    own = createHttpServer(api, root, undefined, null, undefined, undefined, null, BRIDGE);
+    await new Promise<void>((ok) => own.listen(0, "127.0.0.1", ok));
+  });
+  afterEach(async () => { await new Promise((ok) => own.close(ok)); rmSync(root, { recursive: true, force: true }); });
+
+  /** A GET with the Host header a proxy would send (fetch does not let a script set it). */
+  const at = (host: string, path: string) => new Promise<{ status: number; body: string; headers: Record<string, string | string[] | undefined> }>((ok, fail) => {
+    const req = request({ host: "127.0.0.1", port: (own.address() as AddressInfo).port, path, headers: { host } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8").on("data", (d) => { body += d; }).on("end", () => ok({ status: res.statusCode ?? 0, body, headers: res.headers }));
+    });
+    req.on("error", fail).end();
+  });
+
+  it("gives the Bridge's page for / and for every path the pages own, and never the explorer's", async () => {
+    for (const path of ["/", "/bridge", "/blocks", "/tx/0x1", "/anything/else"]) {
+      const r = await at("bridge.ostia.test", path);
+      expect(r.status, path).toBe(200);
+      expect(r.body, path).toBe("<html>bridge</html>");
+    }
+    expect((await at("bridge.ostia.test", "/index.html")).status).toBe(404);
+  });
+
+  it("reads the host in lower case and without its port", async () => {
+    expect((await at("BRIDGE.Ostia.Test:443", "/")).body).toBe("<html>bridge</html>");
+    expect((await at("bridge.ostia.test:8088", "/blocks")).body).toBe("<html>bridge</html>");
+  });
+
+  it("gives the explorer's page on any other host and has no /bridge.html there", async () => {
+    for (const host of ["ostia.test", "127.0.0.1:8088", "bridge.ostia.test.evil", "evil.bridge.ostia.test", "[::1]:8088"]) {
+      expect((await at(host, "/")).body, String(host)).toBe("<html>explorer</html>");
+      expect((await at(host, "/bridge")).body, String(host)).toBe("<html>explorer</html>");
+      expect((await at(host, "/bridge.html")).status, String(host)).toBe(404);
+    }
+  });
+
+  it("answers the api, the files and the policy the same on both hosts", async () => {
+    for (const host of ["bridge.ostia.test", "ostia.test"]) {
+      expect(JSON.parse((await at(host, "/api/status")).body)).toEqual({ target: "/api/status" });
+      expect((await at(host, "/assets/app.js")).body).toBe("export {}");
+    }
+    const a = (await at("bridge.ostia.test", "/")).headers["content-security-policy"];
+    const b = (await at("ostia.test", "/")).headers["content-security-policy"];
+    expect(a).toBeTruthy();
+    expect(a).toBe(b);
+  });
+
+  it("serves /bridge.html as it does any file while the setting is off, so a local run can open the app", async () => {
+    const off = createHttpServer(async () => ({ status: 200, body: {} }), root);
+    await new Promise<void>((ok) => off.listen(0, "127.0.0.1", ok));
+    const r = await fetch(`http://127.0.0.1:${(off.address() as AddressInfo).port}/bridge.html`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe("<html>bridge</html>");
+    expect(await (await fetch(`http://127.0.0.1:${(off.address() as AddressInfo).port}/`)).text()).toBe("<html>explorer</html>");
+    await new Promise((ok) => off.close(ok));
   });
 });

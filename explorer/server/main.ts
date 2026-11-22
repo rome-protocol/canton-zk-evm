@@ -60,7 +60,7 @@ try {
   const source = storage.pool && config.database
     ? createStreamSource({ pool: storage.pool, connection: config.database, hub, inflight: async () => (await api("GET", "/api/in-flight")).body })
     : null;
-  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null);
+  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null, config.bridgeOrigin);
   await Promise.all([tracker.ready(), faucet.ready()]);
   server.listen(config.port, config.host, () => {
     console.log(`explorer for ${config.chainName} listening on http://${config.host}:${config.port}`);

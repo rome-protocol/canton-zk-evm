@@ -15,6 +15,20 @@ describe("the header", () => {
     expect(nav.getByRole("link", { name: "Home" })).not.toHaveClass("active");
   });
 
+  it("opens the Bridge's own site in a new tab from the Bridge item, with the same class, once the build has a Bridge origin", async () => {
+    vi.stubEnv("VITE_BRIDGE_ORIGIN", "https://bridge.ostia.testnet.romeprotocol.xyz");
+    fakeApi(route({}));
+    renderApp("/faucet");
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    const bridge = nav.getByRole("link", { name: "Bridge" });
+    expect(bridge).toHaveAttribute("href", "https://bridge.ostia.testnet.romeprotocol.xyz/");
+    expect(bridge).toHaveAttribute("target", "_blank");
+    expect(bridge).toHaveAttribute("rel", "noopener");
+    expect(bridge).toHaveClass("navlink", "out");
+    expect(nav.getByRole("link", { name: "Faucet" })).not.toHaveAttribute("target");
+    vi.unstubAllEnvs();
+  });
+
   it("opens a page at its top when the link has no hash: following a footer link does not land at the bottom of the next page", async () => {
     fakeApi(route({}));
     const scroll = vi.spyOn(window, "scrollTo").mockImplementation(() => {});

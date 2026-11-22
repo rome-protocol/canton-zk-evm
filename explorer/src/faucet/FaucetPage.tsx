@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ago, at as instant, clock, secs } from "../block-times.ts";
+import { BridgeLink } from "../components/BridgeLink.tsx";
 import { BuilderGrant, builderOf, builderWords, formatDays, readBuilderResult, type BuilderResult } from "./builder.tsx";
 import { createFaucetClient, type CoinResult, type FaucetClient, type FaucetInfo, type RecentSend, type Ticket, type TxTimes } from "./faucet-client.ts";
 import { formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
@@ -432,7 +433,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
           extra: elapsed !== null && usual ? <i className="pbar" role="progressbar" aria-label="How far the proof has got, against how long a proof usually takes" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round((elapsed / Math.max(1, usual.highMs)) * 100))}><b style={{ width: `${Math.min(100, (elapsed / Math.max(1, usual.highMs)) * 100)}%` }} /></i> : null,
         }
         : { state: "todo", title: "Being proven", detail: "The block holding the transfer is proven." },
-      status === "final" ? { at: stamp(times?.finalAt), state: "done", title: "Final on Canton", detail: <>{amount} is final on Canton{block}. The coins are yours, and the balance shown everywhere includes them. Next: <Link to="/bridge">open the Bridge</Link> or <OutLink href={DEPLOY_URL}>read how to deploy a contract</OutLink>.</> }
+      status === "final" ? { at: stamp(times?.finalAt), state: "done", title: "Final on Canton", detail: <>{amount} is final on Canton{block}. The coins are yours, and the balance shown everywhere includes them. Next: <BridgeLink>open the Bridge</BridgeLink> or <OutLink href={DEPLOY_URL}>read how to deploy a contract</OutLink>.</> }
         : { at: expected ? `about ${clock(expected, 3).slice(0, 8)}` : null, state: "todo", title: "Final on Canton", detail: "Then the coins are yours, and the balance shown everywhere includes them." },
     ];
     if (watch.gone) {

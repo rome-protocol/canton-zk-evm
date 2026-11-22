@@ -116,6 +116,14 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     }
   });
 
+  it("gives the explorer the Bridge's own site's origin, from either setting, and not the indexer", () => {
+    const site = "https://bridge.ostia.testnet.romeprotocol.xyz";
+    expect(start({ VITE_BRIDGE_ORIGIN: site })).toContain(` -e BRIDGE_ORIGIN=${site}`);
+    expect(start({ BRIDGE_ORIGIN: site })).toContain(` -e BRIDGE_ORIGIN=${site}`);
+    expect(indexerCommand({ VITE_BRIDGE_ORIGIN: site }).cmd).not.toContain("BRIDGE_ORIGIN");
+    expect(start()).not.toContain("BRIDGE_ORIGIN");
+  });
+
   it("passes the AggLayer bridge's settings to the explorer only, and names the Sepolia endpoint without its value", () => {
     const endpoint = "https://sepolia.example.invalid/hidden-part-1234";
     const env = { AGGLAYER_BRIDGE: "1", AGGLAYER_SEPOLIA_RPC_URL: endpoint, AGGKIT_BRIDGE_URL: "http://127.0.0.1:5578", AGGLAYER_OSTIA_BRIDGE: "0x" + "11".repeat(20), AGGLAYER_SEPOLIA_BRIDGE: "0x" + "22".repeat(20), AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "12", AGGLAYER_SEPOLIA_MAX_PER_SECOND: "3" };
@@ -252,5 +260,18 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh build", () => {
     expect(build()).not.toContain("VITE_NETWORK_NAME");
     expect(build({ NETWORK_NAME: "TestNet", VITE_SITE_ORIGIN: "https://ostia.testnet.romeprotocol.xyz" })).toContain("--build-arg VITE_NETWORK_NAME=TestNet");
     expect(build({ NETWORK_NAME: "TestNet", VITE_NETWORK_NAME: "Other" })).toContain("--build-arg VITE_NETWORK_NAME=Other");
+  });
+
+  it("builds the pages with the Bridge's own site's origin when one is set, from either setting, and without it when not", () => {
+    const site = "https://bridge.ostia.testnet.romeprotocol.xyz";
+    expect(build()).not.toContain("VITE_BRIDGE_ORIGIN");
+    expect(build({ VITE_BRIDGE_ORIGIN: site })).toContain(`--build-arg VITE_BRIDGE_ORIGIN=${site}`);
+    expect(build({ BRIDGE_ORIGIN: site })).toContain(`--build-arg VITE_BRIDGE_ORIGIN=${site}`);
+  });
+
+  it("has an argument and a copy in the Dockerfile for the Bridge's own page", () => {
+    const dockerfile = readFileSync(resolve(import.meta.dirname, "../Dockerfile"), "utf8");
+    expect(dockerfile).toContain("ARG VITE_BRIDGE_ORIGIN=");
+    expect(dockerfile).toMatch(/COPY explorer\/index\.html explorer\/bridge\.html /);
   });
 });

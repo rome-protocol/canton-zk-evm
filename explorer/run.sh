@@ -81,11 +81,13 @@ docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else doc
 quietly() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@" > /dev/null; fi; }
 
 # The Bridge page's build settings (explorer/README.md), each built into the page when it is set: BRIDGE_WTROME_ADDRESS is this deployment's wrapped coin (without it the page does not wrap).
-BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_NETWORK_NAME VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL)
+BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_NETWORK_NAME VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL VITE_BRIDGE_ORIGIN)
 build() {
   local bridge=() name
   # The page's title and card name the network the server's NETWORK_NAME names, unless the build is given its own VITE_NETWORK_NAME (explorer/site-meta.ts).
   : "${VITE_NETWORK_NAME:=${NETWORK_NAME:-}}"
+  # The Bridge's own site (explorer/README.md, "The Bridge's own site"): the pages are built to link to it, and the server given the same origin (explorer_args) serves it.
+  : "${VITE_BRIDGE_ORIGIN:=${BRIDGE_ORIGIN:-}}"
   for name in "${BRIDGE_BUILD_SETTINGS[@]}"; do
     if [ -n "${!name:-}" ]; then bridge+=(--build-arg "$name=${!name}"); fi
   done
@@ -198,6 +200,9 @@ explorer_args() {
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
   # The Ethereum Sepolia endpoint of the AggLayer bridge routes carries a key: named without its value, the same way.
   [ -z "${AGGLAYER_SEPOLIA_RPC_URL:-}" ] || ARGS+=(-e AGGLAYER_SEPOLIA_RPC_URL)
+  # The Bridge's own site: the server answers the pages of this host with bridge.html. The origin is the one the pages were built with (build above).
+  local own_site="${BRIDGE_ORIGIN:-${VITE_BRIDGE_ORIGIN:-}}"
+  [ -z "$own_site" ] || ARGS+=(-e "BRIDGE_ORIGIN=$own_site")
 }
 
 # The indexer's container, in ARGS (also without the database's settings).
