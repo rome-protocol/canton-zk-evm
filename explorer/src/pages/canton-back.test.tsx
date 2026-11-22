@@ -21,9 +21,9 @@ const proof = Array.from({ length: 32 }, (_, i) => "0x" + (i + 1).toString(16).p
 const ARGS = { smtProofLocalExitRoot: proof, smtProofRollupExitRoot: proof, globalIndex: "7", mainnetExitRoot: "0x" + "aa".repeat(32), rollupExitRoot: "0x" + "bb".repeat(32), originNetwork: 75, originTokenAddress: CC, destinationNetwork: 75, destinationAddress: INBOX, amount: cc(4.8).toString(), metadata: "0x" };
 
 interface Sent { chainId: number; tx: any } // eslint-disable-line @typescript-eslint/no-explicit-any
-const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", backStage: null as string | null, readyAt: minutes(-20), claimed: false, checkIn: true,
+const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", backStage: null as string | null, depositFails: 0, readyAt: minutes(-20), claimed: false, checkIn: true,
   connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10), hold: null as Promise<void> | null, tx: null as unknown };
-const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", backStage: null, readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null, tx: null });
+const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", backStage: null, depositFails: 0, readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null, tx: null });
 
 beforeEach(() => {
   reset();
@@ -43,6 +43,7 @@ beforeEach(() => {
       if (world.hold && q.get("party") === PARTY) await world.hold;   // a slow answer for the first account
       return json(200, body);
     }
+    if (input.startsWith("/api/agglayer/deposit") && world.depositFails > 0) { world.depositFails -= 1; return json(500, { error: "no" }); }
     if (input.startsWith("/api/agglayer/deposit")) { const st = (input.includes("network=75") ? world.backStage : null) ?? world.stage; return json(200, { network: 0, count: 7, destinationNetwork: 75, ...stage(st as never), readyAt: st === "ready" || st === "claimed" ? world.readyAt : null }); }
     if (input.startsWith("/api/agglayer/claim?network=75")) return json(200, { network: 75, count: 9, claimed: world.claimed, destinationNetwork: 0, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, l1InfoTreeIndex: 1, data: claimData(0, ME, cc(4.6), 9), args: null });
     if (input.startsWith("/api/agglayer/claim")) return json(200, { network: 0, count: 7, claimed: world.claimed, destinationNetwork: 75, chainId: OSTIA_ID, to: OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(75, INBOX, cc(4.8), 7), args: world.claimed ? null : ARGS });
@@ -431,6 +432,19 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     expect(await within(back).findByRole("button", { name: "Claim on Ethereum Sepolia" })).toBeInTheDocument();
     expect(screen.queryByRole("listitem", { name: /^Arrived back\./ })).toBeNull();
     expect(world.asked.some((a) => a.startsWith("/api/agglayer/deposit?network=75&count=9"))).toBe(true);
+  });
+  it("does not finish a send whose own stage was not read: two equal sends, the newer done, a forwarded episode, and the first deposit read failing", async () => {
+    const mine = (id: string, count: number, minutesAgo: number, done?: number) => ({ id, account: ME, at: Date.now() - minutesAgo * 60_000, route: "canton-in", dir: "in", symbol: "CC", decimals: 10, native: false, amount: cc(4.8).toString(),
+      send: { chainId: SEPOLIA_ID, to: COPY, data: "0x", value: "0", nonce: 1, tx: SEND_HASH }, count, claim: null, receiver: INBOX, party: PARTY, ...(done === undefined ? {} : { done }) });
+    for (const t of [mine("s1", 7, 120), mine("s2", 8, 60, Date.now() - 1000)]) localStorage.setItem(`agglayer-transfer:${t.id}`, JSON.stringify(t));
+    localStorage.setItem("agglayer-transfers", JSON.stringify(["s1", "s2"]));
+    world.stage = "ready";
+    world.depositFails = 1;
+    world.events = [forwarded({ at: minutes(-30) }), opened()];
+    await open();
+    await waitFor(() => expect(world.asked.filter((a) => a.startsWith("/api/agglayer/deposit")).length).toBeGreaterThan(1));
+    expect(JSON.parse(localStorage.getItem("agglayer-transfer:s1")!).done).toBeUndefined();
+    expect(await screen.findByRole("button", { name: "Claim on Ostia" })).toBeInTheDocument();
   });
   it("is found again after a reload: a new page reads the same rows from the server", async () => {
     world.events = [held({ at: minutes(-30), refundAt: minutes(60 * 24 * 3 - 30) }), opened()];

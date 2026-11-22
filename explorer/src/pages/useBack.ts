@@ -97,8 +97,8 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
         if (k && !inBlockSeen.current[k.hash]) { try { const tx = await explorerTx(k.hash as Hex); if (tx !== null && tx.block !== null) inBlockSeen.current = { ...inBlockSeen.current, [k.hash]: true }; } catch { /* looked at again next time */ } }
       }
       setInBlock(inBlockSeen.current);
-      // A send whose coin was paid on or sent back is finished: it is no longer looked at.
-      for (const r of back) if (r.episode?.state === "arrived" || r.episode?.state === "refunded") for (const t of r.sends) if (t.done === undefined) saveTransfer(store, { ...t, done: Date.now() });
+      // A send whose coin was paid on or sent back is finished and no longer looked at, but only once its own deposit is read as claimed: an unknown stage may be a wrong join.
+      for (const r of back) if (r.episode?.state === "arrived" || r.episode?.state === "refunded") for (const t of r.sends) if (t.done === undefined && seen.current[t.id]?.stage === "claimed") saveTransfer(store, { ...t, done: Date.now() });
       if (asset && mine.some((t) => seen.current[t.id]?.stage === "ready" || seen.current[t.id]?.stage === "claimed")) {
         const block = await finalBlock();
         const read = checkInRead(flow.book, asset.erc20);
