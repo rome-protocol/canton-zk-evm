@@ -119,6 +119,32 @@ class IntakeTests(InBase):
         self.assertEqual(self.ask()[0], 200)   # the same inbox again: no second request
         self.assertEqual(len(self.records.where("queued")), 1)
 
+    def test_a_failed_open_asked_again_goes_back_to_queued(self):
+        self.assertEqual(self.ask()[0], 202)
+        self.records.put("open:" + INBOX, state="failed")
+        self.assertEqual(self.ask(), (202, {"inbox": INBOX, "status": "queued"}))
+        self.assertEqual(self.records.get("open:" + INBOX)["state"], "queued")
+        self.records.put("open:" + INBOX, state="done")
+        self.assertEqual(self.ask()[0], 202)
+        self.assertEqual(self.records.get("open:" + INBOX)["state"], "queued")
+
+    def test_asks_that_race_past_the_hourly_limit_get_429_and_the_same_inbox_asked_twice_is_queued_once(self):
+        def others():   # while this ask reads the ledger, other asks use up the hour
+            for n in range(3):
+                self.records.put(f"open:0x{n + 1:040x}", kind="open", state="queued", party=PARTY, net=0, refund=f"0x{n + 1:040x}", asked=NOW)
+            return self.snap
+        self.canton = SimpleNamespace(snapshot=others)
+        self.assertEqual(self.ask()[0], 429)
+        self.assertEqual(self.records.get("open:" + INBOX), {})
+        self.records.data["items"].clear()
+
+        def same():   # while this ask reads the ledger, an ask for the same inbox is queued
+            self.records.put("open:" + INBOX, kind="open", state="queued", party=PARTY, net=0, refund=REFUND, asked=NOW)
+            return self.snap
+        self.canton = SimpleNamespace(snapshot=same)
+        self.assertEqual(self.ask(), (200, {"inbox": INBOX, "status": "queued"}))
+        self.assertEqual(len(self.records.where("queued")), 1)
+
     def test_a_request_that_is_malformed_names_a_network_that_cannot_take_a_refund_or_has_no_acceptance_is_refused(self):
         cases = [({"party": "a b"}, 400), ({"party": ""}, 400), ({"party": "x" * 300}, 400), ({"refundNetwork": -1}, 400), ({"refundNetwork": "0"}, 400), ({"refundNetwork": 2**32}, 400),
                  ({"refundAddress": "0x" + "00" * 20}, 400), ({"refundAddress": "0x12"}, 400), ({"refundNetwork": NET}, 422), ({"refundNetwork": 9}, 422), ({"party": "bob::1220" + "cd" * 32}, 422)]
