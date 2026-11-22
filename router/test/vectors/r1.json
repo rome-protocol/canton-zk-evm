@@ -1,0 +1,68 @@
+{
+  "inboxCodeHash": "0xd484f5a96577eed03b21cec66e503dcf30f7c0d3741ac72824ff966b70f23e49",
+  "routerProxy": "0x000000000000000000000000000000000c0a7001",
+  "labels": [
+    {
+      "party": "ostia-operator::12207f23ae47643a4c4c61543923d62e6320a6db41e7beba264372e2fd61b040bbbb",
+      "net": 0,
+      "dest": "0x5b38da6a701c568545dcfcb03fcb875f56beddc4",
+      "maxFee": "2000000000",
+      "nonce": "17",
+      "label": "r1:0:0x5b38da6a701c568545dcfcb03fcb875f56beddc4:2000000000:17",
+      "id": "0xe92bea73ff5dc5da57288c40fc061b42e0be7fa4d729d2f51759122d4f61540a"
+    },
+    {
+      "party": "bob-treasury::122009fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe",
+      "net": 74,
+      "dest": "0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2",
+      "maxFee": "0",
+      "nonce": "0",
+      "label": "r1:74:0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2:0:0",
+      "id": "0x0bf185ef9f7e638a096709a2069ccaefe64144466e24275b2f4cd84a0cedf6f6"
+    },
+    {
+      "party": "operator::1220b43735bd74bbb95fa897975034c6419e7c91e61de333bf9e0739edfd424fc092",
+      "net": 4294967295,
+      "dest": "0xffffffffffffffffffffffffffffffffffffffff",
+      "maxFee": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "nonce": "18446744073709551615",
+      "label": "r1:4294967295:0xffffffffffffffffffffffffffffffffffffffff:115792089237316195423570985008687907853269984665640564039457584007913129639935:18446744073709551615",
+      "id": "0x872b38a5cdaee93d6ac1447122dee55959ba2f82143281400eafdf8c48fdc038"
+    },
+    {
+      "party": "ostia-operator::12207f23ae47643a4c4c61543923d62e6320a6db41e7beba264372e2fd61b040bbbb",
+      "net": 1,
+      "dest": "0x00000000000000000000000000000000000000a1",
+      "maxFee": "123456789012345678901234567890",
+      "nonce": "9007199254740993",
+      "label": "r1:1:0x00000000000000000000000000000000000000a1:123456789012345678901234567890:9007199254740993",
+      "id": "0x6f2c948d00fb8fffb9b0fd251256d5a6c3d0e06e1201acf8a46c3f7685827e59"
+    }
+  ],
+  "inboxes": [
+    {
+      "party": "ostia-operator::12207f23ae47643a4c4c61543923d62e6320a6db41e7beba264372e2fd61b040bbbb",
+      "refundNetwork": 0,
+      "refundAddress": "0x5b38da6a701c568545dcfcb03fcb875f56beddc4",
+      "inbox": "0xe484b9bb81c7c56f4856dc9f3a0b0acaad564b35"
+    },
+    {
+      "party": "ostia-operator::12207f23ae47643a4c4c61543923d62e6320a6db41e7beba264372e2fd61b040bbbb",
+      "refundNetwork": 74,
+      "refundAddress": "0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2",
+      "inbox": "0xf087bdd7c5d4d1bb5a4078dab7b84be34c9aa812"
+    },
+    {
+      "party": "bob-treasury::122009fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe09fe",
+      "refundNetwork": 0,
+      "refundAddress": "0x5b38da6a701c568545dcfcb03fcb875f56beddc4",
+      "inbox": "0x0e3d4fc48609cdf699030b2548bf19175387a592"
+    },
+    {
+      "party": "operator::1220b43735bd74bbb95fa897975034c6419e7c91e61de333bf9e0739edfd424fc092",
+      "refundNetwork": 1,
+      "refundAddress": "0x00000000000000000000000000000000000000a1",
+      "inbox": "0x70241794b3ad3a8f96b9b65d5bf0ebd4dfc6fbca"
+    }
+  ]
+}

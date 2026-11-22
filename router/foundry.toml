@@ -1,0 +1,25 @@
+[profile.default]
+src = "src"
+out = "out"
+cache_path = "cache"
+test = "test"
+libs = ["lib"]
+# solc comes from SOLC (a path) when run.sh runs, or from the pinned release by name. Never a download in CI.
+solc = "0.8.28"
+auto_detect_solc = false
+evm_version = "shanghai"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+# No metadata hash: the same source gives the same bytes, which the inbox's checked-in bytes rely on.
+bytecode_hash = "none"
+cbor_metadata = false
+allow_paths = ["../gateway"]
+remappings = ["forge-std/=lib/forge-std/src/", "gateway/=../gateway/"]
+fs_permissions = [
+    { access = "read", path = "./artifacts" },
+    { access = "read", path = "./test/vectors" },
+]
+
+[lint]
+lint_on_build = false
