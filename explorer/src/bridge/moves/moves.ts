@@ -68,6 +68,8 @@ export interface Deps {
   sentSince(account: Address, nonce: number): Promise<Hex[]>;
   /** What the gateway holds on Canton of the wrapped token (base units of `decimals`), or null where that is not known. A withdrawal of more is never taken into a block. */
   custody?(wrapped: Address): Promise<{ amount: bigint; decimals: number } | null>;
+  /** The least a deposit of this instrument may carry (Canton's 10 decimals), or null where none is set or it cannot be read: then there is no check here, and the builder still checks the claim. */
+  minimum?(instrument: { admin: string; id: string }): Promise<bigint | null>;
   store: StoreLike | null;
   /** Web Locks (`webLocks()`), or null where there are none: then nothing runs, rather than running without the guard against a second tab. */
   locks: LocksLike | null;
@@ -117,6 +119,17 @@ export const explorerSentSince: Deps["sentSince"] = async (account, nonce) => {
 export const explorerCustody: NonNullable<Deps["custody"]> = async (wrapped) => {
   const c = (await bridgeReads.twins(timeoutSignal()!)).canton.find((x) => same(x.token, wrapped));
   return c ? { amount: BigInt(c.custody), decimals: c.custodyDecimals } : null;
+};
+/** The least a deposit of an instrument may carry, from the explorer (null where it gives none for that instrument's admin, or text that is not an amount). */
+export const explorerMinimum: NonNullable<Deps["minimum"]> = async (instrument) => {
+  const m = (await bridgeReads.minimums(timeoutSignal()!)).minimums?.find((x) => x.instrumentAdmin === instrument.admin);
+  const f = typeof m?.floor === "string" ? /^(\d{1,20})(?:\.(\d{1,10}))?$/.exec(m.floor) : null;
+  return f ? BigInt(f[1]!) * 10n ** 10n + BigInt((f[2] ?? "").padEnd(10, "0")) : null;
+};
+/** An amount in 10 decimals as the words show a minimum: rounded up to two decimals (never below the real one), with no trailing zeros. */
+const minimumText = (units: bigint): string => {
+  const cents = (units + 10n ** 8n - 1n) / 10n ** 8n, fraction = cents % 100n;
+  return fraction === 0n ? (cents / 100n).toString() : `${cents / 100n}.${fraction.toString().padStart(2, "0")}`;
 };
 export const randomRef = (): string => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 
@@ -473,6 +486,11 @@ export function createMove(d: Deps): Move {
       }
       case "deposit": {
         const a = { instrument: p.asset.instrument!, amount: tenDecimals(p.twin), label: ref };
+        // Before anything is locked on Canton: a deposit under the minimum is refused here, and the builder would leave its claim out. A move that has started is never checked again.
+        if (at() === "start") {
+          const least = await d.minimum?.(a.instrument).catch(() => null);
+          if (least != null && p.twin < least) throw new Refused(`A Canton Coin deposit must be at least ${minimumText(least)} CC. Your Canton Coin has not been touched. Try a larger amount.`);
+        }
         if (at() === "start" || at() === "signing") {
           gate("Your deposit is saved. Continue to allocate the tokens on Canton.");
           save({ stage: "signing" });

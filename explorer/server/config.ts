@@ -69,6 +69,8 @@ export interface Config {
   agglayer: AgglayerSettings | null;
   /** A file with a notice for the pages (OSTIA_NOTICE_FILE, see server/notice.ts); null when not set, and then there is never a notice. */
   noticeFile: string | null;
+  /** The builder's status file (PRODUCER_STATUS_FILE, see server/minimums.ts), read for the least a deposit may be; null when not set, and then there is no minimum. */
+  producerStatusFile: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -344,6 +346,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
     agglayer: agglayerSettings(env, (m) => new ConfigError(m)),
     noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
+    producerStatusFile: env.PRODUCER_STATUS_FILE?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),

@@ -25,6 +25,7 @@ import { FIELDS, pick } from "./rest/fields.ts";
 import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
+import { createMinimums } from "./minimums.ts";
 import { createNotices, type Notice } from "./notice.ts";
 import { AGGLAYER_PATHS, agglayerRoutes, type AgglayerBridge } from "./agglayer/bridge.ts";
 
@@ -112,6 +113,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   /** A notice as the API gives it: the three fields always, the level and the link only when it has them. */
   const noticeOut = (n: Notice) => ({ ...pick(n, FIELDS.notice), ...(n.level ? { level: n.level } : {}), ...(n.link ? { link: pick(n.link, FIELDS.noticeLink) } : {}) });
   const noticesNow = () => notices().map(noticeOut);
+  const minimums = createMinimums({ file: config.producerStatusFile, now });
 
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
@@ -331,6 +333,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/tx/{hash}", (hash) => transaction(hash)],
     ["/api/address/{address}", (a) => address(a)],
     ["/api/in-flight", () => inFlight()],
+    ["/api/bridge/minimums", async () => ok(pick({ minimums: minimums().map((m) => pick(m, FIELDS.minimum)) }, FIELDS.minimums))],
     ["/api/search", (_, q) => search((q.get("q") ?? "").trim().toLowerCase())],
     ["/api/faucet/ticket/{ticket}", (t) => ticket(t)],
     ...(verify ? ([["/api/verify/{guid}", (guid: string) => verification(guid)]] as const) : []),

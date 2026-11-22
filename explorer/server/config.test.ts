@@ -329,3 +329,11 @@ describe("the notice file", () => {
     expect(load({ OSTIA_NOTICE_FILE: "/var/lib/explorer/notice.json" }).noticeFile).toBe("/var/lib/explorer/notice.json");
   });
 });
+
+describe("the producer status file", () => {
+  it("is off until PRODUCER_STATUS_FILE names a file", () => {
+    expect(load().producerStatusFile).toBeNull();
+    expect(load({ PRODUCER_STATUS_FILE: "  " }).producerStatusFile).toBeNull();
+    expect(load({ PRODUCER_STATUS_FILE: "/run/explorer/producer/status.json" }).producerStatusFile).toBe("/run/explorer/producer/status.json");
+  });
+});

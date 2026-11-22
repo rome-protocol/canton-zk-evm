@@ -6,7 +6,7 @@ import type { BridgeConfig } from "../evm/config.ts";
 import { UnexpectedTransaction } from "../canton/sign.ts";
 import { LockRefused } from "../evm/registry.ts";
 import { AccountsError, Unanswered } from "../canton/accounts.ts";
-import { CannotTakeBack, createMove, RECORD_MARGIN_MS, TAKE_BACK_AFTER_MS, explorerLeg, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
+import { CannotTakeBack, createMove, RECORD_MARGIN_MS, TAKE_BACK_AFTER_MS, explorerLeg, explorerMinimum, explorerSentSince, explorerTx, Waited, type CantonAdapter, type Deps, type LocksLike } from "./moves.ts";
 import { depositIdOf, keptMoves, listMoves, loadCheckpoint, idBytes, lockIdOf, releaseIdOf, sameId, saveCheckpoint, transition, type Checkpoint, type MoveState, type StoreLike } from "./state.ts";
 
 const addr = (c: string) => ("0x" + c.repeat(40)) as Address;
@@ -88,7 +88,7 @@ function fakeEvm(o: EvmOptions = {}) {
 
 interface SetupOptions {
   evm?: ReturnType<typeof fakeEvm>; txs?: (ApiTx | null)[]; store?: ReturnType<typeof memoryStore>; maxPolls?: number; lockParts?: Deps["registry"]["lockParts"];
-  tx?: Deps["api"]["tx"]; legOf?: Deps["leg"]; sentSince?: Deps["sentSince"]; custody?: Deps["custody"]; locks?: LocksLike | null; config?: BridgeConfig; newRef?: () => string;
+  tx?: Deps["api"]["tx"]; legOf?: Deps["leg"]; sentSince?: Deps["sentSince"]; custody?: Deps["custody"]; minimum?: Deps["minimum"]; locks?: LocksLike | null; config?: BridgeConfig; newRef?: () => string;
 }
 function setup(o: SetupOptions = {}) {
   const evm = o.evm ?? fakeEvm();
@@ -109,7 +109,7 @@ function setup(o: SetupOptions = {}) {
   const deps: Deps = {
     config: o.config ?? config, evm: evm.evm, canton, registry: { lockParts }, store, locks: "locks" in o ? o.locks! : memoryLocks(), sleep: async () => {}, newRef: o.newRef ?? (() => "ref-1"), maxPolls: o.maxPolls ?? 5,
     api: { tx: o.tx ?? (async () => (answers.length > 1 ? answers.shift()! : answers[0] ?? null)) },
-    leg: o.legOf ?? (async () => null), sentSince: o.sentSince ?? (async () => []), custody: o.custody,
+    leg: o.legOf ?? (async () => null), sentSince: o.sentSince ?? (async () => []), custody: o.custody, minimum: o.minimum,
   };
   const move = createMove(deps);
   const phases: string[] = [];
@@ -1486,5 +1486,72 @@ describe("the account's sends are read page by page", () => {
   it("gives up, so the look stays incomplete, when there are more pages than it will read", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [sent(500)], next: "more" }), { status: 200 })));
     await expect(explorerSentSince(ME, 1)).rejects.toThrow(/too many/);
+  });
+});
+
+describe("a Canton Coin deposit under the bridge's minimum", () => {
+  const input = { kind: "deposit", asset: WCC, amount: "1" } as const;
+  const ten = (whole: string, fraction = "") => BigInt(whole) * 10n ** 10n + BigInt(fraction.padEnd(10, "0") || "0");
+
+  it("is refused before anything is locked on Canton, in words that give the minimum rounded up to two decimals, and leaves no record", async () => {
+    const asked: unknown[] = [];
+    const t = setup({ minimum: async (i) => { asked.push(i); return ten("1", "118016"); } });
+    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "A Canton Coin deposit must be at least 1.12 CC. Your Canton Coin has not been touched. Try a larger amount.", kept: false });
+    expect(asked).toEqual([{ admin: "admin::1220" + "00".repeat(32), id: "Amulet" }]);   // asked for the token's own instrument
+    expect(t.canton.calls).toEqual([]);
+    expect(t.evm.calls).toEqual([]);
+    expect(listMoves(t.store)).toEqual([]);
+  });
+  it("names a whole minimum without decimals, and a minimum under a cent as a cent", async () => {
+    expect(await setup({ minimum: async () => ten("5") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 5 CC.") });
+    expect(await setup({ minimum: async () => ten("1") + 1n }).move.start({ ...input, amount: "0.5" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.01 CC.") });
+    expect(await setup({ minimum: async () => 10n ** 6n }).move.start({ ...input, amount: "0.00001" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 0.01 CC.") });
+    expect(await setup({ minimum: async () => ten("1", "1") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.10 CC.") });
+  });
+  it("goes on at exactly the minimum, and above it", async () => {
+    for (const amount of ["1", "1.5"]) {
+      const t = setup({ minimum: async () => ten("1"), txs: [final([leg({ kind: "deposit", legId: depositIdOf(PARTY, "ref-1") }, WCC)])] });
+      await t.move.start({ ...input, amount });
+      expect(t.canton.calls).toContain("allocateDeposit");
+    }
+  });
+  it("makes no check where there is no minimum, or it cannot be read: the builder still checks the claim", async () => {
+    for (const minimum of [undefined, async () => null, async () => { throw new Error("down"); }]) {
+      const t = setup({ minimum, txs: [final([leg({ kind: "deposit", legId: depositIdOf(PARTY, "ref-1") }, WCC)])] });
+      await t.move.start(input);
+      expect(t.canton.calls).toContain("allocateDeposit");
+    }
+  });
+  it("is not asked again for a deposit that was already started: a resumed record never fails on a later minimum", async () => {
+    const store = memoryStore();
+    keep(store, { input: { kind: "deposit", asset: WCC, amount: "1" }, stage: "allocated" });
+    let asked = 0;
+    const t = setup({ store, minimum: async () => { asked++; return ten("5"); } });
+    await t.move.resume("ref-1");
+    await t.move.proceed();
+    expect(asked).toBe(0);
+  });
+  it("does not apply to a withdrawal or to another token's deposit", async () => {
+    let asked = 0;
+    const t = setup({ minimum: async () => { asked++; return ten("5"); }, custody: async () => ({ amount: 100n * 10n ** 10n, decimals: 10 }), txs: [final([leg({ kind: "withdrawal", account: ME, amount: String(ten("1")) }, WCC)])] });
+    expect(await t.move.start({ kind: "withdraw", asset: WCC, amount: "1" })).toMatchObject({ phase: "final" });
+    expect(asked).toBe(0);
+  });
+});
+
+describe("explorerMinimum", () => {
+  const ADMIN = "admin::1220" + "00".repeat(32);
+  const answer = (minimums: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ minimums }), { status: 200, headers: { "content-type": "application/json" } })));
+  afterEach(() => vi.unstubAllGlobals());
+  it("gives the floor of the instrument's admin in 10-decimal units, and null for another admin", async () => {
+    answer([{ instrumentAdmin: ADMIN, floor: "1.118016", readAt: null }]);
+    expect(await explorerMinimum({ admin: ADMIN, id: "Amulet" })).toBe(11_180_160_000n);
+    expect(await explorerMinimum({ admin: "other::1220", id: "Amulet" })).toBeNull();
+  });
+  it("gives null for a floor that is not decimal text, or an answer with no list", async () => {
+    answer([{ instrumentAdmin: ADMIN, floor: "lots", readAt: null }]);
+    expect(await explorerMinimum({ admin: ADMIN, id: "Amulet" })).toBeNull();
+    answer(undefined);
+    expect(await explorerMinimum({ admin: ADMIN, id: "Amulet" })).toBeNull();
   });
 });
