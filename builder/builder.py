@@ -4,6 +4,8 @@
   builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>]
   builder.py run [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
                  [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--timeout-no-blame-limit 3]
+                 [--expiring-instrument <admin>]... [--custody-floor-days 30] [--custody-due-days 7] [--custody-alert-days 3] [--max-transfer-inputs 50]
+  builder.py custody-clear dry-run|run
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
 side, and builds the block again without any transaction whose leg has none. Only then does it prove the block and
@@ -17,6 +19,7 @@ back too, where it had moved). One JSON line on stdout says which, whatever the 
 import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, http.server, ipaddress, itertools, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 from pathlib import Path
 
 from websockets.sync.client import connect
@@ -123,6 +126,11 @@ class Config:
     hosting_auth_file: str = ""       # --hosting-token-file (CZE_HOSTING_TOKEN_FILE): a file with the bearer token the hosting lookup is made with, read again for each lookup; empty: the ledger token
     blame: object = None              # the producer's PartyBlame (the parties held back after a confirmation timeout); None outside a producer
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
+    expiring: tuple = ()              # --expiring-instrument ADMIN (repeatable): the admins whose instruments run out (Canton Coin): the floor, the inputs and the custody check apply to them. Empty: none, and the builder is as it was
+    custody_floor_days: float = 30    # --custody-floor-days: days of holding life a deposit must have, and what a withdrawal leaves is zero or at least this
+    custody_due_days: float = 7       # --custody-due-days: a holding with less life left shows "due" in the status
+    custody_alert_days: float = 3     # --custody-alert-days: ... and "alert" with less than this
+    max_transfer_inputs: int = 50     # --max-transfer-inputs: the most inputs one transfer takes (the open round's maxNumInputs is the other limit)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -488,6 +496,80 @@ def context_disclosed(items) -> list:
     return found
 
 
+ROUNDS_PATH = "/open-and-issuing-mining-rounds"   # under an expiring instrument's registry URL (for Canton Coin the validator's scan proxy): the open rounds
+ROUNDS_MAX_BODY = 64 * 1024   # the most the builder reads of that answer (about 14 KB today)
+MICROS_PER_DAY = 86_400 * 1_000_000
+AMULET = "#splice-amulet:Splice.Amulet:Amulet"   # the Canton Coin contract a Holding view is on: its created round and rate, where the view's meta has none
+
+
+@dataclass(frozen=True)
+class Rounds:
+    """What the open rounds say, for the rules of an instrument whose holdings run out: the newest round's number, its holding fee per round in coin
+    (the round's rate in USD over its price), how long a round lasts, the fewest inputs a transfer may take, and whether any create, transfer or
+    lock-holder fee is above zero."""
+    number: int
+    rate: Fraction
+    tick: int
+    max_inputs: int
+    fee: bool
+
+    def per_day(self) -> Fraction:
+        return Fraction(MICROS_PER_DAY, self.tick)
+
+    def floor(self, days) -> int:
+        """`days` of holding life at this rate, in base units, rounded up to a whole one."""
+        return math.ceil(Fraction(days) * self.per_day() * self.rate * UNIT)
+
+
+DECIMAL_TEXT = re.compile(r"-?[0-9]{1,28}(\.[0-9]{1,20})?")   # what a registry's or a holding's amount may be: no exponent (1e999999999 would take for ever), no NaN, no infinity
+
+
+def decimal(x) -> Fraction:
+    """The number in a registry's answer: text (or a whole JSON number) that is a plain decimal. A ValueError for anything else."""
+    if isinstance(x, bool) or not isinstance(x, (str, int)) or DECIMAL_TEXT.fullmatch(str(x)) is None:
+        raise ValueError("not a decimal")
+    return Fraction(str(x))
+
+
+def positive(x, what: str) -> Fraction:
+    value = decimal(x)
+    if value <= 0:
+        raise ValueError(f"{what} is zero or less")
+    return value
+
+
+def whole(x, what: str, least: int = 0) -> int:
+    value = decimal(x)
+    if value.denominator != 1 or value < least:
+        raise ValueError(f"{what} is not a whole number of {least} or more")
+    return int(value)
+
+
+def parse_rounds(doc) -> Rounds:
+    """The `Rounds` of the answer of GET <registry>/open-and-issuing-mining-rounds (the open rounds' `transferConfigUsd` is in US dollars: coin is dollars
+    over the round's `amuletPrice`). The newest open round gives the rate; the fewest `maxNumInputs` and any fee are over all the open rounds. A rate, price,
+    tick or input limit of zero or less in any of them is a ValueError: the round is unreadable. So is anything not shaped as the answer is."""
+    rows = doc.get("open_mining_rounds") if isinstance(doc, dict) else None
+    rows = list(rows.values()) if isinstance(rows, dict) else rows
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("no open round")
+    found = []
+    for row in rows:
+        contract = row.get("contract", row) if isinstance(row, dict) else None
+        payload = contract.get("payload") if isinstance(contract, dict) else None
+        config = payload["transferConfigUsd"]
+        number = whole(payload["round"]["number"], "the round number")
+        price, usd = positive(payload["amuletPrice"], "the amulet price"), positive(config["holdingFee"]["rate"], "the holding fee rate")
+        tick = whole(payload["tickDuration"]["microseconds"], "the tick", 1)
+        inputs = whole(config["maxNumInputs"], "maxNumInputs", 1)
+        steps = config["transferFee"].get("steps") or []
+        rates = [config["createFee"]["fee"], config["lockHolderFee"]["fee"], config["transferFee"]["initialRate"],
+                 *((step.get("_2") if isinstance(step, dict) else step[1]) for step in steps)]
+        found.append((number, usd / price, tick, inputs, any(decimal(r) > 0 for r in rates)))
+    number, rate, tick, _, _ = max(found, key=lambda f: f[0])
+    return Rounds(number, rate, tick, min(f[3] for f in found), any(f[4] for f in found))
+
+
 class ChoiceContexts:
     """What the token registries (`--registry ADMIN=URL`) say a leg's choice needs: the choice context, and the contracts it names, which go with
     the Advance as disclosed contracts. The registry is trusted for nothing (as for `twin_registry_reader`): a request is bounded by `deadline` seconds, by
@@ -500,6 +582,7 @@ class ChoiceContexts:
                  budget: float | None = None):
         self.registries, self.tokens, self.timeout, self.deadline, self.backoff = registries, tokens or {}, timeout, deadline, backoff
         self.budget, self.spent, self.seen, self.noted = deadline if budget is None else budget, {}, {}, set()   # spent: registry URL -> seconds
+        self.parsed: dict = {}   # instrument admin -> its Rounds, or the Unreadable its read ended in
 
     def wants(self, admin: str) -> bool:
         """Whether the registry of this instrument admin is one the builder asks."""
@@ -535,8 +618,23 @@ class ChoiceContexts:
             raise NoCantonSide("the token registry gave an answer that is not a choice context") from e
         return (context if context["values"] else None), disclosed
 
-    def ask(self, admin: str, path: str, payload: dict, identity: dict | None = None):
-        """The registry's answer to this request; `identity` (the payload by default) tells which requests are the same one."""
+    def rounds(self, admin: str) -> Rounds:
+        """The open rounds of this instrument's registry (ROUNDS_PATH, with the registry's token), read and checked once for the block. The answer is size-capped
+        and untrusted: one that cannot be read or used (a rate, price or tick of zero or less too) is Unreadable, and the legs that need it wait."""
+        if admin not in self.parsed:
+            try:
+                self.parsed[admin] = parse_rounds(self.ask(admin, ROUNDS_PATH, None, method="GET", max_body=ROUNDS_MAX_BODY))
+            except NoCantonSide as e:
+                self.parsed[admin] = Unreadable(f"Canton Coin's open round cannot be read: {e.args[0] if e.args else 'no answer'}")
+            except (ValueError, TypeError, LookupError, AttributeError, ArithmeticError, RecursionError) as e:
+                self.parsed[admin] = Unreadable(f"Canton Coin's open round cannot be used ({type(e).__name__}: {bounded_text(e)})")
+        got = self.parsed[admin]
+        if isinstance(got, Unreadable):
+            raise Unreadable(*got.args)
+        return got
+
+    def ask(self, admin: str, path: str, payload: "dict | None", identity: dict | None = None, method: str = "POST", max_body: int = CONTEXT_MAX_BODY):
+        """The registry's answer to this request (a GET has no payload); `identity` (the payload by default) tells which requests are the same one."""
         base = self.registries[admin]
         key = (base, path, json.dumps(payload if identity is None else identity, sort_keys=True))
         if key in self.seen:
@@ -547,12 +645,12 @@ class ChoiceContexts:
         limit = min(self.deadline, self.budget - self.spent.get(base, 0.0))
         if limit <= 0:   # this registry's own time is used: its remaining legs are left out for this block only (it is not marked down; it answered what it was asked)
             raise NoCantonSide(f"the token registry cannot be read: the block's {self.budget:g} s for it are used")
-        headers = {"content-type": "application/json"}
+        headers = {"content-type": "application/json"} if method == "POST" else {}
         if self.tokens.get(admin):
             headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
         started = time.monotonic()
         try:
-            self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
+            self.seen[key] = json.loads(bounded_fetch(base, method, path, limit, self.timeout, max_body, json.dumps(payload).encode() if method == "POST" else None, headers),
                                         parse_constant=refuse_constant)
         except _RegistryStatus as e:
             raise NoCantonSide(f"the token registry answered HTTP {e.args[0]}") from e
@@ -981,17 +1079,19 @@ class Ledger:
         """The builder, then the parties given with --read-as."""
         return [self.cfg.party, *(p for p in self.cfg.read_as if p != self.cfg.party)]
 
-    def _created(self, identifier_filter: dict) -> list:
+    def _created(self, identifier_filter: dict, offset: int | None = None) -> list:
         """The created events of the active contracts the builder can see that match the filter. Read LIST_PAGE at a time, so that a list anyone can
         make long is never refused for its length: every page at the ledger end the first was read at (the participant refuses a page token
-        used with any other offset than the one the first request named). The whole read, the ledger end included, may take LIST_TOTAL seconds."""
+        used with any other offset than the one the first request named). The whole read, the ledger end included, may take LIST_TOTAL seconds.
+        With an `offset` the list is as of that offset, and the ledger end is not read."""
         deadline = time.monotonic() + LIST_TOTAL
         left = lambda: deadline - time.monotonic()
         if left() <= 0:
             raise TimeoutError(f"the list took longer than {LIST_TOTAL} s")
-        request = urllib.request.Request(self.cfg.ledger_url + "/v2/state/ledger-end", headers=self.auth)
-        with urllib.request.urlopen(request, timeout=min(LIST_TIMEOUT, left())) as r:
-            offset = json.load(r)["offset"]
+        if offset is None:
+            request = urllib.request.Request(self.cfg.ledger_url + "/v2/state/ledger-end", headers=self.auth)
+            with urllib.request.urlopen(request, timeout=min(LIST_TIMEOUT, left())) as r:
+                offset = json.load(r)["offset"]
         filters = {p: {"cumulative": [{"identifierFilter": identifier_filter}]} for p in self.readers()}
         body = {"eventFormat": {"filtersByParty": filters, "verbose": False}, "activeAtOffset": offset, "maxPageSize": LIST_PAGE}
         found = []
@@ -1019,12 +1119,12 @@ class Ledger:
         flt = {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}
         return [{"contractId": e["contractId"], **e["createArgument"]} for e in self._created(flt)]
 
-    def interface_views(self, interface: str) -> list:
-        """(contract id, view) of the active contracts of a token standard interface that the builder can see; the view is
-        None if the participant shows none."""
+    def interface_views(self, interface: str, offset: int | None = None) -> list:
+        """(contract id, view) of the active contracts of a token standard interface that the builder can see (as of `offset`, the ledger end by
+        default); the view is None if the participant shows none."""
         flt = {"InterfaceFilter": {"value": {"interfaceId": interface, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
         found = []
-        for e in self._created(flt):
+        for e in self._created(flt, offset):
             views = [v["viewValue"] for v in e.get("interfaceViews") or [] if v.get("viewStatus", {}).get("code", 0) == 0 and v.get("viewValue")]
             found.append((e["contractId"], views[0] if views else None))
         return found
@@ -1034,9 +1134,10 @@ class Ledger:
         specification (executor, deadlines, the transfer leg), or None if the participant shows no view of it."""
         return {cid: view["allocation"] if view else None for cid, view in self.interface_views(ALLOCATION)}
 
-    def active_holdings(self) -> list:
-        """The token standard's holdings that the builder can see: each one's contract id and view (owner, instrument, amount, lock)."""
-        return [{"contractId": cid, **view} for cid, view in self.interface_views(HOLDING) if view]
+    def active_holdings(self, offset: int | None = None) -> list:
+        """The token standard's holdings that the builder can see (as of `offset`, the ledger end by default): each one's contract id and view (owner,
+        instrument, amount, lock, meta)."""
+        return [{"contractId": cid, **view} for cid, view in self.interface_views(HOLDING, offset) if view]
 
     def head(self) -> dict:
         # Parties given with --read-as may let the builder see other builders' chains; only the ones it builds count.
@@ -1778,12 +1879,331 @@ class PartyBlame:
             self.narrow(rest, self.clock())
 
 
+# ---- an instrument whose holdings run out (Canton Coin) --------------------------------------------------------------------------------
+# Canton archives a holding once its built-up holding fee reaches its amount, and custody then falls below the wrapped supply. For the instruments named
+# with --expiring-instrument: a deposit must have `custody_floor_days` of holding life (the floor), a withdrawal leaves custody at zero or at least the
+# floor and takes its inputs nearest expiry first, and after every committed Canton Coin withdrawal custody is checked (README.md, "Expiring instruments").
+CUSTODY_CHECK_FILE = "custody-check.json"   # in the work folder: a Canton Coin withdrawal's check, from before its Advance goes out until the check has run
+CUSTODY_STOP_FILE = "custody-stop.json"     # in the work folder: while it exists, Canton Coin withdrawals are left out (`builder.py custody-clear` removes it)
+CUSTODY_ROWS_SECONDS = 600                  # how often the status file's custody rows are read again
+CUSTODY_STOPPED = "Canton Coin withdrawals are stopped: the bridge's custody check found a difference. Nothing was burnt."
+CUSTODY_FEE = "Canton Coin charges a create, transfer or lock fee, which this builder does not price."
+
+
+def meta_text(view: dict, name: str):
+    """A value of a Holding view's meta, by its key or by its key after a prefix and a slash; None when it has none."""
+    values = (view.get("meta") or {}).get("values")
+    for key, value in (values.items() if isinstance(values, dict) else ()):
+        if isinstance(key, str) and isinstance(value, str) and (key == name or key.endswith("/" + name)):
+            return value
+    return None
+
+
+def holding_lives(holdings: list, amulets) -> dict:
+    """{contract id: (the round it was made in, its holding fee per round)} for each holding: from the view's meta, and for one whose view has neither
+    value from the `Splice.Amulet:Amulet` contract (`amulets()` reads those once: {contract id: create arguments}). Unreadable when a holding has neither."""
+    found, missing = {}, []
+    for h in holdings:
+        try:
+            found[h["contractId"]] = (whole(meta_text(h, "created-in-round"), "the round"), positive(meta_text(h, "rate-per-round"), "the rate"))
+        except (TypeError, ValueError):
+            missing.append(h["contractId"])
+    if missing:
+        read = amulets()
+        for cid in missing:
+            try:
+                amount = read[cid]["amount"]
+                found[cid] = (whole(amount["createdAt"]["number"], "the round"), positive(amount["ratePerRound"]["rate"], "the rate"))
+            except (LookupError, TypeError, ValueError):
+                raise Unreadable("the life of a Canton Coin holding cannot be read") from None
+    return found
+
+
+def expiry_round(base: int, created: int, rate: Fraction) -> int:
+    """The round from which Canton may archive a holding of `base` units: the one it was made in plus the rounds its holding fee takes to reach its amount."""
+    return created + math.ceil(Fraction(base, UNIT) / rate)
+
+
+def custody_inputs(held: list, need: int, floor: int, cap: int) -> tuple:
+    """The holdings a withdrawal of `need` takes, as (contract ids, None), or (None, why). `held` is [(contract id, amount, expiry round)] of the usable ones.
+    The change and what custody keeps must each be zero or at least `floor`; at most `cap` inputs. First the `cap` nearest to expiry (ties: the larger, then the
+    lower id) when they cover it. Else the fewest, largest first (more of them until the change is right), and the free slots filled nearest expiry first
+    while the change stays zero or at least the floor. `why` is ("left", the amount that would be left) or ("many", the most `cap` holdings give)."""
+    good = lambda x: x == 0 or x >= floor
+    total = sum(h[1] for h in held)
+    if not good(total - need):
+        return None, ("left", total - need)
+    near = sorted(held, key=lambda h: (h[2], -h[1], h[0]))
+    first = near[:cap]
+    got = sum(h[1] for h in first)
+    if got >= need and good(got - need):
+        return [h[0] for h in first], None
+    taken, got = [], 0
+    for h in sorted(held, key=lambda h: (-h[1], h[0]))[:cap]:
+        taken.append(h)
+        got += h[1]
+        if got >= need and good(got - need):
+            break
+    else:
+        return None, (("many", got) if got < need else ("left", got - need))
+    change, chosen = got - need, {h[0] for h in taken}
+    for h in near:
+        if len(taken) >= cap or not good(change + h[1]):
+            break
+        if h[0] not in chosen:
+            taken.append(h)
+            change += h[1]
+    return [h[0] for h in taken], None
+
+
+def custody_reason(why: tuple, total: int, floor: int, cap: int) -> Said:
+    kind, amount = why
+    if kind == "many":
+        return Said(f"Covering this withdrawal takes more than {cap} Canton Coin holdings. The most one withdrawal can take now is {canton_amount(amount)} CC.")
+    most = f"Withdraw at most {canton_amount(total - floor)} CC, or exactly" if total > floor else "Withdraw exactly"
+    return Said(f"This withdrawal would leave {canton_amount(amount)} CC of Canton Coin in the bridge, under its minimum of {canton_amount(floor)} CC. "
+                f"{most} {canton_amount(total)} CC (all that is left).")
+
+
+class ExpiryRules:
+    """The rules of the instruments named with --expiring-instrument, for one block (or one leg check): the settings, and the open rounds through `reader`
+    (a ChoiceContexts, which reads them from the instrument's own registry with its token and keeps them for the block)."""
+
+    def __init__(self, cfg: "Config", reader: "ChoiceContexts"):
+        self.cfg, self.reader = cfg, reader
+
+    def covers(self, admin: str) -> bool:
+        return admin in self.cfg.expiring
+
+    def rounds(self, admin: str) -> Rounds:
+        return self.reader.rounds(admin)
+
+    def floor(self, admin: str) -> int:
+        return self.rounds(admin).floor(self.cfg.custody_floor_days)
+
+    def cap(self, admin: str) -> int:
+        return min(self.cfg.max_transfer_inputs, self.rounds(admin).max_inputs)
+
+    def held_up(self) -> "Said | None":
+        """Why a Canton Coin withdrawal waits or is refused whatever it is: a stop, or a custody check that has not run yet."""
+        work = Path(self.cfg.work_dir)
+        if (work / CUSTODY_STOP_FILE).exists():
+            return Said(CUSTODY_STOPPED)
+        if (work / CUSTODY_CHECK_FILE).exists():
+            return Waiting("the custody check of the last Canton Coin withdrawal has not run yet")
+        return None
+
+
+def deposit_floor_problem(canton: "Canton", admin: str, amount: int) -> "Said | None":
+    """Why a deposit request of this amount is not taken: it is under the floor. Unreadable while the round cannot be read."""
+    if canton.expiry is None or not canton.expiry.covers(admin):
+        return None
+    floor = canton.expiry.floor(admin)
+    return Said(f"Canton Coin deposits must be at least {canton_amount(floor)} CC.") if amount < floor else None
+
+
+def expiring_inputs(canton: "Canton", leg: "LegEvent", admin: str, usable: list) -> list:
+    """The inputs of a withdrawal of an expiring instrument (`custody_inputs`), or a NoCantonSide that says why there are none. A holding at or past its
+    expiry round (at most the newest open round plus one) is never an input: Canton may archive it before the block commits."""
+    rules = canton.expiry
+    stopped = rules.held_up()
+    if stopped is not None:
+        raise NoCantonSide(stopped)
+    rounds = rules.rounds(admin)
+    if rounds.fee:
+        raise NoCantonSide(Said(CUSTODY_FEE))
+    lives = canton.lives(usable)
+    held = [(h["contractId"], base_units(h["amount"]), expiry_round(base_units(h["amount"]), *lives[h["contractId"]])) for h in usable]
+    held = [h for h in held if h[2] > rounds.number + 1]
+    total, floor, cap = sum(h[1] for h in held), rules.floor(admin), rules.cap(admin)
+    if total < leg.amount:
+        raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    inputs, why = custody_inputs(held, leg.amount, floor, cap)
+    if why is not None:
+        raise NoCantonSide(custody_reason(why, total, floor, cap))
+    return inputs
+
+
+def write_json_file(path: Path, value: dict) -> None:
+    """Atomic and on disk, the name too, as save_unresolved writes its record."""
+    tmp = path.with_name(path.name + ".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, "w") as f:
+        f.write(json.dumps(value))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def custody_plan(canton: "Canton", events: list, legs: list) -> list:
+    """What the custody check needs of a block: for each expiring instrument it withdraws, [{"instrument", "withdrawn", "deposits"}] in base units, the
+    deposits being the block's DepositLegs of it. A ClaimLeg adds no holding, and the other legs cannot move these holdings (README.md, "Expiring instruments")."""
+    rules = canton.expiry
+    withdrawn: dict = {}
+    deposits: dict = {}
+    for event, leg in zip(events, legs) if rules is not None else ():
+        if leg.get("tag") not in ("WithdrawalLeg", "DepositLeg"):
+            continue
+        instrument = canton.token(event)["instrumentId"]
+        if rules.covers(instrument["admin"]):
+            key = (instrument["admin"], instrument["id"])
+            into = withdrawn if leg["tag"] == "WithdrawalLeg" else deposits
+            into[key] = into.get(key, 0) + event.amount
+    return [{"instrument": {"admin": a, "id": i}, "withdrawn": n, "deposits": deposits.get((a, i), 0)} for (a, i), n in withdrawn.items()]
+
+
+def custody_check_path(cfg: Config) -> Path:
+    return Path(cfg.work_dir) / CUSTODY_CHECK_FILE
+
+
+def custody_stop_path(cfg: Config) -> Path:
+    return Path(cfg.work_dir) / CUSTODY_STOP_FILE
+
+
+def load_custody_check(cfg: Config) -> dict | None:
+    """The kept custody check, or None when there is none. One that cannot be read or is not one is a BuilderError, and stays: withdrawals wait."""
+    try:
+        found = json.loads(custody_check_path(cfg).read_text())
+        if isinstance(found.get("commandId"), str) and type(found.get("begin")) is int and isinstance(found.get("gateway"), str) and isinstance(found.get("plan"), list):
+            return found
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, AttributeError) as e:
+        raise BuilderError(f"cannot read {custody_check_path(cfg)}: {e}") from e
+    raise BuilderError(f"{custody_check_path(cfg)} is not a custody check")
+
+
+def read_custody_stop(cfg: Config) -> dict | None:
+    """The stop that keeps Canton Coin withdrawals out, or None. A stop file that cannot be read is a stop all the same."""
+    path = custody_stop_path(cfg)
+    if not path.exists():
+        return None
+    try:
+        found = json.loads(path.read_text())
+        return found if isinstance(found, dict) else {"reason": "the stop file is not an object"}
+    except (OSError, ValueError):
+        return {"reason": "the stop file cannot be read"}
+
+
+def custody_sum(holdings: list, gateway: str, instrument: dict) -> int:
+    """The gateway's custody of the instrument: the sum of its holdings' amounts (the Holding view's amount, as the explorer and the watch measure it)."""
+    total = 0
+    for h in holdings:
+        if h["owner"] == gateway and h["instrumentId"] == instrument:
+            units = base_units(h["amount"])
+            if units is None:
+                raise ValueError("a holding's amount is not an amount")
+            total += units
+    return total
+
+
+def stop_custody(cfg: Config, rec: dict, update_id, reason: str, plan: dict | None = None, before: int | None = None, after: int | None = None) -> str:
+    """Writes the stop file (atomically), then ends the check's record: Canton Coin withdrawals are left out until the operator clears the stop."""
+    amount = lambda n: None if n is None else canton_amount(n)
+    stop = {"reason": reason, "block": rec.get("number"), "updateId": update_id, "commandId": rec["commandId"],
+            "instrument": plan and plan["instrument"], "withdrawn": amount(plan and plan["withdrawn"]), "deposits": amount(plan and plan["deposits"]),
+            "custodyBefore": amount(before), "custodyAfter": amount(after), "at": iso(time.time())}
+    write_json_file(custody_stop_path(cfg), stop)
+    custody_check_path(cfg).unlink(missing_ok=True)
+    print(f"custody check: {json.dumps(stop)}", file=sys.stderr, flush=True)
+    return "stopped"
+
+
+def run_custody_check(cfg: Config, rec: dict, offset: int, update_id=None) -> str:
+    """The check of a committed Advance, at its completion `offset`: for each expiring instrument it withdrew, the gateway's custody read at the offset before
+    it and at it must differ by exactly what the block took out less what its deposits put in. "ok", or "stopped" (a difference, or a read the participant
+    refused: it fails closed), or "pending" (a read that failed in a way that may clear by itself: the record stays, and Canton Coin withdrawals wait)."""
+    ledger = Ledger(cfg)
+    try:
+        for plan in rec["plan"]:
+            before = custody_sum(ledger.active_holdings(offset - 1), rec["gateway"], plan["instrument"])
+            after = custody_sum(ledger.active_holdings(offset), rec["gateway"], plan["instrument"])
+            if after != before - plan["withdrawn"] + plan["deposits"]:
+                return stop_custody(cfg, rec, update_id, "custody did not fall by exactly the amount withdrawn (less the deposits of the block)", plan, before, after)
+    except urllib.error.HTTPError as e:
+        e.close()
+        if e.code >= 500 or e.code in (401, 403, 408, 429):
+            return "pending"
+        return stop_custody(cfg, rec, update_id, f"the participant refused to show the holdings at offset {offset - 1} or {offset} (HTTP {e.code})")
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        return "pending"
+    custody_check_path(cfg).unlink(missing_ok=True)
+    return "ok"
+
+
+def settle_custody(cfg: Config) -> str | None:
+    """A kept custody check whose Advance is settled now (a restart, or a read that failed after the commit): the command's completion, found by its id from
+    the ledger end before the submit, says what to do: committed, check at its offset; failed or none, the command never committed and the record is dropped.
+    None when there is no record; "pending" when the completion cannot be read."""
+    rec = load_custody_check(cfg)
+    if rec is None:
+        return None
+    try:
+        found = Ledger(cfg).completion(rec["commandId"], rec["begin"])
+    except (OSError, ValueError, http.client.HTTPException):
+        return "pending"
+    if found is None or not found["committed"]:
+        custody_check_path(cfg).unlink(missing_ok=True)
+        return "dropped"
+    if type(found.get("completionOffset")) is not int:
+        return stop_custody(cfg, rec, found.get("updateId"), "the offset of the committed Advance is not known")
+    return run_custody_check(cfg, rec, found["completionOffset"], found.get("updateId"))
+
+
+def check_after_commit(cfg: Config, command_id: str, offset, update_id) -> str:
+    """The custody check of the Advance that has just committed. It never fails the commit: what cannot be done now stays in the kept record, which the
+    next step of the loop (or the next start) finds again by the command's id."""
+    try:
+        rec = load_custody_check(cfg)
+        if rec is None or rec["commandId"] != command_id:
+            return "none"
+        return run_custody_check(cfg, rec, offset, update_id) if type(offset) is int else settle_custody(cfg) or "none"
+    except Exception as e:
+        print(f"the custody check of command {command_id} could not run now: {type(e).__name__}: {bounded_text(e)}", file=sys.stderr, flush=True)
+        return "pending"
+
+
+def custody_row(cfg: Config, rounds: Rounds, holdings: list, lives: dict, now: float) -> dict:
+    """The status file's custody row of one instrument (the fields PR readers rely on: README.md, "The status file"). `holdings` are the gateway's."""
+    shown = []
+    for h in holdings:
+        units = base_units(h["amount"])
+        expires = expiry_round(units, *lives[h["contractId"]])
+        left = Fraction(expires - rounds.number) / rounds.per_day()
+        level = "expiring" if expires <= rounds.number + 1 else "alert" if left < Fraction(cfg.custody_alert_days) else "due" if left < Fraction(cfg.custody_due_days) else "ok"
+        shown.append({"contractId": h["contractId"], "amount": canton_amount(units), "expiresAt": iso(now + (expires - rounds.number) * rounds.tick / 1_000_000),
+                      "daysLeft": round(float(left), 4), "level": level})
+    shown.sort(key=lambda r: (r["daysLeft"], r["contractId"]))
+    return {"readAt": iso(now), "floor": canton_amount(rounds.floor(cfg.custody_floor_days)), "floorDays": cfg.custody_floor_days, "dueDays": cfg.custody_due_days,
+            "alertDays": cfg.custody_alert_days, "maxInputs": min(cfg.max_transfer_inputs, rounds.max_inputs), "holdings": shown}
+
+
+def custody_rows(cfg: Config, now: float) -> dict:
+    """{instrument admin: its custody row}: one read of the chain, one of the holdings, and one of the open rounds of each registry."""
+    ledger = Ledger(cfg)
+    gateway = ledger.head()["gateway"]
+    holdings = ledger.active_holdings()
+    reader = ChoiceContexts(cfg.registries, cfg.registry_tokens)
+    out = {}
+    for admin in cfg.expiring:
+        mine = [h for h in holdings if h["owner"] == gateway and h["instrumentId"]["admin"] == admin and base_units(h["amount"]) is not None]
+        lives = holding_lives(mine, lambda: {c["contractId"]: c for c in ledger.active(AMULET)})
+        out[admin] = custody_row(cfg, reader.rounds(admin), mine, lives, now)
+    return out
+
+
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
     def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None, lock_parts=None, derived_ids: bool = True, contexts=None, lists: dict | None = None,
-                 settle_margin: timedelta = SETTLE_MARGIN, hosting: "Hosting | None" = None, blame: "PartyBlame | None" = None):
+                 settle_margin: timedelta = SETTLE_MARGIN, hosting: "Hosting | None" = None, blame: "PartyBlame | None" = None, expiry: "ExpiryRules | None" = None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
+        self.expiry = expiry   # the rules of the instruments whose holdings run out (--expiring-instrument), or None: no instrument has them
         self.hosting, self.blame = hosting, blame   # who may confirm (`Hosting`, None: nobody is asked) and who is held back after a confirmation timeout (`PartyBlame`, None: nobody)
         self.leg_parties: dict = {}   # id of a leg (the dict) -> the parties, other than the chain's own, whose participants must confirm it
         self.settle_margin = settle_margin   # how long before its settle-before time a deposit's allocation is no longer used
@@ -1942,6 +2362,13 @@ class Canton:
     @property
     def holdings(self): return self.listed("holdings", self.ledger.active_holdings)
 
+    @property
+    def amulets(self): return self.listed("amulets", lambda: self.ledger.active(AMULET))
+
+    def lives(self, holdings: list) -> dict:
+        """(created round, holding fee per round) of each holding (see `holding_lives`); Unreadable when one cannot be read."""
+        return holding_lives(holdings, lambda: {c["contractId"]: c for c in self.amulets})
+
     def token(self, leg: LegEvent) -> dict:
         found = [t for t in self.tokens if t["evmToken"] == leg.token and names_chain(t, self.chain, "gateway")]
         if not found:
@@ -2034,7 +2461,7 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
             return "its allocation is of another instrument than the token's"
         if base_units(transfer.get("amount")) != leg.amount:
             return "its allocation's amount is not the amount claimed"
-        return canton.party_problem(r["depositor"]) or allocation_in_use(r["allocation"], taken)
+        return deposit_floor_problem(canton, token["instrumentId"]["admin"], leg.amount) or canton.party_problem(r["depositor"]) or allocation_in_use(r["allocation"], taken)
 
     request = first_fit(requests, problem, "")
     canton.deadlines[request["contractId"]] = datetime.fromisoformat(canton.allocations[request["allocation"]]["settlement"]["settleBefore"])
@@ -2083,15 +2510,18 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
         raise NoCantonSide(found)
     usable = [h for h in canton.holdings if h["owner"] == chain["gateway"] and h["instrumentId"] == token["instrumentId"] and not h.get("lock")]
     usable = [h for h in usable if base_units(h["amount"]) is not None]   # whole base units: a sum is never rounded
-    usable.sort(key=lambda h: (-base_units(h["amount"]), h["contractId"]))
-    needed, inputs, total = leg.amount, [], 0
-    for h in usable:
-        if total >= needed:
-            break
-        inputs.append(h["contractId"])
-        total += base_units(h["amount"])
-    if total < needed:
-        raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    if canton.expiry is not None and canton.expiry.covers(instrument[0]):
+        inputs = expiring_inputs(canton, leg, instrument[0], usable)
+    else:
+        usable.sort(key=lambda h: (-base_units(h["amount"]), h["contractId"]))
+        needed, inputs, total = leg.amount, [], 0
+        for h in usable:
+            if total >= needed:
+                break
+            inputs.append(h["contractId"])
+            total += base_units(h["amount"])
+        if total < needed:
+            raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
     leg_out = {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
                                                  "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
     transfer = {"sender": chain["gateway"], "receiver": leg.party, "amount": canton_amount(leg.amount), "instrumentId": token["instrumentId"],
@@ -2167,6 +2597,8 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
         token = next((g for g in canton.tokens if g["contractId"] == t["gatewayToken"] and names_chain(g, chain, "gateway")), None)
         if token is None:
             return "the venue trade's token is not a token of this chain"
+        if canton.expiry is not None and canton.expiry.covers(token["instrumentId"]["admin"]):   # SettleTrade moves any amount: the bridge cannot check the floor on a trade
+            return Said("Canton Coin is not taken through venue trades yet: the bridge cannot check its minimum on a trade.")
         if canton.used is not None:
             try:
                 is_used = canton.used(t["claimId"])
@@ -2567,7 +2999,8 @@ def leg_check(cfg: Config, call: dict) -> dict:
             parent = "0x" + chain["headHash"]
             canton = Canton(ledger, chain, utcnow(), cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
                             lock_parts=twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None, derived_ids=not cfg.unlabelled_deposits,
-                            settle_margin=timedelta(seconds=cfg.settle_margin_seconds), hosting=cfg.hosting, blame=cfg.blame)
+                            settle_margin=timedelta(seconds=cfg.settle_margin_seconds), hosting=cfg.hosting, blame=cfg.blame,
+                            expiry=ExpiryRules(cfg, ChoiceContexts(cfg.registries, cfg.registry_tokens)) if cfg.expiring else None)   # the rules of a block, with no choice contexts asked
             legs, missing = match_legs(canton, events, limits=False)
     except (BuilderError, OSError, ValueError, http.client.HTTPException, TimeoutError) as e:
         return {"ok": True, "unknown": f"the legs could not be checked: {bounded_text(e)}"}
@@ -2828,6 +3261,7 @@ class Built:
     extra_gateways: list = field(default_factory=list)   # Advance's extraGateways: an entry (address, accountNodes, storageNodes, legs) for each registered gateway
     deposit_deadline: datetime | None = None   # the earliest settle-before time among the allocations the block's deposit legs use; None when it has none
     leg_parties: dict = field(default_factory=dict)   # transaction hash -> the parties, other than the chain's own, whose participants must confirm the legs it recorded
+    custody: list = field(default_factory=list)   # the custody check the block needs: [{"instrument", "withdrawn", "deposits"}] for each expiring instrument it withdraws
 
 
 @dataclass
@@ -2948,6 +3382,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     reuse: dict = {}   # the files of the pre-check of the whole block, when it passed (the prover's input is made once)
     work = Path(cfg.work_dir) / f"block-{n}"
     contexts = ChoiceContexts(cfg.registries, cfg.registry_tokens) if cfg.registries else None   # one for the block, like the twin registry's reader
+    expiry = ExpiryRules(cfg, contexts or ChoiceContexts(cfg.registries, cfg.registry_tokens)) if cfg.expiring else None   # reads the open rounds once for the block
     lock_parts = twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None   # one for the block: its answers and its time budget hold across rebuilds
     lists: dict = {}   # the lists read from Canton, one cache for the block: a list is read once however many times the block is built
     while True:
@@ -2968,7 +3403,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
                         lock_parts=lock_parts, derived_ids=not cfg.unlabelled_deposits, contexts=contexts, lists=lists,
-                        settle_margin=timedelta(seconds=cfg.settle_margin_seconds), hosting=cfg.hosting, blame=cfg.blame)
+                        settle_margin=timedelta(seconds=cfg.settle_margin_seconds), hosting=cfg.hosting, blame=cfg.blame, expiry=expiry)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -3047,6 +3482,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
                  disclosed=venue_disclosed(legs, canton), extra_gateways=extra, leg_parties={tx: sorted(ps) for tx, ps in leg_parties.items()},
+                 custody=custody_plan(canton, events, legs),
                  deposit_deadline=min((canton.deadlines[x["value"]["request"]] for x in legs if x.get("tag") == "DepositLeg"), default=None))
 
 
@@ -3182,6 +3618,8 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
         report["legParties"] = built.leg_parties
     # The ledger end before the submit: the command's own completion, whenever it comes, is after it.
     begin = Ledger(cfg).end()
+    if built.custody:   # on disk before the command is: whoever finds the commit afterwards (a restart too) runs the custody check, and until then Canton Coin withdrawals wait
+        write_json_file(custody_check_path(cfg), {"commandId": command_id, "begin": begin, "number": n, "hash": block_hash, "gateway": chain["gateway"], "plan": built.custody})
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
     # that makes the next start wait for the command instead of rewinding a block that may commit. Only a definite answer clears it.
     resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time(), "genesis": genesis_hash(reth),
@@ -3260,6 +3698,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             reported = reported or bool(found.get("reportedByParticipant"))
     if reason is not None:   # Canton refused the command (its own answer, or its failed completion), or it never reached the service: not committed
         clear_unresolved(cfg)    # a definite answer: the command cannot commit any more
+        custody_check_path(cfg).unlink(missing_ok=True)   # and nothing was taken out of custody: no check
         rewind_error = None
         try:
             reth.forkchoice(head, head, head)
@@ -3303,6 +3742,8 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
     clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
     if after_commit is not None:
         after_commit(reth)
+    if sub.built.custody:   # a Canton Coin withdrawal: custody must have fallen by exactly what it took out
+        report["custodyCheck"] = check_after_commit(cfg, command_id, report["completionOffset"], report["updateId"])
     if late:
         traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
         if traffic is not None:
@@ -3720,6 +4161,8 @@ class Producer:
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": max_in_flight,
                          "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "timeout_no_blame_limit": no_blame_limit, "test": test, "traffic_read": bool(cfg.traffic_url),
                          **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {}),
+                         **({"expiring_instruments": list(cfg.expiring), "custody_floor_days": cfg.custody_floor_days, "custody_due_days": cfg.custody_due_days,
+                             "custody_alert_days": cfg.custody_alert_days, "max_transfer_inputs": cfg.max_transfer_inputs} if cfg.expiring else {}),
                          **({"provers": [p.name for p in cfg.pool.provers], "prove_timeout_seconds": cfg.pool.timeout} if cfg.pool and cfg.pool.managed else {})}
         self.status_tick, self.status_stall = status_tick, status_stall
         self.status_lock = threading.Lock()   # the loop's and the ticker's writes of the status file never interleave
@@ -3758,10 +4201,43 @@ class Producer:
         self.reported_left = set()        # the left-out transactions the last "skipped" line named
         self.unresolved = None            # the block whose outcome was not known: {"number", "hash", "pairs"}
         self.lost: list = []              # transactions that could not be put back in reth's pool after such a block
+        self.custody: dict = {}           # instrument admin -> its custody row as last read (the status file's `custody`), for --expiring-instrument
+        self.custody_read = None          # when the rows were last read (or tried); None: not yet
+        self.custody_dirty = False        # a block with legs committed since: the rows are read again at the next step
+        self.custody_warned = False       # the "cannot read" line is printed once until a read works
         self.started = self.last_block_at = self.last_written = self.clock()
         self.committed = self.refused = self.unknown = self.failures = self.refusals_in_row = 0
         self.last_committed = self.last_error = None
         self.timed, self.prove_total, self.advance_total = 0, 0.0, 0.0
+
+    def custody_step(self) -> None:
+        """For --expiring-instrument. A kept custody check whose Advance is settled runs here (after a restart, or a read that failed after the commit),
+        and the status file's custody rows are read again when they are due. Nothing here fails the step."""
+        if not self.cfg.expiring or getattr(self, "sending", None) is not None:   # an Advance in its thread has its record on disk: its commit runs its own check
+            return
+        now = self.clock()
+        try:
+            if custody_check_path(self.cfg).exists() and settle_custody(self.cfg) in ("ok", "stopped", "dropped"):
+                self.custody_dirty = True
+            if self.custody_dirty or self.custody_read is None or now - self.custody_read >= CUSTODY_ROWS_SECONDS:
+                self.custody_read, self.custody_dirty = now, False
+                try:
+                    self.custody = custody_rows(self.cfg, now)
+                    self.custody_warned = False
+                except Exception:
+                    self.custody_read = now - CUSTODY_ROWS_SECONDS + 60   # tried again in a minute; the rows keep their old readAt, which the watch sees
+                    raise
+        except Exception as e:
+            if not self.custody_warned:
+                self.custody_warned = True
+                print(f"custody: {type(e).__name__}: {bounded_text(e)}", file=sys.stderr, flush=True)
+
+    def custody_status(self) -> dict:
+        """The status file's `custody`: a row for each expiring instrument (empty until the first read), with `stopped` read from the stop file now."""
+        stopped = read_custody_stop(self.cfg)
+        empty = {"readAt": None, "floor": None, "floorDays": self.cfg.custody_floor_days, "dueDays": self.cfg.custody_due_days, "alertDays": self.cfg.custody_alert_days,
+                 "maxInputs": None, "holdings": []}
+        return {admin: {**self.custody.get(admin, empty), "stopped": stopped} for admin in self.cfg.expiring}
 
     def emit(self, report: dict) -> None:
         try:
@@ -3876,6 +4352,7 @@ class Producer:
                     return
             if self.unresolved:
                 return self.settle_unknown()
+            self.custody_step()
             if saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
             if self.cfg.pool and self.cfg.pool.managed and not self.cfg.pool.any_up():   # every prover is down: nothing is cut until one is due to be tried again
@@ -4128,6 +4605,7 @@ class Producer:
             self.blame.answered(carried)   # the parties of its legs that were on trial are cleared
         if result["committed"]:
             self.committed += 1
+            self.custody_dirty = self.custody_dirty or bool(result.get("legs"))   # a leg may have moved custody: the status rows are read again
             self.refusals_in_row = 0
             self.previous_kept = set()
             self.gateways_named = set()
@@ -4246,6 +4724,7 @@ class Producer:
                                                             "commandId": self.unresolved.get("commandId"), "why": self.unresolved.get("why")},
                 "lostTransactions": self.lost,
                 "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total),
+                **({"custody": self.custody_status()} if self.cfg.expiring else {}),
                 **({"provers": pool_status} if (pool_status := self.cfg.pool.status() if self.cfg.pool else None) else {})}
 
     def write_status(self, state: str = "running", final: bool = False) -> None:
@@ -4463,6 +4942,7 @@ class Pipeline(Producer):
                     return
             if self.unresolved:
                 return self.settle_unknown()
+            self.custody_step()
             if self.back_pending:   # nothing is cut, submitted or cleared until the failed block's transactions are back in the pool
                 return self.finish_back()
             if self.unwind_pending:   # nothing is cut, submitted, sent again or cleared until reth is on `last` and its transactions are back in the pool
@@ -4974,7 +5454,8 @@ class Arguments(argparse.ArgumentParser):
 
 def parser() -> argparse.ArgumentParser:
     ap = Arguments(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["once", "run"])
+    ap.add_argument("command", choices=["once", "run", "custody-clear"])
+    ap.add_argument("mode", nargs="?", choices=["dry-run", "run"], help="custody-clear only: dry-run shows the stop it would clear, run clears it")
     ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
@@ -4983,6 +5464,13 @@ def parser() -> argparse.ArgumentParser:
                     help="the token registry (the root of its CIP-0056 off-ledger API; for Canton Coin the validator's scan proxy) of the instruments of the party ADMIN (repeatable, also CZE_TOKEN_REGISTRIES, comma separated): a deposit, withdrawal, payment or trade leg of such an instrument gets the registry's choice context, and the contracts it names are disclosed with the Advance. An instrument with no registry here gets none")
     ap.add_argument("--registry-token-file", action="append", default=[x for x in os.environ.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
                     help="a file with the bearer token that the registry of ADMIN wants (repeatable, also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated); sent to that registry only")
+    ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN",
+                    help="an instrument whose holdings run out (for Canton Coin its admin, the DSO party; repeatable) needs a --registry and --registry-token-file of its own, which the builder asks for the open rounds. A deposit of it must have "
+                         "--custody-floor-days of holding life, a withdrawal leaves zero or at least that in the bridge and takes its inputs nearest expiry first, and every withdrawal's effect on custody is checked. Default: none")
+    ap.add_argument("--custody-floor-days", type=float, default=30, metavar="DAYS", help="days of holding life, at the newest open round's rate, a deposit of an --expiring-instrument must have (default 30); a withdrawal leaves custody at zero or at least this much")
+    ap.add_argument("--custody-due-days", type=float, default=7, metavar="DAYS", help="a custody holding with less life than this left shows as due in the status file (default 7)")
+    ap.add_argument("--custody-alert-days", type=float, default=3, metavar="DAYS", help="... and as alert with less than this (default 3); alert < due < floor")
+    ap.add_argument("--max-transfer-inputs", type=int, default=50, metavar="N", help="the most holdings one transfer of an --expiring-instrument takes (default 50); the open round's maxNumInputs is the other limit")
     ap.add_argument("--party-token-file", metavar="FILE", default=os.environ.get("CZE_PARTY_TOKEN_FILE", ""),
                     help="no longer used (also CZE_PARTY_TOKEN_FILE): a lock's receiver is checked by its TwinAcceptance, not by a party lookup; the option is still accepted so that start scripts keep working")
     ap.add_argument("--hosted-on", action="append", default=[x for x in os.environ.get("CZE_HOSTED_ON", "").split(",") if x.strip()], metavar="PARTICIPANT_ID",
@@ -5067,10 +5555,48 @@ def precheck_setup(args) -> "pc.Precheck":
                        max_seconds=args.precheck_cut_seconds)
 
 
+def check_expiring(args, cfg: Config) -> None:
+    """The settings of --expiring-instrument: alert < due < floor (days), at least one input, and a registry and its token for each instrument, which the
+    builder asks for the open rounds. Nothing is checked when no instrument is named."""
+    if not args.expiring_instrument:
+        return
+    days = (args.custody_alert_days, args.custody_due_days, args.custody_floor_days)
+    if not all(math.isfinite(d) for d in days) or not 0 <= days[0] < days[1] < days[2]:
+        raise BuilderError("bad arguments: --custody-alert-days, --custody-due-days and --custody-floor-days must be numbers with alert < due < floor")
+    if args.max_transfer_inputs < 1:
+        raise BuilderError("bad arguments: --max-transfer-inputs must be at least 1")
+    for admin in args.expiring_instrument:
+        if not canton_party_text(admin):
+            raise BuilderError(f"bad arguments: --expiring-instrument must be an instrument admin party, not {admin!r}")
+        if admin not in cfg.registries or admin not in cfg.registry_tokens:
+            raise BuilderError(f"--expiring-instrument {admin} needs its token registry (--registry) and the registry's token (--registry-token-file): the builder asks it for the open rounds")
+    cfg.expiring = tuple(dict.fromkeys(args.expiring_instrument))
+    cfg.custody_alert_days, cfg.custody_due_days, cfg.custody_floor_days = days
+    cfg.max_transfer_inputs = args.max_transfer_inputs
+
+
+def custody_clear(mode: str | None) -> dict:
+    """`builder.py custody-clear dry-run|run`: shows the stop that keeps Canton Coin withdrawals out, and with `run` removes it (the operator, once the cause is known)."""
+    if mode is None:
+        raise BuilderError("bad arguments: custody-clear needs dry-run or run")
+    state = Path(os.environ.get("CZE_STATE_DIR", ROOT / "state"))
+    cfg = Config(ws_url="", engine_url="", jwt_secret=b"", ledger_url="", ledger_user="", ledger_token="", party="", fee_recipient="", genesis="",
+                 work_dir=os.environ.get("CZE_WORK_DIR", str(state / "builder")), make_input_cmd="", prove_cmd="")
+    stop = read_custody_stop(cfg)
+    if mode == "run" and stop is not None:
+        custody_stop_path(cfg).unlink(missing_ok=True)
+    return {"stopped": stop, "cleared": mode == "run" and stop is not None, "dryRun": mode == "dry-run"}
+
+
 def main() -> int:
     """Every way this can fail prints one JSON line and exits 1; a block Canton refused exits 2."""
     try:
         args = parser().parse_args()
+        if args.command == "custody-clear":
+            print(json.dumps(custody_clear(args.mode)))
+            return 0
+        if args.mode is not None:
+            raise BuilderError("bad arguments: dry-run and run are for custody-clear")
         if args.command == "run" and args.exclude:
             raise BuilderError("bad arguments: --exclude is for once; run leaves out the transactions Canton keeps refusing by itself")
         if args.exclude_cooldown_seconds < 0:
@@ -5121,6 +5647,7 @@ def main() -> int:
         if cfg.registries and args.unlabelled_deposits:
             raise BuilderError("--registry needs a package of 0.5.0 or later, which --unlabelled-deposits (a package before it) is not")
         cfg.registry_tokens = read_registry_tokens(args.registry_token_file, cfg.registries)
+        check_expiring(args, cfg)
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
@@ -5133,6 +5660,8 @@ def main() -> int:
             if args.command == "run":
                 return produce(cfg, args)
             recovered = recover_saved(cfg, wait=time.sleep)   # a block cut short earlier: its transactions go back to reth first
+            if cfg.expiring:
+                settle_custody(cfg)   # a Canton Coin withdrawal's custody check that was left (a restart in between): run now that its command is settled
             before = recovered["lostTransactions"] if recovered else []
             earlier = recovered.get("settled") if recovered else None   # what became of an earlier block whose Advance had no answer
             try:

@@ -425,6 +425,10 @@ class FakeLedger:
         self.redeems: list = []       # ... of the RedeemRequest contracts (a twin's release)
         self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
+        self.holdings_at: dict = {}   # offset -> the holdings it shows as of that offset (a read that names the offset); any other offset: `holdings`
+        self.refuse_offsets: set = set()   # a read of the holdings as of one of these offsets is refused (HTTP 400, as for a pruned offset)
+        self.holding_reads: list = []   # the activeAtOffset of each read of the holdings
+        self.amulets: list = []       # (contract id, create arguments) of the Splice.Amulet:Amulet contracts it shows
         self.twin_rules: list = []    # (contract id, create arguments) of the TwinRules contracts it shows; None: the template is refused
         self.get_failures: dict = {}  # path prefix -> an HTTP status that a GET of it answers
         self.no_acceptance_template = False   # a participant that has not uploaded twin package 0.2.0: a read of a TwinAcceptance is refused (HTTP 404, no template)
@@ -572,7 +576,7 @@ class FakeLedger:
             "holdingCids": [], "meta": {"values": {}}}
         return [{"interfaceId": "pkg:Splice.Api.Token.AllocationV1:Allocation", "viewStatus": {"code": 0}, "viewValue": view}]
 
-    def _active(self, template):
+    def _active(self, template, offset=None):
         if template.endswith(":Allocation"):   # the token standard's Allocation interface
             ids = [a["allocation"] for _, a in [*self.terms, *self.requests, *self.trades]] if self.allocations is None else self.allocations
             return [{"contractEntry": {"JsActiveContract": {"createdEvent": {
@@ -582,7 +586,7 @@ class FakeLedger:
             return [{"contractEntry": {"JsActiveContract": {"createdEvent": {
                         "contractId": cid, "templateId": "pkg:Some.Token:Holding",
                         "interfaceViews": [{"interfaceId": "pkg:Splice.Api.Token.HoldingV1:Holding", "viewStatus": {"code": 0}, "viewValue": view}]}}}}
-                    for cid, view in self.holdings]
+                    for cid, view in self.holdings_at.get(offset, self.holdings)]
         def entry(cid, name, args):
             return {"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "templateId": f"pkg:Zk.Chain:{name}", "createArgument": args}}}}
@@ -592,7 +596,7 @@ class FakeLedger:
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
-        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems)):
+        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems), ("Amulet", self.amulets)):
             if template.endswith(":" + name):
                 return [entry(c, name, a) for c, a in found]
         return []
@@ -677,7 +681,11 @@ class FakeLedger:
                         return self._reply_raw(200, b"<html>not json")
                     elif failure:
                         return self._reply(failure, {"code": "FAILURE"})
-                    found = ledger._active(tmpl)
+                    if tmpl.endswith(":Holding"):
+                        ledger.holding_reads.append(body.get("activeAtOffset"))
+                        if body.get("activeAtOffset") in ledger.refuse_offsets:
+                            return self._reply(400, {"code": "OFFSET_AFTER_LEDGER_END", "cause": "the offset is not available"})
+                    found = ledger._active(tmpl, body.get("activeAtOffset"))
                     try:
                         if not paged:
                             if len(found) > LIST_LIMIT:   # a list the participant will not give: the builder has to read pages
