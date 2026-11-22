@@ -105,7 +105,7 @@ describe.skipIf(!dist)("the Bridge page's Canton route, in a browser", () => {
 
   it("shows the limits, finds a move by the wallet, and walks it to Arrived with the person's own claim on Ethereum Sepolia", async () => {
     world.route = setupBody({ notTakenSeconds: 1, ownClaimSeconds: 1 }, { lockRoom: cc(2.5) });
-    world.moves = [taken()];
+    world.moves = [taken({ at: new Date().toISOString() })];   // a move that arrived shows for 5 minutes after it was sent, so it is sent now, not at a fixed time
     const page = await open("/bridge?tab=other-chains");
     await toCanton(page);
     await page.getByText("Up to 10 CC of Canton Coin can be on AggLayer chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC.").waitFor();
