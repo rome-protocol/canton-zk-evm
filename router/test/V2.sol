@@ -47,6 +47,7 @@ contract CantonRouterV2 is Initializable {
     event Forwarded(address indexed inbox, address indexed token, uint256 amount, uint256 fee);
     event Refunded(address indexed inbox, address indexed token, uint256 amount, uint256 fee, uint256 depositCount);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
@@ -107,9 +108,10 @@ contract CantonRouterV2 is Initializable {
         if (amount <= fee0) revert NothingLeft();
         uint256 send = (amount - fee0) / unit * unit;
         if (send == 0) revert NothingLeft();
+        uint256 fee = amount - send; // what is really charged, with the cut-off leftover; never above the user's maxFee
+        if (fee > maxFee) revert FeeAboveMax(fee, maxFee);
         uint256 room = lockRoom(token);
         if (send > room) revert OverLockCap(send, room);
-        uint256 fee = amount - send;
         bytes32 id = Labels.depositId(party, Labels.route(destNetwork, destAddress, maxFee, nonce));
         s.gateway.claim(id, token, amount);
         if (fee > 0) _pay(token, s.book.feeRecipient(), fee);
@@ -297,6 +299,7 @@ contract CantonBookV2 is Initializable, IBook {
     event SwitchChanged(bool indexed out, bool open);
     event Updated(bytes32 indexed what);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }

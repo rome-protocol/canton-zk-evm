@@ -42,6 +42,7 @@ contract CantonBook is Initializable, IBook {
     event SwitchChanged(bool indexed out, bool open);
     event Updated(bytes32 indexed what);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }

@@ -1,0 +1,15 @@
+{
+  "name": "ostia-mainnet-example",
+  "chainId": null,
+  "localNetwork": null,
+  "gateway": null,
+  "bridge": null,
+  "settingsTimelock": {"minDelay": 3600, "proposers": [null], "executors": [null], "cancellers": [null]},
+  "upgradeTimelock": {"minDelay": 86400, "proposers": [null], "executors": [null], "cancellers": [null]},
+  "refuser": null,
+  "feeRecipient": null,
+  "refundWait": 259200,
+  "asset": {"address": null, "instrument": null, "feeOut": null, "feeIn": null, "feeRefund": null, "minAmount": null, "lockCap": null},
+  "destinations": [],
+  "claimFees": []
+}

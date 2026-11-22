@@ -23,3 +23,10 @@ fs_permissions = [
 
 [lint]
 lint_on_build = false
+
+# The build the upgrade-safety check reads (upgrade-check.sh): build info with the storage layout, in its own folder.
+[profile.upgrade]
+out = "out-upgrade"
+cache_path = "cache-upgrade"
+build_info = true
+extra_output = ["storageLayout"]
