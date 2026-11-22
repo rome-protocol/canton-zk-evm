@@ -1496,17 +1496,26 @@ describe("a Canton Coin deposit under the bridge's minimum", () => {
   it("is refused before anything is locked on Canton, in words that give the minimum rounded up to two decimals, and leaves no record", async () => {
     const asked: unknown[] = [];
     const t = setup({ minimum: async (i) => { asked.push(i); return ten("1", "118016"); } });
-    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "A Canton Coin deposit must be at least 1.12 CC. Your Canton Coin has not been touched. Try a larger amount.", kept: false });
+    expect(await t.move.start(input)).toMatchObject({ phase: "failed", reason: "A Canton Coin deposit must be at least 1.12. Your Canton Coin has not been touched. Try a larger amount.", kept: false });
     expect(asked).toEqual([{ admin: "admin::1220" + "00".repeat(32), id: "Amulet" }]);   // asked for the token's own instrument
     expect(t.canton.calls).toEqual([]);
     expect(t.evm.calls).toEqual([]);
     expect(listMoves(t.store)).toEqual([]);
   });
   it("names a whole minimum without decimals, and a minimum under a cent as a cent", async () => {
-    expect(await setup({ minimum: async () => ten("5") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 5 CC.") });
-    expect(await setup({ minimum: async () => ten("1") + 1n }).move.start({ ...input, amount: "0.5" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.01 CC.") });
-    expect(await setup({ minimum: async () => 10n ** 6n }).move.start({ ...input, amount: "0.00001" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 0.01 CC.") });
-    expect(await setup({ minimum: async () => ten("1", "1") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.10 CC.") });
+    expect(await setup({ minimum: async () => ten("5") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 5.") });
+    expect(await setup({ minimum: async () => ten("1") + 1n }).move.start({ ...input, amount: "0.5" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.01.") });
+    expect(await setup({ minimum: async () => 10n ** 6n }).move.start({ ...input, amount: "0.00001" })).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 0.01.") });
+    expect(await setup({ minimum: async () => ten("1", "1") }).move.start(input)).toMatchObject({ phase: "failed", reason: expect.stringContaining("at least 1.10.") });
+  });
+  it("names the instrument from the token's own data, so another instrument with a floor is not called Canton Coin", async () => {
+    const TKB = addr("e");
+    const other: BridgeConfig = { ...config, wrapped: [...config.wrapped, { address: TKB, symbol: "wTKB", decimals: 10, instrument: { admin: "reg::1220" + "11".repeat(32), id: "TKB" } }] };
+    const t = setup({ config: other, minimum: async () => ten("2", "5") });
+    const r = await t.move.start({ kind: "deposit", asset: TKB, amount: "1" });
+    expect(r).toMatchObject({ phase: "failed", reason: "A TKB deposit must be at least 2.50. Your TKB has not been touched. Try a larger amount." });
+    expect((r as { reason: string }).reason).not.toMatch(/Canton Coin|CC/);
+    expect(t.canton.calls).toEqual([]);
   });
   it("goes on at exactly the minimum, and above it", async () => {
     for (const amount of ["1", "1.5"]) {

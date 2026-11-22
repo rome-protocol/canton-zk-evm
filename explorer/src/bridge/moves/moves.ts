@@ -5,6 +5,7 @@ import { timeoutSignal } from "../../timeout.ts";
 import { AmountError, parseAmount, tenDecimals } from "../amounts.ts";
 import { approveCall, claimCall, definitelyNotSent, payCall, releaseCall, wrapCall, withdrawCall, type Call, type EvmAdapter } from "../evm/adapter.ts";
 import type { BridgeConfig, BridgeToken } from "../evm/config.ts";
+import { cantonName } from "../tokens.ts";
 import { UnexpectedTransaction, Unanswered } from "../canton/answers.ts";
 import { LockRefused, type RegistryAdapter } from "../evm/registry.ts";
 import {
@@ -489,7 +490,10 @@ export function createMove(d: Deps): Move {
         // Before anything is locked on Canton: a deposit under the minimum is refused here, and the builder would leave its claim out. A move that has started is never checked again.
         if (at() === "start") {
           const least = await d.minimum?.(a.instrument).catch(() => null);
-          if (least != null && p.twin < least) throw new Refused(`A Canton Coin deposit must be at least ${minimumText(least)} CC. Your Canton Coin has not been touched. Try a larger amount.`);
+          if (least != null && p.twin < least) {
+            const name = cantonName(p.asset.symbol, a.instrument.id);   // the instrument's own name, never a fixed one: the check runs for any instrument that has a floor
+            throw new Refused(`A ${name} deposit must be at least ${minimumText(least)}. Your ${name} has not been touched. Try a larger amount.`);
+          }
         }
         if (at() === "start" || at() === "signing") {
           gate("Your deposit is saved. Continue to allocate the tokens on Canton.");
