@@ -6,6 +6,7 @@ import type { PoolConfig } from "pg";
 import { connectionConfig } from "./db/connect.ts";
 import { MAX_HEAVY_PLACES } from "./rpc-heavy.ts";
 import { agglayerSettings, type AgglayerSettings } from "./agglayer/settings.ts";
+import { routeSettings, type RouteSettings } from "./route/settings.ts";
 
 /** OWN_ADDRESSES: pairs "0x<40 hex>=name" separated by commas. A pair that is not one stops the server at start, with a message that names the setting. */
 export function ownAddresses(env: Record<string, string | undefined>): Record<string, string> {
@@ -67,6 +68,8 @@ export interface Config {
   accountsHealthUrl: string | null;
   /** The AggLayer bridge routes (AGGLAYER_BRIDGE=1), or null when they are off, which is the default. */
   agglayer: AgglayerSettings | null;
+  /** The Canton route's routes (OSTIA_ROUTE_OUT=1, which needs the AggLayer bridge), or null when they are off, which is the default. */
+  cantonRoute: RouteSettings | null;
   /** A file with a notice for the pages (OSTIA_NOTICE_FILE, see server/notice.ts); null when not set, and then there is never a notice. */
   noticeFile: string | null;
   /** The builder's status file (PRODUCER_STATUS_FILE, see server/minimums.ts), read for the least a deposit may be; null when not set, and then there is no minimum. */
@@ -335,6 +338,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     throw new ConfigError(`RPC_HEAVY_CONCURRENCY + RPC_HEAVY_QUEUE must be at most ${MAX_HEAVY_PLACES} (they are ${heavyConcurrency + heavyQueue}): heavy calls would take the places that light calls need`);
   }
   if (!env.READER_PARTY) throw new ConfigError("READER_PARTY must be set to the Canton party id of the reader: the explorer reads Canton as that party only");
+  const agglayer = agglayerSettings(env, (m) => new ConfigError(m));
   return {
     host: env.EXPLORER_HOST || "127.0.0.1",
     port: whole(env, "EXPLORER_PORT", 8088, 1),
@@ -344,7 +348,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     ownAddresses: ownAddresses(env),
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
     accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
-    agglayer: agglayerSettings(env, (m) => new ConfigError(m)),
+    agglayer,
+    cantonRoute: routeSettings(env, agglayer, (m) => new ConfigError(m)),
     noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
     producerStatusFile: env.PRODUCER_STATUS_FILE?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
