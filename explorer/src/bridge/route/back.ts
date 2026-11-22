@@ -42,30 +42,53 @@ export function episodes(events: BackEvent[]): Episode[] {
 
 export interface InRow {
   id: string;
-  /** The browser's own record of the send, when this browser made it. */
+  /** The browser's own record of the send, when this browser made it (the first send of the row when several share one episode). */
   record: Transfer | null;
+  /** Every send of this browser that the row's episode holds, oldest first: more than one when sends into one address were held on one clock. */
+  sends: Transfer[];
   episode: Episode | null;
   inbox: string;
   party: string | null;
   /** The way back's address: the wallet's own. */
   refundAddress: string | null;
-  /** ms: when the send was started, or the episode's last event. */
+  /** ms: when the send was started (the newest send of the row), or the episode's last event. */
   at: number;
 }
 
-/** A send is joined to the first later episode of its address that no earlier send took, or, when a held coin's clock was joined by a later send, to that send's episode; an episode with no send of this browser is a row of its own. Newest first. */
+/** What the address held when the episode ended or now (the router pays or sends back the whole balance), or null when that is not known. */
+const totalOf = (x: Episode): bigint | null => (x.state === "held" ? x.balance : x.amount !== null && x.fee !== null ? x.amount + x.fee : null);
+const amountOf = (r: Transfer): bigint | null => { try { return BigInt(r.amount); } catch { return null; } };
+
+/**
+ * A send joins an episode of its address only when its own coin can be in it: the episode is not older than the send, the send is a deposit (its number is read), and the sends already in
+ * the episode and this one fit in what the address held (a held balance, or the payout and fee of the end). Sends are taken oldest first, each by the oldest episode that holds them, so that
+ * two sends into one held clock share that episode (one row, the sends listed under it) and a send whose coin is not yet claimed is never given another send's end. An episode with no send of
+ * this browser is a row of its own. Newest first.
+ */
 export function rowsOf(records: Transfer[], events: BackEvent[]): InRow[] {
   const opened = new Map(events.filter((e) => e.kind === "opened").map((e) => [e.inbox, e]));
-  const free = episodes(events).reverse();
+  const all = episodes(events).reverse();
+  const members = new Map<Episode, Transfer[]>();
+  const used = new Map<Episode, bigint>();
   const rows: InRow[] = [];
   for (const r of [...records].sort((a, b) => a.at - b.at)) {
     const inbox = r.receiver ?? "";
-    const i = free.findIndex((x) => x.inbox === inbox && x.lastAt >= r.at - 120_000);
-    // A second send into an address whose coin is held joins the running clock (one Held for the total): it shares the first send's episode, so that it ends with it.
-    const episode = i >= 0 ? free.splice(i, 1)[0]! : rows.find((x) => x.inbox === inbox && x.episode !== null && x.episode.heldAt !== null && x.episode.lastAt >= r.at - 120_000)?.episode ?? null;
-    rows.push({ id: r.id, record: r, episode, inbox, party: r.party ?? opened.get(inbox)?.party ?? null, refundAddress: opened.get(inbox)?.refundAddress ?? r.account, at: r.at });
+    const amount = amountOf(r);
+    const x = r.count === null || r.lost || amount === null ? undefined : all.find((e) => {
+      const total = totalOf(e);
+      return e.inbox === inbox && e.lastAt >= r.at - 120_000 && total !== null && (used.get(e) ?? 0n) + amount <= total;
+    });
+    if (x) { members.set(x, [...(members.get(x) ?? []), r]); used.set(x, (used.get(x) ?? 0n) + amount!); continue; }
+    rows.push({ id: r.id, record: r, sends: [r], episode: null, inbox, party: r.party ?? opened.get(inbox)?.party ?? null, refundAddress: opened.get(inbox)?.refundAddress ?? r.account, at: r.at });
   }
-  for (const x of free) rows.push({ id: `${x.inbox}:${x.erc20}:${x.block}`, record: null, episode: x, inbox: x.inbox, party: opened.get(x.inbox)?.party ?? null, refundAddress: opened.get(x.inbox)?.refundAddress ?? null, at: x.lastAt });
+  for (const x of all) {
+    const sends = members.get(x) ?? [];
+    const first = sends[0] ?? null;
+    rows.push({
+      id: first?.id ?? `${x.inbox}:${x.erc20}:${x.block}`, record: first, sends, episode: x, inbox: x.inbox,
+      party: first?.party ?? opened.get(x.inbox)?.party ?? null, refundAddress: opened.get(x.inbox)?.refundAddress ?? first?.account ?? null, at: sends.length > 0 ? sends[sends.length - 1]!.at : x.lastAt,
+    });
+  }
   return rows.sort((a, b) => b.at - a.at);
 }
 
@@ -81,6 +104,8 @@ export interface InView {
   /** Lines under the steps, in order; `bad` for the ones that name a problem. */
   notes: { text: string; bad: boolean }[];
   actions: Action[];
+  /** The sends that one row holds, one line each, when there are several; empty for a row of one send. */
+  sends: string[];
   /** Whether something waits for the person (under Claim), and whether the move is on its way. */
   claimable: boolean;
   open: boolean;
@@ -115,6 +140,7 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
   const a = c.asset, sym = a.symbol;
   const n = (v: bigint | null) => (v === null ? sym : `${showUnits(v, a.decimals)} ${sym}`);
   const { record: t, episode: ep } = row;
+  const sendLines = row.sends.length > 1 ? row.sends.map((x) => `${n(amountOf(x))} sent ${dayTime(new Date(x.at).toISOString())}`) : [];
   const who = row.party === null ? "the Canton account" : `Canton account ${shortParty(row.party)}`;
   const stage = c.deposit?.stage ?? "unknown";
   const readyIn = ep !== null || stage === "ready" || stage === "claimed";
@@ -129,7 +155,7 @@ export function viewOfRow(row: InRow, c: InCtx): InView {
     third,
     { key: "arrived", label: "Arrived in the Canton account", state: fourth ? "done" : "todo", detail: null },
   ];
-  const view = (v: Partial<Omit<InView, "claimable">> & Pick<InView, "phase" | "title" | "word" | "steps">): InView => ({ notes: [], actions: [], open: true, marksOf: null, claimPays: false, ...v, claimable: (v.actions ?? []).some((x) => x.kind !== "send-again") });
+  const view = (v: Partial<Omit<InView, "claimable">> & Pick<InView, "phase" | "title" | "word" | "steps">): InView => ({ notes: [], actions: [], open: true, marksOf: null, claimPays: false, sends: sendLines, ...v, claimable: (v.actions ?? []).some((x) => x.kind !== "send-again") });
 
   // A send that is not yet a deposit: the wallet was not asked, was not heard from, or the send did not go through.
   if (t !== null && ep === null && (t.lost || t.send === null || t.send.tx === null || t.count === null)) {

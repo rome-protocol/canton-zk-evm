@@ -23,6 +23,7 @@ function Row({ item, back, faucet }: { item: BackRow; back: Back; faucet: Faucet
           </li>
         ))}
       </ol>
+      {v.sends.length > 0 && <ul className="small muted" aria-label="The sends held together">{v.sends.map((x, i) => <li key={i}>{x}</li>)}</ul>}
       {v.marksOf && <div className="act-marks"><MoveMarks marks={marks} block={false} /></div>}
       {v.notes.map((n) => <p key={n.text} className={`small ${n.bad ? "bad" : "muted"}`} role="status">{n.text}</p>)}
       {message && <p className="small bad" role="alert">{message}</p>}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Transfer } from "../other/record.ts";
 import { stage } from "../other/fakes.ts";
 import { episodes, rowsOf, viewOfRow, type InCtx, type KeptAct } from "./back.ts";
+import { shortParty } from "./in.ts";
 import { asset, cc, CC, forwarded, held, inFlow, INBOX, ME, on, opened, PARTY, refunded } from "./fakes.ts";
 
 const T0 = Date.parse("2026-11-22T21:40:00Z");
@@ -44,11 +45,37 @@ describe("the rows", () => {
     const rows = rowsOf([record(), record({ id: "r2", at: minutes(60) })], [held({ at: iso(minutes(80)) }), forwarded({ at: iso(minutes(10)) })]);
     expect(rows.map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "arrived"]]);
   });
-  it("lets two sends into one address share the one episode that Canton's not paying made, so that both end with it", () => {
-    const held1 = [held({ at: iso(minutes(10)) })];
-    const two = [record(), record({ id: "r2", at: minutes(5) })];
-    expect(rowsOf(two, held1).map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "held"]]);
-    expect(rowsOf(two, [forwarded({ at: iso(minutes(30)) }), ...held1]).map((r) => [r.record?.id, r.episode?.state])).toEqual([["r2", "arrived"], ["r1", "arrived"]]);
+  const both = [record(), record({ id: "r2", at: minutes(5) })];
+  const heldBoth = held({ at: iso(minutes(10)), balance: cc(9.6) });
+  it("gives two sends into one held clock one row, the sends listed under it, and ends it with the payout", () => {
+    const rows = rowsOf(both, [heldBoth]);
+    expect(rows.map((r) => [r.id, r.sends.map((x) => x.id), r.episode?.state])).toEqual([["r1", ["r1", "r2"], "held"]]);
+    expect(rows[0]!.at).toBe(minutes(5));
+    const ended = rowsOf(both, [forwarded({ at: iso(minutes(30)), amount: cc(9.5) }), heldBoth]);
+    expect(ended.map((r) => [r.id, r.sends.map((x) => x.id), r.episode?.state])).toEqual([["r1", ["r1", "r2"], "arrived"]]);
+  });
+  it("gives a send no episode whose total cannot hold its coin: another send's end is never its own", () => {
+    // r1 is held alone (4.8); r2 is sent into the same address and not claimed yet; r1's coin is then paid on or sent back.
+    for (const end of [forwarded({ at: iso(minutes(30)) }), refunded({ at: iso(minutes(30)), amount: cc(4.6), fee: cc(0.2) })]) {
+      const rows = rowsOf(both, [end, held({ at: iso(minutes(10)) })]);
+      expect(rows.map((r) => [r.id, r.sends.map((x) => x.id), r.episode?.state ?? null]), end.kind).toEqual([["r1", ["r1"], end.kind === "forwarded" ? "arrived" : "refunded"], ["r2", ["r2"], null]].reverse());
+    }
+    const r2 = rowsOf(both, [forwarded({ at: iso(minutes(30)) }), held({ at: iso(minutes(10)) })]).find((r) => r.id === "r2")!;
+    expect(viewOfRow(r2, ctx({ deposit: dep("ready", iso(T0)), now: T0 + 700_000 })).actions.map((x) => x.kind)).toEqual(["claim"]);
+  });
+  it("gives r2 an episode of its own once its coin is claimed after the first ended", () => {
+    const rows = rowsOf(both, [held({ at: iso(minutes(50)) }), forwarded({ at: iso(minutes(30)) }), held({ at: iso(minutes(10)) })]);
+    expect(rows.map((r) => [r.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "arrived"]]);
+  });
+  it("joins no send that is not yet a deposit", () => {
+    expect(rowsOf([record({ count: null })], [forwarded({ at: iso(minutes(12)) })]).map((r) => [r.record?.id ?? null, r.episode?.state ?? null]).sort()).toEqual([[null, "arrived"], ["r1", null]]);
+  });
+  it("offers one way on for a shared held episode, on its one row, and lists both sends", () => {
+    const [row] = rowsOf(both, [heldBoth]);
+    const v = viewOfRow(row!, ctx({ deposit: dep("claimed"), setup: on({ in: inFlow({ payout: { paused: false, pausedUntil: null, assets: {} } }) }), now: minutes(10) + 601_000 }));
+    expect(v.title).toBe("9.6 CC is held on Ostia for Canton account " + shortParty(PARTY));
+    expect(v.sends).toEqual(["4.8 CC sent Sun 22 Nov 21:40 UTC", "4.8 CC sent Sun 22 Nov 21:45 UTC"]);
+    expect(v.actions.filter((x) => x.kind === "forward")).toHaveLength(1);
   });
   it("names the party and the way back from the opening, or from the send", () => {
     expect(rowsOf([], [held(), opened()])[0]).toMatchObject({ party: PARTY, refundAddress: ME });

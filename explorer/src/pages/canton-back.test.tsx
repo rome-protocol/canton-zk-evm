@@ -405,6 +405,19 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     expect(world.sent[0]).toMatchObject({ chainId: SEPOLIA_ID, tx: { to: SEPOLIA_BRIDGE } });
     expect(world.asked.some((a) => a.startsWith("/api/agglayer/deposit?network=75&count=9"))).toBe(true);
   });
+  it("shows two sends held on one clock as one row, the sends listed under it, with one Send on to Canton and one Send back", async () => {
+    const mine = (id: string, count: number, minutesAgo: number) => ({ id, account: ME, at: Date.now() - minutesAgo * 60_000, route: "canton-in", dir: "in", symbol: "CC", decimals: 10, native: false, amount: cc(4.8).toString(),
+      send: { chainId: SEPOLIA_ID, to: COPY, data: "0x", value: "0", nonce: 1, tx: SEND_HASH }, count, claim: null, receiver: INBOX, party: PARTY });
+    for (const t of [mine("s1", 7, 60 * 24 * 3 + 90), mine("s2", 8, 60 * 24 * 3 + 80)]) localStorage.setItem(`agglayer-transfer:${t.id}`, JSON.stringify(t));
+    localStorage.setItem("agglayer-transfers", JSON.stringify(["s1", "s2"]));
+    world.stage = "claimed";
+    world.events = [held({ at: minutes(-60 * 24 * 3 - 30), refundAt: minutes(-30), balance: cc(9.6) }), opened()];
+    await open();
+    const row = await screen.findByRole("listitem", { name: "9.6 CC is held on Ostia for Canton account alice::1220…9f9f" });
+    expect(within(row).getAllByRole("button", { name: "Send back to Ethereum Sepolia" })).toHaveLength(1);
+    expect(within(screen.getByRole("list", { name: "The sends held together" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getAllByRole("listitem", { name: /is held on Ostia/ })).toHaveLength(1);
+  });
   it("is found again after a reload: a new page reads the same rows from the server", async () => {
     world.events = [held({ at: minutes(-30), refundAt: minutes(60 * 24 * 3 - 30) }), opened()];
     const first = renderPage();
