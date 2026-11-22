@@ -21,6 +21,8 @@ import { injected } from "../wallet.ts";
 
 /** The id of a send to a Canton account's Ostia address in the browser's records: the plain transfers' list never shows it. */
 export const BACK_ROUTE = "canton-in";
+/** The key of a send back's own deposit in the stages read: it must not share the key of the send that made the coin (a send's stage is `claimed` once its coin reached the address). */
+const backKey = (depositCount: number) => `back:${depositCount}`;
 /** How many deposits that are not yet paid out are asked about in one look (the bridge routes allow 30 reads a minute). */
 const LOOKS_MAX = 4;
 const explorerRead = (method: string, params: unknown[]) => rpc(method, params, timeoutSignal());
@@ -86,9 +88,9 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
         if (r.live.deposit) seen.current = { ...seen.current, [t.id]: r.live.deposit };
       }
       // A way back is a deposit on Ostia: its stage is read for the newest ones that have not arrived.
-      const back = rowsOf(mine, listed(found?.back ?? eventsNow.current));
-      const refunds = back.filter((r) => r.episode?.state === "refunded" && r.episode.amount !== 0n && r.episode.depositCount !== null && seen.current[r.id]?.stage !== "claimed").slice(0, LOOKS_MAX);
-      for (const r of refunds) { try { seen.current = { ...seen.current, [r.id]: await readDeposit(ostia.networkId, r.episode!.depositCount!, timeoutSignal()) }; } catch { /* the stage stays as it was */ } }
+      const back = rowsOf(mine, listed(found?.back ?? eventsNow.current), seen.current);
+      const refunds = back.filter((r) => r.episode?.state === "refunded" && r.episode.amount !== 0n && r.episode.depositCount !== null && seen.current[backKey(r.episode.depositCount)]?.stage !== "claimed").slice(0, LOOKS_MAX);
+      for (const r of refunds) { const key = backKey(r.episode!.depositCount!); try { seen.current = { ...seen.current, [key]: await readDeposit(ostia.networkId, r.episode!.depositCount!, timeoutSignal()) }; } catch { /* the stage stays as it was */ } }
       // A step of the person's own that is in an Ostia block is not a left-out transaction, whatever the time. One that waits in the pool, or that was replaced or dropped, is in no block: it is left out.
       for (const r of back) {
         const k = keptAct(store, r.id, Date.now());
@@ -109,9 +111,9 @@ export function useBack(o: { setup: RouteOn; asset: RouteAsset | null; ostia: Os
 
   const rows: BackRow[] = useMemo(() => {
     if (!flow || !asset || !account) return [];
-    return rowsOf(records, events).map((row) => ({
+    return rowsOf(records, events, deposits).map((row) => ({
       row,
-      view: viewOfRow(row, { setup, asset, wallet: account, deposit: deposits[row.id] ?? null, accepts: row.party !== null && acceptsBy ? acceptsBy[row.party] ?? null : null, checkIn, kept: keptAct(store, row.id, now), keptSeen: (() => { const k = keptAct(store, row.id, now); return k !== null && inBlock[k.hash] === true; })(), coin: status?.coin.symbol ?? "tROME", now }),
+      view: viewOfRow(row, { setup, asset, wallet: account, deposit: deposits[row.episode?.state === "refunded" && row.episode.depositCount !== null ? backKey(row.episode.depositCount) : row.id] ?? null, accepts: row.party !== null && acceptsBy ? acceptsBy[row.party] ?? null : null, checkIn, kept: keptAct(store, row.id, now), keptSeen: (() => { const k = keptAct(store, row.id, now); return k !== null && inBlock[k.hash] === true; })(), coin: status?.coin.symbol ?? "tROME", now }),
     }));
   }, [flow, asset, account, records, events, deposits, inBlock, acceptsBy, checkIn, store, now, setup, status?.coin.symbol]);
 

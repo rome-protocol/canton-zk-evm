@@ -63,9 +63,10 @@ const amountOf = (r: Transfer): bigint | null => { try { return BigInt(r.amount)
  * A send joins an episode of its address only when its own coin can be in it: the episode is not older than the send, the send is a deposit (its number is read), and the sends already in
  * the episode and this one fit in what the address held (a held balance, or the payout and fee of the end). Sends are taken oldest first, each by the oldest episode that holds them, so that
  * two sends into one held clock share that episode (one row, the sends listed under it) and a send whose coin is not yet claimed is never given another send's end. An episode with no send of
- * this browser is a row of its own. Newest first.
+ * this browser is a row of its own. A send whose deposit stage is known and is not `claimed` (its coin has not reached the address yet) joins no episode, whatever its amount: only a claimed
+ * coin, or one whose stage is not known, is held to the amounts. Newest first.
  */
-export function rowsOf(records: Transfer[], events: BackEvent[]): InRow[] {
+export function rowsOf(records: Transfer[], events: BackEvent[], stages: Record<string, Pick<Deposit, "stage"> | undefined> = {}): InRow[] {
   const opened = new Map(events.filter((e) => e.kind === "opened").map((e) => [e.inbox, e]));
   const all = episodes(events).reverse();
   const members = new Map<Episode, Transfer[]>();
@@ -74,7 +75,8 @@ export function rowsOf(records: Transfer[], events: BackEvent[]): InRow[] {
   for (const r of [...records].sort((a, b) => a.at - b.at)) {
     const inbox = r.receiver ?? "";
     const amount = amountOf(r);
-    const x = r.count === null || r.lost || amount === null ? undefined : all.find((e) => {
+    const stage = stages[r.id]?.stage;
+    const x = r.count === null || r.lost || amount === null || (stage !== undefined && stage !== "claimed") ? undefined : all.find((e) => {
       const total = totalOf(e);
       return e.inbox === inbox && e.lastAt >= r.at - 120_000 && total !== null && (used.get(e) ?? 0n) + amount <= total;
     });

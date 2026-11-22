@@ -21,9 +21,9 @@ const proof = Array.from({ length: 32 }, (_, i) => "0x" + (i + 1).toString(16).p
 const ARGS = { smtProofLocalExitRoot: proof, smtProofRollupExitRoot: proof, globalIndex: "7", mainnetExitRoot: "0x" + "aa".repeat(32), rollupExitRoot: "0x" + "bb".repeat(32), originNetwork: 75, originTokenAddress: CC, destinationNetwork: 75, destinationAddress: INBOX, amount: cc(4.8).toString(), metadata: "0x" };
 
 interface Sent { chainId: number; tx: any } // eslint-disable-line @typescript-eslint/no-explicit-any
-const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true,
+const world = { route: setupInBody() as unknown, events: [] as BackEvent[], accepts: { [PARTY]: true } as Record<string, boolean> | null, address: addressBody() as unknown, intake: 200, stage: "sent", backStage: null as string | null, readyAt: minutes(-20), claimed: false, checkIn: true,
   connected: false, chain: OSTIA_ID, sent: [] as Sent[], posts: [] as unknown[], asked: [] as string[], balance: cc(10), hold: null as Promise<void> | null, tx: null as unknown };
-const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null, tx: null });
+const reset = () => Object.assign(world, { route: setupInBody(), events: [], accepts: { [PARTY]: true }, address: addressBody(), intake: 200, stage: "sent", backStage: null, readyAt: minutes(-20), claimed: false, checkIn: true, connected: false, chain: OSTIA_ID, sent: [], posts: [], asked: [], balance: cc(10), hold: null, tx: null });
 
 beforeEach(() => {
   reset();
@@ -43,7 +43,7 @@ beforeEach(() => {
       if (world.hold && q.get("party") === PARTY) await world.hold;   // a slow answer for the first account
       return json(200, body);
     }
-    if (input.startsWith("/api/agglayer/deposit")) return json(200, { network: 0, count: 7, destinationNetwork: 75, ...stage(world.stage as never), readyAt: world.stage === "ready" || world.stage === "claimed" ? world.readyAt : null });
+    if (input.startsWith("/api/agglayer/deposit")) { const st = (input.includes("network=75") ? world.backStage : null) ?? world.stage; return json(200, { network: 0, count: 7, destinationNetwork: 75, ...stage(st as never), readyAt: st === "ready" || st === "claimed" ? world.readyAt : null }); }
     if (input.startsWith("/api/agglayer/claim?network=75")) return json(200, { network: 75, count: 9, claimed: world.claimed, destinationNetwork: 0, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, l1InfoTreeIndex: 1, data: claimData(0, ME, cc(4.6), 9), args: null });
     if (input.startsWith("/api/agglayer/claim")) return json(200, { network: 0, count: 7, claimed: world.claimed, destinationNetwork: 75, chainId: OSTIA_ID, to: OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(75, INBOX, cc(4.8), 7), args: world.claimed ? null : ARGS });
     if (input.startsWith("/api/tx/")) return world.tx === null ? json(404, { error: "Not found." }) : json(200, world.tx);
@@ -417,6 +417,20 @@ describe("a coin held on Ostia, paid on, or sent back", () => {
     expect(within(row).getAllByRole("button", { name: "Send back to Ethereum Sepolia" })).toHaveLength(1);
     expect(within(screen.getByRole("list", { name: "The sends held together" })).getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getAllByRole("listitem", { name: /is held on Ostia/ })).toHaveLength(1);
+  });
+  it("shows a send back as sent back, with its own claim on Ethereum Sepolia, even when the send that made the coin is claimed", async () => {
+    const t = { id: "s1", account: ME, at: Date.now() - (60 * 24 * 3 + 90) * 60_000, route: "canton-in", dir: "in", symbol: "CC", decimals: 10, native: false, amount: cc(4.8).toString(),
+      send: { chainId: SEPOLIA_ID, to: COPY, data: "0x", value: "0", nonce: 1, tx: SEND_HASH }, count: 7, claim: null, receiver: INBOX, party: PARTY };
+    localStorage.setItem(`agglayer-transfer:${t.id}`, JSON.stringify(t));
+    localStorage.setItem("agglayer-transfers", JSON.stringify(["s1"]));
+    world.stage = "claimed";      // the send's own deposit reached the address
+    world.backStage = "ready";    // the send back is ready on Ethereum Sepolia and not claimed
+    world.events = [refunded({ at: minutes(-30), amount: cc(4.6), fee: cc(0.2) }), held({ at: minutes(-60 * 24 * 3 - 30), refundAt: minutes(-30) }), opened()];
+    await open();
+    const back = await screen.findByRole("listitem", { name: /^Sent back\. 4\.6 CC goes back to 0xe3e3…e3e3 on Ethereum Sepolia\.$/ });
+    expect(await within(back).findByRole("button", { name: "Claim on Ethereum Sepolia" })).toBeInTheDocument();
+    expect(screen.queryByRole("listitem", { name: /^Arrived back\./ })).toBeNull();
+    expect(world.asked.some((a) => a.startsWith("/api/agglayer/deposit?network=75&count=9"))).toBe(true);
   });
   it("is found again after a reload: a new page reads the same rows from the server", async () => {
     world.events = [held({ at: minutes(-30), refundAt: minutes(60 * 24 * 3 - 30) }), opened()];

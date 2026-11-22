@@ -67,6 +67,18 @@ describe("the rows", () => {
     const rows = rowsOf(both, [held({ at: iso(minutes(50)) }), forwarded({ at: iso(minutes(30)) }), held({ at: iso(minutes(10)) })]);
     expect(rows.map((r) => [r.id, r.episode?.state])).toEqual([["r2", "held"], ["r1", "arrived"]]);
   });
+  it("gives a send whose coin is not claimed no episode, even when the newer send's coin was claimed first and the amounts are equal", () => {
+    // r1 and r2 are both 4.8; only r2 was claimed (r1 is ready on Ostia and still has its own claim).
+    const stages = { r1: stage("ready"), r2: stage("claimed") };
+    for (const events of [[held({ at: iso(minutes(10)) })], [forwarded({ at: iso(minutes(30)), amount: cc(4.7) }), held({ at: iso(minutes(10)) })], [refunded({ at: iso(minutes(30)), amount: cc(4.6), fee: cc(0.2) }), held({ at: iso(minutes(10)) })]]) {
+      const rows = rowsOf(both, events, stages);
+      expect(rows.map((r) => [r.id, r.episode?.state ?? null]).sort(), events.map((e) => e.kind).join()).toEqual([["r1", null], ["r2", events.length === 1 ? "held" : events[0]!.kind === "forwarded" ? "arrived" : "refunded"]]);
+      const r1 = rows.find((r) => r.id === "r1")!;
+      expect(viewOfRow(r1, ctx({ deposit: dep("ready", iso(T0)), now: T0 + 700_000 })).actions.map((x) => x.kind)).toEqual(["claim"]);
+    }
+    // Without a known stage the amounts alone decide, and a claimed r1 joins the oldest episode that fits.
+    expect(rowsOf(both, [held({ at: iso(minutes(10)) })], { r1: stage("claimed"), r2: stage("claimed") }).map((r) => [r.id, r.episode?.state ?? null]).sort()).toEqual([["r1", "held"], ["r2", null]]);
+  });
   it("joins no send that is not yet a deposit", () => {
     expect(rowsOf([record({ count: null })], [forwarded({ at: iso(minutes(12)) })]).map((r) => [r.record?.id ?? null, r.episode?.state ?? null]).sort()).toEqual([[null, "arrived"], ["r1", null]]);
   });
