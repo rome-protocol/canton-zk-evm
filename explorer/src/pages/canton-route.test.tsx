@@ -97,7 +97,7 @@ describe("the Move tab of the Canton route", () => {
     world.route = setupBody({}, { lockRoom: cc(2.5) });
     renderPage();
     await openRoute();
-    expect(await screen.findByText("Up to 10 CC of Canton Coin can be on other chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC.")).toBeInTheDocument();
+    expect(await screen.findByText("Up to 10 CC of Canton Coin can be on AggLayer chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC.")).toBeInTheDocument();
     expect(screen.getByText("The smallest amount for this route is 1 CC.")).toBeInTheDocument();
     expect(screen.getByText(/A move from Canton starts in your Canton wallet/)).toBeInTheDocument();
     expect(screen.getByText(/rests on the coin Rome holds on Canton/)).toBeInTheDocument();
@@ -107,7 +107,7 @@ describe("the Move tab of the Canton route", () => {
     world.route = setupBody({}, { lockRoom: 0n });
     renderPage();
     await openRoute();
-    expect(await screen.findByText("Up to 10 CC of Canton Coin can be on other chains at once for now, and that is reached. You can send again when some comes back to Canton.")).toBeInTheDocument();
+    expect(await screen.findByText("Up to 10 CC of Canton Coin can be on AggLayer chains at once for now, and that is reached. You can send again when some comes back to Canton.")).toBeInTheDocument();
   });
   it("says Canton to Ethereum Sepolia is not available right now, and that nothing is lost, when the route stopped or the bridge cannot be used", async () => {
     for (const over of [{ route: "stopped" as const, assets: [] }, { available: false }]) {

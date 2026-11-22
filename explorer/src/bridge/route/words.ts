@@ -20,12 +20,12 @@ export const exact = (base: bigint, decimals: number): string => {
 /** The line about the cap, from the book's `lockCap` and `lockRoom`; null while the whole cap is free. */
 export function capWords(a: RouteAsset): string | null {
   const n = (v: bigint) => showUnits(v, a.decimals);
-  const head = `Up to ${n(a.lockCap)} ${a.symbol} of ${a.name} can be on other chains at once for now`;
+  const head = `Up to ${n(a.lockCap)} ${a.symbol} of ${a.name} can be on AggLayer chains at once for now`;
   if (a.lockRoom === 0n) return `${head}, and that is reached. You can send again when some comes back to Canton.`;
   return a.lockRoom < a.lockCap ? `${head}. ${n(a.lockCap - a.lockRoom)} ${a.symbol} is out, so you can send up to ${n(a.lockRoom)} ${a.symbol}.` : null;
 }
 /** The same line for an amount over the cap, which says the cap even while none is out. */
-export const overCapWords = (a: RouteAsset): string => capWords(a) ?? `Up to ${showUnits(a.lockCap, a.decimals)} ${a.symbol} of ${a.name} can be on other chains at once for now.`;
+export const overCapWords = (a: RouteAsset): string => capWords(a) ?? `Up to ${showUnits(a.lockCap, a.decimals)} ${a.symbol} of ${a.name} can be on AggLayer chains at once for now.`;
 export const minimumWords = (a: RouteAsset, least: bigint) => `The smallest amount for this route is ${showUnits(least, a.decimals)} ${a.symbol}.`;
 export const notTakenWords = (by: string, amount: string) => `Not taken yet. If it is not taken by ${by}, your ${amount} is free again in your Canton account.`;
 export const lapsedWords = (amount: string) => `Not moved. Your ${amount} is free again in your Canton account.`;

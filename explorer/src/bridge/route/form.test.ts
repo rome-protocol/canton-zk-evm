@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { asset, cc } from "./fakes.ts";
 import { checkAddress, checkAmount, quote } from "./form.ts";
+import { capWords, overCapWords } from "./words.ts";
 
 describe("what a move costs, before the wallet is asked", () => {
   it("is the book's fee (the move's and the claim's) taken from the amount, so 5 CC pays 0.2 and sends 4.8", () => {
@@ -33,11 +34,11 @@ describe("the amount typed", () => {
     expect(checkAmount(asset({ minAmount: cc(0.1) }), 1n, "0.1")).toEqual({ state: "bad", why: "The smallest amount for this route is 0.2000000001 CC." });
   });
   it("is refused with the cap's words when what is sent is more than the room under the cap", () => {
-    expect(checkAmount(a, 1n, "5")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on other chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC." });
+    expect(checkAmount(a, 1n, "5")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on AggLayer chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC." });
     expect(checkAmount(a, 1n, "2.7")).toMatchObject({ state: "ok" });
     expect(checkAmount(a, 1n, "2.8")).toMatchObject({ state: "bad" });
-    expect(checkAmount(asset({ lockRoom: 0n }), 1n, "2")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on other chains at once for now, and that is reached. You can send again when some comes back to Canton." });
-    expect(checkAmount(asset(), 1n, "11")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on other chains at once for now." });
+    expect(checkAmount(asset({ lockRoom: 0n }), 1n, "2")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on AggLayer chains at once for now, and that is reached. You can send again when some comes back to Canton." });
+    expect(checkAmount(asset(), 1n, "11")).toEqual({ state: "bad", why: "Up to 10 CC of Canton Coin can be on AggLayer chains at once for now." });
   });
   it("is refused in words when it is not an amount", () => {
     for (const t of ["abc", "-1", "1e3", "1.12345678901"]) expect(checkAmount(a, 1n, t).state, t).toBe("bad");
@@ -50,5 +51,12 @@ describe("the address on Ethereum Sepolia", () => {
     expect(checkAddress(" 0x" + "E3".repeat(20) + " ")).toBeNull();
     expect(checkAddress("0x12")).toMatch(/Type an address on Ethereum Sepolia/);
     expect(checkAddress("0x" + "0".repeat(40))).toMatch(/zero address/);
+  });
+});
+
+describe("the words about the cap", () => {
+  it("name AggLayer chains and never say \"other chains\"", () => {
+    const lines = [capWords(asset({ lockRoom: 0n })), capWords(asset({ lockRoom: cc(2.5) })), overCapWords(asset())];
+    for (const l of lines) { expect(l).toContain("can be on AggLayer chains at once for now"); expect(l).not.toMatch(/other chains/i); }
   });
 });
