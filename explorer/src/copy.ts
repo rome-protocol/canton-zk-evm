@@ -24,6 +24,9 @@ export const DEPLOY_URL = "https://docs.rome.builders/canton-zk-evm/build-on-ost
 export const ISSUES_URL = `${SOURCE_URL}/issues`;
 export const TRUST_MODEL_URL = "https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature";
 
+/** The same page without its section: where the "Limits" link of the Other chains tab goes. */
+export const TRUST_MODEL_PAGE = TRUST_MODEL_URL.split("#")[0]!;
+
 /** What the sign-in sheet says of the account: it depends on the wallet, and nothing can bring it back. */
 export const SIGN_IN_SAME_ACCOUNT = "If your wallet gives the same signature again, the same account opens on another device. Not every wallet does: MetaMask, Rabby and OKX on a computer have been tested.";
 export const SIGN_IN_NO_RECOVERY = "No recovery: test tokens only.";

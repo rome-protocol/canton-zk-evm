@@ -1,0 +1,21 @@
+/* The "Other chains" tab of the Bridge: the route list and the steps of a transfer. The card, the amount, the tabs and the activity rows are the Bridge's own (bridge.css). */
+.other-chains .routes ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.other-chains .routes li { margin: 0; padding: 0; min-width: 0; }
+.other-chains .routes li::before { content: none; }
+.other-chains .route { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; width: 100%; box-sizing: border-box; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.other-chains .route.on { border-color: var(--canton); background: var(--canton-tint); }
+.other-chains .route.closed { cursor: default; color: var(--muted); background: var(--surface-2); border-style: dashed; }
+.other-chains .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.other-chains .xsteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.other-chains .xsteps li { display: flex; align-items: baseline; gap: 4px 8px; flex-wrap: wrap; margin: 0; padding: 0; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.other-chains .xsteps li::before { content: none; }
+.other-chains .xsteps i { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; align-self: center; }
+.other-chains .xsteps li.done { color: var(--ink); }
+.other-chains .xsteps li.done i { background: var(--ok); border-color: var(--ok); }
+.other-chains .xsteps li.now { color: var(--ink); font-weight: 600; }
+.other-chains .xsteps li.now i { border-color: var(--canton); }
+.other-chains .unsure { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.other-chains .unsure p { margin: 0; }
+.other-chains .unsure .btn { align-self: flex-start; }
+.other-chains .transfer .btn { align-self: flex-start; }
+.other-chains .transfer p { margin: 0; overflow-wrap: anywhere; }

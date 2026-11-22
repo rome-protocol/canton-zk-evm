@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { bridgeReads } from "../api.ts";
-import { CardHead, unready } from "../components/Cards.tsx";
+import { CardHead, LoadingCard, unready } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { BuilderGrant } from "../faucet/builder.tsx";
 import { createFaucetClient, type CoinResult, type FaucetInfo } from "../faucet/faucet-client.ts";
@@ -16,6 +16,7 @@ import { forgetKeptKeys } from "../bridge/retired.ts";
 import { accountCode, keystoreCode, senderCode } from "../bridge/derived.ts";
 import { ensureOstia } from "../bridge/evm/network.ts";
 import { buildSettings } from "../bridge/settings.ts";
+import { OFF, readSetup, type Setup } from "../bridge/other/setup.ts";
 import { walletsFromEnv } from "../bridge/wallet/wallets.ts";
 import { GENERIC, PageError, plainText, plainWords, signInWords } from "../bridge/words.ts";
 import type { Account } from "../bridge/account.ts";
@@ -53,11 +54,45 @@ async function coinAdmin(): Promise<string> {
   return admin;
 }
 
+/** The "Other chains" tab's page: its own script, fetched when the tab is first opened. */
+const OtherChains = lazy(() => import("./OtherChains.tsx").then((m) => ({ default: m.OtherChains })));
+
 /**
- * The Bridge route: the account sheet, the Canton account, with the test coins. In a build with the Bridge account made from a wallet signature (`__BRIDGE_ACCOUNT__`) the account is opened from the wallet's signature
- * or is a connected Canton wallet's; in every other build it is the person's own Canton wallet's alone, and the page has no sign-in, no key and no Canton Coin faucet.
+ * The Bridge route. The Canton page is below, as it was. Next to it is the "Other chains" tab, which exists only when the server's AggLayer setup says it is on (`/api/agglayer/setup`);
+ * with that off, nothing here changes: no tab, and the page is the Canton page alone.
  */
 export function Bridge() {
+  const [params, setParams] = useSearchParams();
+  const [found, setFound] = useState<{ done: boolean; setup: Setup }>({ done: false, setup: OFF });
+  useEffect(() => {
+    let live = true;
+    void readSetup(timeoutSignal()).then((setup) => { if (live) setFound({ done: true, setup }); });
+    return () => { live = false; };
+  }, []);
+  const { setup } = found;
+  const wanted = params.get("tab") === "other-chains";
+  const other = setup.on && wanted;
+  const pick = (to: "canton" | "other-chains") => setParams(to === "canton" ? {} : { tab: to });
+  const tabs = setup.on ? (
+    <div className="tabs" role="tablist" aria-label="Bridge pages">
+      <button type="button" role="tab" aria-selected={!other} onClick={() => pick("canton")}>Canton</button>
+      <button type="button" role="tab" aria-selected={other} onClick={() => pick("other-chains")}>Other chains</button>
+    </div>
+  ) : null;
+  // Opened at the tab's own address, the Canton page waits for the answer rather than showing for a moment: it shows only if the answer is that the tab does not exist.
+  return (
+    <>
+      <CantonBridge above={tabs} hidden={wanted && (!found.done || setup.on)} />
+      {other && <Suspense fallback={<LoadingCard>Loading…</LoadingCard>}><OtherChains tabs={tabs} setup={setup} /></Suspense>}
+    </>
+  );
+}
+
+/**
+ * The Canton page: the account sheet, the Canton account, with the test coins. In a build with the Bridge account made from a wallet signature (`__BRIDGE_ACCOUNT__`) the account is opened from the wallet's signature
+ * or is a connected Canton wallet's; in every other build it is the person's own Canton wallet's alone, and the page has no sign-in, no key and no Canton Coin faucet.
+ */
+function CantonBridge({ above, hidden = false }: { above?: ReactNode; hidden?: boolean }) {
   /** This build has the Bridge account (VITE_BRIDGE_ACCOUNT=on). Its code is loaded through src/bridge/derived.ts, which is empty in a build without it. */
   const accountOn = __BRIDGE_ACCOUNT__;
   const st = useStatus();
@@ -186,7 +221,7 @@ export function Bridge() {
   useEffect(() => { if (nudge > 0) sheetRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" }); }, [nudge]);
 
   const wait = unready(st, "Looking up the chain…");
-  if (wait) return wait;
+  if (wait) return hidden ? null : wait;
   const chain = st.data!;
   const sym = chain.coin.symbol;
   const here = location.origin;
@@ -265,8 +300,9 @@ export function Bridge() {
   const needCoin = connected && gas === 0n && faucetOn;
   const walletNote = noWallet ? noWalletWords() : wallet.error ? plainText(wallet.error) : null;
   return (
-    <div className="bridge-page">
+    <div className="bridge-page" hidden={hidden}>
       <div className="ptitle"><h1>Bridge</h1><span className="muted psub">Move tokens between {chain.chainName} and Canton</span></div>
+      {above}
       {settings && (
         <div className="tabs" role="tablist" aria-label="Bridge">
           {(["move", "activity"] as const).map((t) => (
