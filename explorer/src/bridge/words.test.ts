@@ -125,6 +125,7 @@ describe("the page's sentences about wallets and moves", () => {
     for (const text of said) expect(moveWords(text), text).not.toMatch(/\b(party|allocat\w*|vault|gateway|registry|Web Locks|nonce|leg|hash|contract|twins?|redeem|lock)\b|ERC|EIP|0x/i);
     expect(moveWords("User rejected the request.")).toBe("You declined it in your wallet.");
     expect(moveWords("You do not hold enough TKA.")).toBe("You do not hold enough TKA.");
+    expect(moveWords("A Canton Coin deposit must be at least 1.12. Your Canton Coin has not been touched. Try a larger amount.")).toBe("A Canton Coin deposit must be at least 1.12. Your Canton Coin has not been touched. Try a larger amount.");
     expect(moveWords("Canton has your redeem. Continue to ask your wallet for the release.")).toBe("Canton has it. Continue to release it on Ostia.");
   });
   it("says a balance too low for the fees in plain words", () => {

@@ -594,6 +594,8 @@ export const getSwap = async (payId: string) => (await call(`/api/swaps/${encode
 export const bridgeReads = {
   status: readStatus,
   twins: async (signal: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview,
+  /** The least one deposit of an instrument may carry: `floor` is decimal text. The list is empty where the explorer has no minimum to give. */
+  minimums: async (signal: AbortSignal) => (await call("/api/bridge/minimums", [200], signal)).body as { minimums?: { instrumentAdmin: string; floor: string }[] },
   tx: async (hash: string, signal: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx,
   leg: async (id: string, signal: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem,
   /** The newest transactions the address sent; `before` is the `next` of a page, for the page after it. */

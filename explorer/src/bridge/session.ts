@@ -10,7 +10,7 @@ import type { OpenRequest, OpenState } from "./canton/accounts.ts";
 import type { EvmAdapter } from "./evm/adapter.ts";
 import type { BridgeConfig } from "./evm/config.ts";
 import { registryClient } from "./evm/registry.ts";
-import { createMove, explorerCustody, explorerLeg, explorerSentSince, explorerTx, randomRef, Refused, webLocks, type CantonAdapter, type Move } from "./moves/moves.ts";
+import { createMove, explorerCustody, explorerLeg, explorerMinimum, explorerSentSince, explorerTx, randomRef, Refused, webLocks, type CantonAdapter, type Move } from "./moves/moves.ts";
 import { keptMoves, moveStore, depositIdOf, releaseIdOf, type Checkpoint } from "./moves/state.ts";
 
 export interface Session {
@@ -79,7 +79,7 @@ export function createSession(o: { evm: EvmAdapter; account: SessionAccount; con
   const canton = accountAdapter(account);
   const store = moveStore();
   const move = createMove({
-    config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince, custody: explorerCustody,
+    config, evm, canton, registry: registryClient(config.registryUrl), api: { tx: explorerTx }, leg: explorerLeg, sentSince: explorerSentSince, custody: explorerCustody, minimum: explorerMinimum,
     store, locks: webLocks(), sleep, newRef: randomRef,
   });
   const stop = track(move, store);

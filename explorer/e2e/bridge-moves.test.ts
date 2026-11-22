@@ -39,13 +39,13 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
   const ALLOCATION = "00" + "dd".repeat(40);   // the contract id the participant gives the allocation
   const service = {
     has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {} as Extra,
-    prepared: null as null | { hash: string; kind: "redeem" | "allocation" | "deposit" }, label: "", allocated: false, depositOpen: false,
+    prepared: null as null | { hash: string; kind: "redeem" | "allocation" | "deposit" }, label: "", allocated: false, depositOpen: false, minimum: null as string | null,
   };
   let server: Server, browser: any, party = "", publicKey: Uint8Array = new Uint8Array();
   beforeEach(() => {
     chain = freshChain();
     Object.assign(seen, { redeemRef: "", depositId: "", executed: 0, verified: 0, signedOk: false, signRequests: 0, rejectSends: 0, factoryAsked: 0 });
-    Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {}, prepared: null, label: "", allocated: false, depositOpen: false });
+    Object.assign(service, { has: { twin: false, withdrawal: false }, redeemOpen: false, extra: {}, prepared: null, label: "", allocated: false, depositOpen: false, minimum: null });
   });
 
   /** What the browser refused under the Content-Security-Policy: no test may have any. */
@@ -59,6 +59,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
       const json = (status: number, answer: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(answer)); };
       if (path === "/api/status") return json(200, STATUS);
       if (path === "/api/faucet") return json(200, { on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0, balanceBlock: 1 });
+      if (path === "/api/bridge/minimums") return json(200, { minimums: service.minimum === null ? [] : [{ instrumentAdmin: CC_ADMIN, floor: service.minimum, readAt: null }] });   // the builder's floor, as the explorer serves it
       if (path === "/api/twins") return json(200, twinsOverview(`${ORIGIN}/twin-registry`, service.extra));
       if (path.startsWith("/api/tx/")) { const t = txAnswer(chain, decodeURIComponent(path.slice(8))); return t ? json(200, t) : json(404, { error: "Not found." }); }
       if (path === "/rpc") {
@@ -281,6 +282,22 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     expect(sent[0]!.to.toLowerCase()).toBe(GATEWAY.toLowerCase());   // the claim
     expect(sent[0]!.leg).toMatchObject({ kind: "deposit", erc20: WCC });
     expect(sent[0]!.leg!.legId.replace(/^0x/, "").toLowerCase()).toBe(seen.depositId.replace(/^0x/, "").toLowerCase());
+    expect(await noSideways(page)).toBe(true);
+    await page.close();
+  }, 150_000);
+
+  it("refuses a Canton Coin deposit under the minimum the server gives, before anything is signed on Canton, and says the minimum", async () => {
+    service.extra = { wrapped: true };
+    service.minimum = "1.1180160000";
+    const page = await open("/bridge");
+    await signedIn(page);
+    await pick(page, "From", /^Canton Coin on Canton$/);
+    await page.getByRole("textbox", { name: "Amount to move" }).fill("1");
+    await page.getByRole("button", { name: "Move to Ostia" }).click();
+    await page.getByText("A Canton Coin deposit must be at least 1.12. Your Canton Coin has not been touched. Try a larger amount.").waitFor({ timeout: 30_000 });
+    expect(seen.factoryAsked).toBe(0);
+    expect(seen.executed).toBe(0);   // nothing was signed or sent on Canton
+    expect([...chain.sent.values()]).toHaveLength(0);
     expect(await noSideways(page)).toBe(true);
     await page.close();
   }, 150_000);

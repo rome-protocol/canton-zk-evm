@@ -151,6 +151,13 @@ chain_args() {
   [ -z "$tokenfile" ] || mount_file LEDGER_TOKEN_FILE "$tokenfile"
 }
 
+# The producer's work folder (the builder's CZE_WORK_DIR, default <state>/builder), as an absolute path.
+producer_dir() {
+  local work=${CZE_WORK_DIR:-$STATE/builder}
+  case $work in /*) ;; *) work=$PWD/$work ;; esac
+  echo "$work"
+}
+
 # The explorer's container, in ARGS (without the database's settings: the files named here are checked first, before anything runs).
 explorer_args() {
   ARGS=(run -d --name "$NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID")
@@ -178,6 +185,9 @@ explorer_args() {
     AGGLAYER_BRIDGE AGGKIT_BRIDGE_URL AGGLAYER_OSTIA_BRIDGE AGGLAYER_SEPOLIA_BRIDGE AGGLAYER_ROLLUP_MANAGER AGGLAYER_OSTIA_NETWORK_ID AGGLAYER_SEPOLIA_CHAIN_ID AGGLAYER_SEPOLIA_MAX_PER_SECOND AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS AGGLAYER_AGGKIT_MAX_LAG_BLOCKS AGGLAYER_TOKENS AGGLAYER_ROUTES; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
+  # The builder's status file, for the least a deposit may be (GET /api/bridge/minimums): its work folder read-only, as the indexer has it. Without the folder there is no minimum, and the Bridge page makes no check.
+  local work; work=$(producer_dir)
+  [ ! -d "$work" ] || ARGS+=(-v "$work:/run/explorer/producer:ro" -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json)
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
   # The Ethereum Sepolia endpoint of the AggLayer bridge routes carries a key: named without its value, the same way.
@@ -195,8 +205,7 @@ indexer_args() {
   mount_file GENESIS_FILE "$genesis"
   # The producer's work folder (the builder's CZE_WORK_DIR, default <state>/builder), read-only: the indexer reads its journal/ folder and status.json and never writes
   # there. The folder is mounted, not the status file, because the producer replaces that file by a rename. Without the folder the lifecycle stays blank and the health says so.
-  local work=${CZE_WORK_DIR:-$STATE/builder}
-  case $work in /*) ;; *) work=$PWD/$work ;; esac
+  local work; work=$(producer_dir)
   if [ -d "$work" ]; then
     ARGS+=(-v "$work:/run/explorer/producer:ro" -e JOURNAL_DIR=/run/explorer/producer/journal -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json)
   else

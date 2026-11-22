@@ -12,6 +12,9 @@ export const FIELDS = {
   /** A notice in /api/status while there is one: the text and the two times of the planned work, and the level ("major") and the link when it has them. */
   notice: ["text", "startsAt", "endsAt"],
   noticeLink: ["url", "label"],
+  /** The answer of /api/bridge/minimums, and one minimum in it. */
+  minimums: ["minimums"],
+  minimum: ["instrumentAdmin", "floor", "readAt"],
   /** The answer of /api/health, and one check in it. */
   health: ["status", "instance", "starting", "problems", "checks"],
   healthCheck: ["id", "role", "status", "written", "value", "threshold", "detail", "sinceSeconds", "changedAt", "refreshedAt", "refreshedAgoSeconds", "intervalSeconds", "stale", "elsewhere"],
