@@ -62,10 +62,10 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
   let statusAt = -Infinity;
   let statusNow: Promise<Status> | null = null;
 
-  /** The time of the newest deposit made on Ostia, in seconds; null when there is none or it cannot be read. */
-  async function newestOstiaDeposit(head: number | null): Promise<number | null> {
-    if (head === null) return null;
-    const out = await reth.callAt(settings.ostiaBridge, depositCountCall(), head);
+  /** The time of the newest deposit made on Ostia as of `block` (the finalized block: the bridge service follows that one), in seconds; null when there is none or it cannot be read. */
+  async function newestOstiaDeposit(block: number | null): Promise<number | null> {
+    if (block === null) return null;
+    const out = await reth.callAt(settings.ostiaBridge, depositCountCall(), block);
     if (!/^0x[0-9a-f]{64}$/.test(out) || BigInt(out) === 0n || BigInt(out) >= 2n ** 32n) return null;
     return (await aggkit.bridge(settings.ostiaNetworkId, Number(BigInt(out)) - 1))?.blockTimestamp ?? null;
   }
@@ -78,7 +78,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     statusNow = (async (): Promise<Status> => {
       const number = (id: "latest" | "finalized") => reth.block(id).then((b) => b?.number ?? null, () => null);
       const [head, finalized] = await Promise.all([number("latest"), number("finalized")]);
-      const [healthy, sync, settled, attached, newest] = await Promise.allSettled([aggkit.healthy(), aggkit.syncStatus(), aggkit.settlements(), sepolia.attached(chainId), newestOstiaDeposit(head)]);
+      const [healthy, sync, settled, attached, newest] = await Promise.allSettled([aggkit.healthy(), aggkit.syncStatus(), aggkit.settlements(), sepolia.attached(chainId), newestOstiaDeposit(finalized ?? head)]);
       const reachable = healthy.status === "fulfilled" && healthy.value;
       const sy = sync.status === "fulfilled" ? sync.value : null;
       const a = attached.status === "fulfilled" ? attached.value : null;

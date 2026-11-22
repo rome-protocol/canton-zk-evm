@@ -58,5 +58,7 @@ export function isClaimFor(data: string, want: { destinationNetwork: number; rec
   } catch { return false; }
 }
 
-/** The call as a wallet's transaction object (a value in hex). */
-export const asTransaction = (from: string, c: Call, gas?: bigint) => ({ from, to: c.to, data: c.data, value: "0x" + BigInt(c.value).toString(16), ...(gas === undefined ? {} : { gas: "0x" + gas.toString(16) }) });
+/** The call as a wallet's transaction object (a value in hex). With `chainId` the wallet is told which chain it is for, and refuses it on any other. */
+export const asTransaction = (from: string, c: Call, gas?: bigint, chainId?: number) => ({
+  from, to: c.to, data: c.data, value: "0x" + BigInt(c.value).toString(16), ...(gas === undefined ? {} : { gas: "0x" + gas.toString(16) }), ...(chainId === undefined ? {} : { chainId: "0x" + chainId.toString(16) }),
+});

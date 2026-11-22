@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { bridgeCall } from "./calls.ts";
 import { ensureOther, createEnv } from "./wire.ts";
 import { WrongChain } from "./transfer.ts";
+import { definitelyNotSent } from "../evm/adapter.ts";
+import { otherWords } from "./words.ts";
 import { hash, ME, memoryLocks, memoryStore, OSTIA_ID, plan, SEPOLIA_BRIDGE, SEPOLIA_ID } from "./fakes.ts";
 
 const status = { chainId: OSTIA_ID, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 } };
@@ -57,7 +59,7 @@ describe("sending", () => {
     const { env, read } = build(w);
     expect(await env.send(SEPOLIA_ID, call)).toBe(hash(77));
     const sent = w.seen.find((s) => s.method === "eth_sendTransaction")!.params[0];
-    expect(sent).toMatchObject({ from: ME, to: SEPOLIA_BRIDGE, value: "0x7d0", gas: "0x1d4c0" });
+    expect(sent).toMatchObject({ from: ME, to: SEPOLIA_BRIDGE, value: "0x7d0", gas: "0x1d4c0", chainId: "0xaa36a7" });   // the wallet refuses it on any other chain
     expect(read).not.toHaveBeenCalled();
   });
   it("estimates a send on Ostia through the explorer, not the wallet", async () => {
@@ -66,7 +68,17 @@ describe("sending", () => {
     await env.send(OSTIA_ID, call);
     expect(read).toHaveBeenCalledWith("eth_estimateGas", [expect.objectContaining({ from: ME })]);
     expect(w.seen.map((s) => s.method)).not.toContain("eth_estimateGas");
-    expect(w.seen.find((s) => s.method === "eth_sendTransaction")!.params[0].gas).toBe("0x6270");
+    expect(w.seen.find((s) => s.method === "eth_sendTransaction")!.params[0]).toMatchObject({ gas: "0x6270", chainId: "0xbc035" });
+  });
+  it("looks at the wallet's chain right before it asks the wallet to send, on Sepolia and on Ostia, and sends nothing when the wallet has moved", async () => {
+    for (const [start, other] of [[SEPOLIA_ID, OSTIA_ID], [OSTIA_ID, SEPOLIA_ID]] as const) {
+      const w = wallet(start, { eth_estimateGas: () => { w.state.chain = other; return "0x186a0"; }, eth_sendTransaction: () => hash(79) });   // the wallet changes network while the estimate is asked
+      const { env } = build(w, vi.fn(async () => { w.state.chain = other; return "0x5208"; }));
+      const e = await env.send(start, call).catch((x) => x);
+      expect(definitelyNotSent(e)).toBe(true);
+      expect(otherWords(e, "the chain", "")).toBe(`Your wallet is not on ${start === SEPOLIA_ID ? "Ethereum Sepolia" : "Ostia"}. Nothing was sent.`);
+      expect(w.seen.map((s) => s.method)).not.toContain("eth_sendTransaction");
+    }
   });
   it("stops before the wallet is asked when the estimate fails: nothing was sent", async () => {
     const w = wallet(SEPOLIA_ID, { eth_estimateGas: () => { throw new Error("insufficient funds"); } });

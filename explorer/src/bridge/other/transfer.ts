@@ -185,9 +185,10 @@ export function readStop(e: unknown): Stop | unknown {
   return new Stop("The bridge cannot be read right now. Nothing was signed. Try again in a moment.");
 }
 
-export type Looked = "sent" | "not-sent" | "unknown" | "elsewhere";
+/** `unknown`: the wallet's count moved, so something was sent since the record was written. `no-count`: the wallet gave no count, or the record has none, so nothing is known. */
+export type Looked = "sent" | "not-sent" | "unknown" | "no-count" | "elsewhere";
 
-/** Looks for a step the wallet did not answer: with a hash it is sent; else the wallet's own count of transactions says whether anything was sent since the record was written (then the step may be asked again) or not (it stays open). */
+/** Looks for a step the wallet did not answer: with a hash it is sent; else the wallet's own count of transactions says whether anything was sent since the record was written (then the step stays open) or not (then it may be asked again). */
 export async function look(env: Env, id: string, which: "send" | "claim"): Promise<Looked> {
   return locked(env, id, async () => {
     const t = kept(env, id);
@@ -196,7 +197,8 @@ export async function look(env: Env, id: string, which: "send" | "claim"): Promi
     if (a.tx) return "sent";
     if (!(await env.onChain(a.chainId))) return "elsewhere";
     const n = await env.nonces(a.chainId);
-    if (n && a.nonce !== null && n.pending <= a.nonce) {
+    if (!n || a.nonce === null) return "no-count";
+    if (n.pending <= a.nonce) {
       saveTransfer(env.store, { ...t, [which]: null });
       return "not-sent";
     }

@@ -76,6 +76,8 @@ export interface World {
   asked: { ensure: number[]; deposit: number; claim: number };
   /** Reads of the Sepolia side fail with WrongChain while the wallet is elsewhere (as a wallet answers only for its own chain). */
   nextHash: number;
+  /** The wallet gives no count of its transactions. */
+  noCount?: boolean;
 }
 
 export const stage = (s: Stage): Deposit => ({ stage: s, sentAt: s === "unknown" ? null : "2026-11-22T21:40:00Z", confirmedAt: ["confirmed", "ready", "claimed"].includes(s) ? "2026-11-22T21:44:00Z" : null, readyAt: ["ready", "claimed"].includes(s) ? "2026-11-22T21:46:00Z" : null });
@@ -91,7 +93,7 @@ export function fakeEnv(w: World, o: { plan?: Plan; id?: string; clock?: () => n
     plan: o.plan ?? plan(), account: ME, store, locks: o.locks === false ? null : memoryLocks(), now: o.clock ?? (() => 1_700_000_000_000), newId: () => o.id ?? `t${++n}`,
     async ensure(chainId) { w.asked.ensure.push(chainId); w.chain = chainId; return null; },
     async onChain(chainId) { return w.chain === chainId; },
-    async nonces(chainId) { return { pending: w.pending[chainId]!, latest: w.pending[chainId]! }; },
+    async nonces(chainId) { if (w.noCount) return null; return { pending: w.pending[chainId]!, latest: w.pending[chainId]! }; },
     async send(chainId, call) {
       const how = w.next.shift() ?? "ok";
       if (how === "refuse") throw Object.assign(new Error("User rejected the request."), { code: 4001 });

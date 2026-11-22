@@ -33,6 +33,9 @@ describe("the deposit call", () => {
     const c = bridgeCall(BRIDGE, 75, ME, 255n, "native");
     expect(asTransaction(ME, c)).toEqual({ from: ME, to: BRIDGE, data: c.data, value: "0xff" });
     expect(asTransaction(ME, c, 21000n).gas).toBe("0x5208");
+    expect(asTransaction(ME, c, 21000n, 11155111)).toMatchObject({ gas: "0x5208", chainId: "0xaa36a7" });
+    expect(asTransaction(ME, c, undefined, 770101)).toMatchObject({ chainId: "0xbc035" });
+    expect("chainId" in asTransaction(ME, c)).toBe(false);
   });
 });
 

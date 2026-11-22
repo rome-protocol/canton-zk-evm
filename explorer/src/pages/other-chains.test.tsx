@@ -17,9 +17,9 @@ const world = {
   setup: setupBody() as unknown, stage: "unknown" as string, count: 7, claimed: false,
   chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 } as Record<number, number>,
   sent: [] as { chainId: number; tx: any; hash: string }[], receipts: new Map<string, unknown>(), next: [] as string[],
-  coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [] as number[], asked: [] as string[], faucetPosts: 0, hold: null as Promise<void> | null,
+  coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [] as number[], asked: [] as string[], faucetPosts: 0, hold: null as Promise<void> | null, noCount: false,
 };
-const reset = () => Object.assign(world, { setup: setupBody(), stage: "unknown", count: 7, claimed: false, chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 }, sent: [], receipts: new Map(), next: [], coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [], asked: [], faucetPosts: 0, hold: null });
+const reset = () => Object.assign(world, { setup: setupBody(), stage: "unknown", count: 7, claimed: false, chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 }, sent: [], receipts: new Map(), next: [], coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [], asked: [], faucetPosts: 0, hold: null, noCount: false });
 const hex = (n: bigint | number) => "0x" + n.toString(16);
 
 function wireFetch() {
@@ -62,7 +62,7 @@ function wireWallet() {
         case "eth_chainId": return hex(world.chain);
         case "wallet_switchEthereumChain": world.chain = Number(BigInt(params[0].chainId)); world.switches.push(world.chain); return null;
         case "eth_getBalance": return hex(world.eth);
-        case "eth_getTransactionCount": return hex(world.nonce[world.chain]! + (params[1] === "pending" ? world.sent.filter((s) => s.chainId === world.chain).length : 0));
+        case "eth_getTransactionCount": if (world.noCount) throw new Error("no count"); return hex(world.nonce[world.chain]! + (params[1] === "pending" ? world.sent.filter((s) => s.chainId === world.chain).length : 0));
         case "eth_estimateGas": return "0x30d40";
         case "eth_sendTransaction": {
           const how = world.next.shift() ?? "ok";
@@ -71,6 +71,7 @@ function wireWallet() {
           const hash = "0x" + (0x2000 + world.sent.length).toString(16).padStart(64, "0");
           if (how === "silent") throw new Error("The request timed out.");
           world.sent.push({ chainId: world.chain, tx: params[0], hash });
+          if (how === "silent-sent") throw new Error("The request timed out.");
           return hash;
         }
         case "eth_getTransactionReceipt": return world.receipts.get(params[0]) ?? null;
@@ -303,9 +304,42 @@ describe("Ethereum Sepolia to Ostia", () => {
     expect(within(row).getByText("Check your wallet", { selector: "span.small" })).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /Send to Ostia/ })).toBeNull();
     await userEvent.click(within(row).getByRole("button", { name: "Look for it" }));
-    expect(await within(row).findByText("Your wallet did not send it. You can send it again.")).toBeInTheDocument();
+    expect(await within(row).findByText("Nothing has been sent from your wallet since this was started. Check your wallet: if it still has this request open, turn it down, then send again.")).toBeInTheDocument();
     await userEvent.click(await within(await screen.findByRole("listitem", { name: "Sending 0.002 ETH to Ostia" })).findByRole("button", { name: "Send to Ostia" }));
     await waitFor(() => expect(world.sent).toHaveLength(1));
+  });
+  it("says only what a look found for a send the wallet did not answer: that its count moved, or that it gives no count", async () => {
+    wireWallet();
+    world.next = ["silent-sent", "silent"];
+    renderPage();
+    await connect();
+    await type("0.002");
+    await userEvent.click(screen.getByRole("button", { name: "Send to Ostia" }));
+    const row = await screen.findByRole("listitem", { name: "Sending 0.002 ETH to Ostia" });
+    await userEvent.click(await within(row).findByRole("button", { name: "Look for it" }));
+    expect(await within(row).findByText("Your wallet has sent something since this was started. It may be this. Find it in your wallet's activity on Ethereum Sepolia, then paste its transaction hash below.")).toBeInTheDocument();
+    world.noCount = true;
+    await userEvent.click(within(row).getByRole("button", { name: "Look for it" }));
+    expect(await within(row).findByText("Your wallet does not say what it sent. Find it in its activity on Ethereum Sepolia and paste its hash, or give this up.")).toBeInTheDocument();
+    expect(within(row).queryByText(/Something was sent|did not send/)).toBeNull();
+    expect(within(row).queryByRole("button", { name: /Send to Ostia/ })).toBeNull();   // still nothing to press that sends again
+  });
+  it("refuses to send, and keeps no record, when the wallet has left the chain by the moment it is asked", async () => {
+    const w = wireWallet();
+    const base = w.request.getMockImplementation()!;
+    let checks = 0;
+    w.request.mockImplementation(async (a: { method: string; params?: any[] }) => {
+      if (a.method === "eth_chainId" && world.asked.length > 0 && w.request.mock.calls.some((c: any) => c[0].method === "eth_estimateGas")) { checks++; return hex(OSTIA_ID); }
+      return base(a);
+    });
+    renderPage();
+    await connect();
+    await type("0.002");
+    await userEvent.click(screen.getByRole("button", { name: "Send to Ostia" }));
+    expect(await screen.findByText("Your wallet is not on Ethereum Sepolia. Nothing was sent.")).toBeInTheDocument();
+    expect(world.sent).toEqual([]);
+    expect(checks).toBeGreaterThan(0);
+    expect(screen.queryByRole("listitem", { name: /Sending/ })).toBeNull();
   });
   it("says only that the wallet is being asked while its pop-up stays open longer than a look takes: no alert, no Look for it, no give-up", async () => {
     wireWallet();
@@ -395,7 +429,7 @@ describe("Ostia to Ethereum Sepolia", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send to Ethereum Sepolia" }));
     await waitFor(() => expect(world.sent).toHaveLength(1));
     expect(world.switches).toEqual([OSTIA_ID]);
-    expect(world.sent[0]!.tx).toMatchObject({ from: ME, to: OSTIA_BRIDGE, value: "0x0" });
+    expect(world.sent[0]!.tx).toMatchObject({ from: ME, to: OSTIA_BRIDGE, value: "0x0", chainId: hex(OSTIA_ID) });
     const row = await screen.findByRole("listitem", { name: "Sending 0.002 ETH to Ethereum Sepolia" });
     expect(within(row).getByRole("list", { name: "How far the move has got" })).toBeInTheDocument();   // Sent, Proven, Final
     mined(0, OSTIA_BRIDGE, 0);
@@ -410,7 +444,10 @@ describe("Ostia to Ethereum Sepolia", () => {
     expect(world.sent[1]!.tx.to).toBe(SEPOLIA_BRIDGE);
     expect(world.chain).toBe(SEPOLIA_ID);
     world.stage = "claimed";
-    expect(await screen.findByRole("listitem", { name: "Arrived. 0.002 ETH is in your wallet on Ethereum Sepolia." })).toBeInTheDocument();
+    const arrived = await screen.findByRole("listitem", { name: "Arrived. 0.002 ETH is in your wallet on Ethereum Sepolia." });
+    // The Done screen links the claim on Sepolia to Sepolia's own explorer, and the send on Ostia to this one.
+    expect(within(arrived).getByRole("link", { name: "The claim on Ethereum Sepolia" })).toHaveAttribute("href", `https://sepolia.etherscan.io/tx/${world.sent[1]!.hash}`);
+    expect(within(arrived).getByRole("link", { name: "The send on Ostia" })).toHaveAttribute("href", `/tx/${world.sent[0]!.hash}`);
   });
   it("asks for the test coin before a send on Ostia when the wallet has none", async () => {
     wireWallet();

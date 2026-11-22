@@ -1,5 +1,6 @@
 // What the "Other chains" page says. Plain words; "Claim" for the person's own claim step, never "Receive"; never "pending" and never that Rome acts after the person's own transaction. The trust
 // lines are the ones the design allows, each only where it applies.
+import { SEPOLIA_TX_URL } from "../../copy.ts";
 import { GENERIC, plainWords } from "../words.ts";
 import type { Range } from "./setup.ts";
 
@@ -37,11 +38,25 @@ export function elapsedWords(r: Range | null, seconds: number): string | null {
 /** A time of the day in UTC, "21:44 UTC". */
 export const clock = (iso: string | number): string => new Date(iso).toISOString().slice(11, 16) + " UTC";
 
+/** What a look for a step the wallet did not answer says. Only what the look shows: the wallet's count of its transactions has not moved since the step was written, so nothing has been sent from it since; it does not show that no pop-up is still open. */
+export const notSentWords = (again: "send" | "claim") => `Nothing has been sent from your wallet since this was started. Check your wallet: if it still has this request open, turn it down, then ${again} again.`;
+/** The count has moved: something was sent from the wallet since the step was written, which may or may not be this step. */
+export const movedWords = (name: string) => `Your wallet has sent something since this was started. It may be this. Find it in your wallet's activity on ${name}, then paste its transaction hash below.`;
+/** The wallet gave no count, or the record has none to compare it with: nothing is known. */
+export const noCountWords = (name: string) => `Your wallet does not say what it sent. Find it in its activity on ${name} and paste its hash, or give this up.`;
+
+/** Where a transaction on another chain is shown, for a chain the page knows by its chain id (Ethereum Sepolia); null for any other. */
+export function otherTxUrl(chainId: number, hash: string): string | null {
+  return chainId === 11155111 && /^0x[0-9a-fA-F]{64}$/.test(hash) ? `${SEPOLIA_TX_URL}${hash}` : null;
+}
+
 /** What a failed step says, in words. `name` is the chain the step was on. */
 export function otherWords(e: unknown, name: string, coin: string): string {
   const x = e as { name?: unknown; code?: unknown; message?: unknown; shortMessage?: unknown; cause?: unknown } | null | undefined;
   if (x && x.name === "Stop" && typeof x.message === "string") return x.message;
   if (x && x.name === "Unsure") return "Your wallet did not say whether it sent this. Look in its activity on " + name + ". Nothing more is sent until you have.";
+  const inner = x?.cause as { name?: unknown; message?: unknown } | undefined;
+  if (inner?.name === "Stop" && typeof inner.message === "string") return inner.message;   // refused before the wallet was asked, with words of its own
   const text = [x?.message, x?.shortMessage, (x?.cause as { message?: unknown } | undefined)?.message].filter((m): m is string => typeof m === "string").join(" ");
   if (/insufficient funds|exceeds the balance|gas required exceeds/i.test(text)) return `You do not have enough ${coin} on ${name} for this amount and the fee. Get some, then try again.`;
   if (/execution reverted|revert/i.test(text)) return `${name} would not take this. Nothing was sent.`;

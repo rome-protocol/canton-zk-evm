@@ -7,7 +7,7 @@ import { ensureOstia } from "../evm/network.ts";
 import { NotSent, padGas } from "../evm/adapter.ts";
 import { asTransaction, type Call } from "./calls.ts";
 import { readClaim, readDeposit } from "./reads.ts";
-import { WrongChain, type Env, type Plan, type Receipt, type Seen } from "./transfer.ts";
+import { Stop, WrongChain, type Env, type Plan, type Receipt, type Seen } from "./transfer.ts";
 import type { LocksLike } from "../moves/moves.ts";
 import type { StoreLike } from "../moves/state.ts";
 import { plainText } from "../words.ts";
@@ -76,7 +76,9 @@ export function createEnv(o: WireOptions): Env {
     async send(chainId: number, call: Call): Promise<Hex> {
       let gas: bigint;
       try { gas = padGas(BigInt(String(await ask(chainId, "eth_estimateGas", [asTransaction(account, call)])))); } catch (e) { throw new NotSent(e); }
-      return hashText(await wallet.request({ method: "eth_sendTransaction", params: [asTransaction(account, call, gas)] }));
+      // The wallet may have changed network since the check before the estimate: look again right before it is asked, and name the chain in the request, as the Canton page's client does.
+      if (!(await onChain(chainId))) throw new NotSent(new Stop(`Your wallet is not on ${chainId === plan.ostia.chainId ? plan.ostia.name : plan.other.name}. Nothing was sent.`));
+      return hashText(await wallet.request({ method: "eth_sendTransaction", params: [asTransaction(account, call, gas, chainId)] }));
     },
     async receipt(chainId, hash): Promise<Receipt | null> {
       const r = (await ask(chainId, "eth_getTransactionReceipt", [hash])) as { status?: string; logs?: { address: string; topics: string[]; data: string }[] } | null;

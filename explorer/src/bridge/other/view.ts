@@ -5,7 +5,7 @@ import type { Transfer } from "./record.ts";
 import type { Deposit } from "./reads.ts";
 import type { OpenRow, OstiaChain } from "./setup.ts";
 import { sides } from "./transfer.ts";
-import { clock, elapsedWords, feeCoin } from "./words.ts";
+import { clock, elapsedWords, feeCoin, notSentWords } from "./words.ts";
 
 export type Phase = "asking" | "unsent" | "unsure-send" | "sending" | "lost" | "waiting" | "ready" | "unsure-claim" | "claiming" | "arrived";
 export interface StepView { key: string; label: string; state: "done" | "now" | "todo"; detail: string | null }
@@ -87,7 +87,7 @@ export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: nu
     : phase === "ready" && !forYou ? { kind: "claim", label: `Claim on ${s.claimName}`, note: claimNote }
     : null;
   const note: View["note"] =
-    phase === "unsent" ? { text: "Your wallet did not send this. Nothing was sent. You can send it again.", bad: false }
+    phase === "unsent" ? { text: notSentWords("send"), bad: false }
     : phase === "unsure-send" ? { text: `Your wallet did not say whether it sent this. Look in its activity on ${s.sendName}. Nothing more is sent until you have.`, bad: true }
     : phase === "unsure-claim" ? { text: `Your wallet did not say whether it sent the claim. Look in its activity on ${s.claimName}. Nothing more is sent until you have.`, bad: true }
     : phase === "lost" ? { text: t.lost === "failed" ? `This send did not go through on ${s.sendName}. Nothing was lost.` : `This send is on ${s.sendName}, but the page cannot tell which deposit it made, so it cannot carry on with it. Nothing is signed.`, bad: true }

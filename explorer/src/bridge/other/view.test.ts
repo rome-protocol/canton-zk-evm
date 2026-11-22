@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Transfer } from "./record.ts";
 import { stage, ME, ostia, row, hash } from "./fakes.ts";
 import { viewOf } from "./view.ts";
-import { elapsedWords, otherWords, timeWords } from "./words.ts";
+import { elapsedWords, movedWords, noCountWords, notSentWords, otherTxUrl, otherWords, timeWords } from "./words.ts";
 import { ReadError } from "./reads.ts";
 import { Stop, Unsure } from "./transfer.ts";
 
@@ -19,7 +19,7 @@ describe("Ethereum Sepolia to Ostia", () => {
     expect(v.phase).toBe("unsent");
     expect(v.action).toEqual({ kind: "send", label: "Send to Ostia", note: null });
     expect(v.word).toBe("Not sent");
-    expect(v.note).toEqual({ text: "Your wallet did not send this. Nothing was sent. You can send it again.", bad: false });
+    expect(v.note).toEqual({ text: "Nothing has been sent from your wallet since this was started. Check your wallet: if it still has this request open, turn it down, then send again.", bad: false });
   });
   it("shows one state, with no alert and nothing to press, while this tab is waiting for the wallet's pop-up", () => {
     const sending = viewOf(base({ send: attempt(null) }), stage("unknown"), names(), 0, "send");
@@ -141,6 +141,18 @@ describe("the words", () => {
   });
   it("never says Rome acts after the person's own transaction", () => {
     for (const text of all()) expect(text, text).not.toMatch(/Rome (is |will )?(send|process|releas|claim)/i);
+  });
+  it("says of a look only what the look shows", () => {
+    expect(notSentWords("send")).toBe("Nothing has been sent from your wallet since this was started. Check your wallet: if it still has this request open, turn it down, then send again.");
+    expect(notSentWords("claim")).toMatch(/then claim again\.$/);
+    expect(movedWords("Ostia")).toBe("Your wallet has sent something since this was started. It may be this. Find it in your wallet's activity on Ostia, then paste its transaction hash below.");
+    expect(noCountWords("Ostia")).toBe("Your wallet does not say what it sent. Find it in its activity on Ostia and paste its hash, or give this up.");
+    for (const text of [notSentWords("send"), movedWords("Ostia"), noCountWords("Ostia")]) expect(text).not.toMatch(/did not send|Something was sent/);
+  });
+  it("links a transaction on Ethereum Sepolia to Sepolia's explorer, and none on a chain it does not know", () => {
+    expect(otherTxUrl(11155111, hash(5))).toBe(`https://sepolia.etherscan.io/tx/${hash(5)}`);
+    expect(otherTxUrl(11155111, "0x12")).toBeNull();
+    expect(otherTxUrl(770101, hash(5))).toBeNull();
   });
   it("turns a failed step into a sentence, never a code", () => {
     expect(otherWords(new Stop("Already arrived."), "Ostia", "tROME")).toBe("Already arrived.");
