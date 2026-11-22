@@ -2,10 +2,10 @@ name: worker
 
 on:
   pull_request:
-    paths: ["worker/**", "tests/test_worker.py", "tests/test_relay_in.py", "demo/canton.py", "demo/requirements.txt", "router/src/CantonRouter.sol", "router/test/vectors/**", "network/canton/propose.py", ".github/workflows/worker.yml"]
+    paths: ["worker/**", "tests/test_worker.py", "tests/test_relay_in.py", "demo/canton.py", "demo/requirements.txt", "router/src/CantonRouter.sol", "router/src/CantonBook.sol", "router/src/Interfaces.sol", "router/test/vectors/**", "network/canton/propose.py", ".github/workflows/worker.yml"]
   push:
     branches: [main]
-    paths: ["worker/**", "tests/test_worker.py", "tests/test_relay_in.py", "demo/canton.py", "demo/requirements.txt", "router/src/CantonRouter.sol", "router/test/vectors/**", "network/canton/propose.py", ".github/workflows/worker.yml"]
+    paths: ["worker/**", "tests/test_worker.py", "tests/test_relay_in.py", "demo/canton.py", "demo/requirements.txt", "router/src/CantonRouter.sol", "router/src/CantonBook.sol", "router/src/Interfaces.sol", "router/test/vectors/**", "network/canton/propose.py", ".github/workflows/worker.yml"]
 
 permissions:
   contents: read
