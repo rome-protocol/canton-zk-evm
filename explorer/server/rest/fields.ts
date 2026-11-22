@@ -178,11 +178,22 @@ export const REST_FIELDS = {
   agglayerClaimArgs: ["smtProofLocalExitRoot", "smtProofRollupExitRoot", "globalIndex", "mainnetExitRoot", "rollupExitRoot", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount", "metadata"],
   /** The Canton route's setup (moves from Canton to Ethereum Sepolia through Ostia's router): off is `{on: false}`. `route` is closed (never opened), open, or stopped (was open). */
   routeOff: ["on"],
-  routeSetup: ["on", "route", "available", "destination", "assets", "time", "notTakenSeconds", "ownClaimSeconds"],
+  routeSetup: ["on", "route", "available", "destination", "assets", "time", "notTakenSeconds", "ownClaimSeconds", "in"],
+  /** Flow C, back to Canton, in the setup (only with OSTIA_ROUTE_IN): its state, the way back's network, the waits, the router, and what Canton can pay out now (null while Canton cannot be read). */
+  routeIn: ["route", "refundNetwork", "refundWaitSeconds", "router", "book", "setupSeconds", "setupTime", "claimOstia", "payout"],
+  routeClaimOstia: ["afterSeconds", "leftOutSeconds"],
+  routePayout: ["paused", "pausedUntil", "assets"],
+  routePayoutAsset: ["erc20", "left", "renewsAt"],
   routeDestination: ["network", "unit"],
-  routeAsset: ["erc20", "symbol", "name", "decimals", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom"],
+  routeAsset: ["erc20", "symbol", "name", "decimals", "open", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom", "feeIn", "feeRefund"],
   /** One account's or one wallet's moves: the ones Ostia took (`taken`, from the router's event) and the open requests it has not (`requested`, from Canton). */
-  routeMoves: ["moves", "requestsRead"],
+  routeMoves: ["moves", "requestsRead", "back", "accepts"],
+  /** One event of flow C (`kind`: opened, held, forwarded or refunded) for an inbox, with the fields of its kind and null in the rest. */
+  routeBack: ["kind", "inbox", "erc20", "party", "refundNetwork", "refundAddress", "balance", "refundAt", "amount", "fee", "depositCount", "txHash", "block", "at"],
+  routeAccepts: ["party", "accepts"],
+  /** An account's Ostia address and where its opening stands. */
+  routeAddress: ["party", "refundNetwork", "refundAddress", "inbox", "accepts", "opened", "openedAt", "openTx"],
+  routeAsked: ["asked"],
   routeMove: ["id", "state", "party", "destAddress", "erc20", "amount", "send", "fee", "depositCount", "txHash", "block", "at", "maxFee", "settleBefore"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */

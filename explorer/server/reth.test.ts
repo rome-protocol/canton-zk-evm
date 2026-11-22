@@ -275,6 +275,15 @@ describe("reads as of one block, for verifyproxycontract", () => {
     expect(await r.callAt(A("6"), "0x5c60da1b", 255)).toBe("0x" + "0".repeat(24) + "ab".repeat(20));
     expect(seen.map((p) => p[p.length - 1])).toEqual(["0xff", "0xff", "0xff"]);
   });
+  it("reads the logs of one address and topics from a block to the newest, as a transaction and a block each, the newest 20 at most", async () => {
+    const seen: unknown[][] = [];
+    const logs = Array.from({ length: 25 }, (_, i) => ({ transactionHash: H(String(i % 10)), blockNumber: "0x" + (i + 1).toString(16) }));
+    const r = await reth({ eth_getLogs: (p: unknown[]) => { seen.push(p); return logs; } });
+    const found = await r.logsSince(A("5"), [H("1"), H("2")], 255);
+    expect(seen).toEqual([[{ address: A("5"), topics: [H("1"), H("2")], fromBlock: "0xff", toBlock: "latest" }]]);
+    expect(found).toHaveLength(20);
+    expect(found.at(-1)).toEqual({ txHash: H("4"), block: 25 });
+  });
   it("refuses a storage word that is not 32 bytes, and an answer of a call longer than 4 KB", async () => {
     const r = await reth({ eth_getStorageAt: () => "0x01", eth_call: () => "0x" + "00".repeat(4097) });
     await expect(r.storageAt(A("5"), H("1"), 1)).rejects.toThrow(RethError);

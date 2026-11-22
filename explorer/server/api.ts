@@ -366,6 +366,8 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         return await etherscanDoor(url.searchParams, method === "POST" ? body : undefined, ip);
       }
       if (root !== "api") return fail(404, "No such route.");
+      // The one POST of the Canton route: it asks the intake to open an account's Ostia address.
+      if (url.pathname === "/api/canton-route/address" && method === "POST" && cantonRoute) return await cantonRoute.intake(body, ip);
       const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams) ?? agglayerRouted(parts, url.searchParams, ip) ?? cantonRouted(parts, url.searchParams, ip);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
       // The builder grant's two browser routes: GitHub's sign-in starts at one and returns to the other, and each answers with a redirect. They are not described in
