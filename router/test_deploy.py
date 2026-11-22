@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Tests of deploy.py against a local chain (anvil), with throwaway keystores. Run by deploy-test.sh after `forge build`."""
-import copy, http.server, importlib.util, json, os, shutil, socket, subprocess, tempfile, threading, time, unittest
+import copy, http.server, importlib.util, json, os, secrets, shutil, socket, subprocess, tempfile, threading, time, unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEPLOY = HERE / "deploy.py"
-PASSWORD = "throwaway-pass-9f2c"
+PASSWORD = secrets.token_hex(12)  # a new throwaway for the keystores of this run, made on the local test chain
 GATEWAY, BRIDGE, TOKEN = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "c3" * 20
 FEE_TO, REFUSER = "0x" + "d4" * 20, "0x" + "e5" * 20
 
@@ -89,8 +89,8 @@ class Local(unittest.TestCase):
         self.assertEqual(self.call(s["book"], "inOpen()(bool)"), "false")  # listing opens the route, never the direction
         rc, out = self.run_deploy("check", "--settings", state=st)
         self.assertEqual(rc, 0, out)
-        for secret in (PASSWORD, self.url):
-            self.assertNotIn(secret, out)
+        for hidden in (PASSWORD, self.url):
+            self.assertNotIn(hidden, out)
 
     def test_two_timelocks_when_configured(self):
         cfg = self.config(upgradeTimelock={"minDelay": 600, "proposers": [self.who["other"]], "executors": [self.who["other"]]})
