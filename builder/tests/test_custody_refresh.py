@@ -2,7 +2,7 @@
 usable holdings into new ones, K inputs to a transfer and one pass over the holdings there at its start, checks each transfer at the ledger point before it and
 at it, and writes the builder's stop file on a difference. Against a fake participant (a stateful JSON Ledger API with a history of offsets) and a fake
 registry. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, http.server, io, json, os, sys, tempfile, threading, unittest, urllib.error
+import base64, contextlib, http.server, io, json, os, signal, sys, tempfile, threading, time, unittest, urllib.error
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -49,7 +49,7 @@ class Registry:
     """A fake validator scan proxy: the open rounds, and the standard's transfer-factory request (recorded, with its token)."""
 
     def __init__(self, doc=None, status=200):
-        self.doc, self.status, self.asked = rounds_doc() if doc is None else doc, status, []
+        self.doc, self.status, self.asked, self.kind = rounds_doc() if doc is None else doc, status, [], None   # kind: what to answer; None: the real rule, "self" when sender = receiver
         reg = self
 
         class H(BaseHTTPRequestHandler):
@@ -66,7 +66,9 @@ class Registry:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
                 reg.asked.append(("POST", self.path, self.headers.get("authorization"), body))
-                self.send(200, {"factoryId": FACTORY, "transferKind": "direct", "choiceContext": CONTEXT})
+                transfer = body["choiceArguments"]["transfer"]
+                kind = reg.kind if reg.kind is not None else ("self" if transfer["sender"] == transfer["receiver"] else "direct")
+                self.send(200, {"factoryId": FACTORY, "transferKind": kind, "choiceContext": CONTEXT})
         self.server = http.server.HTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, args=(0.01,), daemon=True).start()
@@ -183,7 +185,7 @@ class Rig(unittest.TestCase):
         parties.parent.mkdir(parents=True)
         parties.write_text(f"OPERATOR_PARTY={OP}\nCONFIRMER_PARTY={CF}\nGATEWAY_PARTY={GW}\n")
         self.work = self.dir / "work"
-        self.status({"readAt": None, "floorDays": 30, "maxInputs": None, "holdings": [], "stopped": None})   # the builder's, as it writes it before its first read
+        self.status({"readAt": "t", "floorDays": 30, "maxInputs": 50, "holdings": [], "stopped": None})   # the builder's, as it writes it after its first read
         for name, text in (("operator.token", TOKEN), ("scan.token", SCAN_TOKEN)):
             (self.dir / name).write_text(text + "\n")
             (self.dir / name).chmod(0o600)
@@ -299,7 +301,7 @@ class Arguments(Rig):
                 self.assertRegex(err, r"error: .*--custody-floor-days")
         self.assertEqual((self.node.reads, self.node.submits, self.registry.asked), ([], [], []))
 
-    def test_the_cap_defaults_to_50_and_the_rounds_own_limit_wins_when_lower(self):
+    def test_the_cap_is_the_builders_and_the_rounds_own_limit_wins_when_lower(self):
         self.start(*[hold(f"h{i:02}", "2.0") for i in range(60)])
         out = self.run_step("dry-run")[1]
         self.assertEqual((out["maxInputs"], [t["inputs"] for t in out["transfers"]]), (50, [50, 10]))
@@ -333,9 +335,23 @@ class Arguments(Rig):
         self.start(hold("h1", "3.0"))
         for bad in (0, -1, None, "30", True):
             with self.subTest(bad):
-                self.status({"floorDays": bad, "maxInputs": None})
+                self.status({"floorDays": bad, "maxInputs": 50})
                 self.assertIn("floorDays", self.run_step("dry-run")[2])
                 self.assertEqual(self.run_step("dry-run", "--custody-floor-days", "30")[0], 0)
+
+    def test_a_status_row_with_no_cap_yet_refuses_unless_the_flag_is_given_and_never_takes_50(self):
+        node = self.start(*[hold(f"h{i:02}", "2.0") for i in range(60)])
+        for bad in (None, 0, -1, "50", True, 2.5):
+            with self.subTest(bad):
+                self.status({"readAt": None, "floorDays": 30, "maxInputs": bad, "holdings": [], "stopped": None})
+                for mode in ("dry-run", "run"):
+                    code, out, err = self.run_step(mode)
+                    self.assertNotEqual(code, 0)
+                    self.assertIn("maxInputs", err)
+                    self.assertIn("--max-transfer-inputs", err)
+                out = self.run_step("dry-run", "--max-transfer-inputs", "7")[1]
+                self.assertEqual(out["maxInputs"], 7)
+        self.assertEqual((node.submits, self.registry.posts()), ([], []))
 
     def test_a_cap_under_one_is_refused(self):
         self.start(hold("h1", "3.0"))
@@ -774,7 +790,34 @@ class Holes(Rig):
         with mock.patch.object(self.registry.server.RequestHandlerClass, "do_POST", post):
             code, out, _ = self.run_step("run")
         self.assertEqual((code, node.submits, self.stop()), (1, [], None))
-        self.assertIn("not 'direct'", out["error"])
+        self.assertIn("not 'self'", out["error"])
+
+    def test_the_registrys_kind_for_a_self_transfer_is_self_and_the_step_sends_it(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        code, out, err = self.run_step("run")
+        self.assertEqual((code, len(node.submits), self.stop()), (0, 1, None))
+        self.assertEqual([p[3]["choiceArguments"]["transfer"]["sender"] == p[3]["choiceArguments"]["transfer"]["receiver"] for p in self.registry.posts()], [True])
+        self.assertNotIn("not 'direct'", err)   # the builder's reader says nothing about a kind the step has checked itself
+
+    def test_a_kind_that_is_not_self_is_refused_before_anything_is_sent(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        for kind in ("direct", "offer", "x", "", 5, ["self"], {"a": 1}):
+            with self.subTest(kind):
+                self.registry.kind = kind
+                code, out, _ = self.run_step("run")
+                self.assertEqual((code, node.submits, self.stop()), (1, [], None))
+                self.assertIn("not 'self'", out["error"])
+                self.assertIn("Nothing was sent", out["error"])
+
+    def test_a_transfer_to_another_party_is_never_built_by_the_step(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        self.run_step("run")
+        t = node.submits[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["transfer"]
+        self.assertEqual((t["sender"], t["receiver"]), (GW, GW))   # kind 'self' is only ever true of this
+
+    def test_the_kind_name_is_the_one_the_demo_checks_a_self_transfer_against(self):
+        self.assertEqual(setup.SELF_KIND, "self")
+        self.assertIn('(kind == "self") != (transfer["sender"] == transfer["receiver"])', (ROOT / "demo" / "cc.py").read_text())
 
     def test_a_stop_the_builder_writes_during_the_pass_ends_it_before_the_next_transfer(self):
         node = self.start(*[hold(f"h{i}", "2.0") for i in range(4)])
@@ -797,6 +840,127 @@ class Holes(Rig):
         with mock.patch.object(b.ChoiceContexts, "__init__", autospec=True, side_effect=b.ChoiceContexts.__init__) as made:
             self.run_step("run", "--max-transfer-inputs", "2")
         self.assertEqual(made.call_count, 3)   # the rounds, then one for each of the two transfers
+
+    def test_a_sigterm_or_sighup_during_the_submit_writes_the_stop_and_the_handlers_are_put_back(self):
+        for name in ("SIGTERM", "SIGHUP"):
+            with self.subTest(name):
+                b.custody_clear("run") if self.stop() is not None else None
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP")}
+                real = b.post_json
+                def post(url, body, headers, timeout=120):
+                    if url.endswith("/submit-and-wait"):
+                        os.kill(os.getpid(), getattr(signal, name))   # the session drops while the transfer is in flight
+                        time.sleep(1)
+                    return real(url, body, headers, timeout)
+                with mock.patch.object(b, "post_json", post), self.assertRaises(KeyboardInterrupt):
+                    self.run_step("run")
+                self.assertIn("may have committed", self.stop()["reason"])
+                self.assertIn(name, self.stop()["reason"])
+                self.assertEqual(len(node.submits), 0)   # it never got through: the stop is the safe side
+                self.assertEqual({n: signal.getsignal(getattr(signal, n)) for n in before}, before)
+                (b.custody_stop_path(self.cfg())).unlink()
+
+    def test_a_sigterm_in_the_check_reads_writes_the_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        def end(*a, **k):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+        with mock.patch.object(setup, "read_pair", side_effect=end), self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertEqual(len(node.submits), 1)
+        self.assertIn("SIGTERM", self.stop()["reason"])
+
+    def test_a_sigterm_before_the_submit_sends_and_stops_nothing(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        real = b.ChoiceContexts.transfer
+        def ask(*a, **k):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+        with mock.patch.object(b.ChoiceContexts, "transfer", ask), self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertEqual((node.submits, self.stop()), ([], None))
+
+    def test_a_dry_run_and_a_finished_run_leave_the_signal_handlers_as_they_were(self):
+        self.start(hold("h1", "2.0"))
+        before = signal.getsignal(signal.SIGTERM)
+        self.run_step("dry-run")
+        self.run_step("run")
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before)
+
+    def test_in_a_thread_the_handlers_are_left_alone(self):
+        before, seen = signal.getsignal(signal.SIGTERM), []
+        def run():
+            with setup.signals_as_interrupts():
+                seen.append(signal.getsignal(signal.SIGTERM))
+        t = threading.Thread(target=run); t.start(); t.join()
+        self.assertEqual(seen, [before])
+
+
+class Rejections(Rig):
+    """What the step reads as a refusal, by the builder's own rule (builder.definite_rejection) and its NEVER_TAKEN_CODES."""
+
+    def answer(self, code, body, commit):
+        node = self.node
+        real = b.post_json
+        def post(url, payload, headers, timeout=120):
+            if not url.endswith("/submit-and-wait"):
+                return real(url, payload, headers, timeout)
+            if commit:
+                try:
+                    real(url, payload, headers, timeout)
+                except urllib.error.HTTPError:
+                    pass
+            raise urllib.error.HTTPError(url, code, "x", {}, io.BytesIO(body if isinstance(body, bytes) else json.dumps(body).encode()))
+        return mock.patch.object(b, "post_json", post)
+
+    def test_a_4xx_with_a_canton_error_code_is_a_refusal_with_no_lookup_and_no_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        with self.answer(409, {"code": "CONTRACT_NOT_FOUND"}, False), mock.patch.object(b.Ledger, "completion", side_effect=AssertionError("no lookup")):
+            code, out, _ = self.run_step("run")
+        self.assertEqual((code, self.stop()), (1, None))
+        self.assertIn("was refused", out["error"])
+
+    def test_a_4xx_with_no_canton_error_code_goes_to_the_lookup_and_a_commit_is_checked(self):
+        for code_, body in ((400, b"<html>bad gateway page</html>"), (404, b""), (400, {"cause": "no code"}), (400, {"code": 5}), (422, [1])):
+            with self.subTest(code=code_, body=str(body)):
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                with self.answer(code_, body, True):
+                    code, out, _ = self.run_step("run")
+                self.assertEqual((code, out["transfers"][0]["checked"], self.stop()), (0, True, None))   # found by its command id, then checked
+
+    def test_a_4xx_with_no_canton_error_code_and_no_commit_writes_the_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        with self.answer(404, b"<html>not found</html>", False):
+            code, out, _ = self.run_step("run")
+        self.assertEqual(code, 1)
+        self.assertIn("not known", self.stop()["reason"])
+        self.assertIn("stopped", out)
+
+    def test_a_duplicate_command_is_no_refusal(self):
+        for name in ("DUPLICATE_COMMAND", "SUBMISSION_ALREADY_IN_FLIGHT"):
+            with self.subTest(name):
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                with self.answer(409, {"code": name}, True):
+                    code, out, _ = self.run_step("run")
+                self.assertEqual((code, out["transfers"][0]["checked"]), (0, True))
+
+    def test_408_and_a_5xx_go_to_the_lookup(self):
+        for code_ in (408, 500, 503):
+            with self.subTest(code_):
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                with self.answer(code_, {"code": "SOMETHING"}, True):
+                    code, out, _ = self.run_step("run")
+                self.assertEqual((code, out["transfers"][0]["checked"]), (0, True))
+
+    def test_401_403_and_429_were_never_taken_so_no_lookup_and_no_stop(self):
+        for code_ in (401, 403, 429):
+            with self.subTest(code_):
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                with self.answer(code_, b"<html>no</html>", False), mock.patch.object(b.Ledger, "completion", side_effect=AssertionError("no lookup")):
+                    code, out, _ = self.run_step("run")
+                self.assertEqual((code, self.stop()), (1, None))
+                self.assertIn("did not take", out["error"])
 
 
 class Secrets(Rig):

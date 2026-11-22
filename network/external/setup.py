@@ -140,8 +140,8 @@
     builder's code (the open rounds, a holding's life, the custody read, the stop file; pip install -r builder/requirements.txt) and takes the builder's settings as its own,
     with the builder's names and defaults: --registry and --registry-token-file for the instrument's admin (the open rounds are read from that registry), --custody-floor-days
     and --max-transfer-inputs (the open round's limit is the other cap, and the lower wins). CZE_WORK_DIR is the builder's work folder (default $CZE_STATE_DIR/builder); its status.json
-    must have the row custody.<admin> (the builder runs with --expiring-instrument), or the step refuses. The two flags default to that row's floorDays and maxInputs (maxInputs
-    50 until the builder has read a round), so pass the producer's CZE_STATE_DIR rather than repeating its OSTIA_CUSTODY_* settings.
+    must have the row custody.<admin> (the builder runs with --expiring-instrument), or the step refuses. The two flags default to that row's floorDays and maxInputs (the
+    step refuses when the row has no maxInputs yet, which the builder writes after its first read of a round: then pass --max-transfer-inputs), so pass the producer's CZE_STATE_DIR rather than repeating its OSTIA_CUSTODY_* settings.
       dry-run  reads the rounds and the holdings and prints the plan: the transfers (inputs and amount of each), the holdings it skips and whether all of custody is under the floor. Sends nothing.
       run      sends the transfers, one at a time. Usable holdings are the gateway's unlocked ones that are not at or past their expiry round (a holding that is is skipped and reported).
                In one pass, the step takes the holdings there at its start, nearest expiry first, K to a transfer, so M holdings are ceil(M / K) transfers and the output of one
@@ -149,9 +149,11 @@
                from the one before; a split that cannot be made so stops the step before anything is sent), unless all of custody is under the floor, which the line says ("underFloor").
                Each transfer is checked at the ledger point before it and at it (its completion offset less one, and the offset): the custody must be the same. On any difference,
                on a read the participant refuses, or when the outcome of a transfer is not known, no further transfer is sent and the builder's stop file is written (custody-stop.json
-               in its work folder, with the two custody numbers), so that no Canton Coin withdrawal commits after it; they are held until `builder.py custody-clear run`. Any end of the process
-               between the submit and the end of a transfer's check (an interrupt, a token file that cannot be read) writes the stop too, and a stop that appears during the pass ends it.
-               The step sends a transfer only when the registry says it is of kind direct. A transfer the participant refuses changed nothing: nothing more is sent, and the step is safe to run again. The step refuses to start while a stop is in force, when the round cannot be read
+               in its work folder, with the two custody numbers), so that no Canton Coin withdrawal commits after it; they are held until `builder.py custody-clear run`. An end of the process
+               between the submit and the end of a transfer's check (an interrupt, SIGTERM or SIGHUP, which the step turns into one, or a token file that cannot be read) writes the stop too (a SIGKILL or a power loss
+               cannot: if the step ends without printing its JSON line, check custody and write or keep a stop before any withdrawal), and a stop that appears during the pass ends it.
+               The step sends a transfer only when the registry says it is of kind 'self', which is the registry's name for a transfer from the gateway to itself; an offer, or any other kind, ends the run before anything is sent.
+               A transfer the participant refuses (a 4xx that carries a Canton error code, as the builder reads it) changed nothing: nothing more is sent, and the step is safe to run again. Any other error answer is looked up by the command id as the builder does, and a transfer not found is a stop; a 401, 403 or 429 means the participant did not take it (no stop). The step refuses to start while a stop is in force, when the round cannot be read
                or any round charges a create, transfer or lock fee, and when the gateway has no registered token (or more than one factory) for the instrument. Exit status 0, or 1 when it stopped.
 
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
@@ -161,7 +163,7 @@ applies the rules of check-env.sh itself, before it sends anything: the URL is h
 mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
 no token is sent). A token is never printed.
 """
-import argparse, functools, json, math, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid, zipfile
+import argparse, contextlib, functools, json, math, os, re, signal, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid, zipfile
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
 from decimal import Decimal, InvalidOperation
@@ -1099,6 +1101,8 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
 # ---- the refresh of an instrument whose holdings run out (Canton Coin) --------------------------------------------------------------
 
 TRANSFER_FACTORY = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
+SUBMIT_ERROR_BYTES = 16384   # how much of a submit's error answer is read: enough for a Canton error's JSON
+SELF_KIND = "self"   # the token registry's name for a transfer from a party to itself (demo/cc.py holds the same rule: "self" exactly when sender = receiver)
 REQUESTED_BACK = 60   # seconds: a transfer is requested a minute back, so that a machine ahead of the ledger clock is not refused as not yet requested
 CHECK_TRIES, CHECK_WAIT = 3, 2.0   # reads of a transfer's two offsets before a read that keeps failing is a stop, and the seconds between them
 
@@ -1171,6 +1175,31 @@ def write_stop(work: Path, reason: str, command_id: str, update_id, instrument: 
     return reason
 
 
+class SignalEnd(KeyboardInterrupt):
+    """SIGTERM or SIGHUP, made an exception so that the stop is written like for any other interrupt."""
+
+
+@contextlib.contextmanager
+def signals_as_interrupts():
+    """Python ends at SIGTERM and SIGHUP with no exception, so a dropped session could end a transfer between its submit and its check unseen. In the main thread
+    the two raise SignalEnd (a KeyboardInterrupt) for the length of the block; the old handlers are put back after. Elsewhere nothing is changed."""
+    def raise_end(number, frame):
+        raise SignalEnd(signal.Signals(number).name)
+    old = {}
+    try:
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                number = getattr(signal, name)
+                old[number] = signal.signal(number, raise_end)
+    except ValueError:   # not the main thread
+        pass
+    try:
+        yield
+    finally:
+        for number, handler in old.items():
+            signal.signal(number, handler)
+
+
 def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict, registry_files: dict, floor_days, max_inputs) -> dict:
     """The operator's refresh of an instrument whose holdings run out: the gateway's usable holdings of it, merged into new ones by transfers from the gateway to
     itself, K inputs to a transfer (K the lower of `max_inputs` and the open round's limit), nearest expiry first, in one pass over the holdings there at the start
@@ -1204,8 +1233,8 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
             raise SystemExit(f"the floorDays in {status_file} is not a number above zero: pass --custody-floor-days. Nothing was sent")
     if max_inputs is None:
         max_inputs = row.get("maxInputs")
-        if type(max_inputs) is not int or max_inputs < 1:   # the builder has not read a round yet: its own default
-            max_inputs = 50
+        if type(max_inputs) is not int or max_inputs < 1:   # the builder writes it after its first read of a round
+            raise SystemExit(f"the maxInputs in {status_file} is not a whole number above zero (the builder has not read a round yet?): pass --max-transfer-inputs. Nothing was sent")
     if b.read_custody_stop(cfg) is not None:
         raise SystemExit(f"a custody stop is in force ({work / b.CUSTODY_STOP_FILE}): Canton Coin withdrawals are held until the cause is known and "
                          "`python3 builder/builder.py custody-clear run` has removed it. Nothing was sent")
@@ -1219,7 +1248,8 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
                 raise OSError(str(err)) from None
 
     class Reader(b.ChoiceContexts):
-        """One for the rounds and a new one for each transfer, each with the registry's own time; it keeps the kind of transfer the registry named."""
+        """One for the rounds and a new one for each transfer, each with the registry's own time; it keeps the kind of transfer the registry named. The step checks that
+        kind itself, so the builder's note about a kind that is not 'direct' (for a withdrawal's transfer to another party) is not wanted for each of its transfers."""
         kind = None
 
         def ask(self, admin, path, *rest, **more):
@@ -1277,14 +1307,18 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
             update_id, offset = answer.get("updateId"), answer.get("completionOffset")
         except urllib.error.HTTPError as err:
             try:
-                reason = b.bounded_text(err.read(300).decode("utf-8", "replace"))
+                text = err.read(SUBMIT_ERROR_BYTES).decode("utf-8", "replace")
             except (OSError, ValueError, HTTPException):
-                reason = ""
+                text = ""
             finally:
                 err.close()
-            if 400 <= err.code < 500 and err.code not in (408, 429):
+            reason = b.bounded_text(text)[:300]
+            if b.definite_rejection(err.code, text):   # the builder's own rule: a 4xx that carries a Canton error code (not a duplicate command id)
                 guard["open"] = False
                 return fail(f"the transfer was refused: HTTP {err.code} {reason}. Nothing in it changed; run it again, which reads the holdings afresh (a block may have taken one)")
+            if err.code in b.NEVER_TAKEN_CODES:   # the token or back-pressure: the participant did not take the command, and no completion will come
+                guard["open"] = False
+                return fail(f"the participant did not take the transfer: HTTP {err.code} {reason}. Nothing in it changed; run it again")
         except (OSError, ValueError, HTTPException):
             pass
         if type(offset) is not int:   # no usable answer: the command's own completion says whether it committed
@@ -1311,40 +1345,42 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
         entry["checked"] = True
         return None
 
-    for entry, chunk in zip(result["transfers"], chunks):
-        if b.read_custody_stop(cfg) is not None:   # the builder's own check may have written one since the last transfer
-            return fail("a custody stop is in force; nothing more was sent", True)
-        now = datetime.now(timezone.utc)
-        transfer = {"sender": gateway, "receiver": gateway, "amount": entry["amount"], "instrumentId": instr, "requestedAt": b.stamp(now - timedelta(seconds=REQUESTED_BACK)),
-                    "executeBefore": b.stamp(now + timedelta(days=1)), "inputHoldingCids": [r[0] for r in chunk], "meta": {"values": {}}}
-        asker = Reader(registries, registry_files)
-        try:
-            context, disclosed = asker.transfer(admin, factory, transfer)
-            begin = ledger.end()
-            headers = ledger.auth
-        except b.NoCantonSide as err:
-            return fail(f"the token registry's answer for the transfer cannot be used: {err}. Nothing more was sent")
-        except OSError as err:
-            return fail(f"cannot read the ledger end or the operator's token: {b.bounded_text(err)}. Nothing more was sent")
-        if asker.kind != "direct":   # an offer would lock the chunk, and custody counts a locked holding, so the check could not see it
-            return fail(f"the token registry says the transfer is of kind {b.bounded_text(asker.kind)[:32]!r}, not 'direct': it would lock the holdings instead of merging them. Nothing was sent")
-        command_id = str(uuid.uuid4())
-        body = {"commands": [{"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer",
-                                                  "choiceArgument": {"expectedAdmin": admin, "transfer": transfer,
-                                                                     "extraArgs": {"context": context or {"values": {}}, "meta": {"values": {}}}}}}],
-                "commandId": command_id, "userId": cfg.ledger_user, "actAs": [gateway], **({"disclosedContracts": disclosed} if disclosed else {})}
-        guard = {"open": True}
-        try:
-            outcome = submit_and_check(entry, body, headers, begin, guard)
-        except BaseException as err:   # an end of the process (an interrupt, a token file read half-way) between the submit and the end of the check
-            if guard["open"]:
-                try:
-                    write_stop(work, f"the refresh step's transfer may have committed and its custody check was not made ({type(err).__name__})", command_id, None, instr)
-                except Exception:
-                    pass
-            raise
-        if outcome is not None:
-            return outcome
+    with signals_as_interrupts():
+        for entry, chunk in zip(result["transfers"], chunks):
+            if b.read_custody_stop(cfg) is not None:   # the builder's own check may have written one since the last transfer
+                return fail("a custody stop is in force; nothing more was sent", True)
+            now = datetime.now(timezone.utc)
+            transfer = {"sender": gateway, "receiver": gateway, "amount": entry["amount"], "instrumentId": instr, "requestedAt": b.stamp(now - timedelta(seconds=REQUESTED_BACK)),
+                        "executeBefore": b.stamp(now + timedelta(days=1)), "inputHoldingCids": [r[0] for r in chunk], "meta": {"values": {}}}
+            asker = Reader(registries, registry_files)
+            asker.noted.add((admin, gateway))
+            try:
+                context, disclosed = asker.transfer(admin, factory, transfer)
+                begin = ledger.end()
+                headers = ledger.auth
+            except b.NoCantonSide as err:
+                return fail(f"the token registry's answer for the transfer cannot be used: {err}. Nothing more was sent")
+            except OSError as err:
+                return fail(f"cannot read the ledger end or the operator's token: {b.bounded_text(err)}. Nothing more was sent")
+            if asker.kind != SELF_KIND:   # only a transfer back into the gateway's own custody; an offer (or a transfer to another party) would lock the chunk or move it out of custody
+                return fail(f"the token registry says the transfer is of kind {b.bounded_text(asker.kind)[:32]!r}, not {SELF_KIND!r}: it would not merge the holdings into the gateway's own custody. Nothing was sent")
+            command_id = str(uuid.uuid4())
+            body = {"commands": [{"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer",
+                                                      "choiceArgument": {"expectedAdmin": admin, "transfer": transfer,
+                                                                         "extraArgs": {"context": context or {"values": {}}, "meta": {"values": {}}}}}}],
+                    "commandId": command_id, "userId": cfg.ledger_user, "actAs": [gateway], **({"disclosedContracts": disclosed} if disclosed else {})}
+            guard = {"open": True}
+            try:
+                outcome = submit_and_check(entry, body, headers, begin, guard)
+            except BaseException as err:   # an end of the process (an interrupt, a token file read half-way) between the submit and the end of the check
+                if guard["open"]:
+                    try:
+                        write_stop(work, f"the refresh step's transfer may have committed and its custody check was not made ({err.args[0] if isinstance(err, SignalEnd) else type(err).__name__})", command_id, None, instr)
+                    except Exception:
+                        pass
+                raise
+            if outcome is not None:
+                return outcome
     return result
 
 
