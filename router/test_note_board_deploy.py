@@ -47,6 +47,10 @@ class NoteBoardDeploy(unittest.TestCase):
         p = sh(*a, env={"NOTE_BOARD_RPC_URL": url or self.url})
         return p.returncode, p.stdout + p.stderr
 
+    def assert_nothing_secret(self, out, url=None):
+        for hidden in (PASSWORD, url or self.url):
+            self.assertNotIn(hidden, out)
+
     def test_deploys_bound_to_the_configured_bridge_and_reads_it_back(self):
         rc, out = self.run_deploy("local", self.config())
         self.assertEqual(rc, 0, out)
@@ -54,6 +58,7 @@ class NoteBoardDeploy(unittest.TestCase):
         self.assertEqual(sh("cast", "call", board, "BRIDGE()(address)", "--rpc-url", self.url).stdout.strip().lower(), BRIDGE)
         self.assertEqual(sh("cast", "call", board, "count()(uint256)", "--rpc-url", self.url).stdout.split()[0], "0")
         self.assertIn("read-backs passed", out)
+        self.assert_nothing_secret(out)
 
     def test_refuses_a_chain_that_is_not_the_configs(self):
         rc, out = self.run_deploy("local", self.config(chainId=self.chain_id + 1))
@@ -94,6 +99,7 @@ class NoteBoardDeploy(unittest.TestCase):
             self.assertIn("--live", out)
             rc, out = self.run_deploy("local", self.config(), "--live", url=url)
             self.assertEqual(rc, 0, out)
+            self.assert_nothing_secret(out, url)
         finally:
             srv.shutdown()
 
