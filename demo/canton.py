@@ -452,6 +452,24 @@ def deposit_id_of(depositor: str, label: str) -> str:
     return hashlib.sha256(f"deposit,{depositor},{label}".encode("utf-8")).hexdigest()
 
 
+ROUTE_LABEL = re.compile(r"r1:(0|[1-9][0-9]{0,9}):0x([0-9a-f]{40}):(0|[1-9][0-9]{0,77}):(0|[1-9][0-9]{0,19})")   # matched whole (fullmatch): router/src/Labels.sol's form r1; every number has a length limit (2**256 has 78 digits), so int() never meets a digit string that Python refuses
+
+
+def route_label(network: int, address: str, max_fee: int, nonce: int) -> str:
+    """The label of a Canton deposit that the Canton router sends on to another chain, exactly as the router's routeLabel makes it. The router is the deposit's recipient."""
+    if not (0 <= network < 2**32 and 0 <= max_fee < 2**256 and 0 <= nonce < 2**64):
+        raise SystemExit("the network must fit 32 bits, the most fee 256 bits and the nonce 64 bits")
+    return f"r1:{network}:0x{evm_address(address)}:{max_fee}:{nonce}"
+
+
+def route_parts(label) -> "tuple | None":
+    """(network, address as 0x and 40 lowercase hex digits, most fee, nonce) of a label in the exact r1 form, with every part inside its type; None for anything else."""
+    found = ROUTE_LABEL.fullmatch(label) if isinstance(label, str) else None
+    if not found or int(found[1]) >= 2**32 or int(found[3]) >= 2**256 or int(found[4]) >= 2**64:
+        return None
+    return int(found[1]), "0x" + found[2], int(found[3]), int(found[4])
+
+
 def evm_address(value: str) -> str:
     """An EVM address as the Daml templates write it: 40 lowercase hex digits, no 0x."""
     if not ADDRESS.fullmatch(value):
