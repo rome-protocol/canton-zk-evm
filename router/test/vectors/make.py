@@ -13,10 +13,11 @@ def cast(*args):
 
 
 code_hash = cast("keccak", "0x" + INBOX_CODE)
+# Two ids already public in this repo (explorer/src/bridge/canton/fixtures.json) and one made-up one.
 parties = [
-    "alice::1220" + "ab12" * 16,
+    "ostia-operator::12207f23ae47643a4c4c61543923d62e6320a6db41e7beba264372e2fd61b040bbbb",
     "bob-treasury::1220" + "09fe" * 16,
-    "carol::1220" + "7c3d" * 16,
+    "operator::1220b43735bd74bbb95fa897975034c6419e7c91e61de333bf9e0739edfd424fc092",
 ]
 labels = []
 for i, (party, net, dest, fee, nonce) in enumerate([

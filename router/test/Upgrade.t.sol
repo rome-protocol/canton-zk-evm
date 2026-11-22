@@ -85,6 +85,29 @@ contract UpgradeTest is Base {
         return vm.parseJsonString(_json(), string.concat(".inboxes[", vm.toString(i), "].", field));
     }
 
+    function _labelVector(uint256 i, string memory field) internal view returns (string memory) {
+        return vm.parseJsonString(_json(), string.concat(".labels[", vm.toString(i), "].", field));
+    }
+
+    // Every label vector (text, deposit id, parse): the same for every implementation.
+    function _checkLabelVectors() internal view {
+        for (uint256 i = 0; i < 4; i++) {
+            uint32 net = uint32(vm.parseUint(_labelVector(i, "net")));
+            address to = vm.parseAddress(_labelVector(i, "dest"));
+            uint256 maxFee = vm.parseUint(_labelVector(i, "maxFee"));
+            uint64 nonce = uint64(vm.parseUint(_labelVector(i, "nonce")));
+            string memory label = router.routeLabel(net, to, maxFee, nonce);
+            assertEq(label, _labelVector(i, "label"));
+            assertEq(router.depositId(_labelVector(i, "party"), label), vm.parseBytes32(_labelVector(i, "id")));
+            (bool ok, uint32 n2, address d2, uint256 f2, uint64 q2) = router.parseLabel(label);
+            assertTrue(ok);
+            assertEq(n2, net);
+            assertEq(d2, to);
+            assertEq(f2, maxFee);
+            assertEq(q2, nonce);
+        }
+    }
+
     // A fixed set of (party, network, address) to their inbox addresses: the same for every implementation.
     function test_inboxAddressesAreFixed() public view {
         for (uint256 i = 0; i < 4; i++) {
@@ -147,6 +170,8 @@ contract UpgradeTest is Base {
         assertEq(IProxyAdmin(admin).getProxyImplementation(address(book)), bookV2);
         assertEq(CantonRouterV2(ROUTER).version(), 2);
         assertEq(CantonBookV2(address(book)).version(), 2);
+        assertEq(CantonRouterV2(ROUTER).reserve(), CC); // the appended field reads back after the reinitializer
+        assertEq(CantonBookV2(address(book)).minFeeOut(), 0); // the appended field of the book starts empty
 
         // Nothing moved: inbox addresses, clocks, held coin, the router's zero, the book's settings, the stored hash, the label.
         assertEq(router.inboxOf(PARTY, SEPOLIA, user), a);
@@ -165,6 +190,7 @@ contract UpgradeTest is Base {
         assertEq(router.inboxCodeHash(), hashBefore);
         assertEq(router.depositId(PARTY, router.routeLabel(SEPOLIA, dest, 15e7, 5)), waiting);
         assertEq(router.routeLabel(SEPOLIA, dest, 15e7, 5), label);
+        _checkLabelVectors();
         for (uint256 i = 0; i < 4; i++) {
             assertEq(router.inboxOf(_inboxVector(i, "party"), uint32(vm.parseUint(_inboxVector(i, "refundNetwork"))), vm.parseAddress(_inboxVector(i, "refundAddress"))),
                 vm.parseAddress(_inboxVector(i, "inbox")));
@@ -191,6 +217,28 @@ contract UpgradeTest is Base {
         _out(CC, SEPOLIA, dest, 15e7, 5);
         assertTrue(gw.used(waiting));
         assertEq(cc.balanceOf(ROUTER), 0);
+    }
+
+    // The book's appended field is written and read at the end of the version 1 struct, and its new refusal works; nothing before it moved.
+    function test_bookUpgradeAppendsAFieldAndAddsARefusal() public {
+        Asset memory before = bookAs.assets(address(cc));
+        vm.startPrank(owner);
+        IProxyAdmin(admin).upgrade(address(book), address(new CantonBookV2()));
+        CantonBookV2 b2 = CantonBookV2(address(book));
+        assertEq(b2.outOpen(), false);
+        assertEq(b2.refundWait(), 3 days);
+        assertEq(b2.localNetwork(), 75);
+        assertEq(b2.feeRecipient(), bookAs.feeRecipient());
+        b2.setMinFeeOut(before.feeOut + 1);
+        assertEq(b2.minFeeOut(), before.feeOut + 1);
+        assertEq(b2.refundWait(), 3 days); // the neighbour of the new field is untouched
+        assertEq(b2.localNetwork(), 75);
+        vm.expectRevert(abi.encodeWithSelector(CantonBookV2.FeeBelowFloor.selector, before.feeOut, before.feeOut + 1));
+        b2.setFees(address(cc), before.feeOut, before.feeIn, before.feeRefund);
+        b2.setFees(address(cc), before.feeOut + 1, before.feeIn, before.feeRefund);
+        vm.stopPrank();
+        assertEq(bookAs.assets(address(cc)).feeOut, before.feeOut + 1);
+        assertEq(bookAs.assets(address(cc)).instrument, before.instrument);
     }
 
     function test_theCapStaysAfterAnUpgrade() public {

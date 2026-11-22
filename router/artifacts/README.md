@@ -10,4 +10,4 @@ Nothing here is compiled by this repository. Each file is the bytes that are dep
 
 The proxies are the same compiled files that Ostia's AggLayer bridge already runs behind. OpenZeppelin Contracts is under the MIT licence (NOTICE).
 
-`src/vendor/Initializable.sol` is OpenZeppelin's `Initializable`, unchanged: its text is the same in every release from 5.0.0 to 5.2.0 (its header says "last updated v5.0.0"), which includes 5.1.0.
+`src/vendor/Initializable.sol` is the `proxy/utils/Initializable.sol` of the `@openzeppelin/contracts` 5.1.0 release, byte for byte (SHA-256 `a8b7eafa0fdc7cb5a644c8c61a8e4c51e031d5e1e6f268f72dbe18b768ead56e`), taken from the 5.1.0 npm package (tarball SHA-256 `fcddd83ee65457e2dd40d207010c885b45cdf6ea2360ca8c9d4cf2cca5e2b3b2`).
