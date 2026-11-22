@@ -936,6 +936,37 @@ class DepositTests(DepositCase):
         self.assertNoSecrets(out, err, json.dumps(result))
 
 
+class RouteTests(DepositCase):
+    ROUTER = "0x" + "7a" * 20
+
+    def route(self, *more, network="0", fee="0.2", amount="2.5"):
+        return self.run_cc("route", network, RECIPIENT, fee, amount, *more)
+
+    def test_the_deposit_names_the_router_and_carries_the_label_the_router_makes_and_its_id(self):
+        result = self.route("--router", self.ROUTER, "--nonce", "17")
+        label = "r1:0:" + RECIPIENT + ":2000000000:17"
+        self.assertEqual((result["label"], result["recipient"], result["depositId"]), (label, self.ROUTER, canton.deposit_id_of(U, label)))
+        self.assertEqual((result["network"], result["destination"], result["maxFee"], result["nonce"]), (0, RECIPIENT, "0.2", 17))
+        [made] = self.created()
+        arguments = made["commands"][0]["CreateCommand"]["createArguments"]
+        self.assertEqual((arguments["recipient"], arguments["label"]), ("7a" * 20, label))
+
+    def test_the_router_may_come_from_the_environment_and_the_nonce_is_random_and_a_zero_fee_is_fine(self):
+        with mock.patch.dict(os.environ, {"OSTIA_ROUTER": self.ROUTER}):
+            labels = {self.route(fee="0")["label"] for _ in range(2)}
+        self.assertEqual(len(labels), 2)
+        for label in labels:
+            self.assertEqual(canton.route_parts(label)[:3], (0, RECIPIENT, 0))
+
+    def test_nothing_is_sent_without_a_router_or_with_a_network_a_fee_or_an_address_that_does_not_fit(self):
+        for args, kwargs, text in (((), {}, "router's address"), (("--router", self.ROUTER), {"network": "x"}, "whole numbers"), (("--router", self.ROUTER), {"fee": "0.00000000001"}, "at most 10 decimals"),
+                                   (("--router", self.ROUTER, "--nonce", "x"), {}, "whole numbers"), (("--router", self.ROUTER), {"network": "4294967296"}, "32 bits")):
+            with self.subTest(text), self.assertRaises(SystemExit) as why:
+                self.route(*args, **kwargs)
+            self.assertIn(text, str(why.exception))
+        self.assertEqual((self.allocation_requests(), FakeLedger.commands, self.exercised), ([], [], []))
+
+
 class WithdrawCase(CcCase):
     ADDRESS = None
 
