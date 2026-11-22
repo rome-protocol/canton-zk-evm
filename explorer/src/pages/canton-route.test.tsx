@@ -109,6 +109,15 @@ describe("the Move tab of the Canton route", () => {
     await openRoute();
     expect(await screen.findByText("Up to 10 CC of Canton Coin can be on AggLayer chains at once for now, and that is reached. You can send again when some comes back to Canton.")).toBeInTheDocument();
   });
+  it("shows no cap and no room line when no cap is set, even with some coin out", async () => {
+    const max = 2n ** 256n - 1n;
+    world.route = setupBody({}, { lockCap: max, lockRoom: max - cc(1.3) });
+    renderPage();
+    await openRoute();
+    expect(await screen.findByText("The smallest amount for this route is 1 CC.")).toBeInTheDocument();
+    expect(screen.queryByText(/can be on AggLayer chains at once/)).toBeNull();
+    expect(screen.queryByText(/is out, so you can send up to/)).toBeNull();
+  });
   it("says Canton to Ethereum Sepolia is not available right now, and that nothing is lost, when the route stopped or the bridge cannot be used", async () => {
     for (const over of [{ route: "stopped" as const, assets: [] }, { available: false }]) {
       reset(); world.route = setupBody(over);
