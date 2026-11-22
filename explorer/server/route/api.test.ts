@@ -28,7 +28,7 @@ describe("the Canton route in the API", () => {
     const doc = body(await api("GET", "/api/openapi.json"));
     const props = doc.paths["/api/canton-route/moves"].get.responses["200"].content["application/json"].schema.properties as Record<string, unknown>;
     expect(Object.keys(props).sort()).toEqual([...F.routeMoves].sort());
-    expect(doc.paths["/api/canton-route/moves"].get.parameters.map((p: { name: string }) => p.name)).toEqual(["party", "evm"]);
+    expect(doc.paths["/api/canton-route/moves"].get.parameters.map((p: { name: string }) => p.name)).toEqual(["party", "evm", "ostia"]);
   });
   it("is neither listed nor described while the switch is off (the default), and still answers", async () => {
     const api = make(false);

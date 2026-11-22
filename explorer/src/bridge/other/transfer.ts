@@ -123,12 +123,13 @@ async function ask(env: Env, t: Transfer, which: "send" | "claim", chainId: numb
   } finally { mark(t.id, null); }
 }
 
-export interface SendInput { dir: Dir; asset: Asset; amount: bigint }
+/** `to` is for a send to a Canton account's Ostia address: the record then names that address and the Canton account, and has its own route id, so that the plain transfers' list never shows it. */
+export interface SendInput { dir: Dir; asset: Asset; amount: bigint; to?: { receiver: string; party: string; route: string } }
 
-/** The call a send makes. */
-export function sendCall(plan: Plan, account: string, dir: Dir, asset: Asset, amount: bigint): Call {
+/** The call a send makes. `receiver` is who the coin goes to on the far side: the wallet's own account unless a record says otherwise. */
+export function sendCall(plan: Plan, account: string, dir: Dir, asset: Asset, amount: bigint, receiver: string = account): Call {
   const s = sides(plan, dir);
-  return dir === "in" ? bridgeCall(s.sendBridge, s.claimNetwork, account, amount, asset.sepolia) : bridgeCall(s.sendBridge, s.claimNetwork, account, amount, asset.ostia);
+  return dir === "in" ? bridgeCall(s.sendBridge, s.claimNetwork, receiver, amount, asset.sepolia) : bridgeCall(s.sendBridge, s.claimNetwork, receiver, amount, asset.ostia);
 }
 
 /** Starts a transfer: asks the wallet for the send. The record is kept from the moment the wallet is asked; a send the wallet certainly did not make leaves no record. */
@@ -136,10 +137,10 @@ export async function startSend(env: Env, input: SendInput): Promise<Transfer> {
   if (input.amount <= 0n || input.amount >= MAX) throw new Stop("The amount must be more than zero.");
   if (!storeWorks(env.store)) throw new Stop(NO_STORE);
   const t: Transfer = {
-    id: env.newId(), account: env.account, at: env.now(), route: env.plan.other.id, dir: input.dir, symbol: input.asset.symbol, decimals: input.asset.decimals, native: input.asset.sepolia === "native",
-    amount: input.amount.toString(), send: null, count: null, claim: null,
+    id: env.newId(), account: env.account, at: env.now(), route: input.to?.route ?? env.plan.other.id, dir: input.dir, symbol: input.asset.symbol, decimals: input.asset.decimals, native: input.asset.sepolia === "native",
+    amount: input.amount.toString(), send: null, count: null, claim: null, ...(input.to ? { receiver: input.to.receiver.toLowerCase(), party: input.to.party } : {}),
   };
-  return locked(env, t.id, () => ask(env, t, "send", sides(env.plan, input.dir).sendChain, sendCall(env.plan, env.account, input.dir, input.asset, input.amount)));
+  return locked(env, t.id, () => ask(env, t, "send", sides(env.plan, input.dir).sendChain, sendCall(env.plan, env.account, input.dir, input.asset, input.amount, t.receiver)));
 }
 
 /** Asks the wallet for the send of a record that has none (the page was closed between the record and the pop-up). */
@@ -150,7 +151,7 @@ export async function resendSend(env: Env, id: string): Promise<Transfer> {
     if (t.send) throw new Stop("This send was already asked for. Nothing was signed again.");
     const asset = env.plan.other.assets.find((a) => a.symbol === t.symbol);
     if (!asset) throw new Stop("This token is not offered here any more. Nothing was signed.");
-    return ask(env, t, "send", sides(env.plan, t.dir).sendChain, sendCall(env.plan, t.account, t.dir, asset, BigInt(t.amount)));
+    return ask(env, t, "send", sides(env.plan, t.dir).sendChain, sendCall(env.plan, t.account, t.dir, asset, BigInt(t.amount), t.receiver));
   });
 }
 
@@ -238,15 +239,15 @@ export async function advance(env: Env, id: string): Promise<{ transfer: Transfe
     try {
       const r = await env.receipt(t.send.chainId, t.send.tx);
       if (r) {
-        const n = r.ok ? depositMade(r.logs, s.sendBridge, env.plan.topic0, { destinationNetwork: s.claimNetwork, receiver: t.account, amount: BigInt(t.amount) }) : null;
+        const n = r.ok ? depositMade(r.logs, s.sendBridge, env.plan.topic0, { destinationNetwork: s.claimNetwork, receiver: t.receiver ?? t.account, amount: BigInt(t.amount) }) : null;
         t = patch(env, id, !r.ok ? { lost: "failed" } : n === null ? { lost: "unreadable" } : { count: n }) ?? t;
       }
     } catch (e) { if (e instanceof WrongChain) live.wrongChain = e.chainId; else live.unreadable = true; }
   }
   if (t.count !== null && !t.lost) {
     try { live.deposit = await env.deposit(s.sendNetwork, t.count); } catch { live.unreadable = true; }
-    // Paid out: by this claim, or by a claim made elsewhere. Either way it has arrived.
-    if (live.deposit?.stage === "claimed") return { transfer: patch(env, id, { done: env.now() }) ?? t, live };
+    // Paid out: by this claim, or by a claim made elsewhere. Either way it has arrived. (A send to a Canton account's address is claimed into it: it has arrived only when the router says so.)
+    if (live.deposit?.stage === "claimed" && t.receiver === undefined) return { transfer: patch(env, id, { done: env.now() }) ?? t, live };
     if (t.claim?.tx) {
       try {
         const r = await env.receipt(t.claim.chainId, t.claim.tx);
