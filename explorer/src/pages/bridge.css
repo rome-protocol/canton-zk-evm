@@ -9,7 +9,7 @@
 .bridge-page .account .btn { align-self: flex-start; }
 .bridge-page .btn[disabled] { opacity: .55; cursor: default; }
 .bridge-page .btn.ghost { background: var(--surface); color: var(--canton); border: 1px solid var(--line); box-shadow: none; font-weight: 500; }
-.bridge-page[hidden] { display: none; }   /* the Canton page, while the "Other chains" tab is open */
+.bridge-page[hidden] { display: none; }   /* the Canton page, while the "AggLayer Bridge" tab is open */
 .bridge-page .bad { color: var(--bad); }
 .bridge-page .copy { color: var(--muted); }
 

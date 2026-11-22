@@ -7,7 +7,7 @@ import { contentSecurityPolicy } from "../server/csp.ts";
 import { claimData, eventLog, ME, OSTIA_BRIDGE, OSTIA_ID, SEPOLIA_BRIDGE, SEPOLIA_ID, setupBody, stage } from "../src/bridge/other/fakes.ts";
 
 /**
- * The Bridge page's "Other chains" tab, in a real browser at the width of a phone: the built pages (BRIDGE_E2E_DIST, the TestNet shape as for bridge-off.test.ts), a wallet that records what it is asked, and a fake
+ * The Bridge page's "AggLayer Bridge" tab, in a real browser at the width of a phone: the built pages (BRIDGE_E2E_DIST, the TestNet shape as for bridge-off.test.ts), a wallet that records what it is asked, and a fake
  * explorer with a fake bridge service behind it (the three /api/agglayer routes) and a fake Ethereum Sepolia (the wallet's own chain: it answers only while the wallet is on it). Both ways are walked: a deposit on
  * Sepolia, the wait, the claim on Ostia; a send on Ostia, the wait, the claim on Sepolia. A reload in the middle carries on and signs nothing again, and with the server's switch off there is no tab. Runs only when
  * BRIDGE_E2E_DIST is set (the `bridge-page` job of .github/workflows/explorer.yml does, with the build of bridge-off.test.ts).
@@ -35,7 +35,7 @@ interface World {
 }
 const fresh = (): World => ({ on: true, stage: "unknown", count: 7, claimed: false, chain: SEPOLIA_ID, connected: false, sent: [], signs: [], switches: [], receipts: new Map(), setupReads: 0 });
 
-describe.skipIf(!dist)("the Bridge page's Other chains tab, in a browser", () => {
+describe.skipIf(!dist)("the Bridge page's AggLayer Bridge tab, in a browser", () => {
   let world = fresh();
   let server: Server, browser: any;
   const refused: string[] = [];
@@ -117,7 +117,7 @@ describe.skipIf(!dist)("the Bridge page's Other chains tab, in a browser", () =>
   /** The send at `index` is in a block, and made its deposit number. */
   const mined = (index: number, bridge: string, dest: number) => world.receipts.set(world.sent[index]!.hash, { status: "0x1", logs: [eventLog({ bridge, dest, amount: AMOUNT, count: world.count })] });
   const toOtherChains = async (page: any) => {
-    await page.getByRole("tab", { name: "Other chains" }).click();
+    await page.getByRole("tab", { name: "AggLayer Bridge" }).click();
     await page.getByRole("region", { name: "Route" }).waitFor();
   };
 
@@ -128,7 +128,7 @@ describe.skipIf(!dist)("the Bridge page's Other chains tab, in a browser", () =>
     await page.getByRole("tab", { name: "Move" }).waitFor();   // the Canton page's own tabs: the build has the Canton settings
     await until("the setup to be read", () => world.setupReads > 0);
     await page.waitForTimeout(500);
-    expect(await page.getByRole("tab", { name: "Other chains" }).count()).toBe(0);
+    expect(await page.getByRole("tab", { name: "AggLayer Bridge" }).count()).toBe(0);
     expect(await page.getByRole("heading", { level: 1, name: "Bridge" }).count()).toBe(1);
     await page.close();
   });

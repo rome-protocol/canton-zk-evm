@@ -33,7 +33,7 @@ const explorerRead = (method: string, params: unknown[]) => rpc(method, params, 
 const webLocks = (): LocksLike | null => (typeof navigator !== "undefined" && "locks" in navigator ? (navigator.locks as unknown as LocksLike) : null);
 
 /**
- * The "Other chains" tab of the Bridge: routes between Ostia and other chains over AggLayer. The page reads, the wallet signs; the browser keeps a record of each transfer it started (no list of
+ * The "AggLayer Bridge" tab of the Bridge: routes between Ostia and other chains over AggLayer. The page reads, the wallet signs; the browser keeps a record of each transfer it started (no list of
  * transfers started elsewhere), so a reload carries on where it was and signs nothing twice.
  */
 export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: ReactNode; setup: On; pollMs?: number }) {
@@ -161,7 +161,7 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
 
   return (
     <div className="bridge-page other-chains">
-      <div className="ptitle"><h1>Bridge</h1><span className="muted psub">Move tokens between {chain.name} and other chains</span></div>
+      <div className="ptitle"><h1>Bridge</h1><span className="muted psub">Move tokens to and from {chain.name} over the AggLayer Bridge</span></div>
       {tabs}
       <section className="card routes" aria-label="Route">
         <CardHead title="Route" as="h2" />
@@ -173,7 +173,7 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
       </section>
       {row && names && (
         <>
-          <div className="tabs" role="tablist" aria-label="Other chains">
+          <div className="tabs" role="tablist" aria-label="AggLayer Bridge">
             <button type="button" role="tab" id="other-tab-move" aria-selected={tab === "move"} aria-controls="other-panel-move" onClick={() => setTab("move")}>Move</button>
             <button type="button" role="tab" id="other-tab-activity" aria-selected={tab === "activity"} aria-controls="other-panel-activity" onClick={() => setTab("activity")}>Activity{count(onItsWay.length)}</button>
             <button type="button" role="tab" id="other-tab-claim" aria-selected={tab === "claim"} aria-controls="other-panel-claim" onClick={() => setTab("claim")}>Claim{count(claimable.length)}</button>

@@ -105,14 +105,14 @@ const sentTo = (bridge: string) => world.sent.filter((s) => s.tx.to.toLowerCase(
 /** The send in the wallet is in a block, with its deposit number. */
 const mined = (index: number, bridge: string, dest: number) => world.receipts.set(world.sent[index]!.hash, { status: "0x1", logs: [eventLog({ bridge, dest, amount: AMOUNT, count: world.count })] });
 
-describe("the Bridge page and its Other chains tab", () => {
+describe("the Bridge page and its AggLayer Bridge tab", () => {
   it("is the Canton page alone, with no tab, when the server says the AggLayer bridge is off", async () => {
     world.setup = { on: false };
     renderApp("/bridge");
     expect(await screen.findByText("The bridge is not set up on this site yet.")).toBeInTheDocument();
     await waitFor(() => expect(world.asked).toContain("/api/agglayer/setup"));
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
-    expect(screen.queryByRole("tab", { name: "Other chains" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "AggLayer Bridge" })).toBeNull();
     expect(screen.queryByRole("tablist", { name: "Bridge pages" })).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Bridge" })).toBeInTheDocument();
   });
@@ -122,20 +122,22 @@ describe("the Bridge page and its Other chains tab", () => {
       const { unmount } = renderApp("/bridge");
       await screen.findByText("The bridge is not set up on this site yet.");
       await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
-      expect(screen.queryByRole("tab", { name: "Other chains" })).toBeNull();
+      expect(screen.queryByRole("tab", { name: "AggLayer Bridge" })).toBeNull();
       unmount();
     }
   });
   it("shows the tab next to Canton when the server says it is on, and opens the other page in it", async () => {
     renderApp("/bridge");
-    const tab = await screen.findByRole("tab", { name: "Other chains" });
+    const tab = await screen.findByRole("tab", { name: "AggLayer Bridge" });
     expect(screen.getByRole("tab", { name: "Canton" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("The bridge is not set up on this site yet.")).toBeVisible();   // the Canton page, as it was
     await userEvent.click(tab);
     expect(await screen.findByRole("region", { name: "Route" })).toBeInTheDocument();
     expect(screen.getByText("The bridge is not set up on this site yet.")).not.toBeVisible();   // the Canton page is hidden, not gone
     expect(screen.getAllByRole("heading", { level: 1, name: "Bridge" })).toHaveLength(1);
-    expect(screen.getByRole("tab", { name: "Other chains" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "AggLayer Bridge" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Move tokens to and from Ostia over the AggLayer Bridge")).toBeInTheDocument();
+    expect(screen.queryByText(/Other chains/i)).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "Canton" }));
     expect(await screen.findByText("The bridge is not set up on this site yet.")).toBeVisible();
     expect(screen.queryByRole("region", { name: "Route" })).toBeNull();
@@ -228,7 +230,7 @@ describe("Ethereum Sepolia to Ostia", () => {
     const claim = await screen.findByRole("button", { name: "Claim on Ostia" });
     expect(screen.getByRole("listitem", { name: "Claim on Ostia: now" })).toHaveTextContent("Your move");
     expect(screen.getByText("Your wallet switches to Ostia. Its fee is paid in tROME.")).toBeInTheDocument();
-    expect(within(screen.getByRole("tablist", { name: "Other chains" })).getByRole("tab", { name: /Claim/ })).toHaveTextContent("Claim1");
+    expect(within(screen.getByRole("tablist", { name: "AggLayer Bridge" })).getByRole("tab", { name: /Claim/ })).toHaveTextContent("Claim1");
     await userEvent.click(claim);
     await waitFor(() => expect(world.sent).toHaveLength(2));
     expect(world.sent[1]!.tx).toMatchObject({ from: ME, to: OSTIA_BRIDGE, value: "0x0" });

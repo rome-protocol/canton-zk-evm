@@ -129,7 +129,7 @@ export function OtherCard(p: OtherCardProps) {
     : [<>Send on {s.sendName} <span className="muted small">(1 pop-up, paid in {feeCoin(row, p.ostiaCoin, "ostia")})</span></>, <>Wait until it is confirmed on {s.claimName}</>, <>Claim on {s.claimName} <span className="muted small">(1 pop-up, paid in {feeCoin(row, p.ostiaCoin, "other")})</span></>];
 
   return (
-    <section className="card move" aria-label="Move tokens to or from another chain">
+    <section className="card move" aria-label="Move tokens over the AggLayer Bridge">
       {!asset ? <p className="muted">There are no tokens to move here yet.</p> : (
         <>
           {side("from")}

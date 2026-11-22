@@ -1,4 +1,4 @@
-/* The "Other chains" tab of the Bridge: the route list and the steps of a transfer. The card, the amount, the tabs and the activity rows are the Bridge's own (bridge.css). */
+/* The "AggLayer Bridge" tab of the Bridge: the route list and the steps of a transfer. The card, the amount, the tabs and the activity rows are the Bridge's own (bridge.css). */
 .other-chains .routes ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .other-chains .routes li { margin: 0; padding: 0; min-width: 0; }
 .other-chains .routes li::before { content: none; }

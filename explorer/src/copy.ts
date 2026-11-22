@@ -22,11 +22,11 @@ export const SOURCE_URL = "https://github.com/rome-protocol/canton-zk-evm";
 export const DOCS_URL = "https://docs.rome.builders/canton-zk-evm/";
 export const DEPLOY_URL = "https://docs.rome.builders/canton-zk-evm/build-on-ostia";
 export const ISSUES_URL = `${SOURCE_URL}/issues`;
-/** Where a transaction on Ethereum Sepolia is shown (a link a person may follow, on the Bridge's Other chains tab); the transaction hash follows. */
+/** Where a transaction on Ethereum Sepolia is shown (a link a person may follow, on the Bridge's AggLayer Bridge tab); the transaction hash follows. */
 export const SEPOLIA_TX_URL = "https://sepolia.etherscan.io/tx/";
 export const TRUST_MODEL_URL = "https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature";
 
-/** The same page without its section: where the "Limits" link of the Other chains tab goes. */
+/** The same page without its section: where the "Limits" link of the AggLayer Bridge tab goes. */
 export const TRUST_MODEL_PAGE = TRUST_MODEL_URL.split("#")[0]!;
 
 /** What the sign-in sheet says of the account: it depends on the wallet, and nothing can bring it back. */
