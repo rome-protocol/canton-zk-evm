@@ -87,11 +87,11 @@ done
 [[ $JAVA_MAJOR =~ ^[0-9]+$ ]] || fail "JAVA_MAJOR is not a number"
 
 [ "$(jq .config.chainId "$ROOT/network/genesis.json")" = "$CHAIN_ID" ] || fail "genesis chain id differs from PINS"
-[ "$(jq .config.chainId "$ROOT/network/genesis-$TESTNET_CHAIN_ID.json")" = "$TESTNET_CHAIN_ID" ] || fail "TestNet's genesis chain id differs from PINS"
-[ "$TESTNET_CHAIN_ID" != "$CHAIN_ID" ] || fail "TESTNET_CHAIN_ID is DevNet's"
-# TestNet's genesis is DevNet's under another chain id: nothing else may differ.
-jq -e --slurpfile dev "$ROOT/network/genesis.json" '(.config.chainId = $dev[0].config.chainId) == $dev[0]' "$ROOT/network/genesis-$TESTNET_CHAIN_ID.json" >/dev/null || fail "TestNet's genesis differs from DevNet's in more than the chain id"
-jq -e --arg c "$TESTNET_CHAIN_ID" '.contracts[] | select(.name == "permit2") | .knownRuntimeCodeHashes[$c] | test("^0x[0-9a-f]{64}$")' "$ROOT/network/standard-contracts/contracts.json" >/dev/null || fail "contracts.json has no Permit2 hash for TestNet's chain id"
+[ "$(jq .config.chainId "$ROOT/network/genesis-$TESTNET_CHAIN_ID.json")" = "$TESTNET_CHAIN_ID" ] || fail "The TESTNET_CHAIN_ID genesis has another chain id than PINS says"
+[ "$TESTNET_CHAIN_ID" != "$CHAIN_ID" ] || fail "TESTNET_CHAIN_ID is the same as CHAIN_ID"
+# The TESTNET_CHAIN_ID genesis is the CHAIN_ID genesis under another chain id: nothing else may differ.
+jq -e --slurpfile dev "$ROOT/network/genesis.json" '(.config.chainId = $dev[0].config.chainId) == $dev[0]' "$ROOT/network/genesis-$TESTNET_CHAIN_ID.json" >/dev/null || fail "The TESTNET_CHAIN_ID genesis differs from the default genesis in more than the chain id"
+jq -e --arg c "$TESTNET_CHAIN_ID" '.contracts[] | select(.name == "permit2") | .knownRuntimeCodeHashes[$c] | test("^0x[0-9a-f]{64}$")' "$ROOT/network/standard-contracts/contracts.json" >/dev/null || fail "contracts.json has no Permit2 hash for TESTNET_CHAIN_ID"
 [ "$(printf '0x%x' "$GAS_CAP")" = "$(jq -r .gasLimit "$ROOT/network/genesis.json")" ] || fail "GAS_CAP differs from the genesis gas limit"
 [ "$(jq .config.pragueTime "$ROOT/network/genesis.json")" = "0" ] || fail "Prague is not active from genesis"
 [ "$(jq .config.osakaTime "$ROOT/network/genesis.json")" = "0" ] || fail "Osaka is not active from genesis"

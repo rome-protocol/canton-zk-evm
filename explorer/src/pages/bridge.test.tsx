@@ -140,7 +140,7 @@ describe("the Bridge page", () => {
     const sheet = await screen.findByRole("region", { name: "Your Canton account" });
     expect(sheet.textContent).not.toMatch(/on any device/);
     expect(sheet).toHaveTextContent("If your wallet gives the same signature again, the same account opens on another device. Not every wallet does: MetaMask, Rabby and OKX on a computer have been tested.");
-    expect(sheet).toHaveTextContent("No recovery: DevNet test tokens only.");
+    expect(sheet).toHaveTextContent("No recovery: test tokens only.");
     expect(within(sheet).getByRole("link", { name: "Limits" })).toHaveAttribute("href", "https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature");
     expect(within(sheet).getByRole("link", { name: "Limits" })).toHaveAttribute("rel", "noopener noreferrer");
   });

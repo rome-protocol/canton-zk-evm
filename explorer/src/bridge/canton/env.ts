@@ -39,7 +39,7 @@ export function originFromEnv(env: Record<string, string | undefined>): string {
   return origin;
 }
 
-/** The chain id the page signs for (`VITE_CHAIN_ID`): DevNet's, 770101, when the build sets none; TestNet's build sets 770102 (PINS TESTNET_CHAIN_ID). */
+/** The chain id the page signs for (`VITE_CHAIN_ID`): Ostia's, 770101 (PINS CHAIN_ID), when the build sets none. */
 export function chainIdFromEnv(env: Record<string, string | undefined> | undefined): number {
   const raw = env?.VITE_CHAIN_ID;
   if (!raw) return 770101;
