@@ -1190,6 +1190,8 @@ def signals_as_interrupts():
         for name in ("SIGTERM", "SIGHUP"):
             if hasattr(signal, name):
                 number = getattr(signal, name)
+                if signal.getsignal(number) is signal.SIG_IGN:   # protected on purpose (nohup): left alone
+                    continue
                 old[number] = signal.signal(number, raise_end)
     except ValueError:   # not the main thread
         pass
@@ -1198,6 +1200,28 @@ def signals_as_interrupts():
     finally:
         for number, handler in old.items():
             signal.signal(number, handler)
+
+
+@contextlib.contextmanager
+def signals_held():
+    """SIGTERM and SIGHUP that have a Python handler wait while the block runs and reach that handler after it (their own handler is swapped for a note, not masked:
+    a mask holds for one thread only). Not in the main thread: nothing is held."""
+    arrived, old = [], {}
+    try:
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                number = getattr(signal, name)
+                if callable(signal.getsignal(number)):
+                    old[number] = signal.signal(number, lambda n, frame: arrived.append(n))
+    except ValueError:
+        pass
+    try:
+        yield
+    finally:
+        for number, handler in old.items():
+            signal.signal(number, handler)
+        for number in arrived[:1]:
+            old[number](number, None)
 
 
 def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict, registry_files: dict, floor_days, max_inputs) -> dict:
@@ -1330,20 +1354,24 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
                 guard["open"] = False
                 return fail(f"the transfer failed: {done['reason']}. Nothing in it changed; run it again")
             if done is None or type(done.get("completionOffset")) is not int:
-                guard["open"] = False
-                return fail(write_stop(work, "the outcome of the refresh step's transfer is not known: it got no answer, and no completion of it was found. "
-                                              "Custody has not been checked", command_id, None, instr), True)
+                reason = write_stop(work, "the outcome of the refresh step's transfer is not known: it got no answer, and no completion of it was found. "
+                                          "Custody has not been checked", command_id, None, instr)
+                guard["open"] = False   # only once the stop is on disk: an end during its write leaves the guard to write it again
+                return fail(reason, True)
             update_id, offset = done.get("updateId"), done["completionOffset"]
         entry.update(submitted=True, updateId=update_id, offset=offset, checked=False)
         before, after, why = read_pair(ledger, gateway, instr, offset)
         entry.update(custodyBefore=None if before is None else b.canton_amount(before), custodyAfter=None if after is None else b.canton_amount(after))
-        guard["open"] = False
+        if why is None and before == after:
+            guard["open"] = False
+            entry["checked"] = True
+            return None
         if why is not None:
-            return fail(write_stop(work, why, command_id, update_id, instr), True)
-        if before != after:
-            return fail(write_stop(work, "custody changed across the refresh step's own transfer, which keeps its sum", command_id, update_id, instr, before, after), True)
-        entry["checked"] = True
-        return None
+            reason = write_stop(work, why, command_id, update_id, instr)
+        else:
+            reason = write_stop(work, "custody changed across the refresh step's own transfer, which keeps its sum", command_id, update_id, instr, before, after)
+        guard["open"] = False   # only once the stop is on disk
+        return fail(reason, True)
 
     with signals_as_interrupts():
         for entry, chunk in zip(result["transfers"], chunks):
@@ -1374,10 +1402,11 @@ def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict,
                 outcome = submit_and_check(entry, body, headers, begin, guard)
             except BaseException as err:   # an end of the process (an interrupt, a token file read half-way) between the submit and the end of the check
                 if guard["open"]:
-                    try:
-                        write_stop(work, f"the refresh step's transfer may have committed and its custody check was not made ({err.args[0] if isinstance(err, SignalEnd) else type(err).__name__})", command_id, None, instr)
-                    except Exception:
-                        pass
+                    with signals_held():   # a second end must not cut this write: it lands after it
+                        try:
+                            write_stop(work, f"the refresh step's transfer may have committed and its custody check was not made ({err.args[0] if isinstance(err, SignalEnd) else type(err).__name__})", command_id, None, instr)
+                        except Exception:
+                            pass
                 raise
             if outcome is not None:
                 return outcome
@@ -1445,7 +1474,7 @@ def main(argv: list) -> int:
     ap.add_argument("--instrument", metavar="ADMIN/ID", help="with --custody-refresh-step: the instrument, its admin party and its id")
     ap.add_argument("--registry", action="append", default=[], metavar="ADMIN=URL", help="with --custody-refresh-step: the instrument's token registry, as the builder is given it (for Canton Coin the validator's scan proxy)")
     ap.add_argument("--registry-token-file", action="append", default=[], metavar="ADMIN=FILE", help="with --custody-refresh-step: the file with the token that registry wants, as for the builder")
-    ap.add_argument("--max-transfer-inputs", type=int, help="with --custody-refresh-step: the most holdings one transfer takes, as for the builder (default: the builder's, from its status file, else 50; the open round's limit is the other)")
+    ap.add_argument("--max-transfer-inputs", type=int, help="with --custody-refresh-step: the most holdings one transfer takes, as for the builder (default: the builder's, from its status file; refused when that row has none yet; the open round's limit is the other)")
     ap.add_argument("--custody-floor-days", type=float, help="with --custody-refresh-step: the builder's floor, in days of holding life (default: the builder's, from its status file): no transfer makes a holding under it")
     ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)

@@ -339,6 +339,14 @@ class Arguments(Rig):
                 self.assertIn("floorDays", self.run_step("dry-run")[2])
                 self.assertEqual(self.run_step("dry-run", "--custody-floor-days", "30")[0], 0)
 
+    def test_the_help_for_the_cap_says_what_the_code_does(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            setup.main(["--help"])
+        text = " ".join(out.getvalue().split())
+        self.assertIn("default: the builder's, from its status file; refused when that row has none yet", text)
+        self.assertNotIn("else 50", text)
+
     def test_a_status_row_with_no_cap_yet_refuses_unless_the_flag_is_given_and_never_takes_50(self):
         node = self.start(*[hold(f"h{i:02}", "2.0") for i in range(60)])
         for bad in (None, 0, -1, "50", True, 2.5):
@@ -842,6 +850,7 @@ class Holes(Rig):
         self.assertEqual(made.call_count, 3)   # the rounds, then one for each of the two transfers
 
     def test_a_sigterm_or_sighup_during_the_submit_writes_the_stop_and_the_handlers_are_put_back(self):
+        self.addCleanup(signal.signal, signal.SIGHUP, signal.signal(signal.SIGHUP, signal.SIG_DFL))   # whatever the runner inherited (nohup ignores it)
         for name in ("SIGTERM", "SIGHUP"):
             with self.subTest(name):
                 b.custody_clear("run") if self.stop() is not None else None
@@ -880,6 +889,92 @@ class Holes(Rig):
         with mock.patch.object(b.ChoiceContexts, "transfer", ask), self.assertRaises(KeyboardInterrupt):
             self.run_step("run")
         self.assertEqual((node.submits, self.stop()), ([], None))
+
+    def signal_in_write_stop(self, times):
+        """b.write_json_file as the stop file's write: a SIGTERM lands inside it, before the file is there, on each of its first `times` calls (a second one
+        lands in the except path's own write when `times` is 2); the later calls write for real. Returns the list of the calls."""
+        real, calls = b.write_json_file, []
+        def write(path, data, *a, **k):
+            if Path(path).name == b.CUSTODY_STOP_FILE:
+                calls.append(data["reason"])
+                if len(calls) <= times:
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    time.sleep(0.3)
+            return real(path, data, *a, **k)
+        patch = mock.patch.object(b, "write_json_file", write)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return calls
+
+    def test_a_sigterm_inside_the_stop_write_when_the_outcome_is_not_known_still_leaves_a_stop(self):
+        node = self.start(hold("h1", "2.0"))
+        node.drop_at = {1}   # no answer, and no completion of the command
+        calls = self.signal_in_write_stop(1)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertEqual(len(calls), 2)   # the interrupted write, then the except path's own
+        self.assertIsNotNone(self.stop())
+        self.assertIn("may have committed", self.stop()["reason"])
+
+    def test_a_sigterm_inside_the_stop_write_for_a_refused_read_still_leaves_a_stop(self):
+        node = self.start(hold("h1", "3.0"))
+        node.refuse_offsets = {41}
+        calls = self.signal_in_write_stop(1)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertEqual(len(calls), 2)
+        self.assertIsNotNone(self.stop())
+
+    def test_a_sigterm_inside_the_stop_write_for_a_difference_still_leaves_a_stop(self):
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        node.skew[1] = 1
+        calls = self.signal_in_write_stop(1)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_step("run")
+        self.assertEqual(len(calls), 2)
+        self.assertIsNotNone(self.stop())
+
+    def test_a_second_signal_inside_the_except_paths_own_stop_write_does_not_lose_the_stop(self):
+        for what in ("outcome", "difference"):
+            with self.subTest(what):
+                if self.stop() is not None:
+                    b.custody_stop_path(self.cfg()).unlink()
+                node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+                (setattr(node, "drop_at", {1}) if what == "outcome" else node.skew.update({1: 1}))
+                calls = self.signal_in_write_stop(2)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_step("run")
+                self.assertEqual(len(calls), 2)
+                self.assertIsNotNone(self.stop())   # the second signal waited until the write was done
+
+    def test_a_signal_that_is_ignored_is_left_alone_and_does_not_end_the_run(self):
+        old = signal.signal(signal.SIGHUP, signal.SIG_IGN)   # as under nohup
+        self.addCleanup(signal.signal, signal.SIGHUP, old)
+        node = self.start(hold("h1", "2.0"), hold("h2", "2.0"))
+        real, seen = b.post_json, []
+        def post(url, body, headers, timeout=120):
+            if url.endswith("/submit-and-wait"):
+                seen.append((signal.getsignal(signal.SIGHUP), signal.getsignal(signal.SIGTERM)))
+                os.kill(os.getpid(), signal.SIGHUP)   # the session drops; the run is protected from it
+                time.sleep(0.2)
+            return real(url, body, headers, timeout)
+        with mock.patch.object(b, "post_json", post):
+            code, out, _ = self.run_step("run")
+        self.assertEqual((code, out["ok"], len(node.submits)), (0, True, 1))
+        self.assertIsNone(self.stop())
+        self.assertIs(seen[0][0], signal.SIG_IGN)   # still ignored inside the block
+        self.assertIsNot(seen[0][1], signal.SIG_IGN)   # SIGTERM was handled
+        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)   # and after it
+
+    def test_a_signal_with_a_python_handler_or_the_default_is_taken_over_and_put_back(self):
+        marker = lambda n, f: None
+        for start in (signal.SIG_DFL, marker):
+            with self.subTest(start):
+                old = signal.signal(signal.SIGHUP, start)
+                self.addCleanup(signal.signal, signal.SIGHUP, old)
+                with setup.signals_as_interrupts():
+                    self.assertNotIn(signal.getsignal(signal.SIGHUP), (start,))
+                self.assertIs(signal.getsignal(signal.SIGHUP), start)
 
     def test_a_dry_run_and_a_finished_run_leave_the_signal_handlers_as_they_were(self):
         self.start(hold("h1", "2.0"))
