@@ -22,6 +22,19 @@ describe("starting a send", () => {
     expect(w.sent).toHaveLength(1);
     expect(t).toMatchObject({ account: ME, dir: "in", symbol: "ETH", native: true, amount: AMOUNT.toString(), count: null, claim: null });
   });
+  it("keeps what a look wrote while the wallet was being asked (the step is added to the record, which is not written over)", async () => {
+    const w = world();
+    const env = fakeEnv(w);
+    const send = env.send;
+    env.send = async (chainId, call) => {
+      const hash = await send(chainId, call);
+      saveTransfer(env.store, { ...loadTransfer(env.store, "t1")!, count: 9 });   // a look of the page finds the deposit while the pop-up is open
+      return hash;
+    };
+    const t = await startSend(env, { dir: "in", asset: ETH, amount: AMOUNT });
+    expect(t.count).toBe(9);
+    expect(loadTransfer(env.store, "t1")).toMatchObject({ count: 9, send: { tx: w.sent[0]!.hash } });
+  });
   it("out of Ostia: sends the wrapped ether to the Ostia bridge, for Ethereum, with no value", async () => {
     const w = world({ chain: SEPOLIA_ID });
     const env = fakeEnv(w);

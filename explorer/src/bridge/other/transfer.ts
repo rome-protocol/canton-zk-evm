@@ -84,7 +84,8 @@ async function ask(env: Env, t: Transfer, which: "send" | "claim", chainId: numb
   const nonce = (await env.nonces(chainId))?.pending ?? null;
   const before = loadTransfer(env.store, t.id);
   const planned: Attempt = { chainId, to: call.to, data: call.data, value: call.value, nonce, tx: null };
-  saveTransfer(env.store, { ...t, [which]: planned });
+  // What a look wrote since the record was read (a deposit number, a finished claim) is kept: only the step is added to it.
+  saveTransfer(env.store, { ...(before ?? t), [which]: planned });
   let tx: Hex;
   try {
     tx = await env.send(chainId, call);
@@ -93,7 +94,7 @@ async function ask(env: Env, t: Transfer, which: "send" | "claim", chainId: numb
     if (before) saveTransfer(env.store, before); else removeTransfer(env.store, t.id);
     throw e;
   }
-  const next = { ...t, [which]: { ...planned, tx } };
+  const next = { ...(loadTransfer(env.store, t.id) ?? t), [which]: { ...planned, tx } };
   saveTransfer(env.store, next);
   return next;
 }
@@ -147,7 +148,7 @@ export async function signClaim(env: Env, id: string): Promise<Transfer> {
       || !isClaimFor(claim.data, { destinationNetwork: s.claimNetwork, receiver: t.account, amount: BigInt(t.amount) })) {
       throw new Stop("The bridge sent back a claim that is not yours, so nothing was signed. Try again in a moment.");
     }
-    return ask(env, { ...t, claimFailed: undefined }, "claim", s.claimChain, { to: claim.to, data: claim.data as Hex, value: "0" });
+    return ask(env, patch(env, id, { claimFailed: undefined }) ?? t, "claim", s.claimChain, { to: claim.to, data: claim.data as Hex, value: "0" });
   });
 }
 
