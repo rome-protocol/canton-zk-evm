@@ -2,7 +2,7 @@
 """Part of tests/canton_external.sh: the two sandbox cases of the custody expiry rules, against the real participant.
 Usage: custody_cases.py a-setup     50 one-unit test-token holdings for the gateway in one submit, and U's standing acceptance of withdrawals
        custody_cases.py a-advance   One Advance whose withdrawal names all 50 as inputs, built by the builder's own code and sent by its Ledger.advance
-       custody_cases.py b           A transfer from U with change; custody read at the completion offset less one and at it differs by exactly the amount;
+       custody_cases.py b           A transfer from U with change, accepted by V; custody read at the completion offset less one and at it differs by exactly the amount;
                                     run_custody_check says "ok" for that amount and "stopped" for one base unit more
 Settings are the ones of tests/canton_external.sh (CZE_*), and CZE_MAX_INBOUND: the participant's Ledger API limit on a request, in bytes, as set for this run.
 Prints one "case ..." line with its numbers; any failure exits 1."""
@@ -54,7 +54,8 @@ def a_advance():
     sent = {}
     original = b.post_json
     def post_json(url, body, headers, timeout=120):   # what Ledger.advance sends, measured as post_json encodes it
-        sent["bytes"] = len(json.dumps(body).encode())
+        if url.endswith("/v2/commands/submit-and-wait"):
+            sent["bytes"] = len(json.dumps(body).encode())
         return original(url, body, headers, timeout=timeout)
     b.post_json = post_json
     cfg = config("builder", parties["BUILDER_PARTY"], (parties["OPERATOR_PARTY"], gateway), disclosed=dc.read_disclosed(net))
@@ -93,11 +94,15 @@ def b_case():
     held = [e["contractId"] for e in net.template("users", "u", dc.TOKEN)]
     transfer = {"sender": u, "receiver": net.party("v"), "amount": SENT, "instrumentId": instrument, "requestedAt": dc.utc(dc.timedelta(minutes=-1)),
                 "executeBefore": dc.utc(dc.timedelta(hours=1)), "inputHoldingCids": held, "meta": {"values": {}}}
-    answer = net.submit("users", ["u"], {"ExerciseCommand": {"templateId": dc.TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
+    net.submit("users", ["u"], {"ExerciseCommand": {"templateId": dc.TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
                                                            "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": dc.NO_EXTRA_ARGS}}}, disclosed)
+    # The test token answers with an offer that holds the amount locked with the sender until the receiver accepts: custody falls in the update of the acceptance.
+    offers = net.wait_for("the transfer offer", lambda: net.template("users", "v", dc.TRANSFER_OFFER))
+    answer = net.submit("users", ["v"], {"ExerciseCommand": {"templateId": dc.TRANSFER_INSTRUCTION, "contractId": offers[0]["contractId"], "choice": "TransferInstruction_Accept",
+                                                           "choiceArgument": {"extraArgs": dc.NO_EXTRA_ARGS}}})
     offset = answer.get("completionOffset")
     if type(offset) is not int:
-        fail(f"the transfer's answer has no offset: {answer}")
+        fail(f"the acceptance's answer has no offset: {answer}")
     sent = b.base_units(SENT)
     with tempfile.TemporaryDirectory() as work:
         cfg = config("demo", u, work_dir=work)   # reads as U: the builder's own user reads as the gateway only
