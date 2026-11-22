@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isClaimedCall, proxyAddressCall, rollupIdCall, wrappedAddressCall } from "./abi.ts";
 import { Secret } from "./secret.ts";
-import { SEPOLIA_USER_AGENT, SepoliaError, createSepoliaReader } from "./sepolia.ts";
+import { SEPOLIA_MAX_PER_SECOND, SEPOLIA_USER_AGENT, SepoliaBusy, SepoliaError, createSepoliaReader } from "./sepolia.ts";
 
 const KEY_URL = "https://sepolia.example.invalid/v3/hidden-part-one";
 const BRIDGE = "0x528e26b25a34a4a5d0dbda1d57d318153d2ed582";
@@ -22,9 +22,9 @@ function fake(answer: (to: string, data: string) => string | Error | Response) {
   }) as unknown as typeof fetch;
   return { calls, fetcher };
 }
-const reader = (answer: Parameters<typeof fake>[0], now = { t: 0 }) => {
+const reader = (answer: Parameters<typeof fake>[0], now = { t: 0 }, maxPerSecond?: number) => {
   const f = fake(answer);
-  return { ...f, now, api: createSepoliaReader({ url: new Secret(KEY_URL), bridge: BRIDGE, rollupManager: MANAGER, fetch: f.fetcher, now: () => now.t }) };
+  return { ...f, now, api: createSepoliaReader({ url: new Secret(KEY_URL), bridge: BRIDGE, rollupManager: MANAGER, fetch: f.fetcher, now: () => now.t, ...(maxPerSecond === undefined ? {} : { maxPerSecond }) }) };
 };
 
 describe("the reader of Ethereum Sepolia", () => {
@@ -110,5 +110,84 @@ describe("the reader of Ethereum Sepolia", () => {
     expect(e).toBeInstanceOf(SepoliaError);
     expect(e.message).toBe("Ethereum Sepolia did not answer with JSON");
     expect(pulled).toBeLessThanOrEqual(64 * 1024 + 2 * chunk.length);
+  });
+
+  describe("the cap on all calls to Sepolia", () => {
+    const outcomes = (ps: Promise<unknown>[]) => Promise.allSettled(ps);
+    const busy = (rs: PromiseSettledResult<unknown>[]) => rs.filter((r) => r.status === "rejected" && r.reason instanceof SepoliaBusy);
+
+    it("lets a burst from many clients make at most the cap's calls in a second; the rest are told to wait, with no call made", async () => {
+      const r = reader(() => word(0), { t: 0 }, 5);
+      const rs = await outcomes(Array.from({ length: 60 }, (_, i) => r.api.isClaimed(i, 0)));
+      expect(r.calls).toHaveLength(5);
+      expect(rs.filter((x) => x.status === "fulfilled")).toHaveLength(5);
+      expect(busy(rs)).toHaveLength(55);
+      const e = (busy(rs)[0] as PromiseRejectedResult).reason as SepoliaBusy;
+      expect(e).toBeInstanceOf(SepoliaError);
+      expect(e.retryAfterSeconds).toBe(1);
+      expect(e.message).not.toContain("hidden-part-one");
+    });
+
+    it("never goes over the cap in any second, however the calls are spread, and gives the room back as the second passes", async () => {
+      const r = reader(() => word(0), { t: 0 }, 5);
+      let n = 0;
+      const times: number[] = [];
+      for (let t = 0; t < 10_000; t += 100) {
+        r.now.t = t;
+        const before = r.calls.length;
+        await outcomes(Array.from({ length: 4 }, () => r.api.isClaimed(n++, 0)));
+        for (let k = before; k < r.calls.length; k++) times.push(t);
+      }
+      for (const start of times) expect(times.filter((x) => x >= start && x < start + 1000).length).toBeLessThanOrEqual(5);
+      expect(times.length).toBeGreaterThanOrEqual(45);
+    });
+
+    it("counts only real calls: a repeat from the cache, and a call already on its way, cost nothing", async () => {
+      const r = reader(() => word(0), { t: 0 }, 2);
+      await Promise.all(Array.from({ length: 30 }, () => r.api.isClaimed(1, 0)));
+      expect(r.calls).toHaveLength(1);
+      for (let i = 0; i < 40; i++) await r.api.isClaimed(1, 0);
+      expect(r.calls).toHaveLength(1);
+      await r.api.isClaimed(2, 0);
+      expect(r.calls).toHaveLength(2);
+      expect((await r.api.isClaimed(1, 0))).toBe(false);
+      await expect(r.api.isClaimed(3, 0)).rejects.toBeInstanceOf(SepoliaBusy);
+      expect(r.calls).toHaveLength(2);
+    });
+
+    it("counts a call that fails, since it reached Sepolia, but not a refusal, and does not keep a refusal", async () => {
+      let fail = true;
+      const r = reader(() => (fail ? new TypeError("x") : word(1)), { t: 0 }, 1);
+      await expect(r.api.isClaimed(1, 0)).rejects.toThrow("Ethereum Sepolia cannot be reached");
+      await expect(r.api.isClaimed(1, 0)).rejects.toBeInstanceOf(SepoliaBusy);
+      expect(r.calls).toHaveLength(1);
+      fail = false;
+      r.now.t += 1000;
+      expect(await r.api.isClaimed(1, 0)).toBe(true);
+      expect(r.calls).toHaveLength(2);
+    });
+
+    it("says how many seconds until a call is possible, from the oldest call in the second", async () => {
+      const r = reader(() => word(0), { t: 0 }, 2);
+      await r.api.isClaimed(1, 0);
+      r.now.t = 400;
+      await r.api.isClaimed(2, 0);
+      r.now.t = 500;
+      const e = (await r.api.isClaimed(3, 0).catch((x: unknown) => x)) as SepoliaBusy;
+      expect(e.retryAfterSeconds).toBe(1);
+      r.now.t = 1000;
+      await r.api.isClaimed(3, 0);
+      expect(r.calls).toHaveLength(3);
+    });
+
+    it("asks for a copy's two reads as two calls, and a refusal on the second leaves the first kept", async () => {
+      const r = reader(() => word(0), { t: 0 }, 1);
+      await expect(r.api.copyOf(75, WRAPPED_ETHER)).rejects.toBeInstanceOf(SepoliaBusy);
+      expect(r.calls).toHaveLength(1);
+    });
+
+    it("has a default of 5 a second", () => {
+      expect(SEPOLIA_MAX_PER_SECOND).toBe(5);
+    });
   });
 });

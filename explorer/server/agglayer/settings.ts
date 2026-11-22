@@ -1,5 +1,6 @@
 /** The settings of the AggLayer bridge routes, read from the environment. With AGGLAYER_BRIDGE off, nothing else is read. */
 import { Secret } from "./secret.ts";
+import { SEPOLIA_MAX_PER_SECOND } from "./sepolia.ts";
 
 export interface TimeRange { minSeconds: number; maxSeconds: number }
 export interface TokenSetting {
@@ -25,6 +26,8 @@ export interface AgglayerSettings {
   aggkitUrl: string;
   sepoliaRpc: Secret;
   sepoliaChainId: number;
+  /** The most calls a second the explorer makes to Ethereum Sepolia, all clients together. */
+  sepoliaMaxPerSecond: number;
   ostiaNetworkId: number;
   ostiaBridge: string;
   sepoliaBridge: string;
@@ -143,6 +146,7 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     aggkitUrl: loopbackUrl("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"),
     sepoliaRpc: new Secret(rpc),
     sepoliaChainId: whole("AGGLAYER_SEPOLIA_CHAIN_ID", 11155111, 1),
+    sepoliaMaxPerSecond: whole("AGGLAYER_SEPOLIA_MAX_PER_SECOND", SEPOLIA_MAX_PER_SECOND, 1, 100),
     ostiaNetworkId: whole("AGGLAYER_OSTIA_NETWORK_ID", 75, 1, 2 ** 32 - 1),
     ostiaBridge: address("AGGLAYER_OSTIA_BRIDGE", true)!,
     sepoliaBridge: address("AGGLAYER_SEPOLIA_BRIDGE", true)!,
