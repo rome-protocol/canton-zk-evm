@@ -5,7 +5,8 @@ import type { Transfer } from "../bridge/other/record.ts";
 import type { Live } from "../bridge/other/transfer.ts";
 import { askingOf, sides } from "../bridge/other/transfer.ts";
 import { viewOf, type Names, type View } from "../bridge/other/view.ts";
-import { LEAVE_NOTE } from "../bridge/other/words.ts";
+import { LEAVE_NOTE, otherTxUrl } from "../bridge/other/words.ts";
+import { OutLink } from "../components/Help.tsx";
 import { dateTime, short } from "../format.ts";
 import { MoveMarks } from "./MoveMarks.tsx";
 import { useMarks } from "./moveWatch.ts";
@@ -19,10 +20,12 @@ export interface RowActions {
   onRemove(t: Transfer): void;
 }
 
-/** A transaction of a transfer: Ostia's is a page of the explorer; another chain's is shown by its hash (this site links to no other host). */
+/** A transaction of a transfer: Ostia's is a page of the explorer; Ethereum Sepolia's is its own explorer's page; any other chain's is shown by its hash. */
 function TxLink({ hash, chainId, ostiaId, label }: { hash: Hex; chainId: number; ostiaId: number; label: string }) {
   if (chainId === ostiaId) return <Link to={`/tx/${hash}`}>{label}</Link>;
-  return <span>{label} <span className="mono" title={hash}>{short(hash, 8, 6)}</span></span>;
+  const url = otherTxUrl(chainId, hash);
+  const shown = <span className="mono" title={hash}>{short(hash, 8, 6)}</span>;
+  return url ? <span><OutLink href={url}>{label}</OutLink> {shown}</span> : <span>{label} {shown}</span>;
 }
 
 function Row({ t, v, live, names, busy, message, a }: { t: Transfer; v: View; live: Live | undefined; names: Names; busy: boolean; message: string | null; a: RowActions }) {

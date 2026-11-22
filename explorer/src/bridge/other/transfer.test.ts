@@ -148,6 +148,16 @@ describe("a send the wallet did not answer", () => {
     expect(await look(env, "t1", "send")).toBe("unknown");
     await expect(resendSend(env, "t1")).rejects.toThrow(/already asked for/);
   });
+  it("is not judged when the wallet gives no count, or the record has no count to compare with: the page says only that it cannot tell", async () => {
+    const a = await unsure(world({ next: ["silent-sent"] }));
+    a.w.noCount = true;
+    expect(await look(a.env, "t1", "send")).toBe("no-count");
+    const b = await unsure(world({ next: ["silent"], noCount: true }));   // the wallet gave no count when the step was written, so the record has no nonce
+    expect(loadTransfer(b.env.store, "t1")!.send!.nonce).toBeNull();
+    b.w.noCount = false;
+    expect(await look(b.env, "t1", "send")).toBe("no-count");
+    await expect(resendSend(b.env, "t1")).rejects.toThrow(/already asked for/);   // and the step stays open
+  });
   it("cannot be looked at while the wallet is on another chain", async () => {
     const { w, env } = await unsure(world({ next: ["silent"] }));
     w.chain = OSTIA_ID;

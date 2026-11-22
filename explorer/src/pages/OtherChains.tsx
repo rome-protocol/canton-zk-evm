@@ -15,7 +15,7 @@ import { readSetup, type OpenRow, type Setup } from "../bridge/other/setup.ts";
 import { adopt, advance, giveUp, look, readStop, resendSend, signClaim, startSend, sides, Stop, askingOf, watchAsking, type Live, type SendInput } from "../bridge/other/transfer.ts";
 import { viewOf, type Names } from "../bridge/other/view.ts";
 import { createEnv } from "../bridge/other/wire.ts";
-import { feeCoin, NOT_YET_OPEN, otherWords, TRUST_ALWAYS, TRUST_ETH, ACTIVITY_NOTE } from "../bridge/other/words.ts";
+import { feeCoin, movedWords, noCountWords, notSentWords, NOT_YET_OPEN, otherWords, TRUST_ALWAYS, TRUST_ETH, ACTIVITY_NOTE } from "../bridge/other/words.ts";
 import { OtherCard } from "./OtherCard.tsx";
 import { Transfers, type RowActions } from "./OtherTransfers.tsx";
 import "./bridge.css";
@@ -131,8 +131,10 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
       const s = sides({ ostia: chain, other: row!, topic0: "" }, t.dir);
       const found = await look(env, t.id, which);
       const name = which === "send" ? s.sendName : s.claimName;
-      if (found === "not-sent") throw new Stop(which === "send" ? "Your wallet did not send it. You can send it again." : "Your wallet did not send it. You can claim again.");
-      if (found === "unknown") throw new Stop(`Something was sent from your wallet after this was started. Find it in your wallet's activity on ${name}, then paste its transaction hash below.`);
+      // A send that was not made shows as "not sent" with these words under it; a claim goes back to its button, so it is told here.
+      if (found === "not-sent" && which === "claim") throw new Stop(notSentWords("claim"));
+      if (found === "unknown") throw new Stop(movedWords(name));
+      if (found === "no-count") throw new Stop(noCountWords(name));
       if (found === "elsewhere") throw new Stop(`Put your wallet on ${name} to look.`);
     }, () => ({ name: "", coin: "" })),
     onAdopt: (t, which, hash) => env && void run(t.id, () => adopt(env, t.id, which, hash), which === "send" ? sendWhere(t) : claimWhere(t)),

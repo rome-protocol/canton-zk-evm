@@ -24,13 +24,19 @@ interface World {
   ostiaClaimed?: boolean; ostiaClaimedLatest?: boolean; ostiaReadFails?: boolean;
   /** Ostia's latest and finalized blocks (the finalized one is 500 when not given; null is a read that fails), and the deposits made on Ostia: how many, and the newest one (the bridge service's record of it). */
   head?: number | null; finalized?: number | null; ostiaDeposits?: number; newestOstia?: Partial<BridgeLeaf>;
+  /** How many deposits Ostia's bridge counts as of the finalized block, when fewer than at the latest one (the newest deposits are above it). */
+  depositsAtFinalized?: number;
 }
 function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_700_000_500_000 }) {
   const calls: string[] = [];
+  const countReads: number[] = [];
+  const finalizedAt = w.finalized === undefined ? 500 : w.finalized;   // null: reth gives no finalized block
+  const countAt = (block: number | null) => (block === finalizedAt ? w.depositsAtFinalized ?? w.ostiaDeposits : w.ostiaDeposits);
   const aggkit = {
     bridge: async (n: number, c: number) => {
       if (w.down) throw new AggkitError("the bridge service cannot be reached");
-      if (w.ostiaDeposits !== undefined && n === 75 && c === w.ostiaDeposits - 1) return w.newestOstia ? leaf(w.newestOstia) : undefined;
+      const seen = countAt(finalizedAt);
+      if (seen !== undefined && n === 75 && c === seen - 1) return w.newestOstia ? leaf(w.newestOstia) : undefined;
       calls.push(`bridge ${n} ${c}`);
       return w.leaf;
     },
@@ -53,7 +59,7 @@ function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_7
       return n === null ? null : { number: n };
     },
     callAt: async (to: string, input: string, block: number) => {
-      if (input === depositCountCall()) return H(w.ostiaDeposits ?? 0);
+      if (input === depositCountCall()) { countReads.push(block); return H(countAt(block) ?? 0); }
       calls.push(`ostia ${to} ${input} ${block}`);
       if (w.ostiaReadFails) throw new Error("reth is down");
       const paid = block === 500 ? w.ostiaClaimed : w.ostiaClaimedLatest ?? w.ostiaClaimed;
@@ -66,7 +72,7 @@ function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_7
     const served = bridge.routes(p!.split("/").slice(1), new URLSearchParams(qs), ip);
     return served ? served() : undefined;
   };
-  return { bridge, get, calls, now };
+  return { bridge, get, calls, now, countReads };
 }
 const body = (a: { body: unknown } | undefined) => a!.body as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const keys = (o: object) => Object.keys(o).sort();
@@ -316,6 +322,17 @@ describe("the health row", () => {
     expect(await row({ ostiaDeposits: 1, newestOstia: { blockTimestamp: T - 3600 } })).toMatchObject({ status: "degraded", value: { waitingSeconds: 3600 } });
     expect(await row(waiting(3600, 1800))).toMatchObject({ status: "ok", value: { waitingSeconds: null } });
     expect(await row(waiting(3600), { AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS: "7200" })).toMatchObject({ status: "ok" });
+  });
+  it("reads the newest deposit at Ostia's finalized block, so a deposit above it is not the one that waits", async () => {
+    const T2 = { t: T * 1000 };
+    const w: World = { settlements: [{ blockTimestamp: T - 7200 }], head: 520, finalized: 500, ostiaDeposits: 5, depositsAtFinalized: 4, newestOstia: { blockTimestamp: T - 3600 } };
+    const a = build(w, {}, T2);
+    expect(await a.bridge.healthRow()).toMatchObject({ value: { waitingSeconds: 3600 } });   // deposit 3, the newest at the finalized block; the fifth (number 4) is above it and unknown to the service
+    expect(a.countReads).toEqual([500]);
+    // With no finalized block the latest one is read.
+    const b = build({ ...w, finalized: null, depositsAtFinalized: undefined, ostiaDeposits: 5, newestOstia: { blockTimestamp: T - 60 } }, {}, T2);
+    await b.bridge.healthRow();
+    expect(b.countReads).toEqual([520]);
   });
   it("does not blame the bridge for a deposit it cannot read", async () => {
     expect(await row({ settlements: [{ blockTimestamp: T - 7200 }], ostiaDeposits: 4 })).toMatchObject({ status: "ok", value: { waitingSeconds: null } });
