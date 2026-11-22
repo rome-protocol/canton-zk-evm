@@ -154,6 +154,23 @@ export const REST_FIELDS = {
   twinLine: ["token", "symbol", "name", "decimals", "supply", "vaultBalance", "matched", "locks", "releases", "through"],
   twinCanton: ["token", "symbol", "name", "decimals", "instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "matched", "ledgerOffset", "readAt"],
   twinLeg: ["block", "txHash", "legId", "twin", "token", "symbol", "amount", "updateId"],
+  /** The AggLayer bridge page's setup: the chain, the bridge event to look for in a receipt, and the route rows. A row that is not open has only its name. Off, the answer is `{on: false}`. */
+  agglayerOff: ["on"],
+  agglayerSetup: ["on", "chain", "bridgeEvent", "routes"],
+  agglayerChain: ["chainId", "name", "networkId", "bridge"],
+  agglayerBridgeEvent: ["signature", "topic0"],
+  agglayerRouteClosed: ["id", "name", "open"],
+  agglayerRoute: ["id", "name", "open", "networkId", "chainId", "bridge", "available", "assets", "times", "claimedForYou"],
+  agglayerToken: ["symbol", "name", "decimals", "sepolia", "ostia"],
+  agglayerTimes: ["in", "out"],
+  agglayerRange: ["minSeconds", "maxSeconds"],
+  agglayerClaimedForYou: ["ostia", "remote"],
+  /** A deposit's stage (unknown, sent, confirmed, ready or claimed), and the deposit as the bridge service indexed it. */
+  agglayerDeposit: ["network", "count", "stage", "destinationNetwork", "sentAt", "confirmedAt", "readyAt", "leaf"],
+  agglayerLeaf: ["txHash", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount"],
+  /** What a wallet needs to claim a deposit: where to send it (`to` on `chainId`), the calldata, and the arguments it is made of. */
+  agglayerClaim: ["network", "count", "claimed", "destinationNetwork", "chainId", "to", "l1InfoTreeIndex", "data", "args"],
+  agglayerClaimArgs: ["smtProofLocalExitRoot", "smtProofRollupExitRoot", "globalIndex", "mainnetExitRoot", "rollupExitRoot", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount", "metadata"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
   legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "gateway", "twin", "legId", "token", "account", "amount", "party"],
