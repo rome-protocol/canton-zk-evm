@@ -69,7 +69,7 @@ The demo passed all its checks on the same machine, with one NVIDIA RTX PRO 6000
 | `sidecar/` | The service beside each Canton confirmer |
 | `daml/` | The chain record (from 0.5.0 with its registry of EVM contracts), the block record, and the Daml side of deposits, withdrawals, payments and the locks and releases of twins |
 | `builder/` | Makes a block, gets it proven, submits it to Canton |
-| `worker/` | The Canton router's worker for Canton to another chain: the relayer that sends router deposits on, and the claimer on Ethereum Sepolia (see [worker/README.md](worker/README.md)) |
+| `worker/` | The Canton router's worker: the relayer that sends router deposits on, the claimer on Ethereum Sepolia, and the in-relayer that takes a coin sent to an inbox on to Canton or back (see [worker/README.md](worker/README.md)) |
 | `explorer/` | A block explorer for Ostia, with a tROME faucet and an in-browser proof check (see [explorer/README.md](explorer/README.md)) |
 | `load/` | The mixed load kit (tokens, NFTs, ERC-3643, Uniswap V2, a RedStone price consumer, TACEO's Merces contracts with client-side proofs only) and what one DevNet run measured |
 | `apps/otc/` | An OTC app in its own Daml package: a seller's offer of a Canton token for an ERC-20 payment, and the trade a venue makes of it (see [apps/otc/README.md](apps/otc/README.md)) |
