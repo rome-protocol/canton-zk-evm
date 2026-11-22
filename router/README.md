@@ -33,7 +33,7 @@ router/deploy.py ... check [--settings]    # the read-backs alone, against the c
 - Nothing is written to a chain unless it is a local test chain (anvil, found from the node's own client version, never from its address) or `--live` is given, and then the chain's id must be the config's `chainId`. `deploy-test.sh` runs the whole flow on a local chain with throwaway keys; it is what CI runs.
 - Keys are keystore files with password files, given by path. The chain's address comes from `ROUTER_RPC_URL` or `--rpc-url-file` and is never printed. Needs `cast`; run `forge build` first.
 - Every switch is deployed off (`outOpen`, `inOpen`, each destination's `open`). Listing an asset opens its route, and the direction switch and each destination's setting are what gate a flow.
-- `deploy/testnet.json` leaves `instrument`, `refuser` and `feeRecipient` empty: `deploy.py` refuses until they are set. Its fees are starting values to set from measured costs before a flow is switched on.
+- `deploy/testnet.json` leaves `instrument`, `refuser` and `feeRecipient` empty: `deploy.py` refuses until they are set. Its fees are starting values to set from measured costs before a flow is switched on. Its `lockCap` is the largest 256-bit number (2^256 - 1): the cap is an owner setting, and this value means no limit is set.
 
 ## Upgrade checks
 

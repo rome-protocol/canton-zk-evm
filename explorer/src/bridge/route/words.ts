@@ -17,8 +17,11 @@ export const exact = (base: bigint, decimals: number): string => {
   return decimals === 0 ? base.toString() : `${base / unit}.${(base % unit).toString().padStart(decimals, "0")}`;
 };
 
-/** The line about the cap, from the book's `lockCap` and `lockRoom`; null while the whole cap is free. */
+/** The cap is an owner setting; the largest value (a cap of 2^255 or more) means no limit is set. */
+const NO_CAP = 2n ** 255n;
+/** The line about the cap, from the book's `lockCap` and `lockRoom`; null while the whole cap is free or no cap is set. */
 export function capWords(a: RouteAsset): string | null {
+  if (a.lockCap >= NO_CAP) return null;
   const n = (v: bigint) => showUnits(v, a.decimals);
   const head = `Up to ${n(a.lockCap)} ${a.symbol} of ${a.name} can be on AggLayer chains at once for now`;
   if (a.lockRoom === 0n) return `${head}, and that is reached. You can send again when some comes back to Canton.`;
