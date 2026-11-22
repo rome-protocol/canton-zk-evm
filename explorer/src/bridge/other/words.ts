@@ -1,4 +1,4 @@
-// What the "Other chains" page says. Plain words; "Claim" for the person's own claim step, never "Receive"; never "pending" and never that Rome acts after the person's own transaction. The trust
+// What the "AggLayer Bridge" page says. Plain words; "Claim" for the person's own claim step, never "Receive"; never "pending" and never that Rome acts after the person's own transaction. The trust
 // lines are the ones the design allows, each only where it applies.
 import { SEPOLIA_TX_URL } from "../../copy.ts";
 import { GENERIC, plainWords } from "../words.ts";

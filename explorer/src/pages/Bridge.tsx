@@ -54,11 +54,11 @@ async function coinAdmin(): Promise<string> {
   return admin;
 }
 
-/** The "Other chains" tab's page: its own script, fetched when the tab is first opened. */
+/** The "AggLayer Bridge" tab's page: its own script, fetched when the tab is first opened. */
 const OtherChains = lazy(() => import("./OtherChains.tsx").then((m) => ({ default: m.OtherChains })));
 
 /**
- * The Bridge route. The Canton page is below, as it was. Next to it is the "Other chains" tab, which exists only when the server's AggLayer setup says it is on (`/api/agglayer/setup`);
+ * The Bridge route. The Canton page is below, as it was. Next to it is the "AggLayer Bridge" tab, which exists only when the server's AggLayer setup says it is on (`/api/agglayer/setup`);
  * with that off, nothing here changes: no tab, and the page is the Canton page alone.
  */
 export function Bridge() {
@@ -76,7 +76,7 @@ export function Bridge() {
   const tabs = setup.on ? (
     <div className="tabs" role="tablist" aria-label="Bridge pages">
       <button type="button" role="tab" aria-selected={!other} onClick={() => pick("canton")}>Canton</button>
-      <button type="button" role="tab" aria-selected={other} onClick={() => pick("other-chains")}>Other chains</button>
+      <button type="button" role="tab" aria-selected={other} onClick={() => pick("other-chains")}>AggLayer Bridge</button>
     </div>
   ) : null;
   // Opened at the tab's own address, the Canton page waits for the answer rather than showing for a moment: it shows only if the answer is that the tab does not exist.

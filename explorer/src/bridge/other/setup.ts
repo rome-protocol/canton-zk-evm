@@ -1,4 +1,4 @@
-// What GET /api/agglayer/setup says, checked field by field. The Bridge page asks it first (the "Other chains" tab shows only when it says on); this file carries nothing else, so that
+// What GET /api/agglayer/setup says, checked field by field. The Bridge page asks it first (the "AggLayer Bridge" tab shows only when it says on); this file carries nothing else, so that
 // asking costs the Canton page no more than a small request. Anything that is not exactly the documented answer reads as "off".
 
 export interface Range { minSeconds: number; maxSeconds: number }
