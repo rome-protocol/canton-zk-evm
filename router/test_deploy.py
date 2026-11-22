@@ -43,7 +43,7 @@ class Local(unittest.TestCase):
             "settingsTimelock": {"minDelay": 300, "proposers": [self.who["proposer"]], "executors": [self.who["proposer"]]},
             "upgradeTimelock": None, "refuser": REFUSER, "feeRecipient": FEE_TO, "refundWait": 259200,
             "asset": {"address": TOKEN, "instrument": "0x" + "11" * 32, "feeOut": "500000000", "feeIn": "1000000000",
-                      "feeRefund": "500000000", "minAmount": "1000000000", "lockCap": "100000000000"},
+                      "feeRefund": "500000000", "minAmount": "1000000000", "lockCap": str(2**256 - 1)},
             "destinations": [{"network": 0, "unit": 1, "open": False}], "claimFees": [{"network": 0, "fee": "1500000000"}],
         }
         c.update(over)
@@ -240,6 +240,16 @@ class Config(unittest.TestCase):
         c.update(refuser=REFUSER, feeRecipient=FEE_TO)
         c["asset"]["instrument"] = "0x" + "11" * 32
         m.validate(c)
+
+    def test_the_deploy_files_carry_no_cap_as_the_largest_value(self):
+        m = self.module()
+        for name in ("testnet.json", "mainnet.example.json"):
+            c = json.loads((HERE / "deploy" / name).read_text())
+            self.assertEqual(c["asset"]["lockCap"], str(2**256 - 1), name)
+        c["asset"]["lockCap"] = str(2**256 - 1)
+        with self.assertRaises(m.Fail) as e:
+            m.validate(c)
+        self.assertNotIn("lockCap", str(e.exception))
 
     def test_the_mainnet_example_has_a_second_timelock_and_is_not_deployable_as_it_stands(self):
         m = self.module()

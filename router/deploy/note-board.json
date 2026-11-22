@@ -1,0 +1,4 @@
+{
+  "ostia": {"chainId": 770101, "bridge": "0x53a0ce7242b616fe706b03b464e5c32ed16e0998"},
+  "sepolia": {"chainId": 11155111, "bridge": "0x528e26b25a34a4a5d0dbda1d57d318153d2ed582"}
+}
