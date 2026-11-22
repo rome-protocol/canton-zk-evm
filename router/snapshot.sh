@@ -3,7 +3,7 @@
 # without this machine's paths. upgrade-check.sh compares every later version against it. Run it when the version to deploy is final, and check the file in.
 # For a later deploy, copy the folder to deployed-v2 and point upgrade-check.sh at it (REFERENCE).
 set -euo pipefail
-# shellcheck source=tools.sh
+# shellcheck disable=SC1091
 . "$(dirname "$0")/tools.sh"
 cd "$HERE"
 FOUNDRY_PROFILE=upgrade "$FORGE" build --force --skip 'test/**' --out "$WORK/out" --cache-path "$WORK/cache"

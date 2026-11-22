@@ -6,7 +6,7 @@
 #     versions that swap two fields (test/Reordered.sol) must fail on the storage layout.
 # REFERENCE (a folder name under artifacts/) names the deployed build. Needs node and npm.
 set -euo pipefail
-# shellcheck source=tools.sh
+# shellcheck disable=SC1091
 . "$(dirname "$0")/tools.sh"
 cd "$HERE"
 REFERENCE=${REFERENCE:-deployed-v1}
