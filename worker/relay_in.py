@@ -135,21 +135,28 @@ def intake(raw: bytes, ctx, records, now: float) -> tuple:
         inbox = r.inbox_of(party, net, refund)
     except (chain.ChainError, OSError, KeyError, ValueError):
         return 502, {"error": "this cannot be checked right now"}
-    with records.lock:
+    def settled():
+        """An answer when nothing is left to do or the hourly limit is reached, else None; read under the lock."""
         if records.get("inbox:" + inbox):
             return 200, {"inbox": inbox, "status": "open"}
         if records.get("open:" + inbox).get("state") in ("queued", "sent"):
             return 200, {"inbox": inbox, "status": "queued"}
         if sum(1 for v in list(records.data["items"].values()) if v.get("kind") == "open" and now - v["asked"] < 3600) >= ctx.cfg["open_per_hour"]:
-            return 429, {"error": "too many inboxes asked for; try again later"}   # before the ledger is read, so a flood costs no ledger read
+            return 429, {"error": "too many inboxes asked for; try again later"}
+        return None
+
+    with records.lock:
+        if (early := settled()):
+            return early   # before the ledger is read, so a flood costs no ledger read
     try:
         if party not in ctx.canton.snapshot().accepted:
             return 422, {"error": "this Canton account has not accepted withdrawals"}
     except (canton.Fail, OSError, KeyError, ValueError):
         return 502, {"error": "this cannot be checked right now"}
     with records.lock:
-        if not records.get("open:" + inbox):
-            records.put("open:" + inbox, kind="open", state="queued", party=party, net=net, refund=refund, asked=now)
+        if (late := settled()):
+            return late   # the ledger read took time: another ask may have queued this inbox or used the last place in the hour
+        records.put("open:" + inbox, kind="open", state="queued", party=party, net=net, refund=refund, asked=now)   # a failed or done open goes back to queued
     return 202, {"inbox": inbox, "status": "queued"}
 
 
@@ -322,7 +329,7 @@ def resolve(ctx, records, log, now: float) -> bool:
             records.put(key, state=state)
             if state != "done":
                 cool = records.get(f"cool:{sent['pair']}")
-                tries = cool.get("tries", 0) + 1 if sent["job"] == "forward" else 1   # a forward left out again waits twice as long, up to one quota window
+                tries = cool.get("tries", 0) + 1 if sent["job"] == "forward" else 1   # a forward left out again waits twice as long, up to the cap
                 records.put(f"cool:{sent['pair']}", until=now + min(ctx.cfg["cooldown"] * 2 ** (tries - 1), max(ctx.cfg["cooldown"], ctx.cfg["cooldown_max"])), job=sent["job"], tries=tries)
             elif sent["job"] == "forward":
                 records.put(f"cool:{sent['pair']}", tries=0)
