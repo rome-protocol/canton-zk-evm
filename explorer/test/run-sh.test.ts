@@ -129,6 +129,21 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(off).not.toContain("AGGKIT");
   });
 
+  it("passes the Canton route's settings to the explorer only, and gives it the gateway party's token only with the route on", () => {
+    const file = join(state, "gw-auth");
+    writeFileSync(file, "t\n", { mode: 0o600 });
+    const route = { OSTIA_ROUTE_OUT: "1", OSTIA_ROUTER: "0x" + "a1".repeat(20), OSTIA_BOOK: "0x" + "b2".repeat(20), OSTIA_ROUTE_NOT_TAKEN_SECONDS: "600", OSTIA_ROUTE_OWN_CLAIM_SECONDS: "300", OSTIA_ROUTE_TIME: '{"minSeconds":1,"maxSeconds":2}' };
+    const gateway = { GATEWAY_PARTY: "gw::1220ab", GATEWAY_LEDGER_TOKEN_FILE: file };
+    const cmd = start({ ...route, ...gateway });
+    for (const flag of ["OSTIA_ROUTE_OUT=1", `OSTIA_ROUTER=${route.OSTIA_ROUTER}`, "OSTIA_ROUTE_NOT_TAKEN_SECONDS=600", "OSTIA_ROUTE_OWN_CLAIM_SECONDS=300", "GATEWAY_PARTY=gw::1220ab", "GATEWAY_LEDGER_TOKEN_FILE=/run/explorer/gateway-ledger-token"]) expect(cmd).toContain(` -e ${flag}`);
+    expect(cmd).toContain(`${file}:/run/explorer/gateway-ledger-`);
+    expect(indexerCommand({ ...route, ...gateway }).cmd).not.toContain("OSTIA_ROUTE");
+    const without = start({ ...gateway });
+    expect(without).not.toContain("GATEWAY_PARTY");
+    expect(without).not.toContain("gateway-ledger-token");
+    expect(start()).not.toContain("OSTIA_ROUTE");
+  });
+
   it("keeps the filesystem read-only and gives the tracker one writable folder in the state, with TRACKER_FILE inside it", () => {
     const cmd = start();
     expect(cmd).toContain("--read-only");
