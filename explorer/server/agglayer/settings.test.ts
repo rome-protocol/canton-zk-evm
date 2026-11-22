@@ -96,4 +96,13 @@ describe("the AggLayer bridge's settings", () => {
     expect(why({ ...base, AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "0" })).toContain("AGGLAYER_AGGKIT_MAX_LAG_BLOCKS");
     expect(why({ ...base, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS: "0" })).toContain("AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS");
   });
+
+  it("takes the most calls a second to Ethereum Sepolia (5 when not set), as a whole number from 1 to 100", () => {
+    expect(read(base)!.sepoliaMaxPerSecond).toBe(5);
+    expect(read({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: "" })!.sepoliaMaxPerSecond).toBe(5);
+    expect(read({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: "1" })!.sepoliaMaxPerSecond).toBe(1);
+    expect(read({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: "100" })!.sepoliaMaxPerSecond).toBe(100);
+    for (const bad of ["0", "101", "2.5", "-1", "five", "1e2", " 5"]) expect(why({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: bad }), bad).toContain("AGGLAYER_SEPOLIA_MAX_PER_SECOND");
+    expect(read({ AGGLAYER_BRIDGE: "0", AGGLAYER_SEPOLIA_MAX_PER_SECOND: "nope" })).toBeNull();
+  });
 });

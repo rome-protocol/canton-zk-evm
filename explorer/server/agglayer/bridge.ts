@@ -11,7 +11,7 @@ import { BadRequest } from "../rest/paging.ts";
 import type { Reth } from "../reth.ts";
 import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, depositCountCall, isClaimedCall, type ClaimArgs } from "./abi.ts";
 import { AggkitError, type AggkitReader, type BridgeLeaf } from "./aggkit.ts";
-import { SepoliaError, type SepoliaReader } from "./sepolia.ts";
+import { SepoliaBusy, SepoliaError, type SepoliaReader } from "./sepolia.ts";
 import type { AgglayerSettings } from "./settings.ts";
 
 /** Ethereum's network id in AggLayer. */
@@ -21,6 +21,7 @@ export const AGGLAYER_OFF = "The AggLayer bridge is off on this explorer.";
 export const NOT_SERVED = "That deposit is not on a route this page serves.";
 export const NOT_READY = "That deposit is not ready to claim yet.";
 export const UNREADABLE = "The bridge cannot be read right now.";
+export const BUSY = (seconds: number): string => `The bridge is busy. Try again in ${seconds} s.`;
 /** What the status of the bridge is kept for. */
 const STATUS_MS = 5000;
 /** The reads a client may make of the bridge: bursts of 10, 30 a minute. */
@@ -133,6 +134,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
       if (!/^0x[0-9a-f]{64}$/.test(out)) return null;
       return BigInt(out) !== 0n;
     } catch (e) {
+      if (e instanceof SepoliaBusy) throw e;
       console.error(`agglayer: the claimed read failed: ${(e as Error).message}`);
       return null;
     }
@@ -195,12 +197,13 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     return ok(pick({ ...base, claimed: false, data: claimAssetCall(args), args: pick(args, F.agglayerClaimArgs) }, F.agglayerClaim));
   }
 
-  /** The route's own errors in words: a request that is wrong is 400, and a service or a chain that cannot be read is 503, and the cause is logged without any address. */
+  /** The route's own errors in words: a request that is wrong is 400, Sepolia reads over the total cap are 503 "busy" with Retry-After (no call was made), and a service or a chain that cannot be read is 503, and the cause is logged without any address. */
   async function guarded(run: () => Promise<Answer>): Promise<Answer> {
     try {
       return await run();
     } catch (e) {
       if (e instanceof BadRequest) return fail(400, e.message);
+      if (e instanceof SepoliaBusy) return fail(503, BUSY(e.retryAfterSeconds), retryAfter(e.retryAfterSeconds));
       if (e instanceof AggkitError || e instanceof SepoliaError) {
         console.error(`agglayer: ${e.message}`);
         return fail(503, UNREADABLE);

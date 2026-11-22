@@ -14,6 +14,19 @@ const MAX_BYTES = 64 * 1024;
 
 export class SepoliaError extends Error {}
 
+/** The cap on all calls to Sepolia is used up: no call was made, and one is possible in `retryAfterSeconds`. */
+export class SepoliaBusy extends SepoliaError {
+  retryAfterSeconds: number;
+  constructor(retryAfterSeconds: number) {
+    super("Ethereum Sepolia reads are at their limit for now");
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/** How many calls the explorer makes to Sepolia in any second, all clients together, when not set. */
+export const SEPOLIA_MAX_PER_SECOND = 5;
+const WINDOW_MS = 1000;
+
 export interface SepoliaOptions {
   /** The endpoint, with its key. */
   url: Secret;
@@ -21,6 +34,8 @@ export interface SepoliaOptions {
   /** The rollup manager, for the attached check; null leaves that check out. */
   rollupManager: string | null;
   timeoutMs?: number;
+  /** The most upstream calls in any one second, for every client together (the endpoint's throughput is shared). */
+  maxPerSecond?: number;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -38,6 +53,10 @@ export function createSepoliaReader(opts: SepoliaOptions) {
   const doFetch = opts.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const timeoutMs = opts.timeoutMs ?? SEPOLIA_TIMEOUT_MS;
   const now = opts.now ?? Date.now;
+  const maxPerSecond = opts.maxPerSecond ?? SEPOLIA_MAX_PER_SECOND;
+  if (!Number.isInteger(maxPerSecond) || maxPerSecond < 1) throw new TypeError("maxPerSecond is a whole number from 1");
+  /** When each of the calls in the last second was made, oldest first: the room is what the second has not used. */
+  const made: number[] = [];
   const kept = new Map<string, { at: number; ttl: number; value: Promise<string> }>();
   let id = 0;
 
@@ -65,11 +84,21 @@ export function createSepoliaReader(opts: SepoliaOptions) {
     return b.result;
   }
 
-  /** A call kept for `ttl` ms; a failure is not kept. */
+  /** Takes a place in the second for one real call, or says how many seconds until there is one. Never makes room for a call that was not made. */
+  function take(t: number): number | null {
+    while (made.length > 0 && t - made[0]! >= WINDOW_MS) made.shift();
+    if (made.length >= maxPerSecond) return Math.max(1, Math.ceil((made[0]! + WINDOW_MS - t) / 1000));
+    made.push(t);
+    return null;
+  }
+
+  /** A call kept for `ttl` ms; a failure is not kept. A repeat of a kept call, or of one on its way, costs no place in the second; a call over the cap is refused, not made and not kept. */
   function cached(to: string, data: string, ttl: (word: string) => number): Promise<string> {
     const key = `${to}:${data}`, t = now();
     const had = kept.get(key);
     if (had && t - had.at < had.ttl) return had.value;
+    const wait = take(t);
+    if (wait !== null) return Promise.reject(new SepoliaBusy(wait));
     const value = call(to, data);
     const entry = { at: t, ttl: NOT_YET_MS, value };
     kept.delete(key);

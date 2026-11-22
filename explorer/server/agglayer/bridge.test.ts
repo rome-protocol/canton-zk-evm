@@ -3,7 +3,7 @@ import { decodeFunctionData, parseAbi } from "viem";
 import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, depositCountCall, isClaimedCall } from "./abi.ts";
 import { createAgglayerBridge, agglayerRoutes } from "./bridge.ts";
 import { AggkitError, type AggkitReader, type BridgeLeaf, type SyncStatus } from "./aggkit.ts";
-import { SepoliaError, type SepoliaReader } from "./sepolia.ts";
+import { SepoliaBusy, SepoliaError, type SepoliaReader } from "./sepolia.ts";
 import { agglayerSettings } from "./settings.ts";
 import { REST_FIELDS as F } from "../rest/fields.ts";
 
@@ -20,6 +20,8 @@ const proof = { proofLocal: Array.from({ length: 32 }, (_, i) => H(100 + i)), pr
 interface World {
   leaf?: BridgeLeaf; index?: number; l1Leaf?: { index: number; timestamp: number }; injected?: { index: number; timestamp: number; injectedAt?: number }; proof?: typeof proof;
   healthy?: boolean; sync?: Partial<SyncStatus> | null; settlements?: { blockTimestamp: number | null }[]; attached?: boolean | null; claimedOnSepolia?: boolean; down?: boolean; sepoliaDown?: boolean;
+  /** Seconds the total cap on Sepolia calls asks a caller to wait: every read of Sepolia is refused for that long. */
+  sepoliaBusy?: number;
   /** Whether Ostia's bridge has paid the deposit out as of its finalized block, and as of its latest block (when not given, the same as finalized). */
   ostiaClaimed?: boolean; ostiaClaimedLatest?: boolean; ostiaReadFails?: boolean;
   /** Ostia's latest and finalized blocks (the finalized one is 500 when not given; null is a read that fails), and the deposits made on Ostia: how many, and the newest one (the bridge service's record of it). */
@@ -49,8 +51,8 @@ function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_7
     cached: () => 0,
   } as unknown as AggkitReader;
   const sepolia = {
-    isClaimed: async () => { if (w.sepoliaDown) throw new SepoliaError("Ethereum Sepolia cannot be reached"); return w.claimedOnSepolia ?? false; },
-    attached: async () => (w.attached === undefined ? true : w.attached),
+    isClaimed: async () => { if (w.sepoliaBusy) throw new SepoliaBusy(w.sepoliaBusy); if (w.sepoliaDown) throw new SepoliaError("Ethereum Sepolia cannot be reached"); return w.claimedOnSepolia ?? false; },
+    attached: async () => { if (w.sepoliaBusy) throw new SepoliaBusy(w.sepoliaBusy); return w.attached === undefined ? true : w.attached; },
     copyOf: async () => ({ address: A(1), exists: false }),
   } as unknown as SepoliaReader;
   const reth = {
@@ -278,6 +280,29 @@ describe("the claim receipt", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it("answers 503 busy with Retry-After, never calldata, when the total cap on Sepolia reads is used up, and does not log each one", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const into = { ...ready, leaf: leaf({ originNetwork: 75, destinationNetwork: 0 }), injected: { index: 42, timestamp: 1 }, sepoliaBusy: 3 };
+      for (const path of ["/api/agglayer/claim?network=75&count=7", "/api/agglayer/deposit?network=75&count=7"]) {
+        const a = await build(into).get(path);
+        expect([a!.status, body(a).error, a!.headers?.["retry-after"], body(a).data, body(a).stage]).toEqual([503, "The bridge is busy. Try again in 3 s.", "3", undefined, undefined]);
+      }
+      expect(log).not.toHaveBeenCalled();
+      const a = await build(ready).get("/api/agglayer/claim?network=0&count=7");
+      expect(a!.status).toBe(200);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("keeps answering the setup, and a deposit's stage that needs no Sepolia read, while Sepolia reads are over the cap", async () => {
+    const s = await build({ sepoliaBusy: 2 }).get("/api/agglayer/setup");
+    expect([s!.status, body(s).routes[0].available]).toEqual([200, true]);
+    const d = await build({ leaf: leaf(), index: 1, l1Leaf: { index: 1, timestamp: 5 }, injected: { index: 1, timestamp: 5 }, proof, sepoliaBusy: 2 }).get("/api/agglayer/deposit?network=0&count=7");
+    expect([d!.status, body(d).stage]).toEqual([200, "ready"]);
   });
 
   it("is 404 until the deposit is ready, and for a deposit that is not served", async () => {

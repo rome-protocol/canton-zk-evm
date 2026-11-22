@@ -109,9 +109,9 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
 
   it("passes the AggLayer bridge's settings to the explorer only, and names the Sepolia endpoint without its value", () => {
     const endpoint = "https://sepolia.example.invalid/hidden-part-1234";
-    const env = { AGGLAYER_BRIDGE: "1", AGGLAYER_SEPOLIA_RPC_URL: endpoint, AGGKIT_BRIDGE_URL: "http://127.0.0.1:5578", AGGLAYER_OSTIA_BRIDGE: "0x" + "11".repeat(20), AGGLAYER_SEPOLIA_BRIDGE: "0x" + "22".repeat(20), AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "12" };
+    const env = { AGGLAYER_BRIDGE: "1", AGGLAYER_SEPOLIA_RPC_URL: endpoint, AGGKIT_BRIDGE_URL: "http://127.0.0.1:5578", AGGLAYER_OSTIA_BRIDGE: "0x" + "11".repeat(20), AGGLAYER_SEPOLIA_BRIDGE: "0x" + "22".repeat(20), AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "12", AGGLAYER_SEPOLIA_MAX_PER_SECOND: "3" };
     const cmd = start(env);
-    for (const flag of ["AGGLAYER_BRIDGE=1", "AGGKIT_BRIDGE_URL=http://127.0.0.1:5578", "AGGLAYER_AGGKIT_MAX_LAG_BLOCKS=12", `AGGLAYER_OSTIA_BRIDGE=${env.AGGLAYER_OSTIA_BRIDGE}`]) expect(cmd).toContain(` -e ${flag}`);
+    for (const flag of ["AGGLAYER_BRIDGE=1", "AGGKIT_BRIDGE_URL=http://127.0.0.1:5578", "AGGLAYER_AGGKIT_MAX_LAG_BLOCKS=12", "AGGLAYER_SEPOLIA_MAX_PER_SECOND=3", `AGGLAYER_OSTIA_BRIDGE=${env.AGGLAYER_OSTIA_BRIDGE}`]) expect(cmd).toContain(` -e ${flag}`);
     expect(cmd).toMatch(/ -e AGGLAYER_SEPOLIA_RPC_URL( |$)/);
     expect(cmd).not.toContain("hidden-part-1234");
     expect(indexerCommand(env).cmd).not.toContain("AGGLAYER");
