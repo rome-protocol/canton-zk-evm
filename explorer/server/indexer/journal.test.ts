@@ -32,8 +32,9 @@ const hb = (h: string) => Buffer.from(h.slice(2), "hex");
 const one = async (pool: Pool, sql: string, args: unknown[] = []) => (await pool.query(sql, args)).rows[0];
 const count = async (pool: Pool, table: string) => Number((await one(pool, `select count(*) as n from ${table}`)).n);
 const health = async (pool: Pool, id: string) => one(pool, "select status, value, detail from health_checks where check_id = $1", [id]);
-// Midnight (UTC) two days ago. The loader deletes pool samples older than 30 days by the database clock, so a fixed date would age out of the test; two days is also well past the hour in which a gap or an odd line still counts as recent.
-const T0 = Math.floor(Date.now() / 86_400_000) * 86_400_000 - 2 * 86_400_000;
+const T0 = Date.UTC(2026, 9, 21, 0, 0, 0);
+// The times of the pool samples. The loader deletes pool samples older than 30 days by the database clock, so a fixed date would age out of the test. The rest of the lines stay on T0, near the record times of the synthetic chain.
+const P0 = Math.floor(Date.now() / 86_400_000) * 86_400_000 - 2 * 86_400_000;
 const loader = (pool: Pool, folder: string | null) => createJournal({ pool, folder });
 const lifecycle = (pool: Pool, hash: string) => one(pool, "select * from tx_lifecycle where tx_hash = $1", [hb(hash)]);
 
@@ -61,8 +62,8 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const dir = makeFolder();
       const r = new Run(RUN1);
       r.start(T0 - 60_000, { gather_ms: 0, heartbeat_seconds: 0, test: true });
-      r.add(T0 - 30_000, "pool", { waiting: 3 });
-      r.add(T0 - 29_000, "pool", { waiting: 0 });
+      r.add(P0 - 30_000, "pool", { waiting: 3 });
+      r.add(P0 - 29_000, "pool", { waiting: 0 });
       r.committed(1, 1, chain, { leftOut: [{ transaction: "0x" + "ab".repeat(32), reason: "its deposit leg has no Canton side" }] });
       // attempt 2: nothing includable
       r.add(T0 + 10_000, "cut", { attempt: 2, number: 2, strategy: "on_demand", cut_reason: "retry", pool_waiting: 1, idle_before_cut_ms: 2000, in_flight_at_cut: 0 });
@@ -485,7 +486,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const dir = makeFolder();
       const r = new Run(RUN1);
       r.start(T0 - 1000);
-      r.add(T0 - 500, "pool", { waiting: 2 });
+      r.add(P0 - 500, "pool", { waiting: 2 });
       r.committed(1, 1, chain);
       r.committed(2, 2, chain);
       const shuffled = [...r.lines].reverse(); // the whole file backwards, then every line twice
@@ -527,7 +528,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const lines = r.lines.slice(mark);
       appendLines(dir, "2026-10-21.jsonl", lines.slice(0, 3));
       putFile(dir, "2026-10-22.jsonl", lines.slice(3));
-      const half = JSON.stringify({ v: 1, run: RUN1, seq: r.seq + 1, time: iso(T0 + 99_000), event: "pool", waiting: 9 });
+      const half = JSON.stringify({ v: 1, run: RUN1, seq: r.seq + 1, time: iso(P0 + 99_000), event: "pool", waiting: 9 });
       appendFileSync(join(dir, "2026-10-22.jsonl"), half.slice(0, 20));
       await j.load();
       expect(await count(pool, "block_attempts")).toBe(2);
