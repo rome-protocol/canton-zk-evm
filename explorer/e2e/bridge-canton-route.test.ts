@@ -108,7 +108,7 @@ describe.skipIf(!dist)("the Bridge page's Canton route, in a browser", () => {
     world.moves = [taken()];
     const page = await open("/bridge?tab=other-chains");
     await toCanton(page);
-    await page.getByText("Up to 10 CC of Canton Coin can be on other chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC.").waitFor();
+    await page.getByText("Up to 10 CC of Canton Coin can be on AggLayer chains at once for now. 7.5 CC is out, so you can send up to 2.5 CC.").waitFor();
     expect(await page.getByRole("button", { name: "Send to Ethereum Sepolia" }).count()).toBe(0);   // no Canton wallet can connect yet
     await page.getByRole("button", { name: "Connect wallet" }).click();
     const row = page.getByRole("listitem", { name: "Sending 5 CC to Ethereum Sepolia" });
