@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseSetup, readSetup } from "./setup.ts";
+import { isHandoff, isMoved, parseSetup, readSetup } from "./setup.ts";
 import { ostia, setupBody, SIGNATURE, TOPIC, WETH } from "./fakes.ts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -12,8 +12,8 @@ describe("the setup answer", () => {
     if (!s.on) throw new Error("off");
     expect(s.routes.map((r) => [r.id, r.name, r.open])).toEqual([["sepolia", "Ethereum Sepolia", true], ["hadrian", "Hadrian", false], ["solana-devnet", "Solana devnet", false]]);
     const open = s.routes[0]!;
-    expect(open.open && open.times).toEqual({ in: { minSeconds: 240, maxSeconds: 420 }, out: null });
-    expect(open.open && open.assets).toEqual([{ symbol: "ETH", name: "Ether", decimals: 18, sepolia: "native", ostia: WETH }]);
+    expect(isMoved(open) && open.times).toEqual({ in: { minSeconds: 240, maxSeconds: 420 }, out: null });
+    expect(isMoved(open) && open.assets).toEqual([{ symbol: "ETH", name: "Ether", decimals: 18, sepolia: "native", ostia: WETH }]);
     expect(s.routes[1]).toEqual({ id: "hadrian", name: "Hadrian", open: false });
   });
   it("is off for an answer that says so, and for anything that is not the documented answer", () => {
@@ -28,7 +28,7 @@ describe("the setup answer", () => {
     const s = parseSetup(body);
     if (!s.on) throw new Error("off");
     expect(s.routes.map((r) => r.id)).toEqual(["sepolia", "hadrian", "solana-devnet"]);
-    expect(s.routes[0]!.open && s.routes[0]!.assets.map((a) => a.symbol)).toEqual(["ETH"]);
+    expect(isMoved(s.routes[0]!) && (s.routes[0] as { assets: { symbol: string }[] }).assets.map((a) => a.symbol)).toEqual(["ETH"]);
   });
   it("takes a time only as a whole range, and a worker's setting only when it is true", () => {
     const body = setupBody();
@@ -36,9 +36,40 @@ describe("the setup answer", () => {
     body.routes[0].claimedForYou = { ostia: "yes", remote: true };
     const s = parseSetup(body);
     const r = s.on ? s.routes[0] : undefined;
-    if (!r?.open) throw new Error("off");
+    if (!r || !isMoved(r)) throw new Error("off");
     expect(r.times).toEqual({ in: null, out: null });
     expect(r.claimedForYou).toEqual({ ostia: false, remote: true });
+  });
+});
+
+describe("a route through Solgate", () => {
+  const handoffRow = (over: Record<string, unknown> = {}) => ({
+    id: "hadrian", name: "Hadrian", open: true, via: "solgate", available: true, solgate: "https://solgate.example/", coin: "USDC", times: { in: null, out: { minSeconds: 600, maxSeconds: 900 } },
+    assets: [{ symbol: "ETH", name: "Ether (Rome)", decimals: 18, places: 9, ostia: WETH, times: { in: { minSeconds: 360, maxSeconds: 360 }, out: null } }], ...over,
+  });
+  const read = (r: unknown) => { const b = setupBody(); b.routes[1] = r; const s = parseSetup(b); if (!s.on) throw new Error("off"); return s.routes; };
+
+  it("is read as the server documents it, with Solgate's address without its trailing slash", () => {
+    const r = read(handoffRow())[1]!;
+    expect(isHandoff(r)).toBe(true);
+    expect(isMoved(r)).toBe(false);
+    expect(r).toEqual({
+      id: "hadrian", name: "Hadrian", open: true, via: "solgate", available: true, solgate: "https://solgate.example", coin: "USDC", times: { in: null, out: { minSeconds: 600, maxSeconds: 900 } },
+      assets: [{ symbol: "ETH", name: "Ether (Rome)", decimals: 18, places: 9, ostia: WETH, times: { in: { minSeconds: 360, maxSeconds: 360 }, out: null } }],
+    });
+    expect(isMoved(read(handoffRow())[0]!)).toBe(true);
+  });
+  it("takes no coin for Solana, leaves out a token that does not read, and a time only as a whole range", () => {
+    const r = read(handoffRow({ id: "solana-devnet", coin: null, assets: [handoffRow().assets[0], { symbol: "BAD", name: "x", decimals: 99, places: 9, ostia: WETH }, { symbol: "BAD2", name: "x", decimals: 9, places: 9, ostia: "0x1" }, null, { ...handoffRow().assets[0], symbol: "T2", times: { in: { minSeconds: 9, maxSeconds: 1 }, out: "x" } }] }))[1]!;
+    if (!isHandoff(r)) throw new Error("not a hand-off");
+    expect(r.coin).toBeNull();
+    expect(r.assets.map((t) => t.symbol)).toEqual(["ETH", "T2"]);
+    expect(r.assets[1]!.times).toEqual({ in: null, out: null });
+  });
+  it("leaves out a row that is not the documented shape: no Solgate address over https, no availability, tokens that are not a list, another coin type, a via that is not known", () => {
+    for (const bad of [handoffRow({ solgate: "http://solgate.example" }), handoffRow({ solgate: "https://user@solgate.example" }), handoffRow({ solgate: "javascript:alert(1)" }), handoffRow({ solgate: undefined }), handoffRow({ available: "yes" }), handoffRow({ assets: "ETH" }), handoffRow({ coin: 5 }), handoffRow({ via: "elsewhere" })]) {
+      expect(read(bad).map((r) => r.id), JSON.stringify(bad)).toEqual(["sepolia", "solana-devnet"]);
+    }
   });
 });
 

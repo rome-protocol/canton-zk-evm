@@ -11,8 +11,10 @@ import { BadRequest } from "../rest/paging.ts";
 import type { Reth } from "../reth.ts";
 import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, depositCountCall, isClaimedCall, type ClaimArgs } from "./abi.ts";
 import { AggkitError, type AggkitReader, type BridgeLeaf } from "./aggkit.ts";
+import { createHadrianReader, type HadrianReader } from "./hadrian.ts";
 import { SepoliaBusy, SepoliaError, type SepoliaReader } from "./sepolia.ts";
 import type { AgglayerSettings } from "./settings.ts";
+import { createSolgateReader, type SolgateReader } from "./solgate.ts";
 
 /** Ethereum's network id in AggLayer. */
 const ETHEREUM = 0;
@@ -34,6 +36,9 @@ export interface BridgeDeps {
   aggkit: AggkitReader;
   sepolia: SepoliaReader;
   reth: Pick<Reth, "block" | "callAt">;
+  /** The readers of Solgate and of Hadrian for the routes through Solgate; made from the settings when not given. */
+  solgate?: SolgateReader;
+  hadrian?: HadrianReader;
   now?: () => number;
 }
 
@@ -54,7 +59,9 @@ const fail = (status: number, error: string, headers?: Record<string, string>): 
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString();
 const range = (r: { minSeconds: number; maxSeconds: number } | null) => r && pick(r, F.agglayerRange);
 
-export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sepolia, reth, now = Date.now }: BridgeDeps) {
+export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sepolia, reth, solgate: solgateIn, hadrian: hadrianIn, now = Date.now }: BridgeDeps) {
+  const solgate = solgateIn ?? (settings.solgate ? createSolgateReader({ baseUrl: settings.solgate.url, now }) : null);
+  const hadrian = hadrianIn ?? (settings.hadrian ? createHadrianReader({ url: settings.hadrian.rpc, chainId: settings.hadrian.chainId, now }) : null);
   const limiter = createLimiter(RATE, now);
   const networks = [ETHEREUM, settings.ostiaNetworkId];
   const bridgeOn = (network: number) => (network === ETHEREUM ? settings.sepoliaBridge : settings.ostiaBridge);
@@ -99,14 +106,34 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     return statusNow;
   }
 
+  /**
+   * A route through Solgate: the page hands the person over, so the row carries Solgate's address, the tokens that route offers and their times. It is available only while the bridge is, Solgate lists
+   * Ostia and Hadrian (Hadrian under the chain id of the settings), Hadrian answers, and at least one of the route's tokens has an address on Ostia in Solgate's list.
+   */
+  async function handoffRow(r: AgglayerSettings["routes"][number], times: unknown, bridgeUp: boolean) {
+    const [view, hadrianUp] = await Promise.all([solgate!.read(), hadrian!.reachable()]);
+    const hadrianNet = settings.hadrian!.networkId;
+    const record = view?.chains.get(hadrianNet);
+    const listed = Boolean(view?.chains.has(settings.ostiaNetworkId) && record && (record.chainId === null || record.chainId === settings.hadrian!.chainId));
+    const assets = (view?.assets ?? []).flatMap((t) => {
+      const ostia = t.evm[settings.ostiaNetworkId];
+      if (!r.handoff!.symbols.includes(t.symbol) || ostia === undefined) return [];
+      const own = r.handoff!.assetTimes[t.symbol];
+      return [pick({ symbol: t.symbol, name: t.name, decimals: t.decimals, places: t.places, ostia, times: pick({ in: range(own?.in ?? null), out: range(own?.out ?? null) }, F.agglayerTimes) }, F.agglayerHandoffToken)];
+    }).sort((a, b) => r.handoff!.symbols.indexOf(a.symbol as string) - r.handoff!.symbols.indexOf(b.symbol as string));
+    const available = bridgeUp && listed && hadrianUp && assets.length > 0;
+    return pick({ id: r.id, name: r.name, open: true, via: "solgate", available, solgate: settings.solgate!.url, coin: r.id === "hadrian" && listed ? record!.nativeSymbol : null, assets, times }, F.agglayerHandoffRoute);
+  }
+
   async function setup(): Promise<Answer> {
     const st = await status();
-    const routes = settings.routes.map((r) => {
+    const routes = await Promise.all(settings.routes.map(async (r) => {
       if (!r.open) return pick(r, F.agglayerRouteClosed);
-      const assets = r.offered.map((t) => pick(t, F.agglayerToken));
       const times = pick({ in: range(r.times.in), out: range(r.times.out) }, F.agglayerTimes);
+      if (r.handoff) return handoffRow(r, times, st.available);
+      const assets = r.offered.map((t) => pick(t, F.agglayerToken));
       return pick({ id: r.id, name: r.name, open: true, networkId: ETHEREUM, chainId: settings.sepoliaChainId, bridge: settings.sepoliaBridge, available: st.available, assets, times, claimedForYou: pick(r.claimedForYou, F.agglayerClaimedForYou) }, F.agglayerRoute);
-    });
+    }));
     return cached(ok(pick({
       on: true, chain: pick({ chainId, name: chainName, networkId: settings.ostiaNetworkId, bridge: settings.ostiaBridge }, F.agglayerChain), bridgeEvent: pick({ signature: BRIDGE_EVENT, topic0: BRIDGE_EVENT_TOPIC }, F.agglayerBridgeEvent), routes,
     }, F.agglayerSetup)), "composite");

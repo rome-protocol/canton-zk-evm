@@ -16,7 +16,25 @@ export interface OpenRow {
   claimedForYou: { ostia: boolean; remote: boolean };
 }
 export interface ClosedRow { id: string; name: string; open: false }
-export type Row = OpenRow | ClosedRow;
+/** A token a route through Solgate offers: its places on Ostia and on Solana, its address on Ostia and its own measured times (`in` is into Ostia, `out` out of it). */
+export interface HandoffToken { symbol: string; name: string; decimals: number; places: number; ostia: string; times: { in: Range | null; out: Range | null } }
+/** A route through Solgate: the page hands the person over, and every step of the route is made there. */
+export interface HandoffRow {
+  id: string; name: string; open: true; via: "solgate";
+  /** False while the bridge, Solgate or Hadrian cannot be used right now. */
+  available: boolean;
+  /** Solgate's address (https). */
+  solgate: string;
+  /** The coin of the claim on Hadrian; null for Solana, where the claim is paid in SOL. */
+  coin: string | null;
+  assets: HandoffToken[];
+  /** The route's own measured times, for a token that has none. */
+  times: { in: Range | null; out: Range | null };
+}
+export type Row = OpenRow | HandoffRow | ClosedRow;
+/** A route the page moves tokens on itself (Ethereum Sepolia), as against one it hands over to Solgate. */
+export const isMoved = (r: Row): r is OpenRow => r.open && !("via" in r);
+export const isHandoff = (r: Row): r is HandoffRow => r.open && "via" in r;
 export interface OstiaChain { chainId: number; name: string; networkId: number; bridge: string }
 export type Setup = { on: false } | { on: true; chain: OstiaChain; bridgeEvent: { signature: string; topic0: string }; routes: Row[] };
 
@@ -37,10 +55,27 @@ function asset(v: unknown): Asset | null {
   if (a.sepolia !== "native" && !address(a.sepolia)) return null;
   return { symbol: a.symbol, name: a.name, decimals: a.decimals, sepolia: a.sepolia as string, ostia: a.ostia };
 }
+const https = (v: unknown): v is string => {
+  if (!str(v)) return false;
+  try { const u = new URL(v); return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash; } catch { return false; }
+};
+function token(v: unknown): HandoffToken | null {
+  const t = obj(v), times = obj(t?.times);
+  if (!t || !str(t.symbol) || !str(t.name) || !whole(t.decimals) || t.decimals > 36 || !whole(t.places) || t.places > 36 || !address(t.ostia)) return null;
+  return { symbol: t.symbol, name: t.name, decimals: t.decimals, places: t.places, ostia: t.ostia, times: { in: range(times?.in), out: range(times?.out) } };
+}
+function handoff(r: Record<string, unknown>, id: string, name: string): HandoffRow | null {
+  const times = obj(r.times);
+  if (typeof r.available !== "boolean" || !https(r.solgate) || !Array.isArray(r.assets) || (r.coin !== null && !str(r.coin))) return null;
+  const assets = r.assets.map(token).filter((t): t is HandoffToken => t !== null);
+  return { id, name, open: true, via: "solgate", available: r.available, solgate: r.solgate.replace(/\/+$/, ""), coin: r.coin, assets, times: { in: range(times?.in), out: range(times?.out) } };
+}
 function row(v: unknown): Row | null {
   const r = obj(v);
   if (!r || !str(r.id) || !str(r.name)) return null;
   if (r.open !== true) return { id: r.id, name: r.name, open: false };
+  if (r.via === "solgate") return handoff(r, r.id, r.name);
+  if (r.via !== undefined) return null;
   const times = obj(r.times), gives = obj(r.claimedForYou);
   if (!whole(r.networkId) || !whole(r.chainId) || !address(r.bridge) || typeof r.available !== "boolean" || !Array.isArray(r.assets)) return null;
   return {
