@@ -2,6 +2,7 @@
 and the number of its inputs, the custody check after a committed withdrawal, the status rows and the settings. The open rounds come from a fake validator scan
 proxy through the instrument's registry; the rest runs against test_builder.py's fakes. Run: python3 -m unittest discover -s builder/tests"""
 import http.server, json, sys, tempfile, threading, time, unittest
+from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from unittest import mock
@@ -369,6 +370,12 @@ class Inputs(Rig):
         t = self.withdraw(s, cc("3.6"))
         self.reason(s, t, "Covering this withdrawal takes more than 2 Canton Coin holdings. The most one withdrawal can take now is 2.4 CC.")
 
+    def test_when_the_largest_cover_it_only_with_a_change_under_the_floor_the_sentence_names_the_cap_not_the_change(self):
+        s = self.rig(*self.many(3), k=2)   # 3.6 CC in all; two holdings give 2.4 CC, and 0.4 CC of change is under the floor, while custody would keep 1.6 CC
+        t = self.withdraw(s, cc("2.0"))
+        self.reason(s, t, "This withdrawal cannot be covered by 2 Canton Coin holdings without returning a change under the bridge's minimum of 1.118016 CC. "
+                          "Try a different amount.")
+
     def test_a_holding_at_or_past_its_expiry_round_is_never_an_input(self):
         gone = hold("gone", cc("0.2588"), created=0)   # expires at round 1000: the newest open round
         s = self.rig(gone, hold("h-1", 60 * CC))
@@ -425,6 +432,7 @@ class Check(Rig):
         (rec,) = seen
         self.assertEqual((rec["begin"], rec["gateway"], rec["plan"]), (42, "gw", [{"instrument": TKB, "withdrawn": 4 * CC, "deposits": 0}]))
         self.assertEqual(rec["commandId"], s.ledger.submitted[0]["commandId"])
+        self.assertAlmostEqual(rec["submittedAt"], time.time(), delta=60)
 
     def test_one_base_unit_more_or_less_writes_the_stop_and_only_canton_coin_withdrawals_wait(self):
         for off in (1, -1):
@@ -477,12 +485,56 @@ class Check(Rig):
         s.reth.trace_legs["0x" + "c9" * 20] = [Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 4 * CC, "r::1")]
         self.assertEqual(b.leg_check(s.cfg, {"from": "0x" + "a1" * 20, "to": "0x" + "c9" * 20, "data": "0x1234"}), {"ok": True})
 
-    def test_a_command_that_never_committed_drops_the_record(self):
+    def record(self, s, command_id="never-sent", submitted_ago=0.0):
+        """A kept custody check for a command, submitted `submitted_ago` seconds ago by the builder's clock."""
+        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": command_id, "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": [],
+                                                       "submittedAt": time.time() - submitted_ago})
+
+    def canton_time(self, s, seconds_after_submit):
+        """Canton's time, as the checkpoints of a completions read show it, is this far after the record's submit."""
+        at = json.loads(b.custody_check_path(s.cfg).read_text())["submittedAt"] + seconds_after_submit
+        s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    def test_a_command_that_never_committed_drops_the_record_once_its_window_has_passed(self):
         s = self.block()
-        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": "never-sent", "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": []})
+        self.record(s, submitted_ago=s.cfg.resolve_seconds + 60)
+        self.canton_time(s, s.cfg.resolve_seconds + 5)
         self.assertEqual(b.settle_custody(s.cfg), "dropped")
         self.assertFalse(b.custody_check_path(s.cfg).exists())
         self.assertIsNone(b.settle_custody(s.cfg))
+
+    def test_no_completion_inside_the_window_keeps_the_record_and_withdrawals_wait(self):
+        s = self.block()
+        self.record(s, submitted_ago=10)
+        for seen in (None, 5, s.cfg.resolve_seconds - 1):   # the default checkpoint time is far in the past; then ones that have not reached the end of the window
+            with self.subTest(seen):
+                if seen is not None:
+                    self.canton_time(s, seen)
+                self.assertEqual(b.settle_custody(s.cfg), "pending")
+                self.assertTrue(b.custody_check_path(s.cfg).exists())
+        self.assertIsInstance(b.ExpiryRules(s.cfg, None).held_up(), b.Waiting)
+
+    def test_no_completion_with_a_canton_clock_far_ahead_of_the_builders_is_not_a_passed_window(self):
+        s = self.block()
+        self.record(s, submitted_ago=10)
+        self.canton_time(s, s.cfg.resolve_seconds + 3600)   # Canton says it is long past, but its clock is an hour ahead of ours: a skew, not proof
+        self.assertEqual(b.settle_custody(s.cfg), "pending")
+        self.assertTrue(b.custody_check_path(s.cfg).exists())
+
+    def test_a_failed_completion_drops_the_record_at_once(self):
+        s = self.block()
+        self.record(s, command_id="failed-one", submitted_ago=1)
+        s.ledger.submitted = [{"commandId": "failed-one"}]
+        s.ledger.outcomes["failed-one"] = {"commandId": "failed-one", "offset": 43, "status": {"code": 9, "message": "failed"}}
+        self.assertEqual(b.settle_custody(s.cfg), "dropped")
+        self.assertFalse(b.custody_check_path(s.cfg).exists())
+
+    def test_a_record_without_the_time_of_its_submit_is_never_dropped(self):
+        s = self.block()
+        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": "never-sent", "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": []})
+        with self.assertRaises(b.BuilderError):
+            b.settle_custody(s.cfg)
+        self.assertTrue(b.custody_check_path(s.cfg).exists())
 
     def test_a_block_canton_refused_leaves_no_record(self):
         s = self.block()
@@ -564,9 +616,11 @@ class Rows(Rig):
     def test_the_loop_runs_a_kept_check_and_reads_the_rows_at_its_step(self):
         s = self.rig(hold("h-1", 20 * CC))
         p = b.Producer(s.cfg, threading.Event(), status_file=str(Path(s.dir) / "status.json"))
-        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": "never-sent", "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": []})
+        long_ago = time.time() - 2 * s.cfg.resolve_seconds
+        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": "never-sent", "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": [], "submittedAt": long_ago})
+        s.ledger.record_time = datetime.fromtimestamp(long_ago + s.cfg.resolve_seconds + 1, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         p.custody_step()
-        self.assertFalse(b.custody_check_path(s.cfg).exists())   # no such command ever committed
+        self.assertFalse(b.custody_check_path(s.cfg).exists())   # no such command ever committed, and its window is over
         self.assertEqual(list(p.status()["custody"][ADMIN]["holdings"][0])[:2], ["contractId", "amount"])
         s.ledger.holdings = []
         p.custody_step()   # not due again yet
@@ -580,6 +634,55 @@ class Rows(Rig):
         p = b.Producer(s.cfg, threading.Event(), status_file=str(Path(s.dir) / "status.json"))
         self.assertNotIn("custody", p.status())
         p.custody_step()   # does nothing
+
+
+class Steps(Loop, Rig):
+    """The loop's custody step: the retry of a kept check backs off, and the rows are read while an Advance is in flight."""
+
+    def setUp(self):
+        Rig.setUp(self)
+
+    def stepper(self):
+        s = self.rig(hold("h-1", 20 * CC))
+        p = self.producer(s)
+        b.write_json_file(b.custody_check_path(s.cfg), {"commandId": "c", "begin": 42, "number": 5, "hash": "ab" * 32, "gateway": "gw", "plan": [], "submittedAt": time.time()})
+        return s, p
+
+    def test_a_pending_check_is_tried_again_after_a_minute_and_not_at_every_step(self):
+        s, p = self.stepper()
+        with mock.patch.object(b, "settle_custody", return_value="pending") as settle:
+            p.custody_step()
+            self.assertEqual(settle.call_count, 1)
+            self.now[0] += 59
+            p.custody_step()
+            p.custody_step()
+            self.assertEqual(settle.call_count, 1)
+            self.now[0] += 2
+            p.custody_step()
+            self.assertEqual(settle.call_count, 2)
+
+    def test_a_check_that_is_not_pending_does_not_delay_the_next_one(self):
+        s, p = self.stepper()
+        with mock.patch.object(b, "settle_custody", return_value="ok") as settle:   # the mock leaves the file, so the next step looks again at once
+            p.custody_step()
+            p.custody_step()
+            self.assertEqual(settle.call_count, 2)
+
+    def test_the_rows_are_read_while_an_advance_is_in_flight_and_the_kept_check_waits(self):
+        s, p = self.stepper()
+        p.sending = object()   # the Pipeline's Advance in its thread
+        with mock.patch.object(b, "settle_custody") as settle:
+            p.custody_step()
+            settle.assert_not_called()
+            row = p.status()["custody"][ADMIN]
+            self.assertEqual([h["contractId"] for h in row["holdings"]], ["h-1"])
+            self.assertTrue(row["readAt"])
+            s.ledger.holdings = []
+            self.now[0] += b.CUSTODY_ROWS_SECONDS + 1
+            p.custody_step()   # due again, still in flight
+            settle.assert_not_called()
+        self.assertEqual(p.status()["custody"][ADMIN]["holdings"], [])
+        self.assertTrue(b.custody_check_path(s.cfg).exists())
 
 
 class Looped(Loop, Rig):

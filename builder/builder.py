@@ -1886,6 +1886,7 @@ class PartyBlame:
 CUSTODY_CHECK_FILE = "custody-check.json"   # in the work folder: a Canton Coin withdrawal's check, from before its Advance goes out until the check has run
 CUSTODY_STOP_FILE = "custody-stop.json"     # in the work folder: while it exists, Canton Coin withdrawals are left out (`builder.py custody-clear` removes it)
 CUSTODY_ROWS_SECONDS = 600                  # how often the status file's custody rows are read again
+CUSTODY_RETRY_SECONDS = 60                  # how long a kept custody check that could not be settled waits before the loop tries it again
 CUSTODY_STOPPED = "Canton Coin withdrawals are stopped: the bridge's custody check found a difference. Nothing was burnt."
 CUSTODY_FEE = "Canton Coin charges a create, transfer or lock fee, which this builder does not price."
 
@@ -1928,7 +1929,7 @@ def custody_inputs(held: list, need: int, floor: int, cap: int) -> tuple:
     """The holdings a withdrawal of `need` takes, as (contract ids, None), or (None, why). `held` is [(contract id, amount, expiry round)] of the usable ones.
     The change and what custody keeps must each be zero or at least `floor`; at most `cap` inputs. First the `cap` nearest to expiry (ties: the larger, then the
     lower id) when they cover it. Else the fewest, largest first (more of them until the change is right), and the free slots filled nearest expiry first
-    while the change stays zero or at least the floor. `why` is ("left", the amount that would be left) or ("many", the most `cap` holdings give)."""
+    while the change stays zero or at least the floor. `why` is ("left", the amount that would be left), ("many", the most `cap` holdings give), or ("cap", None): the `cap` largest cover it only with a change under the floor."""
     good = lambda x: x == 0 or x >= floor
     total = sum(h[1] for h in held)
     if not good(total - need):
@@ -1945,7 +1946,7 @@ def custody_inputs(held: list, need: int, floor: int, cap: int) -> tuple:
         if got >= need and good(got - need):
             break
     else:
-        return None, (("many", got) if got < need else ("left", got - need))
+        return None, (("many", got) if got < need else ("cap", None))
     change, chosen = got - need, {h[0] for h in taken}
     for h in near:
         if len(taken) >= cap or not good(change + h[1]):
@@ -1958,6 +1959,8 @@ def custody_inputs(held: list, need: int, floor: int, cap: int) -> tuple:
 
 def custody_reason(why: tuple, total: int, floor: int, cap: int) -> Said:
     kind, amount = why
+    if kind == "cap":
+        return Said(f"This withdrawal cannot be covered by {cap} Canton Coin holdings without returning a change under the bridge's minimum of {canton_amount(floor)} CC. Try a different amount.")
     if kind == "many":
         return Said(f"Covering this withdrawal takes more than {cap} Canton Coin holdings. The most one withdrawal can take now is {canton_amount(amount)} CC.")
     most = f"Withdraw at most {canton_amount(total - floor)} CC, or exactly" if total > floor else "Withdraw exactly"
@@ -2069,7 +2072,8 @@ def load_custody_check(cfg: Config) -> dict | None:
     """The kept custody check, or None when there is none. One that cannot be read or is not one is a BuilderError, and stays: withdrawals wait."""
     try:
         found = json.loads(custody_check_path(cfg).read_text())
-        if isinstance(found.get("commandId"), str) and type(found.get("begin")) is int and isinstance(found.get("gateway"), str) and isinstance(found.get("plan"), list):
+        if isinstance(found.get("commandId"), str) and type(found.get("begin")) is int and isinstance(found.get("gateway"), str) and isinstance(found.get("plan"), list) \
+                and type(found.get("submittedAt")) in (int, float):
             return found
     except FileNotFoundError:
         return None
@@ -2138,15 +2142,20 @@ def run_custody_check(cfg: Config, rec: dict, offset: int, update_id=None) -> st
 
 def settle_custody(cfg: Config) -> str | None:
     """A kept custody check whose Advance is settled now (a restart, or a read that failed after the commit): the command's completion, found by its id from
-    the ledger end before the submit, says what to do: committed, check at its offset; failed or none, the command never committed and the record is dropped.
-    None when there is no record; "pending" when the completion cannot be read."""
+    the ledger end before the submit, says what to do. Committed: check at its offset. Failed: the command never committed and the record is dropped. No
+    completion: the record is dropped only once Canton's own time has passed the last moment the command could commit (`submittedAt` + cfg.resolve_seconds, as
+    `resolve_unknown` judges it, and not while Canton's clock is more than SKEW_SECONDS ahead of the builder's); until then it stays. None when there is no
+    record; "pending" when nothing can be decided yet."""
     rec = load_custody_check(cfg)
     if rec is None:
         return None
     try:
-        found = Ledger(cfg).completion(rec["commandId"], rec["begin"])
+        found, reached = Ledger(cfg).completion_and_time(rec["commandId"], rec["begin"])
     except (OSError, ValueError, http.client.HTTPException):
         return "pending"
+    if found is None:
+        if reached is None or reached < rec["submittedAt"] + cfg.resolve_seconds or reached > builder_now() + SKEW_SECONDS:
+            return "pending"
     if found is None or not found["committed"]:
         custody_check_path(cfg).unlink(missing_ok=True)
         return "dropped"
@@ -2169,7 +2178,7 @@ def check_after_commit(cfg: Config, command_id: str, offset, update_id) -> str:
 
 
 def custody_row(cfg: Config, rounds: Rounds, holdings: list, lives: dict, now: float) -> dict:
-    """The status file's custody row of one instrument (the fields PR readers rely on: README.md, "The status file"). `holdings` are the gateway's."""
+    """The status file's custody row of one instrument (the fields the explorer and the watch read: README.md, "The status file"). `holdings` are the gateway's."""
     shown = []
     for h in holdings:
         units = base_units(h["amount"])
@@ -3619,7 +3628,7 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
     # The ledger end before the submit: the command's own completion, whenever it comes, is after it.
     begin = Ledger(cfg).end()
     if built.custody:   # on disk before the command is: whoever finds the commit afterwards (a restart too) runs the custody check, and until then Canton Coin withdrawals wait
-        write_json_file(custody_check_path(cfg), {"commandId": command_id, "begin": begin, "number": n, "hash": block_hash, "gateway": chain["gateway"], "plan": built.custody})
+        write_json_file(custody_check_path(cfg), {"commandId": command_id, "begin": begin, "number": n, "hash": block_hash, "gateway": chain["gateway"], "plan": built.custody, "submittedAt": time.time()})
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
     # that makes the next start wait for the command instead of rewinding a block that may commit. Only a definite answer clears it.
     resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time(), "genesis": genesis_hash(reth),
@@ -4204,6 +4213,7 @@ class Producer:
         self.custody: dict = {}           # instrument admin -> its custody row as last read (the status file's `custody`), for --expiring-instrument
         self.custody_read = None          # when the rows were last read (or tried); None: not yet
         self.custody_dirty = False        # a block with legs committed since: the rows are read again at the next step
+        self.custody_retry_at = 0.0       # a kept custody check that could not be settled is not tried again before this time
         self.custody_warned = False       # the "cannot read" line is printed once until a read works
         self.started = self.last_block_at = self.last_written = self.clock()
         self.committed = self.refused = self.unknown = self.failures = self.refusals_in_row = 0
@@ -4211,14 +4221,20 @@ class Producer:
         self.timed, self.prove_total, self.advance_total = 0, 0.0, 0.0
 
     def custody_step(self) -> None:
-        """For --expiring-instrument. A kept custody check whose Advance is settled runs here (after a restart, or a read that failed after the commit),
-        and the status file's custody rows are read again when they are due. Nothing here fails the step."""
-        if not self.cfg.expiring or getattr(self, "sending", None) is not None:   # an Advance in its thread has its record on disk: its commit runs its own check
+        """For --expiring-instrument. A kept custody check whose Advance is settled runs here (after a restart, or a read that failed after the commit), and
+        the status file's custody rows are read again when they are due, also while an Advance is in flight. Nothing here fails the step."""
+        if not self.cfg.expiring:
             return
         now = self.clock()
         try:
-            if custody_check_path(self.cfg).exists() and settle_custody(self.cfg) in ("ok", "stopped", "dropped"):
-                self.custody_dirty = True
+            # An Advance in its thread has its record on disk: its commit runs its own check, so the kept record is left alone while it is in flight.
+            if getattr(self, "sending", None) is None and now >= self.custody_retry_at and custody_check_path(self.cfg).exists():
+                self.custody_retry_at = now + CUSTODY_RETRY_SECONDS   # also when the record cannot be read: it is looked at again in a minute, not at every step
+                settled = settle_custody(self.cfg)
+                if settled != "pending":
+                    self.custody_retry_at = 0.0
+                if settled in ("ok", "stopped", "dropped"):
+                    self.custody_dirty = True
             if self.custody_dirty or self.custody_read is None or now - self.custody_read >= CUSTODY_ROWS_SECONDS:
                 self.custody_read, self.custody_dirty = now, False
                 try:
