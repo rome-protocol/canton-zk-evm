@@ -132,6 +132,30 @@
     The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
     the Reject choice instead. It takes no values: naming a gas cap, keys or a delay with it is refused.
 
+  setup.py --ledger-url <URL> --custody-refresh-step dry-run|run --instrument <admin>/<id> --registry <admin>=<url> --registry-token-file <admin>=<file>
+           [--custody-floor-days <days>] [--max-transfer-inputs <N>]
+
+    The refresh of an instrument whose holdings run out (Canton Coin), with the operator's token (which acts as the gateway). It merges the gateway's usable holdings of
+    the instrument into new ones, each a transfer from the gateway to itself through the registry's transfer factory, and prints one JSON line. It imports the
+    builder's code (the open rounds, a holding's life, the custody read, the stop file; pip install -r builder/requirements.txt) and takes the builder's settings as its own,
+    with the builder's names and defaults: --registry and --registry-token-file for the instrument's admin (the open rounds are read from that registry), --custody-floor-days
+    and --max-transfer-inputs (the open round's limit is the other cap, and the lower wins). CZE_WORK_DIR is the builder's work folder (default $CZE_STATE_DIR/builder); its status.json
+    must have the row custody.<admin> (the builder runs with --expiring-instrument), or the step refuses. The two flags default to that row's floorDays and maxInputs (the
+    step refuses when the row has no maxInputs yet, which the builder writes after its first read of a round: then pass --max-transfer-inputs), so pass the producer's CZE_STATE_DIR rather than repeating its OSTIA_CUSTODY_* settings.
+      dry-run  reads the rounds and the holdings and prints the plan: the transfers (inputs and amount of each), the holdings it skips and whether all of custody is under the floor. Sends nothing.
+      run      sends the transfers, one at a time. Usable holdings are the gateway's unlocked ones that are not at or past their expiry round (a holding that is is skipped and reported).
+               In one pass, the step takes the holdings there at its start, nearest expiry first, K to a transfer, so M holdings are ceil(M / K) transfers and the output of one
+               is never the input of another; a second run is a pass of its own. A transfer's output is its inputs' sum and is at least the floor (a last transfer under it takes a holding
+               from the one before; a split that cannot be made so stops the step before anything is sent), unless all of custody is under the floor, which the line says ("underFloor").
+               Each transfer is checked at the ledger point before it and at it (its completion offset less one, and the offset): the custody must be the same. On any difference,
+               on a read the participant refuses, or when the outcome of a transfer is not known, no further transfer is sent and the builder's stop file is written (custody-stop.json
+               in its work folder, with the two custody numbers), so that no Canton Coin withdrawal commits after it; they are held until `builder.py custody-clear run`. An end of the process
+               between the submit and the end of a transfer's check (an interrupt, SIGTERM or SIGHUP, which the step turns into one, or a token file that cannot be read) writes the stop too (a SIGKILL or a power loss
+               cannot: if the step ends without printing its JSON line, check custody and write or keep a stop before any withdrawal), and a stop that appears during the pass ends it.
+               The step sends a transfer only when the registry says it is of kind 'self', which is the registry's name for a transfer from the gateway to itself; an offer, or any other kind, ends the run before anything is sent.
+               A transfer the participant refuses (a 4xx that carries a Canton error code, as the builder reads it) changed nothing: nothing more is sent, and the step is safe to run again. Any other error answer is looked up by the command id as the builder does, and a transfer not found is a stop; a 401, 403 or 429 means the participant did not take it (no stop). The step refuses to start while a stop is in force, when the round cannot be read
+               or any round charges a create, transfer or lock fee, and when the gateway has no registered token (or more than one factory) for the instrument. Exit status 0, or 1 when it stopped.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -139,8 +163,9 @@ applies the rules of check-env.sh itself, before it sends anything: the URL is h
 mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
 no token is sent). A token is never printed.
 """
-import argparse, functools, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
+import argparse, contextlib, functools, json, math, os, re, signal, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid, zipfile
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -1073,6 +1098,321 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
     return {**result, "submitted": False}
 
 
+# ---- the refresh of an instrument whose holdings run out (Canton Coin) --------------------------------------------------------------
+
+TRANSFER_FACTORY = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
+SUBMIT_ERROR_BYTES = 16384   # how much of a submit's error answer is read: enough for a Canton error's JSON
+SELF_KIND = "self"   # the token registry's name for a transfer from a party to itself (demo/cc.py holds the same rule: "self" exactly when sender = receiver)
+REQUESTED_BACK = 60   # seconds: a transfer is requested a minute back, so that a machine ahead of the ledger clock is not refused as not yet requested
+CHECK_TRIES, CHECK_WAIT = 3, 2.0   # reads of a transfer's two offsets before a read that keeps failing is a stop, and the seconds between them
+
+
+def builder():
+    """The builder's code, which this step imports rather than copies: the rounds, the holdings' life, the custody read and the stop file."""
+    try:
+        import builder as b
+    except ImportError as err:
+        raise SystemExit(f"--custody-refresh-step uses the builder's code, which needs its one dependency: pip install --require-hashes -r builder/requirements.txt ({err})") from None
+    return b
+
+
+def refresh_chunks(held: list, floor: int, cap: int) -> list:
+    """The transfers of one pass over `held`, [(contract id, base units, expiry round)]: nearest expiry first (ties: the larger, then the lower id), `cap` to a
+    transfer. A transfer's output is the sum of its inputs and must be at least `floor`: a last transfer under it takes the largest holding of the one before
+    that can spare it, while that one stays over. Unless all of custody is under the floor (each output then is what there is), a split that cannot be made so
+    stops the step before anything is sent."""
+    near = sorted(held, key=lambda h: (h[2], -h[1], h[0]))
+    chunks = [near[i:i + cap] for i in range(0, len(near), cap)]
+    amount = lambda chunk: sum(h[1] for h in chunk)
+    if amount(near) < floor or len(chunks) < 2:
+        return chunks
+    tail, before = chunks[-1], chunks[-2]
+    while amount(tail) < floor and len(tail) < cap:
+        spare = [h for h in sorted(before, key=lambda h: (-h[1], h[0])) if amount(before) - h[1] >= floor]
+        if not spare:
+            break
+        before.remove(spare[0])
+        tail.append(spare[0])
+    for chunk in chunks:
+        if amount(chunk) < floor:
+            b = builder()
+            raise SystemExit(f"{len(chunk)} of the holdings come to {b.canton_amount(amount(chunk))} CC in one transfer, under the minimum of {b.canton_amount(floor)} CC, "
+                             f"and the {len(near)} together are {b.canton_amount(amount(near))} CC: a higher --max-transfer-inputs, or a withdrawal first, makes a split that is not")
+    return chunks
+
+
+def read_custody(ledger, gateway: str, instrument: dict, offset=None) -> int:
+    return builder().custody_sum(ledger.active_holdings(offset), gateway, instrument)
+
+
+def read_pair(ledger, gateway: str, instrument: dict, offset: int) -> tuple:
+    """(custody at offset - 1, custody at offset, None), or (None, None, why) when the participant refuses the read or it keeps failing (CHECK_TRIES times)."""
+    why = ""
+    for attempt in range(CHECK_TRIES):
+        try:
+            return read_custody(ledger, gateway, instrument, offset - 1), read_custody(ledger, gateway, instrument, offset), None
+        except urllib.error.HTTPError as err:
+            err.close()
+            if not (err.code >= 500 or err.code in (401, 403, 408, 429)):
+                return None, None, f"the participant refused to show the holdings at offset {offset - 1} or {offset} (HTTP {err.code})"
+            why = f"HTTP {err.code}"
+        except (OSError, ValueError, KeyError, TypeError, HTTPException) as err:
+            why = type(err).__name__
+        if attempt + 1 < CHECK_TRIES:
+            time.sleep(CHECK_WAIT)
+    return None, None, f"the holdings at offset {offset - 1} or {offset} could not be read ({why})"
+
+
+def write_stop(work: Path, reason: str, command_id: str, update_id, instrument: dict, before=None, after=None) -> str:
+    """The builder's own stop file (custody-stop.json in its work folder, the fields its status shows), so that no Canton Coin withdrawal commits after a transfer
+    whose custody check found a difference or could not be made. The builder's kept custody check, if there is one, is left alone. `builder.py custody-clear` removes it."""
+    b = builder()
+    amount = lambda n: None if n is None else b.canton_amount(n)
+    stop = {"reason": reason, "block": None, "updateId": update_id, "commandId": command_id, "instrument": instrument, "withdrawn": amount(0), "deposits": amount(0),
+            "custodyBefore": amount(before), "custodyAfter": amount(after), "at": b.iso(time.time())}
+    b.write_json_file(work / b.CUSTODY_STOP_FILE, stop)
+    log("custody check: " + json.dumps(stop))
+    return reason
+
+
+class SignalEnd(KeyboardInterrupt):
+    """SIGTERM or SIGHUP, made an exception so that the stop is written like for any other interrupt."""
+
+
+@contextlib.contextmanager
+def signals_as_interrupts():
+    """Python ends at SIGTERM and SIGHUP with no exception, so a dropped session could end a transfer between its submit and its check unseen. In the main thread
+    the two raise SignalEnd (a KeyboardInterrupt) for the length of the block; the old handlers are put back after. Elsewhere nothing is changed."""
+    def raise_end(number, frame):
+        raise SignalEnd(signal.Signals(number).name)
+    old = {}
+    try:
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                number = getattr(signal, name)
+                if signal.getsignal(number) is signal.SIG_IGN:   # protected on purpose (nohup): left alone
+                    continue
+                old[number] = signal.signal(number, raise_end)
+    except ValueError:   # not the main thread
+        pass
+    try:
+        yield
+    finally:
+        for number, handler in old.items():
+            signal.signal(number, handler)
+
+
+@contextlib.contextmanager
+def signals_held():
+    """SIGTERM and SIGHUP that have a Python handler wait while the block runs and reach that handler after it (their own handler is swapped for a note, not masked:
+    a mask holds for one thread only). Not in the main thread: nothing is held."""
+    arrived, old = [], {}
+    try:
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                number = getattr(signal, name)
+                if callable(signal.getsignal(number)):
+                    old[number] = signal.signal(number, lambda n, frame: arrived.append(n))
+    except ValueError:
+        pass
+    try:
+        yield
+    finally:
+        for number, handler in old.items():
+            signal.signal(number, handler)
+        for number in arrived[:1]:
+            old[number](number, None)
+
+
+def custody_refresh_step(url: str, mode: str, instrument: str, registries: dict, registry_files: dict, floor_days, max_inputs) -> dict:
+    """The operator's refresh of an instrument whose holdings run out: the gateway's usable holdings of it, merged into new ones by transfers from the gateway to
+    itself, K inputs to a transfer (K the lower of `max_inputs` and the open round's limit), nearest expiry first, in one pass over the holdings there at the start
+    (ceil(M / K) transfers: an output is never the input of a later transfer). Each transfer is checked at the ledger point before it and at it (its completion
+    offset less one, and the offset): the custody must be the same. On any difference, or a read that cannot be made, no further transfer is sent and the
+    builder's stop file is written. `floor_days` and `max_inputs` are the flags' values, or None to take the builder's own from its status file (which the step
+    insists on: it proves the work folder is the builder's and that the builder honours the stop). `mode` dry-run reads and plans and sends nothing."""
+    b = builder()
+    admin, _, name = instrument.partition("/")
+    instr = {"admin": admin, "id": name}
+    state = Path(os.environ.get("CZE_STATE_DIR", ROOT / "state"))
+    parties = propose.read_env_file(state / "canton" / "parties.env")
+    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY", "GATEWAY_PARTY") if not parties.get(k)]
+    if missing:
+        raise SystemExit(f"parties.env in the state directory does not name {missing}: run setup.py first")
+    gateway = parties["GATEWAY_PARTY"]
+    work = Path(os.environ.get("CZE_WORK_DIR", state / "builder"))
+    cfg = b.Config(ws_url="", engine_url="", jwt_secret=b"", ledger_url=url, ledger_user=propose.user_id("operator"), ledger_token="", party=gateway, fee_recipient="",
+                   genesis="", work_dir=str(work), make_input_cmd="", prove_cmd="")
+    status_file = work / "status.json"
+    try:
+        row = json.loads(status_file.read_text())["custody"][admin]
+        if not isinstance(row, dict):
+            raise TypeError(row)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise SystemExit(f"{status_file} has no custody row for {admin}: the builder that makes Canton Coin withdrawals runs with --expiring-instrument and writes it there. "
+                         "Is CZE_STATE_DIR (or CZE_WORK_DIR) the producer's? Without that row the builder would not honour a stop. Nothing was sent") from None
+    if floor_days is None:
+        floor_days = row.get("floorDays")
+        if type(floor_days) not in (int, float) or not math.isfinite(floor_days) or floor_days <= 0:
+            raise SystemExit(f"the floorDays in {status_file} is not a number above zero: pass --custody-floor-days. Nothing was sent")
+    if max_inputs is None:
+        max_inputs = row.get("maxInputs")
+        if type(max_inputs) is not int or max_inputs < 1:   # the builder writes it after its first read of a round
+            raise SystemExit(f"the maxInputs in {status_file} is not a whole number above zero (the builder has not read a round yet?): pass --max-transfer-inputs. Nothing was sent")
+    if b.read_custody_stop(cfg) is not None:
+        raise SystemExit(f"a custody stop is in force ({work / b.CUSTODY_STOP_FILE}): Canton Coin withdrawals are held until the cause is known and "
+                         "`python3 builder/builder.py custody-clear run` has removed it. Nothing was sent")
+
+    class AsOperator(b.Ledger):
+        @property
+        def auth(self) -> dict:
+            try:
+                return propose.auth(propose.role_token("operator"))   # read again on every call: a renewed one needs no restart
+            except SystemExit as err:   # an unreadable or half-written token file is a failed read like any other, which the checks retry and then stop on
+                raise OSError(str(err)) from None
+
+    class Reader(b.ChoiceContexts):
+        """One for the rounds and a new one for each transfer, each with the registry's own time; it keeps the kind of transfer the registry named. The step checks that
+        kind itself, so the builder's note about a kind that is not 'direct' (for a withdrawal's transfer to another party) is not wanted for each of its transfers."""
+        kind = None
+
+        def ask(self, admin, path, *rest, **more):
+            reply = super().ask(admin, path, *rest, **more)
+            if path.endswith("/transfer-factory"):
+                self.kind = reply.get("transferKind") if isinstance(reply, dict) else None
+            return reply
+
+    ledger, reader = AsOperator(cfg), Reader(registries, registry_files)
+    try:
+        rounds = reader.rounds(admin)
+    except b.NoCantonSide as err:
+        raise SystemExit(f"{err}. Nothing was sent") from None
+    if rounds.fee:
+        raise SystemExit(f"{b.CUSTODY_FEE} Nothing was sent")
+    floor, cap = rounds.floor(floor_days), min(max_inputs, rounds.max_inputs)
+    try:
+        everything = ledger.active_holdings()
+        custody = b.custody_sum(everything, gateway, instr)
+        mine = [h for h in everything if h["owner"] == gateway and h["instrumentId"] == instr and not h.get("lock") and b.base_units(h["amount"]) is not None]
+        lives = b.holding_lives(mine, lambda: {c["contractId"]: c for c in ledger.active(b.AMULET)})
+        found = [t for t in ledger.active(b.GATEWAY_TOKEN) if t.get("gateway") == gateway and t.get("operator") == parties["OPERATOR_PARTY"]
+                 and t.get("confirmer") == parties["CONFIRMER_PARTY"] and t.get("instrumentId") == instr]
+    except (b.NoCantonSide, OSError, ValueError, KeyError, TypeError, HTTPException) as err:
+        raise SystemExit(f"cannot read the gateway's holdings: {b.bounded_text(err)}") from None
+    rows = [(h["contractId"], b.base_units(h["amount"]), b.expiry_round(b.base_units(h["amount"]), *lives[h["contractId"]])) for h in mine]
+    held = [r for r in rows if r[2] > rounds.number + 1]   # one at or past its expiry round is never an input: Canton may archive it before the transfer commits
+    skipped = [{"contractId": r[0], "amount": b.canton_amount(r[1])} for r in rows if r[2] <= rounds.number + 1]
+    chunks = refresh_chunks(held, floor, cap)
+    result = {"step": "custody-refresh", "instrument": instrument, "round": rounds.number, "floor": b.canton_amount(floor), "floorDays": floor_days, "maxInputs": cap,
+              "custody": b.canton_amount(custody), "holdings": len(held), "skipped": skipped, "underFloor": bool(held) and sum(r[1] for r in held) < floor,
+              "transfers": [{"inputs": len(c), "amount": b.canton_amount(sum(r[1] for r in c)), "submitted": False} for c in chunks], "dryRun": mode == "dry-run", "ok": True}
+    if not chunks:
+        return result
+    factories = {t["factory"] for t in found}
+    if not factories:
+        raise SystemExit(f"the gateway has no registered token for {instrument}, so there is no transfer factory to go through")
+    if len(factories) > 1:
+        raise SystemExit(f"the gateway has more than one transfer factory registered for {instrument}: refusing to pick one")
+    [factory] = factories
+    if mode == "dry-run":
+        return result
+
+    def fail(why: str, stopped: bool = False) -> dict:
+        log(why)
+        return {**result, "ok": False, "stopped" if stopped else "error": why}
+
+    def submit_and_check(entry: dict, body: dict, headers: dict, begin: int, guard: dict):
+        """The submit, the lookup of a transfer that got no usable answer, and the two-offset check. None when the transfer is checked and clean, else the run's
+        result. `guard["open"]` is True from the submit until the transfer is known not to have committed, or its check has ended."""
+        command_id, offset, update_id = body["commandId"], None, None
+        try:
+            answer = b.post_json(url + "/v2/commands/submit-and-wait", body, headers)
+            answer = answer if isinstance(answer, dict) else {}
+            update_id, offset = answer.get("updateId"), answer.get("completionOffset")
+        except urllib.error.HTTPError as err:
+            try:
+                text = err.read(SUBMIT_ERROR_BYTES).decode("utf-8", "replace")
+            except (OSError, ValueError, HTTPException):
+                text = ""
+            finally:
+                err.close()
+            reason = b.bounded_text(text)[:300]
+            if b.definite_rejection(err.code, text):   # the builder's own rule: a 4xx that carries a Canton error code (not a duplicate command id)
+                guard["open"] = False
+                return fail(f"the transfer was refused: HTTP {err.code} {reason}. Nothing in it changed; run it again, which reads the holdings afresh (a block may have taken one)")
+            if err.code in b.NEVER_TAKEN_CODES:   # the token or back-pressure: the participant did not take the command, and no completion will come
+                guard["open"] = False
+                return fail(f"the participant did not take the transfer: HTTP {err.code} {reason}. Nothing in it changed; run it again")
+        except (OSError, ValueError, HTTPException):
+            pass
+        if type(offset) is not int:   # no usable answer: the command's own completion says whether it committed
+            try:
+                done = ledger.completion(command_id, begin)
+            except (OSError, ValueError, HTTPException):
+                done = None
+            if done is not None and not done["committed"]:
+                guard["open"] = False
+                return fail(f"the transfer failed: {done['reason']}. Nothing in it changed; run it again")
+            if done is None or type(done.get("completionOffset")) is not int:
+                reason = write_stop(work, "the outcome of the refresh step's transfer is not known: it got no answer, and no completion of it was found. "
+                                          "Custody has not been checked", command_id, None, instr)
+                guard["open"] = False   # only once the stop is on disk: an end during its write leaves the guard to write it again
+                return fail(reason, True)
+            update_id, offset = done.get("updateId"), done["completionOffset"]
+        entry.update(submitted=True, updateId=update_id, offset=offset, checked=False)
+        before, after, why = read_pair(ledger, gateway, instr, offset)
+        entry.update(custodyBefore=None if before is None else b.canton_amount(before), custodyAfter=None if after is None else b.canton_amount(after))
+        if why is None and before == after:
+            guard["open"] = False
+            entry["checked"] = True
+            return None
+        if why is not None:
+            reason = write_stop(work, why, command_id, update_id, instr)
+        else:
+            reason = write_stop(work, "custody changed across the refresh step's own transfer, which keeps its sum", command_id, update_id, instr, before, after)
+        guard["open"] = False   # only once the stop is on disk
+        return fail(reason, True)
+
+    with signals_as_interrupts():
+        for entry, chunk in zip(result["transfers"], chunks):
+            if b.read_custody_stop(cfg) is not None:   # the builder's own check may have written one since the last transfer
+                return fail("a custody stop is in force; nothing more was sent", True)
+            now = datetime.now(timezone.utc)
+            transfer = {"sender": gateway, "receiver": gateway, "amount": entry["amount"], "instrumentId": instr, "requestedAt": b.stamp(now - timedelta(seconds=REQUESTED_BACK)),
+                        "executeBefore": b.stamp(now + timedelta(days=1)), "inputHoldingCids": [r[0] for r in chunk], "meta": {"values": {}}}
+            asker = Reader(registries, registry_files)
+            asker.noted.add((admin, gateway))
+            try:
+                context, disclosed = asker.transfer(admin, factory, transfer)
+                begin = ledger.end()
+                headers = ledger.auth
+            except b.NoCantonSide as err:
+                return fail(f"the token registry's answer for the transfer cannot be used: {err}. Nothing more was sent")
+            except OSError as err:
+                return fail(f"cannot read the ledger end or the operator's token: {b.bounded_text(err)}. Nothing more was sent")
+            if asker.kind != SELF_KIND:   # only a transfer back into the gateway's own custody; an offer (or a transfer to another party) would lock the chunk or move it out of custody
+                return fail(f"the token registry says the transfer is of kind {b.bounded_text(asker.kind)[:32]!r}, not {SELF_KIND!r}: it would not merge the holdings into the gateway's own custody. Nothing was sent")
+            command_id = str(uuid.uuid4())
+            body = {"commands": [{"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer",
+                                                      "choiceArgument": {"expectedAdmin": admin, "transfer": transfer,
+                                                                         "extraArgs": {"context": context or {"values": {}}, "meta": {"values": {}}}}}}],
+                    "commandId": command_id, "userId": cfg.ledger_user, "actAs": [gateway], **({"disclosedContracts": disclosed} if disclosed else {})}
+            guard = {"open": True}
+            try:
+                outcome = submit_and_check(entry, body, headers, begin, guard)
+            except BaseException as err:   # an end of the process (an interrupt, a token file read half-way) between the submit and the end of the check
+                if guard["open"]:
+                    with signals_held():   # a second end must not cut this write: it lands after it
+                        try:
+                            write_stop(work, f"the refresh step's transfer may have committed and its custody check was not made ({err.args[0] if isinstance(err, SignalEnd) else type(err).__name__})", command_id, None, instr)
+                        except Exception:
+                            pass
+                raise
+            if outcome is not None:
+                return outcome
+    return result
+
+
 def ensure_chain(args, named: dict, url: str) -> dict:
     parties = {name.upper() + "_PARTY": party for name, party in named.items()}   # as propose.py reads them from parties.env
     operator = propose.operator_ledger(url, parties)
@@ -1130,9 +1470,50 @@ def main(argv: list) -> int:
     ap.add_argument("--twin-decimals", type=int, help="with --twin-step propose, accept or add: the ERC-20's decimals (0 to 36), which must be the rules' own")
     ap.add_argument("--twin-rules", help="with --twin-step propose, accept or add: the contract id of the twin's TwinRules")
     ap.add_argument("--twin-rules-disclosed", metavar="FILE", help="with --twin-step accept: the TwinRules contract as a disclosed contract (JSON: templateId, contractId, createdEventBlob, synchronizerId), for the confirmer, who cannot see it")
+    ap.add_argument("--custody-refresh-step", choices=("dry-run", "run"), help="merge the gateway's usable holdings of an instrument whose holdings run out (Canton Coin) into new ones, with the operator's token; dry-run reads and plans and sends nothing (see the top of this file)")
+    ap.add_argument("--instrument", metavar="ADMIN/ID", help="with --custody-refresh-step: the instrument, its admin party and its id")
+    ap.add_argument("--registry", action="append", default=[], metavar="ADMIN=URL", help="with --custody-refresh-step: the instrument's token registry, as the builder is given it (for Canton Coin the validator's scan proxy)")
+    ap.add_argument("--registry-token-file", action="append", default=[], metavar="ADMIN=FILE", help="with --custody-refresh-step: the file with the token that registry wants, as for the builder")
+    ap.add_argument("--max-transfer-inputs", type=int, help="with --custody-refresh-step: the most holdings one transfer takes, as for the builder (default: the builder's, from its status file; refused when that row has none yet; the open round's limit is the other)")
+    ap.add_argument("--custody-floor-days", type=float, help="with --custody-refresh-step: the builder's floor, in days of holding life (default: the builder's, from its status file): no transfer makes a holding under it")
     ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    refresh_values = (own.instrument, own.registry, own.registry_token_file, own.custody_floor_days is not None, own.max_transfer_inputs is not None)
+    if own.custody_refresh_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        other = [k for k in ("demo", "dry_run", "package_step", "gas_cap_step", "new_gas_cap", "program_step", "program_vk", "root_c", "rules_hash", "change_delay_step",
+                             "delay_seconds", "pause_step", "pause_seconds", "leg_limits_step", "quota", "quota_window_seconds", "no_quota", "pause_max_seconds",
+                             "contract_step", "contract_address", "contract_kind", "twin_step", "twin_token", "twin_decimals", "twin_rules", "twin_rules_disclosed",
+                             "twin_dar", "withdraw_proposal") if getattr(own, k) not in (None, False, [])]
+        if rest or other:
+            ap.error("--custody-refresh-step does only the refresh: no other step, no --demo, no chain arguments, and not --dry-run (the step itself takes dry-run or run)")
+        admin, _, name = (own.instrument or "").partition("/")
+        if not own.instrument or not name or "/" in name or not re.fullmatch(r"[A-Za-z0-9_\-]+::1220[0-9a-f]{64}", admin):
+            ap.error("--custody-refresh-step needs --instrument ADMIN/ID: the instrument admin's party, a slash and the instrument's id")
+        floor_days, max_inputs = own.custody_floor_days, own.max_transfer_inputs   # None: the builder's own, from its status file
+        if floor_days is not None and (not math.isfinite(floor_days) or floor_days <= 0):
+            ap.error("--custody-floor-days must be a number above zero")
+        if max_inputs is not None and max_inputs < 1:
+            ap.error("--max-transfer-inputs must be at least 1")
+        b = builder()
+        try:
+            registries = b.parse_registries(x.strip() for x in own.registry)
+            files = b.read_registry_tokens(own.registry_token_file, registries)
+        except b.BuilderError as err:
+            raise SystemExit(str(err)) from None
+        if admin not in registries:
+            ap.error("--custody-refresh-step needs --registry ADMIN=URL for the instrument's admin: the open rounds are read from it, as the builder reads them")
+        if admin not in files:
+            ap.error("--custody-refresh-step needs --registry-token-file ADMIN=FILE for the instrument's admin: the registry wants its token")
+        check_settings(own.ledger_url, ("operator",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        result = custody_refresh_step(own.ledger_url, own.custody_refresh_step, own.instrument, registries, files, floor_days, max_inputs)
+        print(json.dumps(result))
+        return 0 if result["ok"] else 1
+    if any(refresh_values):
+        ap.error("--instrument, --registry, --registry-token-file, --custody-floor-days and --max-transfer-inputs go with --custody-refresh-step")
     if own.twin_step:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
