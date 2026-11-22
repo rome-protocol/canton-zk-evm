@@ -136,7 +136,7 @@ def claim_one(aggkit: Aggkit, sepolia: chain.Rpc, signer, bridge: str, ostia_net
     h = lambda xs: [bytes.fromhex(x[2:]) for x in xs]
     args = [h(proof["local"]), h(proof["rollup"]), int(leaf["global_index"]), bytes.fromhex(proof["mainnet"][2:]), bytes.fromhex(proof["rollupRoot"][2:]), ostia_network,
             item["asset"], cfg["network"], dest, int(item["send"]), bytes.fromhex(leaf["metadata"][2:])]
-    note = lambda sent: records.put(str(count), state="sent", recipient=dest, **sent) if sent else records.put(str(count), at=None, tx=None)
+    note = lambda sent: records.put(str(count), state="sent", recipient=dest, **sent) if sent else records.put(str(count), state="pending", at=None, tx=None)   # refused: it never was out, back in the queue
     chain.send(sepolia, signer, bridge, chain.call_data(CLAIM, CLAIM_TYPES, args), cfg["limits"], record=note)
     return None
 
@@ -150,11 +150,11 @@ def run_once(aggkit: Aggkit, ostia: chain.Rpc, sepolia: chain.Rpc, router: str, 
     for key, item in sorted(records.where("pending"), key=lambda kv: kv[1]["count"]):
         try:
             why = claim_one(aggkit, sepolia, signer, bridge, ostia_network, item, records, cfg, now)
-        except chain.ChainError as e:
+        except Exception as e:   # one transfer, whatever is wrong with it, never stops the ones after it
             if records.get(key).get("state") == "sent":   # a timeout after the send: the record finds it again
                 log(f"claim-sepolia: {key} sent, the node's answer is unknown")
                 return
-            why = str(e)
+            why = str(e) if isinstance(e, chain.ChainError) else f"unexpected ({type(e).__name__})"
         if why is None:
             log(f"claim-sepolia: {key} sent")
             return

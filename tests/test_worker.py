@@ -448,6 +448,52 @@ class ClaimTests(Base):
             self.run_once()   # replaced: the nonce goes to a transfer of nothing
         self.assertEqual(self.records.get("7")["state"], "failed")
 
+    def test_a_refused_claim_goes_back_in_the_queue_costs_nothing_and_goes_out_on_the_next_pass(self):
+        seen = []
+        self.sepolia.on_send = lambda: seen.append(self.records.get("7")["state"])
+        self.sepolia.refuse = "replacement transaction underpriced"
+        for _ in range(3):
+            self.run_once()   # never an exception, never stuck on 'sent'
+        self.assertEqual(seen, ["sent"] * 3)   # recorded before each send
+        item = self.records.get("7")
+        self.assertEqual((item["state"], item["tx"], item["at"]), ("pending", None, None))
+        self.assertIn("underpriced", item["why"])
+        self.assertEqual(self.records.where("sent"), [])
+        self.assertIsNone(over_caps(self.records, DEST, {"hour": 1, "day": 1, "recipient": 1}, time.time()))   # a refused send is no cost against the caps
+        self.sepolia.refuse = None
+        self.run_once()
+        self.assertEqual((len(self.sepolia.sent), self.records.get("7")["state"]), (1, "sent"))
+
+    def test_a_claim_whose_answer_is_lost_is_found_again_after_a_restart_and_replaced_after_the_wait(self):
+        self.sepolia.lose_answer = True
+        self.run_once()
+        item = self.records.get("7")
+        self.assertEqual((item["state"], item["tx"]), ("sent", self.sepolia.hashes[0]))   # recorded before it went out
+        self.assertIn("answer is unknown", "\n".join(self.logs))
+        self.sepolia.lose_answer = False
+        self.records = Records(self.records.path)
+        self.run_once()
+        self.assertEqual(len(self.sepolia.sent), 1)   # found, not sent again
+        self.records.get("7")["at"] -= 10_000
+        self.run_once()
+        [first, clear, again] = self.sepolia.sent   # its nonce is cleared by a transfer of nothing, then the claim is tried again
+        self.assertEqual((bytes(clear["data"]), clear["nonce"] == first["nonce"], bytes(again["data"])[:4]), (b"", True, chain.selector(claim_sepolia.CLAIM)))
+        self.assertEqual((self.records.get("7")["state"], self.records.get("7")["tries"]), ("sent", 1))
+
+    def test_an_unexpected_failure_on_one_transfer_is_logged_by_type_and_skips_it_only(self):
+        self.ostia.logs = [routed_log(7), routed_log(8)]
+        real = claim_sepolia.claimed
+        def broken(sepolia, bridge, count, network):
+            if count == 7:
+                raise TypeError("secret detail")
+            return real(sepolia, bridge, count, network)
+        self.routes["bridges"] = {"bridges": [LEAF, {**LEAF, "deposit_count": 8}]}
+        with mock.patch.object(claim_sepolia, "claimed", broken):
+            self.run_once()
+        self.assertIn("unexpected (TypeError)", self.records.get("7")["why"])
+        self.assertNotIn("secret detail", json.dumps(self.records.data) + "\n".join(self.logs))
+        self.assertEqual(self.records.get("8")["state"], "sent")
+
     def test_the_bridge_service_must_be_on_this_machine_and_the_settings_are_needed(self):
         for url in ("http://10.0.0.5:5578", "https://127.0.0.1:5578", "http://127.0.0.1.evil.example:5578"):
             with self.subTest(url), self.assertRaises(SystemExit):
