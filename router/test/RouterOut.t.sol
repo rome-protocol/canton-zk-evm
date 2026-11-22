@@ -80,7 +80,7 @@ contract RouterOutTest is Base {
 
     function test_sendToHadrianCutsToWholeSolanaUnits() public {
         // amount 1 CC + 7 base units: the fee is 1e8, the rest 9.9e9 + 7 is cut to 9.9e9, and the 7 go into the fee
-        _out(CC + 7, HADRIAN, dest, 1e8, 1);
+        _out(CC + 7, HADRIAN, dest, 1e8 + 7, 1);
         assertEq(bridge.leaf(0).destNetwork, HADRIAN);
         assertEq(bridge.leaf(0).amount, 99e8);
         assertEq(cc.balanceOf(feeTo), 1e8 + 7);
@@ -91,6 +91,16 @@ contract RouterOutTest is Base {
     function test_hadrianPaysNoClaimPart() public {
         _out(CC, HADRIAN, dest, 1e8, 1); // maxFee 0.01 is enough: Hadrian's claim part is 0
         assertEq(cc.balanceOf(feeTo), 1e8);
+    }
+
+    // The check is on the fee actually charged, after the send is cut to whole destination units: the user's maxFee is never exceeded.
+    function test_leftoverThatPushesTheFeeOverMaxFeeIsRefused() public {
+        // 9 dp destination (unit 10): fee0 is 1e8 and passes maxFee 1e8, but the 7 left over make the charged fee 1e8 + 7
+        _refused(abi.encodeWithSelector(CantonRouter.FeeAboveMax.selector, 1e8 + 7, 1e8), CC + 7, HADRIAN, dest, 1e8, 1);
+        _out(CC + 7, HADRIAN, dest, 1e8 + 7, 1); // the same amount goes when the cap covers the charged fee
+        assertEq(cc.balanceOf(feeTo), 1e8 + 7);
+        _out(CC + 10, HADRIAN, dest, 1e8, 2); // a whole unit more leaves no leftover: fee 1e8 is within the cap
+        assertEq(cc.balanceOf(feeTo), 2e8 + 7);
     }
 
     function test_claimPartIsAddedPerNetwork() public {
@@ -211,7 +221,7 @@ contract RouterOutTest is Base {
 
     function test_theRouterEndsEveryCallWithZero() public {
         _out(CC, SEPOLIA, dest, 15e7, 1);
-        _out(CC + 7, HADRIAN, dest, 1e8, 2);
+        _out(CC + 7, HADRIAN, dest, 1e8 + 7, 2);
         assertEq(cc.balanceOf(ROUTER), 0);
         assertEq(cc.totalSupply(), cc.balanceOf(address(bridge)) + cc.balanceOf(feeTo));
     }

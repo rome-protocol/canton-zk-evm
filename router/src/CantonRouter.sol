@@ -97,9 +97,10 @@ contract CantonRouter is Initializable {
         if (amount <= fee0) revert NothingLeft();
         uint256 send = (amount - fee0) / unit * unit;
         if (send == 0) revert NothingLeft();
+        uint256 fee = amount - send; // what is really charged, with the cut-off leftover; never above the user's maxFee
+        if (fee > maxFee) revert FeeAboveMax(fee, maxFee);
         uint256 room = lockRoom(token);
         if (send > room) revert OverLockCap(send, room);
-        uint256 fee = amount - send;
         bytes32 id = Labels.depositId(party, Labels.route(destNetwork, destAddress, maxFee, nonce));
         s.gateway.claim(id, token, amount);
         if (fee > 0) _pay(token, s.book.feeRecipient(), fee);

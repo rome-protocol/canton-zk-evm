@@ -1,0 +1,8 @@
+{
+  "name": "canton-router-upgrade-check",
+  "private": true,
+  "description": "Runs OpenZeppelin's upgrade-safety check on the router's contracts (../upgrade-check.sh).",
+  "dependencies": {
+    "@openzeppelin/upgrades-core": "1.47.0"
+  }
+}
