@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
+import { bridgeOrigin } from "../bridge-app/where.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useHealth, useNow, useStatus } from "../useStatus.ts";
 import { DOCS_URL, FOOTER_LINE, ISSUES_URL, SOURCE_URL } from "../copy.ts";
 import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
+import { BridgeLink } from "./BridgeLink.tsx";
 import { Icon } from "./Icon.tsx";
 import { NoticeBanners } from "./Notice.tsx";
 import { SearchBox } from "./SearchBox.tsx";
@@ -160,7 +162,9 @@ function ShellBody({ children }: { children: ReactNode }) {
         </Link>
         <button type="button" className="menu" aria-label="Menu" aria-expanded={menu} aria-controls="pages" onClick={() => setMenu((m) => !m)}><Icon name={menu ? "cross" : "menu"} size={18} /></button>
         <nav id="pages" className={`nav${menu ? " open" : ""}`} aria-label="Pages">
-          {NAV.filter(([, , built]) => built).map(([to, label]) => <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>)}
+          {NAV.filter(([, , built]) => built).map(([to, label]) => to === "/bridge" && bridgeOrigin() !== null
+            ? <BridgeLink key={to} className="navlink">{label}</BridgeLink>
+            : <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>)}
         </nav>
         {!home && <SearchBox />}
       </header>

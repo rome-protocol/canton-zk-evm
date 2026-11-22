@@ -40,4 +40,10 @@ describe("the Bridge page's settings", () => {
     expect(settingsFromEnv({ ...bare, VITE_PARTY_HINT: "a b", VITE_ACCOUNTS_URL: "/other" }, false).partyHint).toBe("");
     for (const name of ["VITE_CHAIN_OPERATOR", "VITE_SITE_ORIGIN"]) expect(() => settingsFromEnv({ ...bare, [name]: undefined }, false), name).toThrow(name);
   });
+  it("names the Bridge's own site as the origin when the page runs as that site, and the site's own otherwise", () => {
+    const withBridge = { ...env, VITE_BRIDGE_ORIGIN: "https://bridge.example" };
+    expect(settingsFromEnv(withBridge, false, true).origin).toBe("https://bridge.example");
+    expect(settingsFromEnv(withBridge, false, false).origin).toBe(env.VITE_SITE_ORIGIN);
+    expect(settingsFromEnv(env, false, true).origin).toBe(env.VITE_SITE_ORIGIN);
+  });
 });

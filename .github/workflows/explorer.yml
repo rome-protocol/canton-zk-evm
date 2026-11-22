@@ -59,6 +59,7 @@ jobs:
               && env -u VITE_CANTON_PARTICIPANT VITE_CANTON_WALLETS=extension npm run build -- --outDir dist-wallet && BRIDGE_E2E_DIST=dist-wallet PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-wallet.test.ts \
               && env -u VITE_CANTON_PARTICIPANT npm run build -- --outDir dist-off && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-off.test.ts \
               && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-other-chains.test.ts \
+              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-app.test.ts \
               && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-route.test.ts \
               && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-back.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/canton-phone.test.ts \

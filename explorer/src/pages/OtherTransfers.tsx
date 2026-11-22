@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import type { Hex } from "viem";
 import type { Transfer } from "../bridge/other/record.ts";
 import type { Live } from "../bridge/other/transfer.ts";
@@ -22,7 +22,7 @@ export interface RowActions {
 
 /** A transaction of a transfer: Ostia's is a page of the explorer; Ethereum Sepolia's is its own explorer's page; any other chain's is shown by its hash. */
 function TxLink({ hash, chainId, ostiaId, label }: { hash: Hex; chainId: number; ostiaId: number; label: string }) {
-  if (chainId === ostiaId) return <Link to={`/tx/${hash}`}>{label}</Link>;
+  if (chainId === ostiaId) return <ExplorerLink to={`/tx/${hash}`}>{label}</ExplorerLink>;
   const url = otherTxUrl(chainId, hash);
   const shown = <span className="mono" title={hash}>{short(hash, 8, 6)}</span>;
   return url ? <span><OutLink href={url}>{label}</OutLink> {shown}</span> : <span>{label} {shown}</span>;

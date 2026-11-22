@@ -337,3 +337,12 @@ describe("the producer status file", () => {
     expect(load({ PRODUCER_STATUS_FILE: "/run/explorer/producer/status.json" }).producerStatusFile).toBe("/run/explorer/producer/status.json");
   });
 });
+
+describe("the Bridge's own site", () => {
+  it("serves the Bridge's own site only when BRIDGE_ORIGIN names its origin, and stops, naming the setting, for anything else", () => {
+    expect(load().bridgeOrigin).toBeNull();
+    expect(load({ BRIDGE_ORIGIN: "  " }).bridgeOrigin).toBeNull();
+    expect(load({ BRIDGE_ORIGIN: "https://bridge.ostia.testnet.romeprotocol.xyz" }).bridgeOrigin).toBe("https://bridge.ostia.testnet.romeprotocol.xyz");
+    for (const bad of ["bridge.example", "https://bridge.example/", "https://bridge.example/path", "ftp://bridge.example"]) expect(() => load({ BRIDGE_ORIGIN: bad }), bad).toThrow(/BRIDGE_ORIGIN/);
+  });
+});

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiStatus } from "./api.ts";
+import { explorerOrigin } from "./bridge-app/where.ts";
 
 /** What a browser wallet gives a page (EIP-1193). */
 export interface Eip1193 {
@@ -53,7 +54,7 @@ export function useWallet(chain: Chain | undefined) {
       try { await w.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] }); }
       catch (e) {
         if ((e as { code?: number }).code !== 4902) throw e;
-        await w.request({ method: "wallet_addEthereumChain", params: [{ chainId: hex, chainName: chain.chainName, nativeCurrency: { name: chain.coin.symbol, symbol: chain.coin.symbol, decimals: chain.coin.decimals }, rpcUrls: [`${location.origin}/rpc`], blockExplorerUrls: [location.origin] }] });
+        await w.request({ method: "wallet_addEthereumChain", params: [{ chainId: hex, chainName: chain.chainName, nativeCurrency: { name: chain.coin.symbol, symbol: chain.coin.symbol, decimals: chain.coin.decimals }, rpcUrls: [`${explorerOrigin()}/rpc`], blockExplorerUrls: [explorerOrigin()] }] });
       }
       await read(w);
       setError(null);
@@ -85,7 +86,7 @@ export function useWallet(chain: Chain | undefined) {
 }
 
 /** The address wallets and scripts use, on this explorer's own host. */
-export const rpcUrl = () => `${location.origin}/rpc`;
+export const rpcUrl = () => `${explorerOrigin()}/rpc`;
 
 /** Asks the visitor's wallet to add this chain and says how it went. `name` is the chain's name as drawn (a caller may cut it); `where` is where the details are to be read when there is no wallet. */
 export async function addNetwork(status: Pick<ApiStatus, "chainId" | "chainName" | "coin">, name: string, where: "above" | "below"): Promise<string> {
@@ -97,7 +98,7 @@ export async function addNetwork(status: Pick<ApiStatus, "chainId" | "chainName"
       params: [{
         chainId: "0x" + status.chainId.toString(16), chainName: status.chainName,
         nativeCurrency: { name: status.coin.symbol, symbol: status.coin.symbol, decimals: status.coin.decimals },
-        rpcUrls: [rpcUrl()], blockExplorerUrls: [location.origin],
+        rpcUrls: [rpcUrl()], blockExplorerUrls: [explorerOrigin()],
       }],
     });
     return `${name} is in your wallet.`;

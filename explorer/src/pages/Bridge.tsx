@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import { bridgeReads } from "../api.ts";
 import { CardHead, LoadingCard, unready } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -369,7 +370,7 @@ function CantonBridge({ above, hidden = false }: { above?: ReactNode; hidden?: b
         <section className="card account" aria-label="Your Canton account"><CardHead title="Your Canton account" as="h2" /><p className="muted">The bridge is not set up on this site yet.</p></section>
       )}
       {settings && !injected() && onPhone() && <p className="small muted" role="note">{noWalletWords()}</p>}
-      <p className="small muted">Test coins have no value. <Link to="/faucet">The Faucet page</Link> has the limits.</p>
+      <p className="small muted">Test coins have no value. <ExplorerLink to="/faucet">The Faucet page</ExplorerLink> has the limits.</p>
       <p className="small muted">{MOVES_ARE_PUBLIC}</p>
       <HelpLine />
     </div>

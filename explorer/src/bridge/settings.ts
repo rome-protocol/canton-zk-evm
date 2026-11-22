@@ -1,4 +1,5 @@
 // What the Bridge page is built with, read from the build's environment (explorer/README.md, "The Bridge page's settings"). One place, so the page reads it once.
+import { bridgeOrigin, inApp } from "../bridge-app/where.ts";
 import { chainFromEnv, originFromEnv, participantFromEnv, partyHintFromEnv, type Chain } from "./canton/env.ts";
 
 export interface Settings {
@@ -9,7 +10,7 @@ export interface Settings {
   partyHint: string;
   /** The base of the account service's requests for `AccountsClient`: always "", this site (its endpoints are under /accounts/v1). */
   accountsBase: string;
-  /** The site's origin, shown beside the sign-in so a person can check where they are. */
+  /** The site's origin, shown beside the sign-in so a person can check where they are: the Bridge's own site's, when the page runs as that site. */
   origin: string;
 }
 
@@ -24,8 +25,8 @@ export function accountsBase(url = "/accounts"): string {
  * Throws when a setting the page needs is missing: the page then says the bridge is not set up here. The participant, the party hint and the service's path are the Bridge account's (`account`, this build's
  * VITE_BRIDGE_ACCOUNT): a build without it needs and reads none of them.
  */
-export function settingsFromEnv(env: Record<string, string | undefined>, account: boolean = __BRIDGE_ACCOUNT__): Settings {
-  const chain = chainFromEnv(env), origin = originFromEnv(env);
+export function settingsFromEnv(env: Record<string, string | undefined>, account: boolean = __BRIDGE_ACCOUNT__, app: boolean = inApp()): Settings {
+  const chain = chainFromEnv(env), site = originFromEnv(env), origin = (app ? bridgeOrigin(env) : null) ?? site;
   if (!account) return { chain, participant: "", partyHint: "", accountsBase: "", origin };
   return { chain, participant: participantFromEnv(env), partyHint: partyHintFromEnv(env), accountsBase: accountsBase(env.VITE_ACCOUNTS_URL || undefined), origin };
 }

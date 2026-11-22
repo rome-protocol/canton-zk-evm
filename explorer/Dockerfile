@@ -40,7 +40,8 @@ ARG VITE_SITE_ORIGIN=
 ARG VITE_NETWORK_NAME=
 ARG VITE_CANTON_WALLETS=
 ARG VITE_CANTON_GATEWAY_URL=
-COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts explorer/site-meta.ts ./
+ARG VITE_BRIDGE_ORIGIN=
+COPY explorer/index.html explorer/bridge.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts explorer/site-meta.ts ./
 COPY explorer/src ./src
 COPY explorer/canton-proto ./canton-proto
 COPY explorer/public ./public
