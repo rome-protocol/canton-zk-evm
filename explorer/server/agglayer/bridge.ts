@@ -24,7 +24,7 @@ export const MESSAGES_OFF = "AggLayer messages are off on this explorer.";
 export const TOO_LARGE = "This message is too large for this page.";
 export const NOT_AVAILABLE = (chain: string): string => `${chain} is not available right now. Nothing is lost.`;
 export const NO_CODE = (chain: string): string => `There is no contract at this address on ${chain} yet. The message can be claimed once one is there.`;
-export const WOULD_FAIL = (chain: string): string => `The claim would fail on ${chain}, so nothing was sent. The message stays ready to claim.`;
+export const WOULD_FAIL = (chain: string): string => `The contract on ${chain} turns this message down right now, so a claim would fail. No claim was sent. The message stays ready to claim.`;
 export const AGGLAYER_OFF = "The AggLayer bridge is off on this explorer.";
 export const NOT_SERVED = "That deposit is not on a route this page serves.";
 export const NOT_READY = "That deposit is not ready to claim yet.";

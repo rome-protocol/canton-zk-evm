@@ -206,7 +206,7 @@ describe("the claim route for a message", () => {
     expect(noCode.log.map((l) => l.split(" ")[1])).toEqual(["paused", "code"]);
     const fails = build({ leaf: one, accepted: false });
     expect(await fails.get(sep)).toMatchObject({ status: 409, body: { code: "message_would_fail" } });
-    expect(body(await fails.get(sep)).error).toBe("The claim would fail on Ethereum Sepolia, so nothing was sent. The message stays ready to claim.");
+    expect(body(await fails.get(sep)).error).toBe("The contract on Ethereum Sepolia turns this message down right now, so a claim would fail. No claim was sent. The message stays ready to claim.");
     expect(fails.log.map((l) => l.split(" ")[1])).toEqual(["paused", "code", "simulate", "paused", "code", "simulate"]);
   });
 
@@ -221,7 +221,7 @@ describe("the claim route for a message", () => {
     const b = body(await ok.get(url));
     expect(b).toMatchObject({ claimed: false, destinationNetwork: 75, chainId: 770101, to: OSTIA });
     expect(ok.log).toEqual([`ostia eth_call - ${OSTIA} ${emergencyStateCall().slice(0, 10)}`, `ostia code ${A(0xbeef)}`, `ostia eth_call ${SIMULATE_FROM} ${OSTIA} ${b.data.slice(0, 10)}`]);
-    expect(await build({ leaf: message(), accepted: false }).get(url)).toMatchObject({ status: 409, body: { code: "message_would_fail", error: "The claim would fail on Ostia, so nothing was sent. The message stays ready to claim." } });
+    expect(await build({ leaf: message(), accepted: false }).get(url)).toMatchObject({ status: 409, body: { code: "message_would_fail", error: "The contract on Ostia turns this message down right now, so a claim would fail. No claim was sent. The message stays ready to claim." } });
     expect(await build({ leaf: message(), hasCode: false }).get(url)).toMatchObject({ status: 409, body: { code: "receiver_has_no_code" } });
     expect(await build({ leaf: message(), paused: true }).get(url)).toMatchObject({ status: 503, body: { code: "bridge_paused", error: "Ostia is not available right now. Nothing is lost." } });
   });

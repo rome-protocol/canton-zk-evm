@@ -151,10 +151,10 @@ export function createSepoliaReader(opts: SepoliaOptions) {
     async paused(): Promise<boolean> {
       return BigInt(await word(opts.bridge, emergencyStateCall(), () => PAUSED_MS)) !== 0n;
     },
-    /** Whether an address has code. */
+    /** Whether an address has code. Only a yes or no is kept, never the bytecode. */
     async hasCode(address: string): Promise<boolean> {
       const a = addr(address).toLowerCase();
-      return (await cached(`code:${a}`, async () => { const r = await rpc("eth_getCode", [a, "latest"]); return r === "reverted" ? "0x" : r.result; }, (x) => (x === "0x" ? NOT_YET_MS : CLAIMED_MS))) !== "0x";
+      return (await cached(`code:${a}`, async () => { const r = await rpc("eth_getCode", [a, "latest"]); return r === "reverted" || r.result === "0x" ? "0x" : "code"; }, (x) => (x === "0x" ? NOT_YET_MS : CLAIMED_MS))) !== "0x";
     },
     /** Whether `data` sent to the bridge from a fixed address that holds nothing would succeed, at the latest block. A revert is false; a node that refuses for another reason is an error. */
     async wouldPass(data: string): Promise<boolean> {
