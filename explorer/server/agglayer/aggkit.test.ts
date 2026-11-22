@@ -95,20 +95,28 @@ describe("the reader of AggKit's bridge service", () => {
     }
   });
 
-  it("lists the newest settlements and says whether the service is healthy and synced", async () => {
+  it("lists the newest settlements and says whether the service is healthy", async () => {
     const r = reader((p) => {
       if (p === "/bridge/v1/settlements") return json({ settlements: [{ tx_hash: H(9), block_number: 12_000, block_timestamp: 1_700_000_300 }, { block_number: 11_990 }, { bad: true }], total: 3 });
-      if (p === "/bridge/v1/sync-status") return json({ l1: { is_synced: true, contract_deposit_count: 3 }, l2: { is_synced: false } });
       if (p === "/health") return json({ status: "ok" });
       return undefined;
     });
     expect(await r.api.settlements()).toEqual([{ txHash: H(9), blockNumber: 12_000, blockTimestamp: 1_700_000_300 }, { txHash: null, blockNumber: 11_990, blockTimestamp: null }]);
-    expect(await r.api.synced()).toBe(false);
     expect(await r.api.healthy()).toBe(true);
-    const ok = reader((p) => (p === "/bridge/v1/sync-status" ? json({ a: { b: { is_synced: true } }, c: { isSynced: true } }) : undefined));
-    expect(await ok.api.synced()).toBe(true);
-    expect(await reader((p) => (p === "/bridge/v1/sync-status" ? json({ nothing: 1 }) : undefined)).api.synced()).toBeNull();
     expect(await reader((p) => (p === "/health" ? json({}, 500) : undefined)).api.healthy()).toBe(false);
+  });
+
+  it("reads the syncers' positions and halts from the sync status, under the service's own field names", async () => {
+    const status = (body: unknown) => reader((p) => (p === "/bridge/v1/sync-status" ? json(body) : undefined)).api.syncStatus();
+    const syncer = (last: number, over: Record<string, unknown> = {}) => ({ is_synced: true, last_processed_block: last, network_block: 1000, is_halted: false, ...over });
+    expect(await status({ l1_info: syncer(5), l2_info: syncer(990), claim_l2_info: { last_processed_block: 985 }, l1_info_tree_info: syncer(6) })).toEqual({ halted: false, ostiaBlock: 985, ostiaHead: 1000 });
+    expect(await status({ l1_info: syncer(5), l2_info: syncer(990, { is_halted: true }), l1_info_tree_info: syncer(6) })).toMatchObject({ halted: true, ostiaBlock: 990 });
+    expect(await status({ l1_info: syncer(5, { is_halted: true }), l2_info: syncer(990) })).toMatchObject({ halted: true });
+    expect(await status({ l2_info: { last_processed_block: "77", network_block: "80" } })).toEqual({ halted: null, ostiaBlock: 77, ostiaHead: 80 });
+    expect(await status({ l2_info: { last_processed_block: -1, network_block: "x" }, l1_info: { is_halted: "no" } })).toEqual({ halted: null, ostiaBlock: null, ostiaHead: null });
+    expect(await status({ nothing: 1 })).toEqual({ halted: null, ostiaBlock: null, ostiaHead: null });
+    expect(await reader(() => json({}, 404)).api.syncStatus()).toBeNull();
+    await expect(status([1])).rejects.toThrow(AggkitError);
   });
 
   it("says in words, never with the address, what went wrong, and does not follow a redirect", async () => {

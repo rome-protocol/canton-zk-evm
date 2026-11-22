@@ -3,6 +3,7 @@
  * endpoint is a secret (it carries a key): it is never logged, put in an error or sent to a browser, so every failure here is said in words that leave it out.
  */
 import { isClaimedCall, proxyAddressCall, rollupIdCall, wrappedAddressCall } from "./abi.ts";
+import { cappedText } from "./capped.ts";
 import type { Secret } from "./secret.ts";
 
 export const SEPOLIA_USER_AGENT = "Rome Protocol rome@romeprotocol.com";
@@ -54,9 +55,7 @@ export function createSepoliaReader(opts: SepoliaOptions) {
     if (!res.ok) { await res.body?.cancel().catch(() => undefined); throw new SepoliaError(`Ethereum Sepolia answered HTTP ${res.status}`); }
     let body: unknown;
     try {
-      const text = await res.text();
-      if (text.length > MAX_BYTES) throw new Error();
-      body = JSON.parse(text);
+      body = JSON.parse(await cappedText(res, MAX_BYTES, () => new Error()));
     } catch {
       throw new SepoliaError("Ethereum Sepolia did not answer with JSON");
     }

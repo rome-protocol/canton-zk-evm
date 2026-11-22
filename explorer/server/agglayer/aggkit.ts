@@ -4,6 +4,8 @@
  * for requests that arrive together.
  */
 
+import { cappedText } from "./capped.ts";
+
 /** The only routes this reader asks. */
 export const AGGKIT_PATHS = {
   bridges: "/bridge/v1/bridges",
@@ -72,33 +74,31 @@ function uint32(n: number, what: string): number {
   return n;
 }
 
-/** The text of a response, read until `MAX_BYTES`; longer is refused. */
-async function textOf(res: Response): Promise<string> {
-  if (!res.body) return "";
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > MAX_BYTES) { await reader.cancel().catch(() => undefined); throw new AggkitError("the bridge service's answer is too long"); }
-    parts.push(value);
-  }
-  return Buffer.concat(parts).toString("utf8");
+/** What the sync status says about the syncers Ostia's bridge depends on. A field the answer does not carry is null. */
+export interface SyncStatus {
+  /** True when a syncer reports it is halted, false when every one that reports says it is not, null when none reports. */
+  halted: boolean | null;
+  /** The lowest last processed Ostia block of the layer-two syncers (`l2_info`, `claim_l2_info`). */
+  ostiaBlock: number | null;
+  /** The head of Ostia as the service itself last saw it (`l2_info.network_block`). */
+  ostiaHead: number | null;
 }
 
-/** Whether a body carries `is_synced` (or `isSynced`) flags anywhere in it, and whether every one of them is true. Null when it carries none. */
-function syncedOf(body: unknown, depth = 0): boolean | null {
-  if (depth > 6) return null;
+const count = (v: unknown): number | null => {
+  const n = typeof v === "string" && /^\d{1,15}$/.test(v) ? Number(v) : v;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null;
+};
+
+function syncStatusOf(body: unknown): SyncStatus {
+  const o = record(body) ?? bad("sync status");
   const flags: boolean[] = [];
-  const o = record(body);
-  if (!o) return null;
-  for (const [k, v] of Object.entries(o)) {
-    if ((k === "is_synced" || k === "isSynced") && typeof v === "boolean") flags.push(v);
-    else if (typeof v === "object") { const inner = syncedOf(v, depth + 1); if (inner !== null) flags.push(inner); }
+  for (const name of ["l1_info", "l2_info", "l1_info_tree_info"]) {
+    const halted = record(o[name])?.["is_halted"];
+    if (typeof halted === "boolean") flags.push(halted);
   }
-  return flags.length ? flags.every(Boolean) : null;
+  const l2 = record(o["l2_info"]), claim = record(o["claim_l2_info"]);
+  const seen = [count(l2?.["last_processed_block"]), count(claim?.["last_processed_block"])].filter((n): n is number => n !== null);
+  return { halted: flags.length ? flags.some(Boolean) : null, ostiaBlock: seen.length ? Math.min(...seen) : null, ostiaHead: count(l2?.["network_block"]) };
 }
 
 type Reply = { found: true; json: unknown } | { found: false };
@@ -121,7 +121,7 @@ export function createAggkitReader(opts: AggkitOptions) {
     }
     if (notReadyIs404 && (res.status === 404 || res.status === 503)) { await res.body?.cancel().catch(() => undefined); return { found: false }; }
     if (!res.ok) { await res.body?.cancel().catch(() => undefined); throw new AggkitError(`the bridge service answered HTTP ${res.status}`); }
-    const text = await textOf(res);
+    const text = await cappedText(res, MAX_BYTES, () => new AggkitError("the bridge service's answer is too long"));
     try {
       return { found: true, json: JSON.parse(text) };
     } catch {
@@ -191,10 +191,10 @@ export function createAggkitReader(opts: AggkitOptions) {
         return [{ txHash: tx, blockNumber: s["block_number"], blockTimestamp: at }];
       });
     },
-    /** True when every sync flag the service reports is true, false when one is not, null when it reports none or has no such route. */
-    async synced(): Promise<boolean | null> {
+    /** The syncers' positions and whether one is halted; null when the service has no such route. */
+    async syncStatus(): Promise<SyncStatus | null> {
       const r = await get(AGGKIT_PATHS.syncStatus, []);
-      return r.found ? syncedOf(r.json) : null;
+      return r.found ? syncStatusOf(r.json) : null;
     },
     /** True when the service's own health route answers with a success. A refusal is false; a service that cannot be reached is an error. */
     async healthy(): Promise<boolean> {

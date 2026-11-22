@@ -19,7 +19,7 @@ describe("the AggLayer bridge's settings", () => {
 
   it("has defaults for the service's address, the networks, the three rows (only Ethereum Sepolia open) and no times and no tokens", () => {
     const s = read(base)!;
-    expect(s).toMatchObject({ aggkitUrl: "http://127.0.0.1:5578", ostiaNetworkId: 75, sepoliaChainId: 11155111, ostiaBridge: OSTIA, sepoliaBridge: SEPOLIA, rollupManager: null, settlementMaxAgeSeconds: 1800 });
+    expect(s).toMatchObject({ aggkitUrl: "http://127.0.0.1:5578", ostiaNetworkId: 75, sepoliaChainId: 11155111, ostiaBridge: OSTIA, sepoliaBridge: SEPOLIA, rollupManager: null, settlementMaxAgeSeconds: 1800, aggkitMaxLagBlocks: 30 });
     expect(s.routes.map((r) => [r.id, r.name, r.open])).toEqual([["sepolia", "Ethereum Sepolia", true], ["hadrian", "Hadrian", false], ["solana-devnet", "Solana devnet", false]]);
     expect(s.routes[0]).toMatchObject({ times: { in: null, out: null }, claimedForYou: { ostia: false, remote: false }, offered: [] });
     expect(s.sepoliaRpc.reveal()).toBe(base.AGGLAYER_SEPOLIA_RPC_URL);
@@ -48,6 +48,14 @@ describe("the AggLayer bridge's settings", () => {
     expect(why({ ...base, AGGLAYER_ROLLUP_MANAGER: "nope" })).toContain("AGGLAYER_ROLLUP_MANAGER");
     expect(why({ ...base, AGGLAYER_OSTIA_NETWORK_ID: "0" })).toContain("AGGLAYER_OSTIA_NETWORK_ID");
     expect(why({ ...base, AGGKIT_BRIDGE_URL: "tcp://x" })).toContain("AGGKIT_BRIDGE_URL");
+  });
+
+  it("takes the bridge service's address only when it is on this machine, over http", () => {
+    for (const url of ["http://127.0.0.1:5578", "http://localhost:5578/", "http://[::1]:5578"]) expect(read({ ...base, AGGKIT_BRIDGE_URL: url }), url).not.toBeNull();
+    expect(read({ ...base, AGGKIT_BRIDGE_URL: "http://localhost:5578/" })!.aggkitUrl).toBe("http://localhost:5578");
+    for (const url of ["http://10.0.0.5:5578", "https://127.0.0.1:5578", "http://aggkit.example.invalid:5578", "http://127.0.0.1.example.invalid:5578", "http://0.0.0.0:5578"]) {
+      expect(why({ ...base, AGGKIT_BRIDGE_URL: url }), url).toContain("AGGKIT_BRIDGE_URL");
+    }
   });
 
   it("lowercases the addresses and takes the tokens from a list", () => {
@@ -84,7 +92,8 @@ describe("the AggLayer bridge's settings", () => {
   });
 
   it("takes whole numbers for the rest", () => {
-    expect(read({ ...base, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS: "60", AGGLAYER_OSTIA_NETWORK_ID: "76", AGGLAYER_SEPOLIA_CHAIN_ID: "5" })).toMatchObject({ settlementMaxAgeSeconds: 60, ostiaNetworkId: 76, sepoliaChainId: 5 });
+    expect(read({ ...base, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS: "60", AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "12", AGGLAYER_OSTIA_NETWORK_ID: "76", AGGLAYER_SEPOLIA_CHAIN_ID: "5" })).toMatchObject({ settlementMaxAgeSeconds: 60, aggkitMaxLagBlocks: 12, ostiaNetworkId: 76, sepoliaChainId: 5 });
+    expect(why({ ...base, AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "0" })).toContain("AGGLAYER_AGGKIT_MAX_LAG_BLOCKS");
     expect(why({ ...base, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS: "0" })).toContain("AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS");
   });
 });

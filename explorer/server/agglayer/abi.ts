@@ -1,5 +1,5 @@
 /**
- * The bridge calls the explorer makes or hands to a wallet, as signatures only. The reads (`isClaimed`, the token copy's address, the rollup lookup) are the whole list of
+ * The bridge calls the explorer makes or hands to a wallet, as signatures only. The reads (`isClaimed`, the deposit count, the token copy's address, the rollup lookup) are the whole list of
  * calls the server sends to a chain for the AggLayer routes; the claim's calldata is built here and sent by the person's wallet.
  */
 import { encodeFunctionData, parseAbi, toEventSelector, type Hex } from "viem";
@@ -8,6 +8,7 @@ export const BRIDGE_EVENT = "BridgeEvent(uint8,uint32,address,uint32,address,uin
 export const BRIDGE_EVENT_TOPIC = toEventSelector(`event ${BRIDGE_EVENT}`);
 
 const bridge = parseAbi([
+  "function depositCount() view returns (uint32)",
   "function isClaimed(uint32 leafIndex, uint32 sourceBridgeNetwork) view returns (bool)",
   "function getTokenWrappedAddress(uint32 originNetwork, address originTokenAddress) view returns (address)",
   "function computeTokenProxyAddress(uint32 originNetwork, address originTokenAddress) view returns (address)",
@@ -16,6 +17,7 @@ const bridge = parseAbi([
 const manager = parseAbi(["function chainIDToRollupID(uint64 chainID) view returns (uint32)"]);
 
 export const isClaimedCall = (leafIndex: number, sourceNetwork: number): Hex => encodeFunctionData({ abi: bridge, functionName: "isClaimed", args: [leafIndex, sourceNetwork] });
+export const depositCountCall = (): Hex => encodeFunctionData({ abi: bridge, functionName: "depositCount" });
 export const wrappedAddressCall = (originNetwork: number, token: string): Hex => encodeFunctionData({ abi: bridge, functionName: "getTokenWrappedAddress", args: [originNetwork, token as Hex] });
 export const proxyAddressCall = (originNetwork: number, token: string): Hex => encodeFunctionData({ abi: bridge, functionName: "computeTokenProxyAddress", args: [originNetwork, token as Hex] });
 export const rollupIdCall = (chainId: number): Hex => encodeFunctionData({ abi: manager, functionName: "chainIDToRollupID", args: [BigInt(chainId)] });

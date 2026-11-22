@@ -31,6 +31,8 @@ export interface AgglayerSettings {
   rollupManager: string | null;
   routes: RouteSetting[];
   settlementMaxAgeSeconds: number;
+  /** How many blocks AggKit's Ostia syncers may trail Ostia's head before the bridge is "not available". */
+  aggkitMaxLagBlocks: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -58,13 +60,14 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     if (!ADDRESS.test(v)) throw fail(`${name} must be 0x and 40 hex digits, not "${v.slice(0, 50)}"`);
     return v.toLowerCase();
   };
-  const httpUrl = (name: string, fallback: string): string => {
+  /** AggKit's bridge service answers only on this machine, so only a loopback address over http is taken. */
+  const loopbackUrl = (name: string, fallback: string): string => {
     const v = env[name]?.trim() || fallback;
     try {
       const u = new URL(v);
-      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
+      if (u.protocol !== "http:" || !["127.0.0.1", "[::1]", "localhost"].includes(u.hostname)) throw new Error();
     } catch {
-      throw fail(`${name} must be an http or https address, not "${v.slice(0, 60)}"`);
+      throw fail(`${name} must be an http address on this machine (127.0.0.1, [::1] or localhost), not "${v.slice(0, 60)}"`);
     }
     return v.replace(/\/+$/, "");
   };
@@ -137,7 +140,7 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
   });
 
   return {
-    aggkitUrl: httpUrl("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"),
+    aggkitUrl: loopbackUrl("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"),
     sepoliaRpc: new Secret(rpc),
     sepoliaChainId: whole("AGGLAYER_SEPOLIA_CHAIN_ID", 11155111, 1),
     ostiaNetworkId: whole("AGGLAYER_OSTIA_NETWORK_ID", 75, 1, 2 ** 32 - 1),
@@ -146,5 +149,6 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     rollupManager: address("AGGLAYER_ROLLUP_MANAGER", false),
     routes,
     settlementMaxAgeSeconds: whole("AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS", 1800, 1),
+    aggkitMaxLagBlocks: whole("AGGLAYER_AGGKIT_MAX_LAG_BLOCKS", 30, 1),
   };
 }

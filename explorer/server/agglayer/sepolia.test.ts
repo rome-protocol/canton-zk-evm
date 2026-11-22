@@ -101,4 +101,14 @@ describe("the reader of Ethereum Sepolia", () => {
     expect(await said(() => new TypeError("x"))).toBe("Ethereum Sepolia cannot be reached");
     expect(await said(() => new Response(JSON.stringify({ error: { message: "x" } })))).toBe("Ethereum Sepolia refused the call");
   });
+
+  it("stops reading an answer past 64 KiB instead of holding it, and says so in words", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(16 * 1024).fill(120);
+    const long = () => new Response(new ReadableStream({ pull(c) { pulled += chunk.length; c.enqueue(chunk); } }));
+    const e = (await reader(long).api.isClaimed(1, 0).catch((x: unknown) => x)) as Error;
+    expect(e).toBeInstanceOf(SepoliaError);
+    expect(e.message).toBe("Ethereum Sepolia did not answer with JSON");
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 2 * chunk.length);
+  });
 });

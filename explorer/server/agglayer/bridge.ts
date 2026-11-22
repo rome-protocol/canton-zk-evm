@@ -9,7 +9,7 @@ import { cached } from "../rest/cache.ts";
 import { REST_FIELDS as F, pick } from "../rest/fields.ts";
 import { BadRequest } from "../rest/paging.ts";
 import type { Reth } from "../reth.ts";
-import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, isClaimedCall, type ClaimArgs } from "./abi.ts";
+import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, depositCountCall, isClaimedCall, type ClaimArgs } from "./abi.ts";
 import { AggkitError, type AggkitReader, type BridgeLeaf } from "./aggkit.ts";
 import { SepoliaError, type SepoliaReader } from "./sepolia.ts";
 import type { AgglayerSettings } from "./settings.ts";
@@ -36,7 +36,17 @@ export interface BridgeDeps {
   now?: () => number;
 }
 
-interface Status { reachable: boolean; synced: boolean | null; attached: boolean | null; lastSettlementAgeSeconds: number | null; available: boolean }
+interface Status {
+  reachable: boolean;
+  halted: boolean | null;
+  /** How many blocks AggKit's Ostia syncers trail Ostia's head; null when either is not known. */
+  lagBlocks: number | null;
+  attached: boolean | null;
+  lastSettlementAgeSeconds: number | null;
+  /** How long the newest Ostia deposit has waited for a settlement after it; null when none waits. */
+  waitingSeconds: number | null;
+  available: boolean;
+}
 
 const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string, headers?: Record<string, string>): Answer => ({ status, body: { error }, ...(headers ? { headers } : {}) });
@@ -51,20 +61,36 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
 
   let statusAt = -Infinity;
   let statusNow: Promise<Status> | null = null;
+
+  /** The time of the newest deposit made on Ostia, in seconds; null when there is none or it cannot be read. */
+  async function newestOstiaDeposit(head: number | null): Promise<number | null> {
+    if (head === null) return null;
+    const out = await reth.callAt(settings.ostiaBridge, depositCountCall(), head);
+    if (!/^0x[0-9a-f]{64}$/.test(out) || BigInt(out) === 0n || BigInt(out) >= 2n ** 32n) return null;
+    return (await aggkit.bridge(settings.ostiaNetworkId, Number(BigInt(out)) - 1))?.blockTimestamp ?? null;
+  }
+
   /** What the service and the chains say about the bridge, read once for a few seconds. Never rejects: a reading that fails is "not reachable" or "not known". */
   function status(): Promise<Status> {
     const t = now();
     if (statusNow && t - statusAt < STATUS_MS) return statusNow;
     statusAt = t;
     statusNow = (async (): Promise<Status> => {
-      const [healthy, synced, settled, attached] = await Promise.allSettled([aggkit.healthy(), aggkit.synced(), aggkit.settlements(), sepolia.attached(chainId)]);
+      const head = await reth.block("latest").then((b) => b?.number ?? null, () => null);
+      const [healthy, sync, settled, attached, newest] = await Promise.allSettled([aggkit.healthy(), aggkit.syncStatus(), aggkit.settlements(), sepolia.attached(chainId), newestOstiaDeposit(head)]);
       const reachable = healthy.status === "fulfilled" && healthy.value;
-      const s = synced.status === "fulfilled" ? synced.value : null;
+      const sy = sync.status === "fulfilled" ? sync.value : null;
       const a = attached.status === "fulfilled" ? attached.value : null;
       const last = settled.status === "fulfilled" ? settled.value.find((x) => x.blockTimestamp !== null) : undefined;
+      const lastAt = last?.blockTimestamp ?? null;
+      const sent = newest.status === "fulfilled" ? newest.value : null;
+      const ostia = head ?? sy?.ostiaHead ?? null;
+      const lagBlocks = ostia !== null && sy?.ostiaBlock != null ? Math.max(0, ostia - sy.ostiaBlock) : null;
+      const halted = sy?.halted ?? null;
       return {
-        reachable, synced: s, attached: a, lastSettlementAgeSeconds: last ? Math.max(0, Math.floor(t / 1000 - last.blockTimestamp!)) : null,
-        available: reachable && s !== false && a !== false,
+        reachable, halted, lagBlocks, attached: a, lastSettlementAgeSeconds: lastAt === null ? null : Math.max(0, Math.floor(t / 1000 - lastAt)),
+        waitingSeconds: sent !== null && (lastAt === null || sent > lastAt) ? Math.max(0, Math.floor(t / 1000 - sent)) : null,
+        available: reachable && a !== false && halted !== true && (lagBlocks === null || lagBlocks <= settings.aggkitMaxLagBlocks),
       };
     })();
     return statusNow;
@@ -75,11 +101,11 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     const routes = settings.routes.map((r) => {
       if (!r.open) return pick(r, F.agglayerRouteClosed);
       const assets = r.offered.map((t) => pick(t, F.agglayerToken));
-      const times = { in: range(r.times.in), out: range(r.times.out) };
+      const times = pick({ in: range(r.times.in), out: range(r.times.out) }, F.agglayerTimes);
       return pick({ id: r.id, name: r.name, open: true, networkId: ETHEREUM, chainId: settings.sepoliaChainId, bridge: settings.sepoliaBridge, available: st.available, assets, times, claimedForYou: pick(r.claimedForYou, F.agglayerClaimedForYou) }, F.agglayerRoute);
     });
     return cached(ok(pick({
-      on: true, chain: pick({ chainId, name: chainName, networkId: settings.ostiaNetworkId, bridge: settings.ostiaBridge }, F.agglayerChain), bridgeEvent: { signature: BRIDGE_EVENT, topic0: BRIDGE_EVENT_TOPIC }, routes,
+      on: true, chain: pick({ chainId, name: chainName, networkId: settings.ostiaNetworkId, bridge: settings.ostiaBridge }, F.agglayerChain), bridgeEvent: pick({ signature: BRIDGE_EVENT, topic0: BRIDGE_EVENT_TOPIC }, F.agglayerBridgeEvent), routes,
     }, F.agglayerSetup)), "composite");
   }
 
@@ -95,11 +121,11 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     return { network, count };
   }
 
-  /** Whether the destination has paid the deposit out; null when that cannot be read now. */
-  async function claimedOn(destination: number, source: number, count: number): Promise<boolean | null> {
+  /** Whether the destination has paid the deposit out, as of Ostia's `at` block where that is Ostia; null when that cannot be read now. */
+  async function claimedOn(destination: number, source: number, count: number, at: "finalized" | "latest"): Promise<boolean | null> {
     try {
       if (destination === ETHEREUM) return await sepolia.isClaimed(count, source);
-      const head = (await reth.block("finalized"))?.number;
+      const head = (await reth.block(at))?.number;
       if (head === undefined) return null;
       const out = await reth.callAt(settings.ostiaBridge, isClaimedCall(count, source), head);
       if (!/^0x[0-9a-f]{64}$/.test(out)) return null;
@@ -112,11 +138,14 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
 
   type Look =
     | { stage: "unknown" }
-    | { stage: "sent" | "confirmed" | "ready" | "claimed"; leaf: BridgeLeaf; confirmedAt: number | null; readyAt: number | null; index?: number; proof?: ClaimArgsParts };
+    | { stage: "sent" | "confirmed" | "ready" | "claimed"; leaf: BridgeLeaf; confirmedAt: number | null; readyAt: number | null; proof?: ClaimArgsParts; unreadable?: true };
   interface ClaimArgsParts { l1InfoTreeIndex: number; proofLocal: string[]; proofRollup: string[]; mainnetExitRoot: string; rollupExitRoot: string }
 
-  /** Where a deposit is. A deposit that is not between Ethereum and Ostia, or is a message, is not served. */
-  async function look(network: number, count: number): Promise<Look | "not served"> {
+  /**
+   * Where a deposit is. A deposit that is not between Ethereum and Ostia, or is a message, is not served. `forClaim` is for the route that hands out calldata: a deposit into Ostia
+   * counts as paid as soon as Ostia's latest block shows it, not only its finalized one, so a claim already sent is not offered again, and a read that fails is `unreadable`.
+   */
+  async function look(network: number, count: number, forClaim = false): Promise<Look | "not served"> {
     const leaf = await aggkit.bridge(network, count);
     if (!leaf) return { stage: "unknown" };
     const other = network === ETHEREUM ? settings.ostiaNetworkId : ETHEREUM;
@@ -130,8 +159,9 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     if (!taken || !proof) return { stage: "confirmed", leaf, confirmedAt, readyAt: null };
     const readyAt = taken.injectedAt ?? taken.timestamp;
     const parts = { l1InfoTreeIndex: taken.index, proofLocal: proof.proofLocal, proofRollup: proof.proofRollup, mainnetExitRoot: proof.mainnetExitRoot, rollupExitRoot: proof.rollupExitRoot };
-    const claimed = await claimedOn(other, network, count);
-    return { stage: claimed ? "claimed" : "ready", leaf, confirmedAt, readyAt, proof: parts };
+    let claimed = await claimedOn(other, network, count, "finalized");
+    if (forClaim && claimed === false && other !== ETHEREUM) claimed = await claimedOn(other, network, count, "latest");
+    return { stage: claimed ? "claimed" : "ready", leaf, confirmedAt, readyAt, proof: parts, ...(claimed === null ? { unreadable: true as const } : {}) };
   }
 
   async function deposit(q: URLSearchParams): Promise<Answer> {
@@ -148,9 +178,10 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
 
   async function claim(q: URLSearchParams): Promise<Answer> {
     const { network, count } = asked(q);
-    const l = await look(network, count);
+    const l = await look(network, count, true);
     if (l === "not served") return fail(404, NOT_SERVED);
     if (l.stage === "unknown" || !("proof" in l) || !l.proof) return fail(404, NOT_READY);
+    if (l.unreadable) return fail(503, UNREADABLE);
     const { leaf, proof } = l;
     const destination = leaf.destinationNetwork;
     const base = { network, count, destinationNetwork: destination, chainId: chainOn(destination), to: bridgeOn(destination), l1InfoTreeIndex: proof.l1InfoTreeIndex };
@@ -187,18 +218,22 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     };
   };
 
-  /** The `agglayer` health row: degraded, never down, when the service is not reachable or healthy or not synced, when Ostia is not attached, or when the last settlement is old. */
+  /**
+   * The `agglayer` health row: degraded, never down, when the service is not reachable or healthy, a syncer is halted, its Ostia syncers trail Ostia's head by more than the limit,
+   * Ostia is not attached, or an Ostia deposit has waited past the limit for a settlement. A quiet bridge makes no certificate, so an old last settlement is no fault by itself.
+   */
   async function healthRow(): Promise<HealthRow> {
     const st = await status();
     const why: string[] = [];
     if (!st.reachable) why.push("the bridge service cannot be read or says it is not healthy");
-    else if (st.synced === false) why.push("the bridge service says it is not synced");
+    if (st.halted === true) why.push("the bridge service says a syncer is halted");
+    if (st.lagBlocks !== null && st.lagBlocks > settings.aggkitMaxLagBlocks) why.push(`the bridge service is ${st.lagBlocks} blocks behind Ostia (limit ${settings.aggkitMaxLagBlocks})`);
     if (st.attached === false) why.push("Ostia is not attached to AggLayer");
-    if (st.lastSettlementAgeSeconds !== null && st.lastSettlementAgeSeconds > settings.settlementMaxAgeSeconds) why.push(`the last settlement is ${st.lastSettlementAgeSeconds} s old (limit ${settings.settlementMaxAgeSeconds} s)`);
+    if (st.waitingSeconds !== null && st.waitingSeconds > settings.settlementMaxAgeSeconds) why.push(`a deposit on Ostia has waited ${st.waitingSeconds} s for a settlement (limit ${settings.settlementMaxAgeSeconds} s)`);
     return {
       id: "agglayer", status: why.length ? "degraded" : "ok",
-      value: { aggkit: st.reachable ? "ok" : "unavailable", synced: st.synced, attached: st.attached, lastSettlementAgeSeconds: st.lastSettlementAgeSeconds },
-      threshold: { settlementMaxAgeSeconds: settings.settlementMaxAgeSeconds }, detail: why.join("; ") || null,
+      value: { aggkit: st.reachable ? "ok" : "unavailable", halted: st.halted, lagBlocks: st.lagBlocks, attached: st.attached, lastSettlementAgeSeconds: st.lastSettlementAgeSeconds, waitingSeconds: st.waitingSeconds },
+      threshold: { aggkitMaxLagBlocks: settings.aggkitMaxLagBlocks, settlementMaxAgeSeconds: settings.settlementMaxAgeSeconds }, detail: why.join("; ") || null,
     };
   }
 

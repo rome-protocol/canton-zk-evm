@@ -18,7 +18,7 @@ const settingsText = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const on = { ...env, AGGLAYER_BRIDGE: "1", AGGLAYER_SEPOLIA_RPC_URL: "https://sepolia.example.invalid/hidden-part-1234", AGGLAYER_OSTIA_BRIDGE: OSTIA, AGGLAYER_SEPOLIA_BRIDGE: SEPOLIA };
 const unreachable = new Proxy({}, { get: (_t, name) => () => { throw new Error(`the database was read (${String(name)})`); } }) as unknown as Pool;
 
-const aggkit = { bridge: async () => undefined, l1InfoTreeIndex: async () => undefined, injectedLeaf: async () => undefined, claimProof: async () => undefined, settlements: async () => [], synced: async () => null, healthy: async () => true } as unknown as AggkitReader;
+const aggkit = { bridge: async () => undefined, l1InfoTreeIndex: async () => undefined, injectedLeaf: async () => undefined, claimProof: async () => undefined, settlements: async () => [], syncStatus: async () => null, healthy: async () => true } as unknown as AggkitReader;
 const sepolia = { isClaimed: async () => false, attached: async () => true } as unknown as SepoliaReader;
 const reth = { block: async () => ({ number: 5 }), callAt: async () => "0x" + "0".repeat(64) };
 

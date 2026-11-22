@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BRIDGE_EVENT_TOPIC, claimAssetCall, isClaimedCall, rollupIdCall } from "./abi.ts";
+import { BRIDGE_EVENT_TOPIC, claimAssetCall, depositCountCall, isClaimedCall, rollupIdCall } from "./abi.ts";
 
 describe("the bridge's calls", () => {
   it("have the selectors and the event topic the bridge contract has", () => {
@@ -7,6 +7,7 @@ describe("the bridge's calls", () => {
     expect(isClaimedCall(1, 0).slice(0, 10)).toBe("0xcc461632");
     expect(isClaimedCall(1, 0)).toHaveLength(2 + 8 + 128);
     expect(rollupIdCall(770101)).toHaveLength(2 + 8 + 64);
+    expect(depositCountCall()).toBe("0x2dfdf0b5");
   });
 
   it("builds claimAsset's calldata from 32 and 32 proof words", () => {
