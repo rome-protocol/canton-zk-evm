@@ -124,7 +124,8 @@ describe.skipIf(!dist)("the Bridge page's Other chains tab, in a browser", () =>
   it("has no tab and the Canton page as it was when the server's switch is off", async () => {
     world.on = false;
     const page = await open("/bridge");
-    await page.getByText("The bridge is not set up on this site yet.").waitFor();
+    await page.getByRole("heading", { level: 1, name: "Bridge" }).waitFor();
+    await page.getByRole("tab", { name: "Move" }).waitFor();   // the Canton page's own tabs: the build has the Canton settings
     await until("the setup to be read", () => world.setupReads > 0);
     await page.waitForTimeout(500);
     expect(await page.getByRole("tab", { name: "Other chains" }).count()).toBe(0);
