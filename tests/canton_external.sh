@@ -7,7 +7,9 @@
 #   - the demo's Canton helpers (demo/canton.py, CZE_CANTON=external) upload the test token's DAR, make its rules and U's holding, and register a wrapped token
 #     for it (one stand-in reth says the gateway made the token), all with the users' tokens; a second run of each changes nothing;
 #   - one Advance commits, against one stand-in sidecar: this participant is every party's host, so its sidecar is the only confirmer, and Canton asks it
-#     both when the block is submitted and when the block is validated; a refused block changes nothing.
+#     both when the block is submitted and when the block is validated; a refused block changes nothing;
+#   - the custody rules of Canton Coin, on the test token (tests/custody_cases.py): a withdrawal naming 50 inputs commits under the request limit, and custody read
+#     at the offsets of a withdrawal and of a transfer with change differs by exactly the amount.
 # The participant's Ledger API has a login here, as the DevNet's has: HS256 tokens (audience https://canton.network.global, sub = the user's id) from a
 # secret made for this run, written to a file of this run and never to the repository. Every call without a token is refused.
 # Needs Java 21 and network access to the registry in PINS. No GPU, no reth, no ZisK.
@@ -38,8 +40,11 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 
 # The login: a secret for this run, in a configuration file and nowhere else; one token file per role.
 SECRET=$(openssl rand -hex 32)
+# The most one request to the Ledger API may be, set here so that the custody cases below know it (4 MiB, set for this run so that the custody cases below can print it).
+MAX_INBOUND=4194304; export CZE_MAX_INBOUND=$MAX_INBOUND
 cat > "$WORK/auth.conf" <<CONF
 canton.participants.operator.ledger-api.auth-services = [{ type = unsafe-jwt-hmac-256, secret = "$SECRET", target-audience = "https://canton.network.global" }]
+canton.participants.operator.ledger-api.max-inbound-message-size = $MAX_INBOUND
 CONF
 # The participant refuses a token with a long lifetime (as the DevNet's does), so a token lives two minutes and is written again, in place, before each phase.
 mint() {
@@ -160,4 +165,16 @@ done
 # A third run, with the chain at block 1: it finds the chain, and does not move it back.
 third=$(setup 2>/dev/null) || fail "the third setup failed"
 jq -e '.created == false and .headNumber == "1"' <<<"$third" >/dev/null || fail "the third setup did not find the chain at block 1: $third"
+
+# The custody rules, on this participant (tests/custody_cases.py; the builder's own code, and the builder's dependency in PYTHON).
+# A: a withdrawal that names 50 gateway holdings goes through the builder's Advance, whose sidecar answers match, so it commits under the request limit.
+# A reads the gateway's custody at the Advance's offset less one and at it, B reads U's at the acceptance's offsets; each check says ok for the amount and stopped for one unit more.
+cases() { mint; CZE_CANTON=external "${PYTHON:-python3}" "$ROOT/tests/custody_cases.py" "$@"; }
+BLOCK2="ok $(printf 'cd%.0s' $(seq 32)) $(printf 'ef%.0s' $(seq 32)) $(printf 'cc%.0s' $(seq 32)) $(printf 'bb%.0s' $(seq 32)) 2 $(printf '55%.0s' $(seq 32)) 1700000001 30000000 0 0"
+cases a-setup || fail "case A: the 50 holdings were not made"
+echo "$BLOCK2" > "$FAKE_ANSWER.verify"; echo "$BLOCK2" > "$FAKE_ANSWER.verify2"
+echo "ok $(printf '55%.0s' $(seq 32)) 2 ${GATEWAY_ADDRESS#0x} 1" > "$FAKE_ANSWER.legs"
+cases a-advance || fail "case A: the Advance with 50 inputs"
+cases b || fail "case B: the two-offset custody read"
+
 echo "canton external participant test passed"
