@@ -119,6 +119,15 @@ describe("the reader of AggKit's bridge service", () => {
     await expect(status([1])).rejects.toThrow(AggkitError);
   });
 
+  it("says in words, as an AggkitError, when the answer's body stalls or breaks after its headers came", async () => {
+    const broken = () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("{")); c.error(new TypeError("terminated")); } }), { status: 200 });
+    const e = await reader(broken).api.bridge(0, 1).catch((x: unknown) => x as Error);
+    expect(e).toBeInstanceOf(AggkitError);
+    expect((e as Error).message).toBe("the bridge service's answer could not be read");
+    const stalled = createAggkitReader({ baseUrl: BASE, timeoutMs: 20, fetch: (async (_u: unknown, init?: RequestInit) => new Response(new ReadableStream({ start(c) { init?.signal?.addEventListener("abort", () => c.error(init.signal!.reason)); } }), { status: 200 })) as unknown as typeof fetch });
+    expect(await stalled.bridge(0, 1).catch((x: unknown) => x)).toBeInstanceOf(AggkitError);
+  });
+
   it("says in words, never with the address, what went wrong, and does not follow a redirect", async () => {
     const down = createAggkitReader({ baseUrl: BASE, fetch: (async () => { throw new TypeError(`fetch failed ${BASE}`); }) as unknown as typeof fetch });
     const e = await down.bridge(0, 1).catch((x: unknown) => x as Error);

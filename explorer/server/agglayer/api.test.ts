@@ -9,7 +9,7 @@ import { DOCS } from "../rest/openapi.ts";
 import { REST_FIELDS as F } from "../rest/fields.ts";
 import { specOf } from "../health.ts";
 import { AGGLAYER_PATHS, createAgglayerBridge } from "./bridge.ts";
-import type { AggkitReader } from "./aggkit.ts";
+import { createAggkitReader, type AggkitReader } from "./aggkit.ts";
 import type { SepoliaReader } from "./sepolia.ts";
 
 const OSTIA = "0x53a0ce7242b616fe706b03b464e5c32ed16e0998", SEPOLIA = "0x528e26b25a34a4a5d0dbda1d57d318153d2ed582";
@@ -30,16 +30,23 @@ function make(withBridge: boolean) {
 const body = (a: Answer) => a.body as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 describe("the AggLayer routes in the API", () => {
-  it("are registered and described in the API description, on or off", async () => {
-    for (const w of [false, true]) {
-      const api = make(w);
-      for (const p of AGGLAYER_PATHS) { expect(api.routes).toContain(p); expect(DOCS[p]).toBeDefined(); }
-      const doc = body(await api("GET", "/api/openapi.json"));
-      expect(Object.keys(doc.paths)).toEqual(expect.arrayContaining([...AGGLAYER_PATHS]));
-      const props = doc.paths["/api/agglayer/claim"].get.responses["200"].content["application/json"].schema.properties as Record<string, unknown>;
-      expect(Object.keys(props).sort()).toEqual([...F.agglayerClaim].sort());
-      expect(doc.paths["/api/agglayer/deposit"].get.parameters.map((p: { name: string }) => p.name)).toEqual(["network", "count"]);
-    }
+  it("are registered and described in the API description while the switch is on", async () => {
+    const api = make(true);
+    for (const p of AGGLAYER_PATHS) { expect(api.routes).toContain(p); expect(DOCS[p]).toBeDefined(); }
+    const doc = body(await api("GET", "/api/openapi.json"));
+    expect(Object.keys(doc.paths)).toEqual(expect.arrayContaining([...AGGLAYER_PATHS]));
+    const props = doc.paths["/api/agglayer/claim"].get.responses["200"].content["application/json"].schema.properties as Record<string, unknown>;
+    expect(Object.keys(props).sort()).toEqual([...F.agglayerClaim].sort());
+    expect(doc.paths["/api/agglayer/deposit"].get.parameters.map((p: { name: string }) => p.name)).toEqual(["network", "count"]);
+  });
+
+  it("are not in the route list or the API description while the switch is off, and still answer", async () => {
+    const api = make(false);
+    for (const p of AGGLAYER_PATHS) expect(api.routes).not.toContain(p);
+    const doc = body(await api("GET", "/api/openapi.json"));
+    expect(Object.keys(doc.paths).filter((p) => p.includes("agglayer"))).toEqual([]);
+    expect(JSON.stringify(doc)).not.toMatch(/agglayer/i);
+    expect(await api("GET", "/api/agglayer/setup")).toMatchObject({ status: 200, body: { on: false } });
   });
 
   it("answer {on: false} for the setup and 404 for the others while the switch is off (the default)", async () => {
@@ -60,6 +67,16 @@ describe("the AggLayer routes in the API", () => {
     expect((await api("POST", "/api/agglayer/setup")).status).toBe(405);
     expect(body(await api("GET", "/api/agglayer/deposit?network=0&count=1", undefined, "1.1.1.1"))).toMatchObject({ stage: "unknown", leaf: null });
     expect((await api("GET", "/api/agglayer/deposit?network=7&count=1", undefined, "1.1.1.1")).status).toBe(400);
+  });
+});
+
+describe("a bridge service answer that breaks mid-body", () => {
+  it("is a 503 in words on the deposit and claim routes, never a 500", async () => {
+    const broken = (async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("{")); c.error(new TypeError("terminated")); } }), { status: 200 })) as unknown as typeof fetch;
+    const config = loadConfig(on, () => settingsText);
+    const bridge = createAgglayerBridge({ settings: config.agglayer!, chainId: config.chainId, chainName: config.chainName, aggkit: createAggkitReader({ baseUrl: "http://127.0.0.1:5578", fetch: broken }), sepolia, reth: reth as never });
+    const api = createApi({ config, reth: reth as never, ledger: {} as never, chain: createChainDb(unreachable), agglayer: bridge });
+    for (const p of ["deposit", "claim"]) expect(await api("GET", `/api/agglayer/${p}?network=0&count=1`, undefined, "1.1.1.1")).toMatchObject({ status: 503, body: { error: "The bridge cannot be read right now." } });
   });
 });
 

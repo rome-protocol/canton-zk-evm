@@ -336,8 +336,8 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ...(verify ? ([["/api/verify/{guid}", (guid: string) => verification(guid)]] as const) : []),
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
-  // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...AGGLAYER_PATHS, ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  // Every route this API answers (the AggLayer ones only while the bridge is on, so the description shows nothing of a switch that is off). `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...(agglayer ? AGGLAYER_PATHS : []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
   const api: Api = async (method, target, body, ip, cookie, site, mode) => {

@@ -39,7 +39,7 @@ export interface BridgeDeps {
 interface Status {
   reachable: boolean;
   halted: boolean | null;
-  /** How many blocks AggKit's Ostia syncers trail Ostia's head; null when either is not known. */
+  /** How many blocks AggKit's Ostia syncers trail Ostia's finalized block; null when either is not known. */
   lagBlocks: number | null;
   attached: boolean | null;
   lastSettlementAgeSeconds: number | null;
@@ -76,7 +76,8 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     if (statusNow && t - statusAt < STATUS_MS) return statusNow;
     statusAt = t;
     statusNow = (async (): Promise<Status> => {
-      const head = await reth.block("latest").then((b) => b?.number ?? null, () => null);
+      const number = (id: "latest" | "finalized") => reth.block(id).then((b) => b?.number ?? null, () => null);
+      const [head, finalized] = await Promise.all([number("latest"), number("finalized")]);
       const [healthy, sync, settled, attached, newest] = await Promise.allSettled([aggkit.healthy(), aggkit.syncStatus(), aggkit.settlements(), sepolia.attached(chainId), newestOstiaDeposit(head)]);
       const reachable = healthy.status === "fulfilled" && healthy.value;
       const sy = sync.status === "fulfilled" ? sync.value : null;
@@ -84,7 +85,8 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
       const last = settled.status === "fulfilled" ? settled.value.find((x) => x.blockTimestamp !== null) : undefined;
       const lastAt = last?.blockTimestamp ?? null;
       const sent = newest.status === "fulfilled" ? newest.value : null;
-      const ostia = head ?? sy?.ostiaHead ?? null;
+      // The bridge service's Ostia syncers follow the finalized block, so that is what their lag is measured against.
+      const ostia = finalized ?? sy?.ostiaHead ?? null;
       const lagBlocks = ostia !== null && sy?.ostiaBlock != null ? Math.max(0, ostia - sy.ostiaBlock) : null;
       const halted = sy?.halted ?? null;
       return {
@@ -219,7 +221,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
   };
 
   /**
-   * The `agglayer` health row: degraded, never down, when the service is not reachable or healthy, a syncer is halted, its Ostia syncers trail Ostia's head by more than the limit,
+   * The `agglayer` health row: degraded, never down, when the service is not reachable or healthy, a syncer is halted, its Ostia syncers trail Ostia's finalized block by more than the limit,
    * Ostia is not attached, or an Ostia deposit has waited past the limit for a settlement. A quiet bridge makes no certificate, so an old last settlement is no fault by itself.
    */
   async function healthRow(): Promise<HealthRow> {

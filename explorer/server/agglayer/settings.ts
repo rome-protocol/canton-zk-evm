@@ -31,7 +31,7 @@ export interface AgglayerSettings {
   rollupManager: string | null;
   routes: RouteSetting[];
   settlementMaxAgeSeconds: number;
-  /** How many blocks AggKit's Ostia syncers may trail Ostia's head before the bridge is "not available". */
+  /** How many blocks AggKit's Ostia syncers may trail Ostia's finalized block before the bridge is "not available". */
   aggkitMaxLagBlocks: number;
 }
 

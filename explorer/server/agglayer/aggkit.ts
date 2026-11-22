@@ -121,7 +121,12 @@ export function createAggkitReader(opts: AggkitOptions) {
     }
     if (notReadyIs404 && (res.status === 404 || res.status === 503)) { await res.body?.cancel().catch(() => undefined); return { found: false }; }
     if (!res.ok) { await res.body?.cancel().catch(() => undefined); throw new AggkitError(`the bridge service answered HTTP ${res.status}`); }
-    const text = await cappedText(res, MAX_BYTES, () => new AggkitError("the bridge service's answer is too long"));
+    let text: string;
+    try {
+      text = await cappedText(res, MAX_BYTES, () => new AggkitError("the bridge service's answer is too long"));
+    } catch (e) {
+      throw e instanceof AggkitError ? e : new AggkitError("the bridge service's answer could not be read");
+    }
     try {
       return { found: true, json: JSON.parse(text) };
     } catch {

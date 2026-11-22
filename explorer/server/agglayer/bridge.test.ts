@@ -22,8 +22,8 @@ interface World {
   healthy?: boolean; sync?: Partial<SyncStatus> | null; settlements?: { blockTimestamp: number | null }[]; attached?: boolean | null; claimedOnSepolia?: boolean; down?: boolean; sepoliaDown?: boolean;
   /** Whether Ostia's bridge has paid the deposit out as of its finalized block, and as of its latest block (when not given, the same as finalized). */
   ostiaClaimed?: boolean; ostiaClaimedLatest?: boolean; ostiaReadFails?: boolean;
-  /** Ostia's head, and the deposits made on Ostia: how many, and the newest one (the bridge service's record of it). */
-  head?: number | null; ostiaDeposits?: number; newestOstia?: Partial<BridgeLeaf>;
+  /** Ostia's latest and finalized blocks (the finalized one is 500 when not given; null is a read that fails), and the deposits made on Ostia: how many, and the newest one (the bridge service's record of it). */
+  head?: number | null; finalized?: number | null; ostiaDeposits?: number; newestOstia?: Partial<BridgeLeaf>;
 }
 function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_700_000_500_000 }) {
   const calls: string[] = [];
@@ -48,7 +48,10 @@ function build(w: World = {}, extra: Record<string, string> = {}, now = { t: 1_7
     copyOf: async () => ({ address: A(1), exists: false }),
   } as unknown as SepoliaReader;
   const reth = {
-    block: async (id: string) => (id !== "finalized" && w.head === null ? null : { number: id === "finalized" ? 500 : w.head ?? 520 }),
+    block: async (id: string) => {
+      const n = id === "finalized" ? (w.finalized === undefined ? 500 : w.finalized) : w.head === undefined ? 520 : w.head;
+      return n === null ? null : { number: n };
+    },
     callAt: async (to: string, input: string, block: number) => {
       if (input === depositCountCall()) return H(w.ostiaDeposits ?? 0);
       calls.push(`ostia ${to} ${input} ${block}`);
@@ -108,21 +111,28 @@ describe("the setup", () => {
     expect(await avail({ down: true })).toBe(false);
     expect(await avail({ healthy: false })).toBe(false);
     expect(await avail({ sync: { halted: true } })).toBe(false);
-    expect(await avail({ head: 600, sync: { ostiaBlock: 569 } })).toBe(false);
+    expect(await avail({ finalized: 600, sync: { ostiaBlock: 569 } })).toBe(false);
     expect(await avail({ attached: false })).toBe(false);
     expect(await avail({ sync: null, attached: null })).toBe(true);
     expect(await avail({ sync: {} })).toBe(true);
-    expect(await avail({ head: 600, sync: { halted: false, ostiaBlock: 570 }, attached: true })).toBe(true);
-    expect(await avail({ head: 600, sync: { ostiaBlock: 700 } })).toBe(true);
+    expect(await avail({ finalized: 600, sync: { halted: false, ostiaBlock: 570 }, attached: true })).toBe(true);
+    expect(await avail({ finalized: 600, sync: { ostiaBlock: 700 } })).toBe(true);
   });
 
-  it("takes the lag limit from the settings, and Ostia's head from the bridge service when reth gives none", async () => {
+  it("takes the lag limit from the settings, and Ostia's head from the bridge service when reth gives no finalized block", async () => {
     const lag = async (w: World, extra: Record<string, string> = {}) => body(await build(w, extra).get("/api/agglayer/setup")).routes[0].available;
-    expect(await lag({ head: 600, sync: { ostiaBlock: 570 } }, { AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "10" })).toBe(false);
-    expect(await lag({ head: 600, sync: { ostiaBlock: 590 } }, { AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "10" })).toBe(true);
-    expect(await lag({ head: null, sync: { ostiaBlock: 100, ostiaHead: 200 } })).toBe(false);
-    expect(await lag({ head: null, sync: { ostiaBlock: 190, ostiaHead: 200 } })).toBe(true);
-    expect(await lag({ head: null, sync: { ostiaBlock: 100 } })).toBe(true);
+    expect(await lag({ finalized: 600, sync: { ostiaBlock: 570 } }, { AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "10" })).toBe(false);
+    expect(await lag({ finalized: 600, sync: { ostiaBlock: 590 } }, { AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "10" })).toBe(true);
+    expect(await lag({ finalized: null, sync: { ostiaBlock: 100, ostiaHead: 200 } })).toBe(false);
+    expect(await lag({ finalized: null, sync: { ostiaBlock: 190, ostiaHead: 200 } })).toBe(true);
+    expect(await lag({ finalized: null, sync: { ostiaBlock: 100 } })).toBe(true);
+  });
+
+  it("measures the lag against Ostia's finalized block, which is what the bridge service's Ostia syncers follow, not its latest", async () => {
+    const lag = async (w: World) => body(await build(w).get("/api/agglayer/setup")).routes[0].available;
+    expect(await lag({ head: 700, finalized: 600, sync: { ostiaBlock: 590 } })).toBe(true);
+    expect(await lag({ head: 700, finalized: 600, sync: { ostiaBlock: 560 } })).toBe(false);
+    expect(await lag({ head: null, finalized: 600, sync: { ostiaBlock: 590 } })).toBe(true);
   });
 
   it("reads the service once for a few seconds", async () => {
@@ -277,7 +287,7 @@ describe("the health row", () => {
   const T = 1_700_000_500;
   const row = async (w: World, extra: Record<string, string> = {}) => build(w, extra, { t: T * 1000 }).bridge.healthRow();
   it("is ok when the service is healthy and keeps up, Ostia is attached and nothing waits too long, with the lag and the settlement age in the value", async () => {
-    const r = await row({ head: 600, sync: { halted: false, ostiaBlock: 595, ostiaHead: 600 }, settlements: [{ blockTimestamp: T - 100 }] });
+    const r = await row({ finalized: 600, sync: { halted: false, ostiaBlock: 595, ostiaHead: 600 }, settlements: [{ blockTimestamp: T - 100 }] });
     expect(r).toMatchObject({
       id: "agglayer", status: "ok", value: { aggkit: "ok", halted: false, lagBlocks: 5, attached: true, lastSettlementAgeSeconds: 100, waitingSeconds: null },
       threshold: { aggkitMaxLagBlocks: 30, settlementMaxAgeSeconds: 1800 }, detail: null,
@@ -295,7 +305,7 @@ describe("the health row", () => {
   it("is degraded, never down, and says why in words", async () => {
     expect(await row({ down: true })).toMatchObject({ status: "degraded", detail: "the bridge service cannot be read or says it is not healthy" });
     expect(await row({ sync: { halted: true } })).toMatchObject({ status: "degraded", detail: "the bridge service says a syncer is halted" });
-    expect(await row({ head: 600, sync: { ostiaBlock: 400 } })).toMatchObject({ status: "degraded", value: { lagBlocks: 200 }, detail: "the bridge service is 200 blocks behind Ostia (limit 30)" });
+    expect(await row({ finalized: 600, sync: { ostiaBlock: 400 } })).toMatchObject({ status: "degraded", value: { lagBlocks: 200 }, detail: "the bridge service is 200 blocks behind Ostia (limit 30)" });
     expect(await row({ attached: false })).toMatchObject({ status: "degraded", detail: "Ostia is not attached to AggLayer" });
     expect((await row({ down: true, sync: { halted: true }, attached: false })).status).toBe("degraded");
   });
