@@ -54,6 +54,19 @@ describe("the address on Ethereum Sepolia", () => {
   });
 });
 
+describe("the words about the cap when no cap is set", () => {
+  const NO_CAP = 2n ** 256n - 1n;
+  it("say nothing, whether or not some is out", () => {
+    for (const lockRoom of [NO_CAP, NO_CAP - cc(1.3)]) expect(capWords(asset({ lockCap: NO_CAP, lockRoom }))).toBeNull();
+  });
+  it("take an amount that is under the room", () => {
+    expect(checkAmount(asset({ lockCap: NO_CAP, lockRoom: NO_CAP - cc(1.3) }), 1n, "5")).toMatchObject({ state: "ok" });
+  });
+  it("still show a real cap, even a very large one", () => {
+    expect(capWords(asset({ lockCap: 2n ** 255n - 1n, lockRoom: 2n ** 255n - 1n - cc(1) }))).toContain("is out");
+  });
+});
+
 describe("the words about the cap", () => {
   it("name AggLayer chains and never say \"other chains\"", () => {
     const lines = [capWords(asset({ lockRoom: 0n })), capWords(asset({ lockRoom: cc(2.5) })), overCapWords(asset())];
