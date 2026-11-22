@@ -11,7 +11,7 @@ import { injected, noWalletWords, useWallet } from "../wallet.ts";
 import { plainText } from "../bridge/words.ts";
 import type { LocksLike } from "../bridge/moves/moves.ts";
 import { keptTransfers, transferStore, type Transfer } from "../bridge/other/record.ts";
-import { readSetup, type OpenRow, type Setup } from "../bridge/other/setup.ts";
+import { isHandoff, isMoved, readSetup, type Setup } from "../bridge/other/setup.ts";
 import { readRouteSetup, ROUTE_OFF, type RouteSetup } from "../bridge/route/setup.ts";
 import { adopt, advance, giveUp, look, readStop, resendSend, signClaim, startSend, sides, Stop, askingOf, watchAsking, type Live, type SendInput } from "../bridge/other/transfer.ts";
 import { viewOf, type Names } from "../bridge/other/view.ts";
@@ -19,6 +19,7 @@ import { createEnv } from "../bridge/other/wire.ts";
 import { feeCoin, movedWords, noCountWords, notSentWords, NOT_YET_OPEN, otherWords, TRUST_ALWAYS, TRUST_ETH, ACTIVITY_NOTE } from "../bridge/other/words.ts";
 import { CantonRoute } from "./CantonRoute.tsx";
 import { OtherCard } from "./OtherCard.tsx";
+import { OtherHandoff } from "./OtherHandoff.tsx";
 import { Transfers, type RowActions } from "./OtherTransfers.tsx";
 import "./bridge.css";
 import "./other-chains.css";
@@ -66,11 +67,13 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
     return () => clearInterval(id);
   }, [pollMs]);
 
-  const open = setup.routes.filter((r): r is OpenRow => r.open);
+  const open = setup.routes.filter(isMoved);
+  const handoff = setup.routes.find((r) => isHandoff(r) && r.id === routeId);
   // The Canton route needs the Ethereum Sepolia row: its claim is that row's bridge.
   const sepolia = open.find((r) => r.id === "sepolia") ?? null;
   const cantonOn = route.on && sepolia !== null ? { route, sepolia } : null;
   const onCanton = cantonOn !== null && routeId === CANTON;
+  const onHandoff = !onCanton && handoff !== undefined && isHandoff(handoff);
   const row = open.find((r) => r.id === routeId) ?? open[0] ?? null;
   const chain = setup.chain;
   // The parts of the route that decide what a transfer does. A change of availability or of a time does not start the wallet's machinery again.
@@ -177,8 +180,10 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
       <section className="card routes" aria-label="Route">
         <CardHead title="Route" as="h2" />
         <ul>
-          {setup.routes.map((r) => r.open
-            ? <li key={r.id}><button type="button" className={`route${row?.id === r.id && !onCanton ? " on" : ""}`} aria-pressed={row?.id === r.id && !onCanton} onClick={() => setRouteId(r.id)}><span>{chain.name} <span aria-hidden="true">↔</span><span className="sr-only"> and </span> {r.name}</span><span className="muted small">via AggLayer</span></button></li>
+          {setup.routes.map((r) => isHandoff(r)
+            ? <li key={r.id}><button type="button" className={`route${onHandoff && routeId === r.id ? " on" : ""}`} aria-pressed={onHandoff && routeId === r.id} onClick={() => setRouteId(r.id)}><span>{chain.name} <span aria-hidden="true">↔</span><span className="sr-only"> and </span> {r.name}</span><span className="muted small">via Solgate</span></button></li>
+            : r.open
+            ? <li key={r.id}><button type="button" className={`route${row?.id === r.id && !onCanton && !onHandoff ? " on" : ""}`} aria-pressed={row?.id === r.id && !onCanton && !onHandoff} onClick={() => setRouteId(r.id)}><span>{chain.name} <span aria-hidden="true">↔</span><span className="sr-only"> and </span> {r.name}</span><span className="muted small">via AggLayer</span></button></li>
             : <li key={r.id} className="route closed"><span>{chain.name} <span aria-hidden="true">↔</span><span className="sr-only"> and </span> {r.name}</span><span className="muted small">{NOT_YET_OPEN}</span></li>)}
           {route.on && sepolia && (route.route === "closed"
             ? <li className="route closed"><span>Canton <span aria-hidden="true">↔</span><span className="sr-only"> and </span> {sepolia.name}</span><span className="muted small">{NOT_YET_OPEN}</span></li>
@@ -186,9 +191,10 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
         </ul>
       </section>
       {onCanton && cantonOn.route.on && (
-        <CantonRoute setup={cantonOn.route} ostia={chain} sepolia={cantonOn.sepolia} account={account} connectNote={messages.wallet ?? connectNote} onConnect={connect} pollMs={pollMs} />
+        <CantonRoute setup={cantonOn.route} ostia={chain} sepolia={cantonOn.sepolia} account={account} connectNote={messages.wallet ?? connectNote} onConnect={connect} pollMs={pollMs} topic0={setup.bridgeEvent.topic0} walletChainId={wallet.chainId} faucet={faucetOn ? { label: `Get ${amount}`, busy: coin.busy, coming: coin.coming, onGet: () => void getCoin() } : null} />
       )}
-      {!onCanton && row && names && (
+      {onHandoff && handoff && isHandoff(handoff) && <OtherHandoff row={handoff} chain={chain} ostiaCoin={ostiaCoin} />}
+      {!onCanton && !onHandoff && row && names && (
         <>
           <div className="tabs" role="tablist" aria-label="AggLayer Bridge">
             <button type="button" role="tab" id="other-tab-move" aria-selected={tab === "move"} aria-controls="other-panel-move" onClick={() => setTab("move")}>Move</button>
@@ -222,7 +228,7 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
           )}
         </>
       )}
-      {!row && !onCanton && <section className="card"><p className="muted">No route is open yet.</p></section>}
+      {!row && !onCanton && !onHandoff && <section className="card"><p className="muted">No route is open yet.</p></section>}
       <p className="small muted">{TRUST_ALWAYS}</p>
       <HelpLine />
     </div>

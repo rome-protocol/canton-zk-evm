@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cc, CC, movesBody, ME, requested, setupBody, taken } from "./fakes.ts";
-import { parseMoves, parseRouteSetup, readMoves, readRouteSetup } from "./setup.ts";
+import { addressBody, BOOK, cc, CC, forwarded, held, INBOX, movesBody, movesInBody, ME, opened, PARTY, refunded, requested, ROUTER, setupBody, setupInBody, taken } from "./fakes.ts";
+import { askAddress, parseMoves, parseRouteSetup, readAddress, readMoves, readRouteSetup } from "./setup.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 const answer = (status: number, body: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status })));
@@ -9,7 +9,7 @@ describe("the Canton route's setup, as the page reads it", () => {
   it("reads the documented answer, with amounts in base units", () => {
     const s = parseRouteSetup(setupBody({ time: { minSeconds: 480, maxSeconds: 960 } }));
     expect(s).toMatchObject({ on: true, route: "open", available: true, unit: 1n, time: { minSeconds: 480, maxSeconds: 960 }, notTakenSeconds: 600, ownClaimSeconds: 300 });
-    expect(s.on && s.assets).toEqual([{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10) }]);
+    expect(s.on && s.assets).toEqual([{ erc20: CC, symbol: "CC", name: "Canton Coin", decimals: 10, open: true, feeOut: cc(0.05), claimFee: cc(0.15), minAmount: cc(1), lockCap: cc(10), lockRoom: cc(10), feeIn: 0n, feeRefund: 0n }]);
   });
   it("reads anything else as off", () => {
     const good = setupBody();
@@ -57,5 +57,55 @@ describe("the moves, as the page reads them", () => {
     expect((fetch as unknown as { mock: { calls: string[][] } }).mock.calls[1]![0]).toBe(`/api/canton-route/moves?evm=${ME}`);
     answer(503, { error: "x" });
     expect(await readMoves("evm", ME)).toBeNull();
+  });
+});
+
+describe("the way back, as the page reads it", () => {
+  it("reads the setup's way back with the payout, and an asset's way-back fees", () => {
+    const s = parseRouteSetup(setupInBody());
+    expect(s.on && s.in).toMatchObject({ route: "open", refundWaitSeconds: 259_200, router: ROUTER, book: BOOK, setupSeconds: 900, setupTime: null, claimOstia: { afterSeconds: 600, leftOutSeconds: 1200 }, payout: { paused: false, assets: { [CC]: { left: cc(6.2), renewsAt: "2026-11-22T14:05:00.000Z" } } } });
+    expect(s.on && s.assets[0]).toMatchObject({ feeIn: cc(0.1), feeRefund: cc(0.05) });
+    expect(parseRouteSetup(setupBody())).toMatchObject({ on: true, in: null });
+  });
+  it("reads no way back from an answer that does not read, and no payout while Canton could not be read", () => {
+    const good = setupInBody();
+    for (const bad of [{ ...good.in, route: "x" }, { ...good.in, refundNetwork: 74 }, { ...good.in, router: "0x1" }, { ...good.in, book: undefined }, { ...good.in, setupSeconds: -1 }, "nope"]) {
+      expect(parseRouteSetup({ ...good, in: bad }), JSON.stringify(bad).slice(0, 50)).toMatchObject({ on: true, in: null });
+    }
+    expect(parseRouteSetup({ ...good, in: { ...good.in, payout: null } })).toMatchObject({ in: { payout: null } });
+    expect(parseRouteSetup({ ...good, in: { ...good.in, payout: { paused: "no", assets: [] } } })).toMatchObject({ in: { payout: null } });
+    expect(parseRouteSetup({ ...good, in: { ...good.in, claimOstia: null } })).toMatchObject({ in: { claimOstia: null } });
+  });
+  it("reads the router's events and which accounts take withdrawals, and leaves out an event that does not read", () => {
+    const m = parseMoves(movesInBody([refunded(), forwarded(), held(), opened()]))!;
+    expect(m.back.map((e) => e.kind)).toEqual(["refunded", "forwarded", "held", "opened"]);
+    expect(m.back[0]).toMatchObject({ amount: cc(4.6), fee: cc(0.2), depositCount: 9, erc20: CC });
+    expect(m.back[3]).toMatchObject({ party: PARTY, refundAddress: ME, refundNetwork: 0 });
+    expect(m.accepts).toEqual({ [PARTY]: true });
+    const body = movesInBody([held(), forwarded(), opened()]);
+    const broken = { ...body, back: [{ ...body.back[0], refundAt: null }, { ...body.back[1], amount: null }, { ...body.back[2], party: null }, { ...body.back[0], kind: "other" }, { ...body.back[0], txHash: "0x1" }] };
+    expect(parseMoves(broken)!.back).toEqual([]);
+  });
+  it("has no events from a server without the way back, and no accounts when Canton could not be read", () => {
+    expect(parseMoves(movesBody([]))).toMatchObject({ back: [], accepts: null });
+    expect(parseMoves(movesInBody([], null))!.accepts).toBeNull();
+  });
+  it("reads an account's address, and asks for it to be opened, never reading the address from the ask", async () => {
+    answer(200, addressBody({ opened: true, openedAt: "2026-11-22T21:30:00Z", openTx: "0x" + "ab".repeat(32) }));
+    expect(await readAddress(PARTY, ME)).toEqual({ party: PARTY, refundAddress: ME, inbox: INBOX, accepts: true, opened: true, openedAt: "2026-11-22T21:30:00Z", openTx: "0x" + "ab".repeat(32) });
+    expect((fetch as unknown as { mock: { calls: string[][] } }).mock.calls[0]![0]).toBe(`/api/canton-route/address?party=alice%3A%3A1220${"9f".repeat(16)}&refundNetwork=0&refundAddress=${ME}`);
+    answer(200, addressBody({ inbox: "0x12" }));
+    expect(await readAddress(PARTY, ME)).toBeNull();
+    answer(503, { error: "x" });
+    expect(await readAddress(PARTY, ME)).toBeNull();
+    answer(200, { asked: true });
+    expect(await askAddress(PARTY, ME)).toBe(true);
+    const call = (fetch as unknown as { mock: { calls: [string, { method: string; body: string }][] } }).mock.calls[0]!;
+    expect(call[0]).toBe("/api/canton-route/address");
+    expect([call[1].method, JSON.parse(call[1].body)]).toEqual(["POST", { party: PARTY, refundNetwork: 0, refundAddress: ME }]);
+    answer(503, { error: "x" });
+    expect(await askAddress(PARTY, ME)).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    expect(await askAddress(PARTY, ME)).toBe(false);
   });
 });

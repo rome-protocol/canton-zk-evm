@@ -23,7 +23,7 @@
 # POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_PER_IP_SECONDS, FAUCET_PER_NET_MAX, FAUCET_MAX_PER_HOUR, FAUCET_BATCH, FAUCET_QUEUE_MAX, the builder grant's FAUCET_GITHUB_CLIENT_ID, FAUCET_GITHUB_REDIRECT_URL and FAUCET_BUILDER_* (its client secret is a file, FAUCET_GITHUB_CLIENT_SECRET_FILE, mounted read-only like the keys), the human check's CAPTCHA_VERIFY_URL, CAPTCHA_SCRIPT_URL, CAPTCHA_SITE_KEY and CAPTCHA_WIDGET_CLASS (and CAPTCHA_SECRET, which is taken from the environment and never put on the command), and the public RPC's settings: PUBLIC_RPC (1 turns on POST /rpc),
 # RPC_RATE_PER_MINUTE, RPC_HEAVY_CONCURRENCY, RPC_HEAVY_QUEUE, LEG_CHECK_URL, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The AggLayer bridge routes are off unless AGGLAYER_BRIDGE=1 (see explorer/README.md, "The AggLayer bridge routes"): AGGKIT_BRIDGE_URL, AGGLAYER_OSTIA_BRIDGE, AGGLAYER_SEPOLIA_BRIDGE, AGGLAYER_ROLLUP_MANAGER, AGGLAYER_OSTIA_NETWORK_ID,
-# AGGLAYER_SEPOLIA_CHAIN_ID, AGGLAYER_SEPOLIA_MAX_PER_SECOND, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS, AGGLAYER_AGGKIT_MAX_LAG_BLOCKS, AGGLAYER_TOKENS and AGGLAYER_ROUTES are passed on when set, and so are the Canton route's OSTIA_ROUTE_OUT, OSTIA_ROUTER, OSTIA_BOOK, OSTIA_ROUTE_NOT_TAKEN_SECONDS, OSTIA_ROUTE_OWN_CLAIM_SECONDS and OSTIA_ROUTE_TIME (with OSTIA_ROUTE_OUT=1 also GATEWAY_PARTY and its token file). The Sepolia endpoint, AGGLAYER_SEPOLIA_RPC_URL, carries a key and is taken from the environment, never put on the command.
+# AGGLAYER_SEPOLIA_CHAIN_ID, AGGLAYER_SEPOLIA_MAX_PER_SECOND, AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS, AGGLAYER_AGGKIT_MAX_LAG_BLOCKS, AGGLAYER_TOKENS, AGGLAYER_ROUTES and, for the message routes, AGGLAYER_MESSAGES, AGGLAYER_NOTE_BOARDS, AGGLAYER_MESSAGE_MAX_BYTES and AGGLAYER_MESSAGE_READ_MAX_BYTES are passed on when set, and so are the Canton route's OSTIA_ROUTE_OUT, OSTIA_ROUTER, OSTIA_BOOK, OSTIA_ROUTE_NOT_TAKEN_SECONDS, OSTIA_ROUTE_OWN_CLAIM_SECONDS and OSTIA_ROUTE_TIME, and for the way back to Canton OSTIA_ROUTE_IN, OSTIA_INTAKE_URL, OSTIA_ROUTE_SETUP_SECONDS, OSTIA_ROUTE_SETUP_TIME, OSTIA_CLAIM_OSTIA, OSTIA_ROUTE_CLAIM_OSTIA_SECONDS and OSTIA_ROUTE_LEFT_OUT_SECONDS (with OSTIA_ROUTE_OUT=1 also GATEWAY_PARTY and its token file). The Sepolia endpoint, AGGLAYER_SEPOLIA_RPC_URL, carries a key and is taken from the environment, never put on the command.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
 # The pages show a notice of planned work when <state>/explorer/notice.json exists (OSTIA_NOTICE_FILE, /var/lib/explorer/notice.json inside; see explorer/README.md, "A notice for planned work").
@@ -81,11 +81,13 @@ docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else doc
 quietly() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@" > /dev/null; fi; }
 
 # The Bridge page's build settings (explorer/README.md), each built into the page when it is set: BRIDGE_WTROME_ADDRESS is this deployment's wrapped coin (without it the page does not wrap).
-BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_NETWORK_NAME VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL)
+BRIDGE_BUILD_SETTINGS=(BRIDGE_WTROME_ADDRESS VITE_CHAIN_OPERATOR VITE_CHAIN_CONFIRMER VITE_CHAIN_GATEWAY VITE_CHAIN_BUILDER VITE_CHAIN_ID VITE_BRIDGE_ACCOUNT VITE_CANTON_PARTICIPANT VITE_PARTY_HINT VITE_ACCOUNTS_URL VITE_SITE_ORIGIN VITE_NETWORK_NAME VITE_CANTON_WALLETS VITE_CANTON_GATEWAY_URL VITE_BRIDGE_ORIGIN)
 build() {
   local bridge=() name
   # The page's title and card name the network the server's NETWORK_NAME names, unless the build is given its own VITE_NETWORK_NAME (explorer/site-meta.ts).
   : "${VITE_NETWORK_NAME:=${NETWORK_NAME:-}}"
+  # The Bridge's own site (explorer/README.md, "The Bridge's own site"): the pages are built to link to it, and the server given the same origin (explorer_args) serves it.
+  : "${VITE_BRIDGE_ORIGIN:=${BRIDGE_ORIGIN:-}}"
   for name in "${BRIDGE_BUILD_SETTINGS[@]}"; do
     if [ -n "${!name:-}" ]; then bridge+=(--build-arg "$name=${!name}"); fi
   done
@@ -182,8 +184,9 @@ explorer_args() {
     FAUCET_GITHUB_CLIENT_ID FAUCET_GITHUB_REDIRECT_URL FAUCET_BUILDER_AMOUNT FAUCET_BUILDER_PER_ACCOUNT_SECONDS FAUCET_BUILDER_MIN_ACCOUNT_AGE_DAYS FAUCET_BUILDER_MAX_PER_DAY \
     CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS \
     PUBLIC_RPC RPC_RATE_PER_MINUTE RPC_HEAVY_CONCURRENCY RPC_HEAVY_QUEUE LEG_CHECK_URL TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES \
-    AGGLAYER_BRIDGE AGGKIT_BRIDGE_URL AGGLAYER_OSTIA_BRIDGE AGGLAYER_SEPOLIA_BRIDGE AGGLAYER_ROLLUP_MANAGER AGGLAYER_OSTIA_NETWORK_ID AGGLAYER_SEPOLIA_CHAIN_ID AGGLAYER_SEPOLIA_MAX_PER_SECOND AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS AGGLAYER_AGGKIT_MAX_LAG_BLOCKS AGGLAYER_TOKENS AGGLAYER_ROUTES \
-    OSTIA_ROUTE_OUT OSTIA_ROUTER OSTIA_BOOK OSTIA_ROUTE_NOT_TAKEN_SECONDS OSTIA_ROUTE_OWN_CLAIM_SECONDS OSTIA_ROUTE_TIME; do
+    AGGLAYER_BRIDGE AGGKIT_BRIDGE_URL AGGLAYER_OSTIA_BRIDGE AGGLAYER_SEPOLIA_BRIDGE AGGLAYER_ROLLUP_MANAGER AGGLAYER_OSTIA_NETWORK_ID AGGLAYER_SEPOLIA_CHAIN_ID AGGLAYER_SEPOLIA_MAX_PER_SECOND AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS AGGLAYER_AGGKIT_MAX_LAG_BLOCKS AGGLAYER_TOKENS AGGLAYER_ROUTES AGGLAYER_MESSAGES AGGLAYER_NOTE_BOARDS AGGLAYER_MESSAGE_MAX_BYTES AGGLAYER_MESSAGE_READ_MAX_BYTES \
+    OSTIA_ROUTE_OUT OSTIA_ROUTER OSTIA_BOOK OSTIA_ROUTE_NOT_TAKEN_SECONDS OSTIA_ROUTE_OWN_CLAIM_SECONDS OSTIA_ROUTE_TIME \
+    OSTIA_ROUTE_IN OSTIA_INTAKE_URL OSTIA_ROUTE_SETUP_SECONDS OSTIA_ROUTE_SETUP_TIME OSTIA_CLAIM_OSTIA OSTIA_ROUTE_CLAIM_OSTIA_SECONDS OSTIA_ROUTE_LEFT_OUT_SECONDS; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The Canton route reads the requests Ostia has not taken yet as the gateway party, with its own read-only token, and the explorer gets them only with OSTIA_ROUTE_OUT=1.
@@ -198,6 +201,9 @@ explorer_args() {
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
   # The Ethereum Sepolia endpoint of the AggLayer bridge routes carries a key: named without its value, the same way.
   [ -z "${AGGLAYER_SEPOLIA_RPC_URL:-}" ] || ARGS+=(-e AGGLAYER_SEPOLIA_RPC_URL)
+  # The Bridge's own site: the server answers the pages of this host with bridge.html. The origin is the one the pages were built with (build above).
+  local own_site="${BRIDGE_ORIGIN:-${VITE_BRIDGE_ORIGIN:-}}"
+  [ -z "$own_site" ] || ARGS+=(-e "BRIDGE_ORIGIN=$own_site")
 }
 
 # The indexer's container, in ARGS (also without the database's settings).

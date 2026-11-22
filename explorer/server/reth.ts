@@ -9,6 +9,8 @@ export const ALLOWED_METHODS: ReadonlySet<string> = new Set([
   "eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getBlockReceipts",
   "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getBalance", "eth_getTransactionCount",
   "eth_getCode", "eth_call", "eth_getStorageAt",
+  // For the Canton route's setting up of an account's Ostia address: the one fixed log, in the newest blocks, that carries the transaction whose marks the page shows.
+  "eth_getLogs",
   // For a transaction's call tree (the explorer's /trace route): one transaction of a final block, never a replay of a block.
   "trace_transaction",
   // For the faucet: the chain id, fee data and the signed transfer.
@@ -216,6 +218,8 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
     code: (a: string) => read("eth_getCode", [a, "latest"], data),
     /** The code an address has as of one block (`0x` for none). */
     codeAt: (a: string, block: number) => read("eth_getCode", [a, tag(block)], data),
+    /** The logs of one address with these topics from block `from` to the newest block (a fixed filter the caller builds): the transaction and block of each, the newest 20 at most. */
+    logsSince: (address: string, topics: string[], from: number) => read("eth_getLogs", [{ address, topics, fromBlock: tag(from), toBlock: "latest" }], (v) => list(v).slice(-20).map((l) => ({ txHash: hash(obj(l).transactionHash), block: num(obj(l).blockNumber) }))),
     /** One storage slot of an account as of one block, as 32 bytes: for the Etherscan `verifyproxycontract`, which reads a proxy's slots at the final head. */
     storageAt: (a: string, slot: string, block: number) => read("eth_getStorageAt", [a, slot, tag(block)], hex(/^0x[0-9a-f]{64}$/, "storage word")),
     /** A read-only call as of one block, answered as data (at most 4 KB, as the indexer's reads are); a revert is a RethError with `answered` set. */

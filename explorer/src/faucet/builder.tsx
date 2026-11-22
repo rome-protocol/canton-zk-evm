@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { explorerHref, inApp } from "../bridge-app/where.ts";
 import { formatCoin, formatPeriod, formatWait } from "./format.ts";
 import type { FaucetInfo } from "./faucet-client.ts";
 
@@ -10,7 +11,7 @@ export function builderOf(info: FaucetInfo | null | undefined) {
   return b && b.on && b.amount ? { ...b, amount: b.amount } : null;
 }
 
-/** Where "Sign in with GitHub" goes: the explorer sends the person to GitHub, and GitHub back to the Faucet page with the result. */
+/** Where "Sign in with GitHub" goes: the explorer sends the person to GitHub, and GitHub back to the Faucet page with the result. The link is that path on the explorer's own address, in a new tab, when the page runs as the Bridge's own site. */
 export const builderStartPath = (address: string) => `/api/faucet/github/start?address=${encodeURIComponent(address.toLowerCase())}`;
 
 /** A period in whole days when it is, else as the faucet words it: 7 days, 1 day, 36 hours. */
@@ -46,7 +47,7 @@ export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null 
     <div className="builder-grant">
       <p className="small builder-line">Building on Ostia? Get {amount}.</p>
       {ready ? (
-        <a className="gh-btn" href={builderStartPath(address!.trim())}>
+        <a className="gh-btn" href={explorerHref(builderStartPath(address!.trim()))} {...(inApp() ? { target: "_blank", rel: "noopener" } : {})}>
           <GitHubMark />
           <span>Sign in with GitHub</span>
         </a>

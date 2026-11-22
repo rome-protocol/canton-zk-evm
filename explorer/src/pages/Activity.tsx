@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import type { Address, Hex } from "viem";
 import type { ApiTx } from "../api.ts";
 import { continueWords, openOnCanton, otherMoves, recordOf, rememberUpdate, rowsOf, seedOf, standing, whatMoved, type Entry } from "../bridge/activity.ts";
@@ -60,8 +60,8 @@ function Row({ e, props, state, live, onCanton, busy, onContinue, canContinue = 
       {where && <p className={`small ${note?.bad ? "bad" : "muted"}`}>{where}</p>}
       {(marks.block !== null || marks.updateId !== null) && (
         <p className="act-links small">
-          {marks.block !== null && <Link to={`/block/${marks.block}`}>{props.chainName} block {marks.block}</Link>}
-          {marks.updateId !== null && <Link to={`/canton/${marks.updateId}`}>Canton update</Link>}
+          {marks.block !== null && <ExplorerLink to={`/block/${marks.block}`}>{props.chainName} block {marks.block}</ExplorerLink>}
+          {marks.updateId !== null && <ExplorerLink to={`/canton/${marks.updateId}`}>Canton update</ExplorerLink>}
         </p>
       )}
       {!e.done && !running && canContinue && (mine

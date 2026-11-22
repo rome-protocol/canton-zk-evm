@@ -35,7 +35,7 @@ jobs:
 
   # The Bridge page in a real browser. Three builds of the pages: with the Bridge account made from a wallet signature (VITE_BRIDGE_ACCOUNT=on; explorer/e2e/bridge-account.test.ts, then bridge-moves.test.ts, which move a token each way through the card,
   # and bridge-send.test.ts: a wallet that signs with a fixed key opens an account on a fake account service, at the width of a phone); with Canton wallets switched on and no Bridge account (explorer/e2e/bridge-wallet.test.ts, which moves
-  # Canton Coin with a connected Canton wallet); and with neither, which is the default build and TestNet's (explorer/e2e/bridge-off.test.ts: no key code in the pages, no signature asked, no account service; then bridge-other-chains.test.ts on the same build: the AggLayer Bridge tab, with a fake bridge service and a fake Ethereum Sepolia; then bridge-canton-route.test.ts: its Canton route, with a fake route API). The two builds without the account are made
+  # Canton Coin with a connected Canton wallet); and with neither, which is the default build and TestNet's (explorer/e2e/bridge-off.test.ts: no key code in the pages, no signature asked, no account service; then bridge-other-chains.test.ts on the same build: the AggLayer Bridge tab, with a fake bridge service and a fake Ethereum Sepolia; then bridge-canton-route.test.ts and bridge-canton-back.test.ts: its Canton route and its way back to Canton, with a fake route API). The two builds without the account are made
   # with no participant and no party hint, which only the Bridge account needs. It runs in the pinned browser image, with the playwright-core of explorer/test/l4 (the same exact version the image's browsers belong to).
   # The last step lists the size of each script, gzipped: the Bridge's own and the signing code's are separate from the first page's.
   bridge-page:
@@ -59,7 +59,9 @@ jobs:
               && env -u VITE_CANTON_PARTICIPANT VITE_CANTON_WALLETS=extension npm run build -- --outDir dist-wallet && BRIDGE_E2E_DIST=dist-wallet PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-wallet.test.ts \
               && env -u VITE_CANTON_PARTICIPANT npm run build -- --outDir dist-off && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-off.test.ts \
               && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-other-chains.test.ts \
+              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-app.test.ts \
               && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-route.test.ts \
+              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-back.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/canton-phone.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/warning-phone.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/notice-phone.test.ts \

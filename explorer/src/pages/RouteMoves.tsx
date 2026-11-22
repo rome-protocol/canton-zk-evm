@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import type { Hex } from "viem";
 import type { Deposit } from "../bridge/other/reads.ts";
 import type { Move, RouteAsset, RouteOn } from "../bridge/route/setup.ts";
@@ -38,7 +38,7 @@ function Row({ m, deposit, setup, asset, claiming, now, busy, message, a }: { m:
         </>
       )}
       {v.phase === "lapsed" && a.onTryAgain && <button type="button" className="btn ghost" onClick={a.onTryAgain}>Try again</button>}
-      {m.txHash && <p className="act-links small"><Link to={`/tx/${m.txHash}`}>The move on Ostia</Link></p>}
+      {m.txHash && <p className="act-links small"><ExplorerLink to={`/tx/${m.txHash}`}>The move on Ostia</ExplorerLink></p>}
       {v.open && v.phase !== "ready" && v.phase !== "claiming" && <p className="small muted">{LEAVE_MOVE}</p>}
     </li>
   );

@@ -21,6 +21,8 @@ export interface RouteSetting {
   /** True where a worker, not the person, makes the claim there. Nothing sets it yet: a worker is not built. */
   claimedForYou: { ostia: boolean; remote: boolean };
   offered: TokenSetting[];
+  /** A route that goes through Solgate (the page hands the person over): the symbols it offers, looked up in Solgate's token list, and each one's measured times. Null for the Ethereum Sepolia route. */
+  handoff: { symbols: string[]; assetTimes: Record<string, { in: TimeRange | null; out: TimeRange | null }> } | null;
 }
 /** The settings of the message routes; `messages` of the settings is null while AGGLAYER_MESSAGES is off. */
 export interface MessageSettings {
@@ -42,6 +44,9 @@ export interface AgglayerSettings {
   sepoliaBridge: string;
   rollupManager: string | null;
   routes: RouteSetting[];
+  /** Where Solgate is (its page and its API), and Hadrian as the routes through it see it: set when a hand-off route is open. */
+  solgate: { url: string } | null;
+  hadrian: { rpc: string; chainId: number; networkId: number } | null;
   settlementMaxAgeSeconds: number;
   /** How many blocks AggKit's Ostia syncers may trail Ostia's finalized block before the bridge is "not available". */
   aggkitMaxLagBlocks: number;
@@ -53,8 +58,9 @@ type Fail = (message: string) => Error;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DEFAULT_ROUTES = [{ id: "sepolia", name: "Ethereum Sepolia", open: true }, { id: "hadrian", name: "Hadrian" }, { id: "solana-devnet", name: "Solana devnet" }];
-/** The one route this build can open. */
+/** The routes this build can open: Ethereum Sepolia (moved on this page) and the two that go through Solgate. */
 export const OPEN_ROUTE = "sepolia";
+export const HANDOFF_ROUTES: readonly string[] = ["hadrian", "solana-devnet"];
 
 export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null {
   const raw = env.AGGLAYER_BRIDGE;
@@ -86,6 +92,18 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
       throw fail(`${name} must be an http address on this machine (127.0.0.1, [::1] or localhost), not "${v.slice(0, 60)}"`);
     }
     return v.replace(/\/+$/, "");
+  };
+  /** A public address of another service: https, no login, no query. A trailing slash is dropped. */
+  const publicUrl = (name: string): string | null => {
+    const v = env[name]?.trim();
+    if (!v) return null;
+    try {
+      const u = new URL(v);
+      if (u.protocol !== "https:" || u.username || u.password || u.search || u.hash) throw new Error();
+      return (u.origin + u.pathname).replace(/\/+$/, "");
+    } catch {
+      throw fail(`${name} must be an https address with no login and no query, not "${v.slice(0, 60)}"`);
+    }
   };
   const json = (name: string, text: string): unknown => {
     try {
@@ -143,16 +161,28 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
   if (!Array.isArray(rows) || rows.length === 0) throw fail("AGGLAYER_ROUTES must be a list with at least one row");
   const seen = new Set<string>();
   const routes = rows.map((v): RouteSetting => {
-    const r = object("AGGLAYER_ROUTES", v, ["id", "name", "open", "times", "claimedForYou"]);
+    const r = object("AGGLAYER_ROUTES", v, ["id", "name", "open", "times", "claimedForYou", "assets", "assetTimes"]);
     if (typeof r.id !== "string" || !/^[a-z0-9-]{1,30}$/.test(r.id)) throw fail("AGGLAYER_ROUTES: a row's id is lowercase letters, digits and hyphens");
     if (typeof r.name !== "string" || r.name.length < 1 || r.name.length > 60) throw fail("AGGLAYER_ROUTES: a row's name is 1 to 60 characters");
     if (seen.has(r.id)) throw fail(`AGGLAYER_ROUTES: the id "${r.id}" is given twice`);
     seen.add(r.id);
     const open = flagIn(r.open);
-    if (open && r.id !== OPEN_ROUTE) throw fail(`AGGLAYER_ROUTES: only ${OPEN_ROUTE} can be open in this build`);
+    if (open && r.id !== OPEN_ROUTE && !HANDOFF_ROUTES.includes(r.id)) throw fail(`AGGLAYER_ROUTES: only ${[OPEN_ROUTE, ...HANDOFF_ROUTES].join(", ")} can be open in this build`);
+    const handoff = HANDOFF_ROUTES.includes(r.id);
+    if (!handoff && (r.assets !== undefined || r.assetTimes !== undefined)) throw fail(`AGGLAYER_ROUTES: assets and assetTimes are for the routes through Solgate (${HANDOFF_ROUTES.join(", ")}); ${OPEN_ROUTE} takes its tokens from AGGLAYER_TOKENS`);
+    const symbols = r.assets === undefined ? [] : r.assets;
+    if (!Array.isArray(symbols) || symbols.length > 20 || !symbols.every((x) => typeof x === "string" && /^[A-Za-z0-9._-]{1,12}$/.test(x)) || new Set(symbols).size !== symbols.length) throw fail("AGGLAYER_ROUTES: assets is a list of up to 20 different token symbols");
+    const tt = r.assetTimes === undefined ? {} : r.assetTimes;
+    if (!tt || typeof tt !== "object" || Array.isArray(tt)) throw fail("AGGLAYER_ROUTES: assetTimes is an object from a token symbol to its times");
+    const assetTimes: Record<string, { in: TimeRange | null; out: TimeRange | null }> = {};
+    for (const [sym, v] of Object.entries(tt)) {
+      if (!symbols.includes(sym)) throw fail(`AGGLAYER_ROUTES: assetTimes names ${sym.slice(0, 12)}, which is not in assets`);
+      const x = object("AGGLAYER_ROUTES", v, ["in", "out"]);
+      assetTimes[sym] = { in: range(x.in), out: range(x.out) };
+    }
     const t = r.times === undefined ? {} : object("AGGLAYER_ROUTES", r.times, ["in", "out"]);
     const c = r.claimedForYou === undefined ? {} : object("AGGLAYER_ROUTES", r.claimedForYou, ["ostia", "remote"]);
-    return { id: r.id, name: r.name, open, times: { in: range(t.in), out: range(t.out) }, claimedForYou: { ostia: flagIn(c.ostia), remote: flagIn(c.remote) }, offered: r.id === OPEN_ROUTE ? tokens : [] };
+    return { id: r.id, name: r.name, open, times: { in: range(t.in), out: range(t.out) }, claimedForYou: { ostia: flagIn(c.ostia), remote: flagIn(c.remote) }, handoff: handoff ? { symbols: symbols as string[], assetTimes } : null, offered: r.id === OPEN_ROUTE ? tokens : [] };
   });
 
   const messages = ((): MessageSettings | null => {
@@ -171,6 +201,11 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     return { maxBytes, readMaxBytes, noteBoards: { ostia: board("ostia"), sepolia: board("sepolia") } };
   })();
 
+  const anyHandoff = routes.some((r) => r.open && r.handoff);
+  const solgateUrl = publicUrl("AGGLAYER_SOLGATE_URL");
+  const hadrianRpc = publicUrl("AGGLAYER_HADRIAN_RPC_URL");
+  if (anyHandoff && (!solgateUrl || !hadrianRpc)) throw fail("AGGLAYER_SOLGATE_URL and AGGLAYER_HADRIAN_RPC_URL must be set (https, public) when a route through Solgate is open");
+
   return {
     aggkitUrl: loopbackUrl("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"),
     sepoliaRpc: new Secret(rpc),
@@ -181,6 +216,8 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     sepoliaBridge: address("AGGLAYER_SEPOLIA_BRIDGE", true)!,
     rollupManager: address("AGGLAYER_ROLLUP_MANAGER", false),
     routes,
+    solgate: anyHandoff ? { url: solgateUrl! } : null,
+    hadrian: anyHandoff ? { rpc: hadrianRpc!, chainId: whole("AGGLAYER_HADRIAN_CHAIN_ID", 200010, 1), networkId: whole("AGGLAYER_HADRIAN_NETWORK_ID", 74, 1, 2 ** 32 - 1) } : null,
     settlementMaxAgeSeconds: whole("AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS", 1800, 1),
     aggkitMaxLagBlocks: whole("AGGLAYER_AGGKIT_MAX_LAG_BLOCKS", 30, 1),
     messages,

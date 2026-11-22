@@ -23,6 +23,9 @@ export interface Transfer {
   amount: string;
   /** The send, once the wallet has been asked for it. */
   send: Attempt | null;
+  /** A send to a Canton account's Ostia address (the way back to Canton): the address the coin is sent to, and the Canton account it is for. Without them the coin goes to `account`. */
+  receiver?: string;
+  party?: string;
   /** The deposit number the bridge gave the send, once its transaction is in a block. */
   count: number | null;
   /** The claim, once the wallet has been asked for it. */

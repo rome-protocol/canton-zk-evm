@@ -32,6 +32,16 @@ describe("addNetwork", () => {
     });
   });
 
+  it("gives the wallet the explorer's address, never the Bridge site's own, when it runs as the Bridge site", async () => {
+    vi.stubEnv("VITE_SITE_ORIGIN", "https://ostia.testnet.romeprotocol.xyz");
+    document.documentElement.setAttribute("data-app", "bridge");
+    const request = wallet(async () => null);
+    await addNetwork(st(), "Ostia", "below");
+    expect(request.mock.calls[0]![0].params[0]).toMatchObject({ rpcUrls: ["https://ostia.testnet.romeprotocol.xyz/rpc"], blockExplorerUrls: ["https://ostia.testnet.romeprotocol.xyz"] });
+    vi.unstubAllEnvs();
+    document.documentElement.removeAttribute("data-app");
+  });
+
   it("says so, and points to where the details are, when the browser has no wallet", async () => {
     expect(await addNetwork(st(), "Ostia", "below")).toBe("No wallet was found in this browser. Add the network by hand with the address below.");
     expect(await addNetwork(st(), "Ostia", "above")).toBe("No wallet was found in this browser. Add the network by hand with the details above.");

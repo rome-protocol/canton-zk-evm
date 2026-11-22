@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
 import { AmountError, maxText, normaliseAmount, parseAmount, showBalance } from "../bridge/amounts.ts";
@@ -246,7 +246,7 @@ export function MoveCard(p: MoveCardProps) {
   };
 
   let extra: ReactNode = null;
-  if (move.phase === "final" && text === "") extra = <p className="small ok" role="status">Done. It is final in <Link to={`/block/${move.block}`}>block {move.block}</Link>.</p>;
+  if (move.phase === "final" && text === "") extra = <p className="small ok" role="status">Done. It is final in <ExplorerLink to={`/block/${move.block}`}>block {move.block}</ExplorerLink>.</p>;
   return (
     <section className="card move" aria-label="Move tokens">
       {!pair ? (

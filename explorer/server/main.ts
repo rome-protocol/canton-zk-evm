@@ -50,7 +50,7 @@ try {
   const agglayer = ag ? createAgglayerBridge({ settings: ag, chainId: config.chainId, chainName: config.chainName, reth, aggkit: createAggkitReader({ baseUrl: ag.aggkitUrl, ...(ag.messages ? { maxMetadataBytes: ag.messages.readMaxBytes } : {}) }), sepolia: createSepoliaReader({ url: ag.sepoliaRpc, bridge: ag.sepoliaBridge, rollupManager: ag.rollupManager, maxPerSecond: ag.sepoliaMaxPerSecond }) }) : undefined;
   // The Canton route (OSTIA_ROUTE_OUT=1): the book and the router are read on Ostia, the moves from the database, and the open requests from Canton as the gateway party when one is set.
   const cr = config.cantonRoute;
-  const cantonRoute = cr && agglayer && storage.pool ? createCantonRoute({ settings: cr, agglayer: ag!, bridge: agglayer, reth, pool: storage.pool, canton: cr.gateway ? createCanton({ reader: ledger, gateway: Object.assign(gatewayLedgerFromConfig(config, cr.gateway), { party: cr.gateway.party }) }) : null }) : undefined;
+  const cantonRoute = cr && agglayer && storage.pool ? createCantonRoute({ settings: cr, agglayer: ag!, bridge: agglayer, reth, pool: storage.pool, canton: cr.gateway ? createCanton({ reader: ledger, chainId: config.chainId, gateway: Object.assign(gatewayLedgerFromConfig(config, cr.gateway), { party: cr.gateway.party }) }) : null }) : undefined;
   if (cr && !cantonRoute) throw new ConfigError("OSTIA_ROUTE_OUT reads moves from the database: set EXPLORER_DATABASE_URL, or EXPLORER_DB_PASSWORD_FILE with its parts");
   // Each API instance writes its own health rows (design 6.5). The name is EXPLORER_INSTANCE, or the host's name.
   const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker, ...(config.accountsHealthUrl ? { accounts: { url: config.accountsHealthUrl } } : {}), ...(agglayer ? { agglayer } : {}) }) : undefined;
@@ -60,7 +60,7 @@ try {
   const source = storage.pool && config.database
     ? createStreamSource({ pool: storage.pool, connection: config.database, hub, inflight: async () => (await api("GET", "/api/in-flight")).body })
     : null;
-  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null);
+  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null, config.bridgeOrigin);
   await Promise.all([tracker.ready(), faucet.ready()]);
   server.listen(config.port, config.host, () => {
     console.log(`explorer for ${config.chainName} listening on http://${config.host}:${config.port}`);

@@ -12,6 +12,10 @@ import { OutLink } from "../components/Help.tsx";
 import { TRUST_MODEL_PAGE } from "../copy.ts";
 import { timeoutSignal } from "../timeout.ts";
 import { injected } from "../wallet.ts";
+import { useStatus } from "../useStatus.ts";
+import { BackRows, type Faucet } from "./BackRows.tsx";
+import { CantonBack } from "./CantonBack.tsx";
+import { useBack } from "./useBack.ts";
 import { RouteForm, type SendInput } from "./RouteForm.tsx";
 import { RouteMoves } from "./RouteMoves.tsx";
 import "./bridge.css";
@@ -25,8 +29,10 @@ const LOOKS_MAX = 4;
  * Canton to Ethereum Sepolia through Ostia: the limits and states of the route, the moves of the connected wallet (found by their destination, kept on the chain and on Canton, so a reload loses none) and the
  * person's own claim. The page reads and the wallet signs. The form that starts a move on Canton is given by the page only where a Canton wallet can connect.
  */
-export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onConnect, pollMs, start }: {
+export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onConnect, pollMs, start, topic0, walletChainId, faucet }: {
   setup: RouteOn; ostia: OstiaChain; sepolia: OpenRow; account: string | null; connectNote: string | null; onConnect(): void; pollMs: number;
+  /** What the way back to Canton needs: the bridge's deposit event, the chain the wallet is on, and the test coin of Ostia. */
+  topic0: string; walletChainId: number | null; faucet: Faucet | null;
   /** Starts a move in the Canton wallet; given only once the page can. */
   start?: (input: SendInput) => Promise<void>;
 }) {
@@ -37,7 +43,13 @@ export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onCon
   const [busy, setBusy] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const store = useMemo(transferStore, []);
-  const asset = setup.assets[0] ?? null;
+  /** The coin new sends use (open); the way back also needs a coin that is not open, to send a held one home. */
+  const asset = setup.assets.find((a) => a.open) ?? null;
+  const held = asset ?? setup.assets[0] ?? null;
+  const st = useStatus();
+  const back = useBack({ setup, asset: held, ostia, status: st.data, sepolia, topic0, account, pollMs });
+  const backShown = back.rows.filter((r) => r.view.open || (r.row.episode !== null && now - r.row.episode.lastAt < JUST_ARRIVED_MS));
+  const backClaimable = back.rows.filter((r) => r.view.claimable);
   const looking = useRef(false);
   const seen = useRef<Record<string, Deposit>>({});
 
@@ -62,7 +74,7 @@ export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onCon
   const views = moves.map((m) => ({ m, v: viewOfMove(m, deposits[m.id] ?? null, setup, asset, claiming(m), now) }));
   const shown = views.filter((x) => x.v.open || x.v.phase === "lapsed" || (x.m.state === "taken" && deposits[x.m.id]?.stage === "claimed" && x.m.at !== null && now - Date.parse(x.m.at) < JUST_ARRIVED_MS)).map((x) => x.m);
   const claimable = views.filter((x) => x.v.claimable).map((x) => x.m);
-  const onItsWay = views.filter((x) => x.v.open).length;
+  const onItsWay = views.filter((x) => x.v.open).length + back.open;
   const count = (n: number) => (n > 0 ? <span className="count">{n}</span> : null);
 
   async function claim(m: Move) {
@@ -84,7 +96,7 @@ export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onCon
       <div className="tabs" role="tablist" aria-label="Canton to Ethereum Sepolia">
         <button type="button" role="tab" id="route-tab-move" aria-selected={tab === "move"} aria-controls="route-panel-move" onClick={() => setTab("move")}>Move</button>
         <button type="button" role="tab" id="route-tab-activity" aria-selected={tab === "activity"} aria-controls="route-panel-activity" onClick={() => setTab("activity")}>Activity{count(onItsWay)}</button>
-        <button type="button" role="tab" id="route-tab-claim" aria-selected={tab === "claim"} aria-controls="route-panel-claim" onClick={() => setTab("claim")}>Claim{count(claimable.length)}</button>
+        <button type="button" role="tab" id="route-tab-claim" aria-selected={tab === "claim"} aria-controls="route-panel-claim" onClick={() => setTab("claim")}>Claim{count(claimable.length + backClaimable.length)}</button>
       </div>
       {tab === "move" && (
         <div className="panel" role="tabpanel" id="route-panel-move" aria-labelledby="route-tab-move">
@@ -102,17 +114,21 @@ export function CantonRoute({ setup, ostia, sepolia, account, connectNote, onCon
               )}
             {connectNote && <p className="small bad" role="alert">{connectNote}</p>}
           </section>
+          {setup.in && setup.in.route !== "closed" && <CantonBack setup={setup} asset={asset} sepolia={sepolia} account={account} walletChainId={walletChainId} back={back} pollMs={pollMs} onConnect={onConnect} />}
           {account === null ? connect : <RouteMoves items={shown} deposits={deposits} setup={setup} asset={asset} claiming={claiming} now={now} busy={busy} messages={messages} empty="" actions={actions} />}
+          <BackRows items={backShown} back={back} faucet={faucet} />
         </div>
       )}
       {tab === "activity" && (
         <div className="panel" role="tabpanel" id="route-panel-activity" aria-labelledby="route-tab-activity">
-          {account === null ? connect : <RouteMoves items={moves} deposits={deposits} setup={setup} asset={asset} claiming={claiming} now={now} busy={busy} messages={messages} empty="No moves have been sent to this wallet yet." actions={actions} />}
+          {account === null ? connect : <RouteMoves items={moves} deposits={deposits} setup={setup} asset={asset} claiming={claiming} now={now} busy={busy} messages={messages} empty={back.rows.length > 0 ? "" : "No moves have been sent to this wallet yet."} actions={actions} />}
+          {account !== null && <BackRows items={back.rows} back={back} faucet={faucet} />}
         </div>
       )}
       {tab === "claim" && (
         <div className="panel" role="tabpanel" id="route-panel-claim" aria-labelledby="route-tab-claim">
-          {account === null ? connect : <RouteMoves items={claimable} deposits={deposits} setup={setup} asset={asset} claiming={claiming} now={now} busy={busy} messages={messages} empty="Nothing is ready to claim." actions={actions} />}
+          {account === null ? connect : <RouteMoves items={claimable} deposits={deposits} setup={setup} asset={asset} claiming={claiming} now={now} busy={busy} messages={messages} empty={backClaimable.length > 0 ? "" : "Nothing is ready to claim."} actions={actions} />}
+          {account !== null && <BackRows items={backClaimable} back={back} faucet={faucet} />}
         </div>
       )}
     </>

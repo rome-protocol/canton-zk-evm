@@ -13,7 +13,7 @@ describe("the Canton route's settings", () => {
   });
   it("need the AggLayer bridge on", () => expect(() => routeSettings(good, null, fail)).toThrow("needs AGGLAYER_BRIDGE=1"));
   it("read the two addresses (lower case) and the two waits, which have no default", () => {
-    expect(routeSettings(good, ag, fail)).toEqual({ router: "0x" + "a1".repeat(20), book: "0x" + "b2".repeat(20), notTakenSeconds: 600, ownClaimSeconds: 300, time: null, gateway: null });
+    expect(routeSettings(good, ag, fail)).toEqual({ router: "0x" + "a1".repeat(20), book: "0x" + "b2".repeat(20), notTakenSeconds: 600, ownClaimSeconds: 300, time: null, gateway: null, in: null });
     for (const name of ["OSTIA_ROUTER", "OSTIA_BOOK"]) expect(() => routeSettings({ ...good, [name]: undefined }, ag, fail)).toThrow(name);
     expect(() => routeSettings({ ...good, OSTIA_ROUTER: "0x12" }, ag, fail)).toThrow("OSTIA_ROUTER");
     for (const name of ["OSTIA_ROUTE_NOT_TAKEN_SECONDS", "OSTIA_ROUTE_OWN_CLAIM_SECONDS"]) {

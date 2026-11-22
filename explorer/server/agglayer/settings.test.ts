@@ -87,7 +87,7 @@ describe("the AggLayer bridge's settings", () => {
       [{ id: "sepolia", name: "x", times: { sideways: null } }], [{ id: "sepolia", name: "x", open: "yes" }], [{ id: "sepolia", name: "x", claimedForYou: { ostia: "yes" } }]]) {
       expect(why(rows(bad)), JSON.stringify(bad)).toContain("AGGLAYER_ROUTES");
     }
-    expect(why(rows([{ id: "hadrian", name: "Hadrian", open: true }]))).toContain("only sepolia");
+    expect(why(rows([{ id: "katana", name: "Katana", open: true }]))).toContain("only sepolia, hadrian, solana-devnet");
     expect(why(rows([{ id: "sepolia", name: "Sepolia", open: false }]))).toBeNull();
   });
 
@@ -104,5 +104,52 @@ describe("the AggLayer bridge's settings", () => {
     expect(read({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: "100" })!.sepoliaMaxPerSecond).toBe(100);
     for (const bad of ["0", "101", "2.5", "-1", "five", "1e2", " 5"]) expect(why({ ...base, AGGLAYER_SEPOLIA_MAX_PER_SECOND: bad }), bad).toContain("AGGLAYER_SEPOLIA_MAX_PER_SECOND");
     expect(read({ AGGLAYER_BRIDGE: "0", AGGLAYER_SEPOLIA_MAX_PER_SECOND: "nope" })).toBeNull();
+  });
+
+  describe("the routes through Solgate", () => {
+    const hand = { AGGLAYER_SOLGATE_URL: "https://solgate.example/", AGGLAYER_HADRIAN_RPC_URL: "https://hadrian.example/rpc" };
+    const rows = (...r: unknown[]) => ({ ...base, ...hand, AGGLAYER_ROUTES: JSON.stringify(r) });
+    const open = [
+      { id: "sepolia", name: "Ethereum Sepolia", open: true },
+      { id: "hadrian", name: "Hadrian", open: true, assets: ["ETH", "SOL"], assetTimes: { SOL: { in: { minSeconds: 240, maxSeconds: 240 }, out: { minSeconds: 570, maxSeconds: 570 } }, ETH: { in: { minSeconds: 360, maxSeconds: 360 }, out: null } } },
+      { id: "solana-devnet", name: "Solana devnet", open: true, assets: ["SOL"] },
+    ];
+
+    it("opens hadrian and solana-devnet one at a time, each with its tokens and each token's times, and gives the defaults of Hadrian and Solgate", () => {
+      const s = read(rows(...open))!;
+      expect(s.routes.map((r) => [r.id, r.open])).toEqual([["sepolia", true], ["hadrian", true], ["solana-devnet", true]]);
+      expect(s.routes[0]!.handoff).toBeNull();
+      expect(s.routes[1]!.handoff).toEqual({ symbols: ["ETH", "SOL"], assetTimes: { SOL: { in: { minSeconds: 240, maxSeconds: 240 }, out: { minSeconds: 570, maxSeconds: 570 } }, ETH: { in: { minSeconds: 360, maxSeconds: 360 }, out: null } } });
+      expect(s.routes[2]!.handoff).toEqual({ symbols: ["SOL"], assetTimes: {} });
+      expect(s.solgate).toEqual({ url: "https://solgate.example" });
+      expect(s.hadrian).toEqual({ rpc: "https://hadrian.example/rpc", chainId: 200010, networkId: 74 });
+      const one = read(rows(open[0], { id: "solana-devnet", name: "Solana devnet", open: true, assets: ["SOL"] }))!;
+      expect(one.routes.map((r) => r.open)).toEqual([true, true]);
+    });
+
+    it("leaves Solgate and Hadrian unset while no such route is open, and a route that is not open keeps its tokens unread by the page", () => {
+      const s = read(base)!;
+      expect(s.solgate).toBeNull();
+      expect(s.hadrian).toBeNull();
+      const closed = read({ ...base, AGGLAYER_ROUTES: JSON.stringify([{ id: "hadrian", name: "Hadrian", assets: ["ETH"] }]) })!;
+      expect(closed.solgate).toBeNull();
+      expect(closed.routes[0]).toMatchObject({ open: false, handoff: { symbols: ["ETH"] } });
+    });
+
+    it("needs the Solgate address and Hadrian's endpoint as https addresses, and takes Hadrian's chain and network numbers from the settings", () => {
+      expect(why({ ...base, AGGLAYER_ROUTES: JSON.stringify(open) })).toContain("AGGLAYER_SOLGATE_URL and AGGLAYER_HADRIAN_RPC_URL must be set");
+      for (const bad of ["http://solgate.example", "https://user@solgate.example", "https://solgate.example/?k=1", "not a url"]) expect(why({ ...rows(...open), AGGLAYER_SOLGATE_URL: bad }), bad).toContain("AGGLAYER_SOLGATE_URL");
+      expect(why({ ...rows(...open), AGGLAYER_HADRIAN_RPC_URL: "http://127.0.0.1:8545" })).toContain("AGGLAYER_HADRIAN_RPC_URL");
+      expect(read({ ...rows(...open), AGGLAYER_HADRIAN_CHAIN_ID: "7", AGGLAYER_HADRIAN_NETWORK_ID: "9" })!.hadrian).toMatchObject({ chainId: 7, networkId: 9 });
+      expect(why({ ...rows(...open), AGGLAYER_HADRIAN_CHAIN_ID: "0" })).toContain("AGGLAYER_HADRIAN_CHAIN_ID");
+    });
+
+    it("refuses tokens that are wrong, tokens on the Ethereum Sepolia row, and times for a token that is not listed", () => {
+      const h = (extra: object) => rows({ id: "hadrian", name: "Hadrian", open: true, ...extra });
+      for (const bad of [{ assets: "ETH" }, { assets: ["ETH", "ETH"] }, { assets: ["not ok!"] }, { assets: [1] }, { assets: Array.from({ length: 21 }, (_, i) => `T${i}`) }, { assetTimes: [] }, { assets: ["ETH"], assetTimes: { SOL: {} } }, { assets: ["ETH"], assetTimes: { ETH: { sideways: null } } }, { assets: ["ETH"], assetTimes: { ETH: { in: { minSeconds: 9, maxSeconds: 1 } } } }]) {
+        expect(why(h(bad)), JSON.stringify(bad)).toContain("AGGLAYER_ROUTES");
+      }
+      expect(why(rows({ id: "sepolia", name: "Ethereum Sepolia", open: true, assets: ["ETH"] }))).toContain("sepolia takes its tokens from AGGLAYER_TOKENS");
+    });
   });
 });
