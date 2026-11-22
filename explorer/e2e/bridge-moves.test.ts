@@ -294,7 +294,7 @@ describe.skipIf(!dist)("the Bridge page's moves, in a browser", () => {
     await pick(page, "From", /^Canton Coin on Canton$/);
     await page.getByRole("textbox", { name: "Amount to move" }).fill("1");
     await page.getByRole("button", { name: "Move to Ostia" }).click();
-    await page.getByText("A Canton Coin deposit must be at least 1.12 CC. Your Canton Coin has not been touched. Try a larger amount.").waitFor({ timeout: 30_000 });
+    await page.getByText("A Canton Coin deposit must be at least 1.12. Your Canton Coin has not been touched. Try a larger amount.").waitFor({ timeout: 30_000 });
     expect(seen.factoryAsked).toBe(0);
     expect(seen.executed).toBe(0);   // nothing was signed or sent on Canton
     expect([...chain.sent.values()]).toHaveLength(0);
