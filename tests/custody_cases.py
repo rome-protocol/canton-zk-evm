@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Part of tests/canton_external.sh: the two sandbox cases of the custody expiry rules, against the real participant.
 Usage: custody_cases.py a-setup     50 one-unit test-token holdings for the gateway in one submit, and U's standing acceptance of withdrawals
-       custody_cases.py a-advance   One Advance whose withdrawal names all 50 as inputs, built by the builder's own code and sent by its Ledger.advance
-       custody_cases.py b           A transfer from U with change, accepted by V; custody read at the completion offset less one and at it differs by exactly the amount;
-                                    run_custody_check says "ok" for that amount and "stopped" for one base unit more
+       custody_cases.py a-advance   One Advance whose withdrawal names all 50 as inputs, built by the builder's own code and sent by its Ledger.advance; the gateway's custody
+                                    read at its completion offset less one and at it differs by exactly the withdrawn amount, and run_custody_check says "ok" for it
+                                    and "stopped" for one base unit more
+       custody_cases.py b           A transfer from U with change, accepted by V; U's custody read at the acceptance's completion offset less one and at it differs by
+                                    exactly the amount; run_custody_check says "ok" for that amount and "stopped" for one base unit more
 Settings are the ones of tests/canton_external.sh (CZE_*), and CZE_MAX_INBOUND: the participant's Ledger API limit on a request, in bytes, as set for this run.
 Prints one "case ..." line with its numbers; any failure exits 1."""
-import json, os, re, sys, tempfile, urllib.error
+import json, os, re, shutil, sys, tempfile, urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,8 +34,8 @@ u, gateway, registry = net.party("u"), net.party("gateway"), net.party("registry
 instrument = {"admin": registry, "id": dc.INSTRUMENT}
 
 
-def config(user, party, read_as=(), token_role="", **more):
-    file = os.environ["CZE_TOKEN_FILE_" + (token_role or user).upper()]   # the user's login file, read again on every call
+def config(user, party, read_as=(), **more):
+    file = os.environ["CZE_TOKEN_FILE_" + user.upper()]   # the user's login file, read again on every call
     return b.Config(ws_url="", engine_url="", jwt_secret=b"", ledger_url=os.environ["CZE_LEDGER_URL"], ledger_user=net.user(user), party=party, fee_recipient="",
                     genesis="", work_dir=more.pop("work_dir", ""), make_input_cmd="", prove_cmd="", read_as=tuple(read_as), **{"ledger_token": "", "ledger_token_file": file}, **more)
 
@@ -58,7 +60,8 @@ def a_advance():
             sent["bytes"] = len(json.dumps(body).encode())
         return original(url, body, headers, timeout=timeout)
     b.post_json = post_json
-    cfg = config("builder", parties["BUILDER_PARTY"], (parties["OPERATOR_PARTY"], gateway), disclosed=dc.read_disclosed(net))
+    work = tempfile.mkdtemp()   # the custody check's work directory, removed at the end
+    cfg = config("builder", parties["BUILDER_PARTY"], (parties["OPERATOR_PARTY"], gateway), disclosed=dc.read_disclosed(net), work_dir=work)
     ledger = b.Ledger(cfg)
     chain = ledger.head()
     leg = b.LegEvent(b.WITHDRAWAL, LEG_ID, WRAPPED, BURNER, b.base_units(WITHDRAW), u, b.ZERO32)
@@ -81,26 +84,52 @@ def a_advance():
     head = ledger.head()["headNumber"]
     if head != "2":
         fail(f"the chain's head is {head}, not 2: the Advance did not commit")
+    withdrawn = b.base_units(WITHDRAW)
+    before = b.custody_sum(ledger.active_holdings(offset - 1), gateway, instrument)
     left = b.custody_sum(ledger.active_holdings(offset), gateway, instrument)
     if left != b.base_units("0.5"):
         fail(f"the gateway's custody after the Advance is {b.canton_amount(left)} TKB, not 0.5")
+    if before - left != withdrawn:
+        fail(f"the gateway's custody at offset {offset - 1} is {before} and at {offset} is {left} base units: the difference is {before - left}, not {withdrawn}")
+    rec = lambda n: {"gateway": gateway, "commandId": "custody-cases-a", "number": None, "plan": [{"instrument": instrument, "withdrawn": n, "deposits": 0}]}
+    good, wrong = b.run_custody_check(cfg, rec(withdrawn), offset), b.run_custody_check(cfg, rec(withdrawn + 1), offset)
+    shutil.rmtree(work, ignore_errors=True)
+    if (good, wrong) != ("ok", "stopped"):
+        fail(f"run_custody_check says {good!r} for the withdrawn amount and {wrong!r} for one base unit more, not 'ok' and 'stopped'")
     if sent["bytes"] >= limit:
         fail(f"the request of {sent['bytes']} bytes is not under the limit {limit}")
-    print(f"case A: Advance with {len(inputs)} inputs committed at offset {offset} (head {head}); request {sent['bytes']} bytes, participant limit {limit} bytes; gateway custody left {b.canton_amount(left)} TKB")
+    print(f"case A: Advance with {len(inputs)} inputs committed at offset {offset} (head {head}); request {sent['bytes']} bytes, participant limit {limit} bytes; gateway custody {b.canton_amount(before)} at offset {offset - 1} and {b.canton_amount(left)} at {offset} TKB, "
+          f"a difference of {b.canton_amount(before - left)} TKB = {WITHDRAW} withdrawn; run_custody_check says {good} for it and {wrong} for one base unit more")
+
+
+def acceptance_offset(begin, party):
+    """The offset of the one successful completion of the demo user's commands for `party` after offset `begin`; fails when there is none."""
+    ask = {"userId": net.user("demo"), "parties": [party], "beginExclusive": begin}
+    for item in net.post("users", f"/v2/commands/completions?limit={dc.COMPLETION_LIMIT}&stream_idle_timeout_ms={dc.COMPLETION_IDLE_MS}", ask, "demo"):
+        done = ((item.get("completionResponse") or {}).get("Completion") or {}).get("value") or {}
+        if ((done.get("status") or {}).get("code") or 0) == 0 and type(done.get("offset")) is int:
+            return done["offset"]
+    fail("the acceptance was answered as a duplicate, but no completion of it is on the ledger")
 
 
 def b_case():
     disclosed = dc.read_disclosed(net)
+    begin = net.get("users", "/v2/state/ledger-end", "demo")["offset"]   # the ledger end before anything of this case, for the completion of the acceptance
+    old_offers = {e["contractId"] for e in net.template("users", "v", dc.TRANSFER_OFFER)}   # V's offers from before the transfer
     held = [e["contractId"] for e in net.template("users", "u", dc.TOKEN)]
     transfer = {"sender": u, "receiver": net.party("v"), "amount": SENT, "instrumentId": instrument, "requestedAt": dc.utc(dc.timedelta(minutes=-1)),
                 "executeBefore": dc.utc(dc.timedelta(hours=1)), "inputHoldingCids": held, "meta": {"values": {}}}
     net.submit("users", ["u"], {"ExerciseCommand": {"templateId": dc.TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
                                                            "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": dc.NO_EXTRA_ARGS}}}, disclosed)
     # The test token answers with an offer that holds the amount locked with the sender until the receiver accepts: custody falls in the update of the acceptance.
-    offers = net.wait_for("the transfer offer", lambda: net.template("users", "v", dc.TRANSFER_OFFER))
-    answer = net.submit("users", ["v"], {"ExerciseCommand": {"templateId": dc.TRANSFER_INSTRUCTION, "contractId": offers[0]["contractId"], "choice": "TransferInstruction_Accept",
+    new = net.wait_for("the transfer offer", lambda: [e for e in net.template("users", "v", dc.TRANSFER_OFFER) if e["contractId"] not in old_offers])
+    if len(new) != 1:
+        fail(f"V has {len(new)} new transfer offers, not 1")
+    answer = net.submit("users", ["v"], {"ExerciseCommand": {"templateId": dc.TRANSFER_INSTRUCTION, "contractId": new[0]["contractId"], "choice": "TransferInstruction_Accept",
                                                            "choiceArgument": {"extraArgs": dc.NO_EXTRA_ARGS}}})
     offset = answer.get("completionOffset")
+    if answer.get("duplicate"):   # a repeat after a 503 was answered as known: the acceptance committed, and its completion (V's only command since `begin`) has the offset
+        offset = acceptance_offset(begin, net.party("v"))
     if type(offset) is not int:
         fail(f"the acceptance's answer has no offset: {answer}")
     sent = b.base_units(SENT)

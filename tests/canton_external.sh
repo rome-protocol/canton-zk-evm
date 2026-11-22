@@ -9,7 +9,7 @@
 #   - one Advance commits, against one stand-in sidecar: this participant is every party's host, so its sidecar is the only confirmer, and Canton asks it
 #     both when the block is submitted and when the block is validated; a refused block changes nothing;
 #   - the custody rules of Canton Coin, on the test token (tests/custody_cases.py): a withdrawal naming 50 inputs commits under the request limit, and custody read
-#     at the two offsets of a transfer with change differs by exactly the amount.
+#     at the offsets of a withdrawal and of a transfer with change differs by exactly the amount.
 # The participant's Ledger API has a login here, as the DevNet's has: HS256 tokens (audience https://canton.network.global, sub = the user's id) from a
 # secret made for this run, written to a file of this run and never to the repository. Every call without a token is refused.
 # Needs Java 21 and network access to the registry in PINS. No GPU, no reth, no ZisK.
@@ -40,7 +40,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 
 # The login: a secret for this run, in a configuration file and nowhere else; one token file per role.
 SECRET=$(openssl rand -hex 32)
-# The most one request to the Ledger API may be, set here so that the custody cases below know it (4 MiB, the smaller of the limits Canton has had).
+# The most one request to the Ledger API may be, set here so that the custody cases below know it (4 MiB, set for this run so that the custody cases below can print it).
 MAX_INBOUND=4194304; export CZE_MAX_INBOUND=$MAX_INBOUND
 cat > "$WORK/auth.conf" <<CONF
 canton.participants.operator.ledger-api.auth-services = [{ type = unsafe-jwt-hmac-256, secret = "$SECRET", target-audience = "https://canton.network.global" }]
@@ -168,7 +168,7 @@ jq -e '.created == false and .headNumber == "1"' <<<"$third" >/dev/null || fail 
 
 # The custody rules, on this participant (tests/custody_cases.py; the builder's own code, and the builder's dependency in PYTHON).
 # A: a withdrawal that names 50 gateway holdings goes through the builder's Advance, whose sidecar answers match, so it commits under the request limit.
-# B: custody read at the completion offset less one and at it differs by exactly the amount sent; the check says ok for it and stopped for one unit more.
+# A reads the gateway's custody at the Advance's offset less one and at it, B reads U's at the acceptance's offsets; each check says ok for the amount and stopped for one unit more.
 cases() { mint; CZE_CANTON=external "${PYTHON:-python3}" "$ROOT/tests/custody_cases.py" "$@"; }
 BLOCK2="ok $(printf 'cd%.0s' $(seq 32)) $(printf 'ef%.0s' $(seq 32)) $(printf 'cc%.0s' $(seq 32)) $(printf 'bb%.0s' $(seq 32)) 2 $(printf '55%.0s' $(seq 32)) 1700000001 30000000 0 0"
 cases a-setup || fail "case A: the 50 holdings were not made"
