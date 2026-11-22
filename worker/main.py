@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""The Canton router's worker, flow A (worker/README.md).
+"""The Canton router's worker (worker/README.md).
 
   main.py out [--once]     the out-relayer: router deposits on Canton, sent on through claimAndBridge. Runs only with OSTIA_RELAY_OUT=1
   main.py claim [--once]   the Sepolia claimer: claims what the router sent. Runs only with OSTIA_CLAIM_SEPOLIA=1
+  main.py in [--once]      the in-relayer (flow C): opens inboxes, claims sends to them and takes them on to Canton or back. Runs only with OSTIA_RELAY_IN=1
 
 With its switch off a worker reads and sends nothing (it exits at once). --once makes one pass; without it a pass runs every OSTIA_WORKER_INTERVAL_SECONDS. Endpoints and key files are named by
 environment variables (README), read here and never printed; a pass that fails is logged by its kind of error and tried again.
 """
 import os, re, sys, time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import chain, claim_sepolia, relay_out
+import chain, claim_sepolia, relay_in, relay_out
 from records import Records, whole_setting
 
 ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
@@ -38,10 +40,10 @@ def settings(prefix: str) -> dict:
 
 
 def run(argv: list) -> None:
-    kind = argv[0] if argv[:1] and argv[0] in ("out", "claim") and set(argv[1:]) <= {"--once"} else None
+    kind = argv[0] if argv[:1] and argv[0] in ("out", "claim", "in") and set(argv[1:]) <= {"--once"} else None
     if kind is None:
         raise SystemExit(__doc__)
-    switch = "OSTIA_RELAY_OUT" if kind == "out" else "OSTIA_CLAIM_SEPOLIA"
+    switch = {"out": "OSTIA_RELAY_OUT", "claim": "OSTIA_CLAIM_SEPOLIA", "in": "OSTIA_RELAY_IN"}[kind]
     if os.environ.get(switch) != "1":
         print(f"{switch} is not 1: nothing to do")
         return
@@ -57,6 +59,25 @@ def run(argv: list) -> None:
         chain.expect_chain(ostia, int(canton.chain_record(net)["chainId"]))   # the ledger's chain record names the Ostia chain id
         ledger, handle = relay_out.Ledger(net), relay_out.Router(ostia, router)
         step = lambda: relay_out.run_once(ledger, handle, ostia, signer, records, cfg, print)
+        errors = (chain.ChainError, canton.Fail, OSError, KeyError, ValueError)
+    elif kind == "in":
+        import canton
+        coins = [t.strip().lower() for t in need("OSTIA_RELAY_IN_TOKENS").split(",")]
+        if not all(ADDRESS.fullmatch(t) for t in coins):
+            raise SystemExit("OSTIA_RELAY_IN_TOKENS must be a comma-separated list of token addresses")
+        n = lambda name, default: whole_setting("OSTIA_RELAY_IN_" + name, default)
+        cfg = {**settings("OSTIA_RELAY_IN_"), "coins": coins, "floor": n("FLOOR", 0), "chunk": max(1, n("CHUNK_BLOCKS", 2000)), "from_block": n("FROM_BLOCK", 0), "ostia_from": n("OSTIA_FROM_BLOCK", 0),
+               "cooldown": n("COOLDOWN_SECONDS", 300), "open_per_hour": n("OPEN_PER_HOUR", 20), "src_net": n("SOURCE_NETWORK", 0)}
+        signer, records = chain.load_signer(need("OSTIA_RELAY_IN_KEY_FILE")), Records(state / "relay-in.json")
+        source, bridge = chain.Rpc("source chain", need("OSTIA_RELAY_IN_SOURCE_RPC_URL")), address("OSTIA_RELAY_IN_SOURCE_BRIDGE")
+        net = canton.Network()
+        chain.expect_chain(ostia, int(canton.chain_record(net)["chainId"]))
+        chain.expect_chain(source, n("SOURCE_CHAIN_ID", 11155111))
+        ctx = SimpleNamespace(router=relay_in.InRouter(ostia, router), rpc=ostia, source=source, source_bridge=bridge, signer=signer, cfg=cfg, canton=relay_in.Canton(net),
+                              aggkit=claim_sepolia.Aggkit(os.environ.get("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578")))
+        if "--once" not in argv:   # the page's request to open an inbox, on this machine only
+            relay_in.serve(n("INTAKE_PORT", 5591), lambda raw: relay_in.intake(raw, ctx, records, time.time()))
+        step = lambda: relay_in.run_once(ctx, records, print)
         errors = (chain.ChainError, canton.Fail, OSError, KeyError, ValueError)
     else:
         cfg = {**settings("OSTIA_CLAIM_"), "floor": whole_setting("OSTIA_CLAIM_FLOOR", 0), "network": whole_setting("OSTIA_CLAIM_NETWORK", 0), "from_block": whole_setting("OSTIA_CLAIM_FROM_BLOCK", 0),

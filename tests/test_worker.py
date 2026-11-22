@@ -55,7 +55,7 @@ class FakeChain(chain.Rpc):
             try:
                 return "0x" + encode(outs, list(fn(*decode(ins, bytes.fromhex(params[0]["data"][10:]))))).hex()
             except Revert:
-                raise chain.ChainError(f"{self.label}: eth_call was refused: execution reverted") from None
+                raise chain.Refused(f"{self.label}: eth_call was refused: execution reverted") from None
         if method == "eth_sendRawTransaction":
             if self.on_send:
                 self.on_send()
