@@ -164,6 +164,8 @@ export const REST_FIELDS = {
   agglayerBridgeEvent: ["signature", "topic0"],
   agglayerRouteClosed: ["id", "name", "open"],
   agglayerRoute: ["id", "name", "open", "networkId", "chainId", "bridge", "available", "assets", "times", "claimedForYou"],
+  agglayerHandoffRoute: ["id", "name", "open", "via", "available", "solgate", "coin", "assets", "times"],
+  agglayerHandoffToken: ["symbol", "name", "decimals", "places", "ostia", "times"],
   agglayerToken: ["symbol", "name", "decimals", "sepolia", "ostia"],
   agglayerTimes: ["in", "out"],
   agglayerRange: ["minSeconds", "maxSeconds"],

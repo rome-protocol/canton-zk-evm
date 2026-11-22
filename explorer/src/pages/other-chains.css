@@ -22,3 +22,5 @@
 .other-chains .route-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .other-chains .route-form p, .other-chains .route-form ol { margin: 0; overflow-wrap: anywhere; }
 .other-chains .route-form ol { padding-left: 20px; }
+.other-chains .handoff ul { margin: 4px 0 0; padding-left: 20px; }
+.other-chains .handoff .btn.go { align-self: flex-start; text-decoration: none; display: inline-block; }
