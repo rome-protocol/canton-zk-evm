@@ -19,6 +19,20 @@ describe("Ethereum Sepolia to Ostia", () => {
     expect(v.phase).toBe("unsent");
     expect(v.action).toEqual({ kind: "send", label: "Send to Ostia", note: null });
     expect(v.word).toBe("Not sent");
+    expect(v.note).toEqual({ text: "Your wallet did not send this. Nothing was sent. You can send it again.", bad: false });
+  });
+  it("shows one state, with no alert and nothing to press, while this tab is waiting for the wallet's pop-up", () => {
+    const sending = viewOf(base({ send: attempt(null) }), stage("unknown"), names(), 0, "send");
+    expect(sending).toMatchObject({ phase: "asking", word: "Confirm in your wallet", action: null, note: null, open: true, claimable: false, marksOf: null });
+    expect(states(sending)[0]).toBe("now:Sent on Ethereum Sepolia (Confirm in your wallet…)");
+    const claiming = viewOf(base({ count: 3, claim: attempt(null) }), stage("ready"), names(), 0, "claim");
+    expect(claiming).toMatchObject({ phase: "asking", action: null, note: null, claimable: false });
+    expect(states(claiming)[2]).toBe("now:Claim on Ostia (Confirm in your wallet…)");
+    const out = viewOf(base({ dir: "out", count: 3, claim: attempt(null) }), stage("ready"), names(), 0, "claim");
+    expect(states(out)[3]).toBe("now:Arrived (Confirm in your wallet…)");
+    // The same records, when this tab is not asking, are the ones the wallet did not answer.
+    expect(viewOf(base({ send: attempt(null) }), stage("unknown"), names(), 0).phase).toBe("unsure-send");
+    expect(viewOf(base({ count: 3, claim: attempt(null) }), stage("ready"), names(), 0).phase).toBe("unsure-claim");
   });
   it("waits for the send to be in a block, then for the deposit to reach Ostia", () => {
     expect(states(at(base()))).toEqual(["now:Sent on Ethereum Sepolia (Confirming…)", "todo:Ready to claim on Ostia", "todo:Claim on Ostia", "todo:Arrived"]);
@@ -43,8 +57,8 @@ describe("Ethereum Sepolia to Ostia", () => {
   });
   it("goes straight on, with no Claim to press, where a worker makes the claim", () => {
     const v = at(base({ count: 3 }), stage("ready"), names({ claimedForYou: { ostia: true, remote: false } }));
-    expect(v).toMatchObject({ action: null, claimable: false, note: { text: "It is on its way to your wallet.", bad: false } });
-    expect(v.steps[2]!.detail).toBeNull();
+    expect(v).toMatchObject({ action: null, claimable: false, note: null });
+    expect(states(v)).toEqual(["done:Sent on Ethereum Sepolia (21:40 UTC)", "done:Ready to claim on Ostia (21:46 UTC)", "todo:Claim on Ostia", "now:Arrived"]);
   });
   it("says again that a claim did not go through, and offers it again", () => {
     const v = at(base({ count: 3, claimFailed: true }), stage("ready"));

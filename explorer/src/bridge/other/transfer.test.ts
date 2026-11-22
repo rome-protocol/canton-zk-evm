@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ReadError } from "./reads.ts";
 import { loadTransfer, saveTransfer, type Transfer } from "./record.ts";
-import { adopt, advance, giveUp, look, resendSend, signClaim, startSend, Stop, Unsure } from "./transfer.ts";
-import { claimData, ETH, eventLog, fakeEnv, hash, ME, memoryLocks, OSTIA_BRIDGE, OSTIA_ID, SEPOLIA_BRIDGE, SEPOLIA_ID, stage, WETH, world } from "./fakes.ts";
+import { adopt, advance, askingOf, giveUp, look, resendSend, signClaim, startSend, Stop, Unsure, watchAsking } from "./transfer.ts";
+import { claimData, ETH, eventLog, fakeEnv, hash, ME, memoryLocks, memoryStore, OSTIA_BRIDGE, OSTIA_ID, SEPOLIA_BRIDGE, SEPOLIA_ID, stage, WETH, world } from "./fakes.ts";
 
 const AMOUNT = 2_000_000_000_000_000n;
 const OTHER = "0x" + "e4".repeat(20);
@@ -34,6 +34,47 @@ describe("starting a send", () => {
     const t = await startSend(env, { dir: "in", asset: ETH, amount: AMOUNT });
     expect(t.count).toBe(9);
     expect(loadTransfer(env.store, "t1")).toMatchObject({ count: 9, send: { tx: w.sent[0]!.hash } });
+  });
+  it("sends nothing, and puts the wallet nowhere, when the browser keeps no record: no store, writes that are dropped, or writes that throw", async () => {
+    const dropped = { ...memoryStore(), setItem: () => {} };
+    const full = { ...memoryStore(), setItem: () => { throw new Error("quota"); } };
+    for (const store of [null, dropped, full]) {
+      const w = world();
+      const env = fakeEnv(w, { store: store as never });
+      env.store = store as never;
+      await expect(startSend(env, { dir: "in", asset: ETH, amount: AMOUNT })).rejects.toThrow(/does not keep data for this site.*Nothing was sent/);
+      expect(w.sent).toEqual([]);
+      expect(w.asked.ensure).toEqual([]);
+    }
+  });
+  it("sends nothing when the step cannot be read back after it is written (the storage fills up between the probe and the record)", async () => {
+    const w = world();
+    const store = memoryStore();
+    const env = fakeEnv(w, { store });
+    const set = store.setItem;
+    store.setItem = (k, v) => { if (k.startsWith("agglayer-transfer:")) return; set(k, v); };
+    await expect(startSend(env, { dir: "in", asset: ETH, amount: AMOUNT })).rejects.toThrow(/does not keep data for this site/);
+    expect(w.sent).toEqual([]);
+  });
+  it("is known as asked in this tab only while the wallet is being asked, and tells a watcher when that changes", async () => {
+    const w = world();
+    const env = fakeEnv(w);
+    const seen: (string | null)[] = [];
+    const stop = watchAsking(() => seen.push(askingOf("t1")));
+    const send = env.send;
+    let during: string | null = null;
+    env.send = async (chainId, call) => { during = askingOf("t1"); return send(chainId, call); };
+    await startSend(env, { dir: "in", asset: ETH, amount: AMOUNT });
+    stop();
+    expect(during).toBe("send");
+    expect(askingOf("t1")).toBeNull();
+    expect(seen[0]).toBe("send");
+    expect(seen.at(-1)).toBeNull();
+    // A wallet that does not answer clears it too: the step is then one the wallet left open.
+    const w2 = world({ next: ["silent"] });
+    const env2 = fakeEnv(w2);
+    await expect(startSend(env2, { dir: "in", asset: ETH, amount: AMOUNT })).rejects.toBeInstanceOf(Unsure);
+    expect(askingOf("t1")).toBeNull();
   });
   it("out of Ostia: sends the wrapped ether to the Ostia bridge, for Ethereum, with no value", async () => {
     const w = world({ chain: SEPOLIA_ID });
@@ -232,7 +273,7 @@ describe("the claim", () => {
     const t = await startSend(env, { dir: "in", asset: ETH, amount: AMOUNT });
     saveTransfer(env.store, { ...t, count: 12, ...over });
     w.deposit = stage("ready");
-    w.claim = { claimed: false, chainId: OSTIA_ID, to: OSTIA_BRIDGE, destinationNetwork: 75, data: claimData(75, ME, AMOUNT) };
+    w.claim = { claimed: false, chainId: OSTIA_ID, to: OSTIA_BRIDGE, destinationNetwork: 75, data: claimData(75, ME, AMOUNT, 12) };
     return { w, env };
   }
   it("is signed on the destination chain after the server says it is ready and the claim is this wallet's: the record is written before the wallet is asked", async () => {
@@ -254,7 +295,7 @@ describe("the claim", () => {
   });
   it("is refused, with nothing signed, when it pays someone else, another amount, another network, or is for another bridge or chain", async () => {
     for (const bad of [
-      { data: claimData(75, OTHER, AMOUNT) }, { data: claimData(75, ME, AMOUNT + 1n) }, { data: claimData(0, ME, AMOUNT) },
+      { data: claimData(75, OTHER, AMOUNT, 12) }, { data: claimData(75, ME, AMOUNT + 1n, 12) }, { data: claimData(0, ME, AMOUNT, 12) }, { data: claimData(75, ME, AMOUNT, 11) },
       { to: SEPOLIA_BRIDGE }, { chainId: SEPOLIA_ID }, { destinationNetwork: 0 }, { data: null },
     ]) {
       const { w, env } = await ready();
@@ -291,7 +332,7 @@ describe("the claim", () => {
     const env = fakeEnv(w);
     const t = await startSend(env, { dir: "out", asset: ETH, amount: AMOUNT });
     saveTransfer(env.store, { ...t, count: 3 });
-    w.claim = { claimed: false, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, destinationNetwork: 0, data: claimData(0, ME, AMOUNT) };
+    w.claim = { claimed: false, chainId: SEPOLIA_ID, to: SEPOLIA_BRIDGE, destinationNetwork: 0, data: claimData(0, ME, AMOUNT, 3) };
     await signClaim(env, "t1");
     expect(w.asked.ensure.at(-1)).toBe(SEPOLIA_ID);
   });

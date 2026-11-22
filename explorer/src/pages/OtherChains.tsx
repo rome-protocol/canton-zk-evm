@@ -12,7 +12,7 @@ import { plainText } from "../bridge/words.ts";
 import type { LocksLike } from "../bridge/moves/moves.ts";
 import { keptTransfers, transferStore, type Transfer } from "../bridge/other/record.ts";
 import { readSetup, type OpenRow, type Setup } from "../bridge/other/setup.ts";
-import { adopt, advance, giveUp, look, readStop, resendSend, signClaim, startSend, sides, Stop, type Live, type SendInput } from "../bridge/other/transfer.ts";
+import { adopt, advance, giveUp, look, readStop, resendSend, signClaim, startSend, sides, Stop, askingOf, watchAsking, type Live, type SendInput } from "../bridge/other/transfer.ts";
 import { viewOf, type Names } from "../bridge/other/view.ts";
 import { createEnv } from "../bridge/other/wire.ts";
 import { feeCoin, NOT_YET_OPEN, otherWords, TRUST_ALWAYS, TRUST_ETH, ACTIVITY_NOTE } from "../bridge/other/words.ts";
@@ -75,6 +75,8 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
 
   const reload = useCallback(() => { setRecords(account ? keptTransfers(store, account).filter((t) => t.route === (row?.id ?? t.route)) : []); setNow(Date.now()); }, [account, store, row?.id]);
   useEffect(reload, [reload]);
+  // A step that starts or stops being asked of the wallet shows at once, not at the next look.
+  useEffect(() => watchAsking(reload), [reload]);
 
   // One look at each open transfer, every few seconds: it reads, and never signs.
   const looking = useRef(false);
@@ -147,7 +149,7 @@ export function OtherChains({ tabs, setup: first, pollMs = POLL_MS }: { tabs: Re
   if (wait) return wait;
   const connectNote = wallet.error ? plainText(wallet.error) : null;
   const connect = () => { if (!injected()) setMessages((m) => ({ ...m, wallet: noWalletWords() })); else void wallet.connect(); };
-  const views = names ? records.map((t) => ({ t, v: viewOf(t, live[t.id]?.deposit ?? null, names, now) })) : [];
+  const views = names ? records.map((t) => ({ t, v: viewOf(t, live[t.id]?.deposit ?? null, names, now, askingOf(t.id)) })) : [];
   const onItsWay = views.filter((x) => x.v.open).map((x) => x.t);
   // A transfer that arrived stays on the Move tab for a few minutes, so that the person sees it arrive.
   const shown = views.filter((x) => x.v.open || (x.t.done !== undefined && now - x.t.done < JUST_ARRIVED_MS)).map((x) => x.t);

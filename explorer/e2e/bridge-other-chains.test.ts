@@ -56,7 +56,7 @@ describe.skipIf(!dist)("the Bridge page's Other chains tab, in a browser", () =>
       }
       if (path === "/api/agglayer/claim" && world.on) {
         const network = Number(url.searchParams.get("network")), out = network === 75;
-        return json(200, { network, count: world.count, claimed: world.claimed, destinationNetwork: out ? 0 : 75, chainId: out ? SEPOLIA_ID : OSTIA_ID, to: out ? SEPOLIA_BRIDGE : OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(out ? 0 : 75, ME, AMOUNT), args: null });
+        return json(200, { network, count: world.count, claimed: world.claimed, destinationNetwork: out ? 0 : 75, chainId: out ? SEPOLIA_ID : OSTIA_ID, to: out ? SEPOLIA_BRIDGE : OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(out ? 0 : 75, ME, AMOUNT, world.count), args: null });
       }
       if (path === "/rpc") {
         const chunks: Buffer[] = [];

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import type { Hex } from "viem";
 import type { Transfer } from "../bridge/other/record.ts";
 import type { Live } from "../bridge/other/transfer.ts";
-import { sides } from "../bridge/other/transfer.ts";
+import { askingOf, sides } from "../bridge/other/transfer.ts";
 import { viewOf, type Names, type View } from "../bridge/other/view.ts";
 import { LEAVE_NOTE } from "../bridge/other/words.ts";
 import { dateTime, short } from "../format.ts";
@@ -76,7 +76,7 @@ function Row({ t, v, live, names, busy, message, a }: { t: Transfer; v: View; li
           <button type="button" className="btn ghost" disabled={busy || hash === ""} onClick={() => a.onAdopt(t, which, hash)}>Use this hash</button>
         </div>
       )}
-      {v.open && v.phase !== "unsent" && !unsure && <p className="small muted">{LEAVE_NOTE}</p>}
+      {v.open && v.phase !== "unsent" && v.phase !== "asking" && !unsure && <p className="small muted">{LEAVE_NOTE}</p>}
       {removable && !asking && <button type="button" className="link-b give-up" onClick={() => (unsure ? setAsking(true) : a.onRemove(t))}>{v.phase === "lost" ? "Remove this" : "Give this transfer up"}</button>}
       {removable && asking && (
         <div className="give-up" role="group" aria-label="Give this transfer up">
@@ -95,7 +95,7 @@ export function Transfers({ items, live, names, busy, messages, now, empty, acti
   if (items.length === 0) return <p className="muted small">{empty}</p>;
   return (
     <ul className="act-list">
-      {items.map((t) => <Row key={t.id} t={t} v={viewOf(t, live[t.id]?.deposit ?? null, names, now)} live={live[t.id]} names={names} busy={busy !== null} message={busy === t.id ? null : messages[t.id] ?? null} a={actions} />)}
+      {items.map((t) => <Row key={t.id} t={t} v={viewOf(t, live[t.id]?.deposit ?? null, names, now, askingOf(t.id))} live={live[t.id]} names={names} busy={busy !== null} message={busy === t.id ? null : messages[t.id] ?? null} a={actions} />)}
     </ul>
   );
 }

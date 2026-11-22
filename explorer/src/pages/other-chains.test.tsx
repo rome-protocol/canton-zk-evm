@@ -17,9 +17,9 @@ const world = {
   setup: setupBody() as unknown, stage: "unknown" as string, count: 7, claimed: false,
   chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 } as Record<number, number>,
   sent: [] as { chainId: number; tx: any; hash: string }[], receipts: new Map<string, unknown>(), next: [] as string[],
-  coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [] as number[], asked: [] as string[], faucetPosts: 0,
+  coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [] as number[], asked: [] as string[], faucetPosts: 0, hold: null as Promise<void> | null,
 };
-const reset = () => Object.assign(world, { setup: setupBody(), stage: "unknown", count: 7, claimed: false, chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 }, sent: [], receipts: new Map(), next: [], coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [], asked: [], faucetPosts: 0 });
+const reset = () => Object.assign(world, { setup: setupBody(), stage: "unknown", count: 7, claimed: false, chain: SEPOLIA_ID, connected: false, nonce: { [SEPOLIA_ID]: 4, [OSTIA_ID]: 7 }, sent: [], receipts: new Map(), next: [], coin: 5n * 10n ** 18n, weth: 3n * 10n ** 15n, eth: 5n * 10n ** 18n, switches: [], asked: [], faucetPosts: 0, hold: null });
 const hex = (n: bigint | number) => "0x" + n.toString(16);
 
 function wireFetch() {
@@ -32,7 +32,7 @@ function wireFetch() {
     if (input.startsWith("/api/agglayer/deposit")) return json(200, { network: 0, count: world.count, destinationNetwork: 75, ...stage(world.stage as never) });
     if (input.startsWith("/api/agglayer/claim")) {
       const out = input.includes("network=75");
-      return json(200, { network: out ? 75 : 0, count: world.count, claimed: world.claimed, destinationNetwork: out ? 0 : 75, chainId: out ? SEPOLIA_ID : OSTIA_ID, to: out ? SEPOLIA_BRIDGE : OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(out ? 0 : 75, ME, AMOUNT), args: null });
+      return json(200, { network: out ? 75 : 0, count: world.count, claimed: world.claimed, destinationNetwork: out ? 0 : 75, chainId: out ? SEPOLIA_ID : OSTIA_ID, to: out ? SEPOLIA_BRIDGE : OSTIA_BRIDGE, l1InfoTreeIndex: 1, data: world.claimed ? null : claimData(out ? 0 : 75, ME, AMOUNT, world.count), args: null });
     }
     if (input.startsWith("/api/tx/")) return json(404, { error: "Not found." });
     if (input === "/rpc") {
@@ -66,6 +66,7 @@ function wireWallet() {
         case "eth_estimateGas": return "0x30d40";
         case "eth_sendTransaction": {
           const how = world.next.shift() ?? "ok";
+          if (world.hold) await world.hold;   // the pop-up is open, and the person has not answered
           if (how === "refuse") throw Object.assign(new Error("User rejected the request."), { code: 4001 });
           const hash = "0x" + (0x2000 + world.sent.length).toString(16).padStart(64, "0");
           if (how === "silent") throw new Error("The request timed out.");
@@ -306,6 +307,68 @@ describe("Ethereum Sepolia to Ostia", () => {
     await userEvent.click(await within(await screen.findByRole("listitem", { name: "Sending 0.002 ETH to Ostia" })).findByRole("button", { name: "Send to Ostia" }));
     await waitFor(() => expect(world.sent).toHaveLength(1));
   });
+  it("says only that the wallet is being asked while its pop-up stays open longer than a look takes: no alert, no Look for it, no give-up", async () => {
+    wireWallet();
+    let answer!: () => void;
+    world.hold = new Promise<void>((r) => { answer = r; });
+    renderPage();
+    await connect();
+    await type("0.002");
+    await userEvent.click(screen.getByRole("button", { name: "Send to Ostia" }));
+    const row = await screen.findByRole("listitem", { name: "Sending 0.002 ETH to Ostia" });
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });   // several looks, as the poll is 40 ms here
+    expect(within(row).getByRole("listitem", { name: "Sent on Ethereum Sepolia: now" })).toHaveTextContent("Confirm in your wallet…");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for it" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give this transfer up" })).toBeNull();
+    expect(screen.queryByText(/did not say whether/)).toBeNull();
+    await act(async () => { answer(); });
+    await waitFor(() => expect(world.sent).toHaveLength(1));
+    expect(await screen.findByText("Confirming…")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for it" })).toBeNull();
+  });
+  it("says the same of a claim whose pop-up stays open, with no alert and nothing to press", async () => {
+    wireWallet();
+    renderPage();
+    await connect();
+    await type("0.002");
+    await userEvent.click(screen.getByRole("button", { name: "Send to Ostia" }));
+    await waitFor(() => expect(world.sent).toHaveLength(1));
+    mined(0, SEPOLIA_BRIDGE, 75);
+    world.stage = "ready";
+    const claim = await screen.findByRole("button", { name: "Claim on Ostia" });
+    let answer!: () => void;
+    world.hold = new Promise<void>((r) => { answer = r; });
+    await userEvent.click(claim);
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    const row = screen.getByRole("listitem", { name: "Sending 0.002 ETH to Ostia" });
+    expect(within(row).getByRole("listitem", { name: "Claim on Ostia: now" })).toHaveTextContent("Confirm in your wallet…");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for it" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give this transfer up" })).toBeNull();
+    await act(async () => { answer(); });
+    await waitFor(() => expect(world.sent).toHaveLength(2));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for it" })).toBeNull();
+    expect(await screen.findByRole("listitem", { name: "Claim on Ostia: now" })).toHaveTextContent("Claiming…");
+  });
+  it("does not start a send in a browser that keeps no site data, and says so", async () => {
+    wireWallet();
+    const real = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", { configurable: true, get() { throw new Error("blocked"); } });
+    try {
+      renderPage();
+      await connect();
+      await type("0.002");
+      await userEvent.click(screen.getByRole("button", { name: "Send to Ostia" }));
+      expect(await screen.findByText(/This browser does not keep data for this site/)).toBeInTheDocument();
+      expect(world.sent).toEqual([]);
+      expect(world.switches).toEqual([]);
+    } finally {
+      if (real) Object.defineProperty(window, "localStorage", real); else Reflect.deleteProperty(window, "localStorage");
+    }
+  });
   it("says in words when the wallet has too little for the send", async () => {
     wireWallet();
     world.eth = 1n;
@@ -328,6 +391,7 @@ describe("Ostia to Ethereum Sepolia", () => {
     await userEvent.clear(screen.getByRole("textbox", { name: "Amount to move" }));
     await type("0.002");
     expect(screen.queryByText(/Bring your own Sepolia ETH/)).toBeNull();
+    expect(screen.getByText("You need a little tROME to send, and a little Sepolia ETH to claim on Ethereum Sepolia.")).toBeInTheDocument();   // said before the send, so nobody is stuck at the claim
     await userEvent.click(screen.getByRole("button", { name: "Send to Ethereum Sepolia" }));
     await waitFor(() => expect(world.sent).toHaveLength(1));
     expect(world.switches).toEqual([OSTIA_ID]);

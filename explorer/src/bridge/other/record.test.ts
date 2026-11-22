@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KEEP_FINISHED, keptTransfers, loadTransfer, removeTransfer, saveTransfer, type Transfer } from "./record.ts";
+import { KEEP_FINISHED, keptTransfers, loadTransfer, removeTransfer, saveTransfer, storeWorks, type Transfer } from "./record.ts";
 import type { StoreLike } from "../moves/state.ts";
 
 const memory = (): StoreLike & { map: Map<string, string> } => {
@@ -28,6 +28,22 @@ describe("the kept transfers", () => {
     store.setItem("agglayer-transfer:junk", "{\"id\":1}"); store.setItem("agglayer-transfers", JSON.stringify(["old", "new", "junk", 5]));
     expect(keptTransfers(store, ME, 41 * 86_400_000).map((t) => t.id)).toEqual(["new"]);
     expect(store.map.has("agglayer-transfer:old")).toBe(false);
+  });
+  it("keeps a deposit that is not claimed after 30 days, and drops the old ones that are over or never got a deposit number", () => {
+    const store = memory();
+    const day = 86_400_000;
+    saveTransfer(store, make("ready", { at: 1_000, count: 4 }));
+    saveTransfer(store, make("claiming", { at: 1_000, count: 5, claim: { chainId: 1, to: "0x", data: "0x00", value: "0", nonce: 1, tx: null } }));
+    saveTransfer(store, make("done", { at: 1_000, count: 6, done: 2_000 }));
+    saveTransfer(store, make("lost", { at: 1_000, count: 7, lost: "failed" }));
+    saveTransfer(store, make("nonumber", { at: 1_000, send: null }));
+    expect(keptTransfers(store, ME, 100 * day).map((t) => t.id).sort()).toEqual(["claiming", "ready"]);
+  });
+  it("tells whether the browser keeps a record: one that is missing, blocked or full does not", () => {
+    expect(storeWorks(memory())).toBe(true);
+    expect(storeWorks(null)).toBe(false);
+    expect(storeWorks({ getItem: () => null, setItem: () => { throw new Error("full"); }, removeItem: () => {} })).toBe(false);
+    expect(storeWorks({ getItem: () => null, setItem: () => {}, removeItem: () => {} })).toBe(false);   // writes that are dropped
   });
   it("refuses a record whose transaction or amount is not what the page writes", () => {
     const store = memory();

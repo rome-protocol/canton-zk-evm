@@ -56,13 +56,23 @@ describe("the deposit number", () => {
 describe("a claim the server hands over", () => {
   const claim = parseAbi(["function claimAsset(bytes32[32] smtProofLocalExitRoot, bytes32[32] smtProofRollupExitRoot, uint256 globalIndex, bytes32 mainnetExitRoot, bytes32 rollupExitRoot, uint32 originNetwork, address originTokenAddress, uint32 destinationNetwork, address destinationAddress, uint256 amount, bytes metadata)"]);
   const proof = Array<Hex>(32).fill(("0x" + "00".repeat(32)) as Hex);
-  const made = (destinationNetwork: number, receiver: string, amount: bigint) =>
-    encodeFunctionData({ abi: claim, functionName: "claimAsset", args: [proof as never, proof as never, 1n, ("0x" + "01".repeat(32)) as Hex, ("0x" + "02".repeat(32)) as Hex, 0, zeroAddress, destinationNetwork, receiver as Hex, amount, "0x"] });
+  const made = (destinationNetwork: number, receiver: string, amount: bigint, o: { index?: bigint; origin?: number; token?: Hex } = {}) =>
+    encodeFunctionData({ abi: claim, functionName: "claimAsset", args: [proof as never, proof as never, o.index ?? 1n, ("0x" + "01".repeat(32)) as Hex, ("0x" + "02".repeat(32)) as Hex, o.origin ?? 0, o.token ?? zeroAddress, destinationNetwork, receiver as Hex, amount, "0x"] });
   it("is accepted only when it pays this receiver exactly this amount on this network", () => {
     expect(isClaimFor(made(75, ME, 2000n), want)).toBe(true);
     expect(isClaimFor(made(75, OTHER, 2000n), want)).toBe(false);
     expect(isClaimFor(made(75, ME, 2001n), want)).toBe(false);
     expect(isClaimFor(made(0, ME, 2000n), want)).toBe(false);
+  });
+  it("is, for ether, also the claim of the L1's own ether, for the deposit the page read", () => {
+    const w = { ...want, ether: true, count: 5 };
+    const flags = (index: bigint) => made(75, ME, 2000n, { index });
+    expect(isClaimFor(flags(5n), w)).toBe(true);
+    expect(isClaimFor(flags((1n << 64n) | 5n), w)).toBe(true);   // the mainnet flag and the rollup's index sit above the deposit's number
+    expect(isClaimFor(flags((3n << 32n) | 5n), w)).toBe(true);
+    expect(isClaimFor(flags(6n), w)).toBe(false);
+    expect(isClaimFor(made(75, ME, 2000n, { index: 5n, origin: 1 }), w)).toBe(false);
+    expect(isClaimFor(made(75, ME, 2000n, { index: 5n, token: ("0x" + "77".repeat(20)) as Hex }), w)).toBe(false);
   });
   it("is refused when it is another call, or not a call", () => {
     expect(isClaimFor(bridgeCall(BRIDGE, 75, ME, 2000n, "native").data, want)).toBe(false);

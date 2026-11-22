@@ -7,7 +7,7 @@ import type { OpenRow, OstiaChain } from "./setup.ts";
 import { sides } from "./transfer.ts";
 import { clock, elapsedWords, feeCoin } from "./words.ts";
 
-export type Phase = "unsent" | "unsure-send" | "sending" | "lost" | "waiting" | "ready" | "unsure-claim" | "claiming" | "arrived";
+export type Phase = "asking" | "unsent" | "unsure-send" | "sending" | "lost" | "waiting" | "ready" | "unsure-claim" | "claiming" | "arrived";
 export interface StepView { key: string; label: string; state: "done" | "now" | "todo"; detail: string | null }
 export interface View {
   phase: Phase;
@@ -31,7 +31,8 @@ export interface View {
 }
 export interface Names { ostia: OstiaChain; other: OpenRow; ostiaCoin: string }
 
-export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: number): View {
+/** `asking` is the step this tab is asking the wallet for right now (its pop-up is open): that transfer shows one state, whatever the record says of the step. */
+export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: number, asking: "send" | "claim" | null = null): View {
   const s = sides({ ostia: n.ostia, other: n.other, topic0: "" }, t.dir);
   const amount = showUnits(BigInt(t.amount), t.decimals);
   const wrapped = t.native ? `W${t.symbol}` : t.symbol;
@@ -44,6 +45,7 @@ export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: nu
   const phase: Phase =
     paid ? "arrived"
     : t.lost ? "lost"
+    : asking ? "asking"
     : t.send === null ? "unsent"
     : t.send.tx === null ? "unsure-send"
     : t.count === null ? "sending"
@@ -54,29 +56,30 @@ export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: nu
 
   const sent = t.count !== null;
   const when = (iso: string | null | undefined) => (iso ? clock(iso) : null);
+  const CONFIRM = "Confirm in your wallet…";
   const sendNow = !sent && phase !== "lost";
   const send: StepView = {
     key: "send", label: `Sent on ${s.sendName}`, state: sent ? "done" : sendNow ? "now" : "todo",
-    detail: sent ? when(deposit?.sentAt) ?? clock(t.at) : phase === "sending" ? "Confirming…" : phase === "unsure-send" ? "Check your wallet" : phase === "unsent" ? "Not sent yet" : null,
+    detail: sent ? when(deposit?.sentAt) ?? clock(t.at) : phase === "asking" ? CONFIRM : phase === "sending" ? "Confirming…" : phase === "unsure-send" ? "Check your wallet" : phase === "unsent" ? "Not sent yet" : null,
   };
   const steps: StepView[] = t.dir === "in"
     ? [
         send,
         { key: "ready", label: `Ready to claim on ${s.claimName}`, state: readyNow ? "done" : sent ? "now" : "todo", detail: readyNow ? when(deposit?.readyAt) : sent ? "Confirming…" : null },
-        { key: "claim", label: `Claim on ${s.claimName}`, state: paid ? "done" : phase === "ready" || phase === "claiming" || phase === "unsure-claim" ? "now" : "todo", detail: phase === "ready" ? (forYou ? null : "Your move") : phase === "claiming" ? "Claiming…" : phase === "unsure-claim" ? "Check your wallet" : null },
-        { key: "arrived", label: "Arrived", state: paid ? "done" : "todo", detail: paid && t.done !== undefined ? clock(t.done) : null },
+        { key: "claim", label: `Claim on ${s.claimName}`, state: paid ? "done" : (phase === "ready" && !forYou) || phase === "claiming" || phase === "unsure-claim" || (phase === "asking" && asking === "claim") ? "now" : "todo", detail: phase === "asking" && asking === "claim" ? CONFIRM : phase === "ready" ? (forYou ? null : "Your move") : phase === "claiming" ? "Claiming…" : phase === "unsure-claim" ? "Check your wallet" : null },
+        { key: "arrived", label: "Arrived", state: paid ? "done" : phase === "ready" && forYou ? "now" : "todo", detail: paid && t.done !== undefined ? clock(t.done) : null },
       ]
     : [
         send,
         { key: "confirmed", label: `Confirmed on ${s.claimName}`, state: confirmed ? "done" : sent ? "now" : "todo", detail: confirmed ? when(deposit?.confirmedAt) : sent ? "Confirming…" : null },
         { key: "ready", label: "Ready to claim", state: readyNow ? "done" : confirmed ? "now" : "todo", detail: readyNow ? when(deposit?.readyAt) : null },
-        { key: "arrived", label: "Arrived", state: paid ? "done" : phase === "claiming" || phase === "unsure-claim" ? "now" : "todo", detail: paid && t.done !== undefined ? clock(t.done) : phase === "claiming" ? "Claiming…" : phase === "unsure-claim" ? "Check your wallet" : null },
+        { key: "arrived", label: "Arrived", state: paid ? "done" : phase === "claiming" || phase === "unsure-claim" || (phase === "asking" && asking === "claim") || (phase === "ready" && forYou) ? "now" : "todo", detail: paid && t.done !== undefined ? clock(t.done) : phase === "asking" && asking === "claim" ? CONFIRM : phase === "claiming" ? "Claiming…" : phase === "unsure-claim" ? "Check your wallet" : null },
       ];
 
   const title = paid
     ? t.dir === "in" ? `Arrived. ${amount} ${wrapped} is in your wallet.` : `Arrived. ${amount} ${t.symbol} is in your wallet on ${s.claimName}.`
     : `Sending ${amount} ${t.symbol} to ${s.claimName}`;
-  const word = ({ arrived: "Arrived", lost: "Did not go through", unsent: "Not sent", "unsure-send": "Check your wallet", sending: "Sent", waiting: stage === "confirmed" && t.dir === "out" ? "Confirmed" : "Sent", ready: "Ready to claim", "unsure-claim": "Check your wallet", claiming: "Claiming" } as const)[phase];
+  const word = ({ arrived: "Arrived", lost: "Did not go through", asking: "Confirm in your wallet", unsent: "Not sent", "unsure-send": "Check your wallet", sending: "Sent", waiting: stage === "confirmed" && t.dir === "out" ? "Confirmed" : "Sent", ready: "Ready to claim", "unsure-claim": "Check your wallet", claiming: "Claiming" } as const)[phase];
 
   const claimNote = `Your wallet switches to ${s.claimName}. Its fee is paid in ${feeCoin(n.other, n.ostiaCoin, t.dir === "in" ? "ostia" : "other")}.`;
   const action: View["action"] =
@@ -84,12 +87,11 @@ export function viewOf(t: Transfer, deposit: Deposit | null, n: Names, nowMs: nu
     : phase === "ready" && !forYou ? { kind: "claim", label: `Claim on ${s.claimName}`, note: claimNote }
     : null;
   const note: View["note"] =
-    phase === "unsent" ? { text: "This transfer was started, but your wallet was never asked. Nothing was sent.", bad: false }
+    phase === "unsent" ? { text: "Your wallet did not send this. Nothing was sent. You can send it again.", bad: false }
     : phase === "unsure-send" ? { text: `Your wallet did not say whether it sent this. Look in its activity on ${s.sendName}. Nothing more is sent until you have.`, bad: true }
     : phase === "unsure-claim" ? { text: `Your wallet did not say whether it sent the claim. Look in its activity on ${s.claimName}. Nothing more is sent until you have.`, bad: true }
     : phase === "lost" ? { text: t.lost === "failed" ? `This send did not go through on ${s.sendName}. Nothing was lost.` : `This send is on ${s.sendName}, but the page cannot tell which deposit it made, so it cannot carry on with it. Nothing is signed.`, bad: true }
     : phase === "ready" && t.claimFailed ? { text: "The claim did not go through. Nothing was lost. Claim again.", bad: true }
-    : phase === "ready" && forYou ? { text: "It is on its way to your wallet.", bad: false }
     : null;
 
   const open = phase !== "arrived" && phase !== "lost";

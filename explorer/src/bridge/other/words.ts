@@ -8,7 +8,9 @@ export const TRUST_ETH = "ETH you send to Ostia stays locked on Ethereum Sepolia
 export const TRUST_ALWAYS = "Test tokens only. Ostia has not been independently audited.";
 /** Said before the wallet's pop-up on Ethereum Sepolia. */
 export const BRING_YOUR_OWN = "Bring your own Sepolia ETH: the amount and the fee are paid from your wallet on Ethereum Sepolia. Get a little from a Sepolia faucet you choose.";
-export const FEES_NOTE = "You need a little Sepolia ETH for fees, and a little tROME to claim.";
+/** Under the Send button: what the person needs on each chain, in the coin of each. `claimName` is the chain of the claim. */
+export const feesNote = (dir: "in" | "out", ostiaCoin: string, otherCoin: string, claimName: string) =>
+  dir === "in" ? `You need a little ${otherCoin} for fees, and a little ${ostiaCoin} to claim.` : `You need a little ${ostiaCoin} to send, and a little ${otherCoin} to claim on ${claimName}.`;
 export const LEAVE_NOTE = "You can leave this page. This transfer stays in Activity.";
 export const ACTIVITY_NOTE = "Activity lists the transfers started in this browser.";
 export const NOT_YET_OPEN = "Not yet open";

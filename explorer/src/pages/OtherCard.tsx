@@ -6,7 +6,7 @@ import { readBalances, type Balances } from "../bridge/other/balances.ts";
 import type { Dir } from "../bridge/other/record.ts";
 import type { Asset, OpenRow, OstiaChain } from "../bridge/other/setup.ts";
 import { sides, type SendInput } from "../bridge/other/transfer.ts";
-import { BRING_YOUR_OWN, FEES_NOTE, feeCoin, notAvailable, otherWords, timeWords } from "../bridge/other/words.ts";
+import { BRING_YOUR_OWN, feeCoin, feesNote, notAvailable, otherWords, timeWords } from "../bridge/other/words.ts";
 import { StillStuck } from "../components/Help.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
@@ -140,7 +140,7 @@ export function OtherCard(p: OtherCardProps) {
           {!row.available && <p className="small bad" role="status">{notAvailable(row.name)}</p>}
           <button type="button" className="btn go" disabled={button.disabled} onClick={() => void press()}>{button.label}</button>
           {dir === "in" && <p className="small muted">{BRING_YOUR_OWN}</p>}
-          {dir === "in" && <p className="small muted">{FEES_NOTE}</p>}
+          <p className="small muted">{feesNote(dir, p.ostiaCoin, feeCoin(row, p.ostiaCoin, "other"), s.claimName)}</p>
           {problem && <><p className="small bad" role="alert">{problem}</p><StillStuck error={problem} /></>}
           {p.connectNote && <p className="small bad" role="alert">{p.connectNote}</p>}
           {p.faucet && bal.coin === 0n && button.action !== "faucet" && <p className="small"><button type="button" className="link-b" disabled={p.faucet.busy || p.faucet.coming} onClick={p.faucet.onGet}>{p.faucet.busy ? "Asking the faucet…" : p.faucet.coming ? `${p.ostiaCoin} is on its way…` : p.faucet.label}</button> <span className="muted">You have none for fees on {chain.name}.</span></p>}

@@ -60,6 +60,17 @@ export function saveTransfer(store: StoreLike | null, t: Transfer): void {
     if (!ids(store).includes(t.id)) store?.setItem(INDEX, JSON.stringify([...ids(store), t.id]));
   } catch { /* the transfer still runs; it just cannot be picked up after a reload */ }
 }
+/** Whether this browser keeps a record: one is written, read back and removed. False where the store is missing, blocked or full. */
+export function storeWorks(store: StoreLike | null): boolean {
+  if (!store) return false;
+  try {
+    const key = "agglayer-probe", value = String(Math.random());
+    store.setItem(key, value);
+    const ok = store.getItem(key) === value;
+    store.removeItem(key);
+    return ok;
+  } catch { return false; }
+}
 export function removeTransfer(store: StoreLike | null, id: string): void {
   try { store?.removeItem(KEY + id); store?.setItem(INDEX, JSON.stringify(ids(store).filter((r) => r !== id))); } catch { /* nothing to remove */ }
 }
@@ -67,11 +78,15 @@ export function loadTransfer(store: StoreLike | null, id: string): Transfer | nu
   try { const t = JSON.parse(store?.getItem(KEY + id) ?? "null") as unknown; return valid(t) ? t : null; } catch { return null; }
 }
 
-/** The transfers of `account` kept in this browser, newest first. A record more than 30 days old is dropped, and so are the oldest finished ones past the 50 kept. */
+/**
+ * The transfers of `account` kept in this browser, newest first. A transfer that is over (it arrived, or its send did not go through) or that never got a deposit number is dropped after 30 days,
+ * and so are the oldest finished ones past the 50 kept. A deposit that is not yet claimed is kept until it arrives or the person gives it up: the page has no other way to its claim.
+ */
 export function keptTransfers(store: StoreLike | null, account: string, now: number = Date.now()): Transfer[] {
   const all = ids(store).reverse().map((id) => loadTransfer(store, id)).filter((t): t is Transfer => t !== null);
-  for (const t of all) if (now - t.at > MAX_AGE_MS) removeTransfer(store, t.id);
-  const fresh = all.filter((t) => now - t.at <= MAX_AGE_MS);
+  const stale = (t: Transfer) => now - t.at > MAX_AGE_MS && (t.done !== undefined || t.lost !== undefined || t.count === null);
+  for (const t of all) if (stale(t)) removeTransfer(store, t.id);
+  const fresh = all.filter((t) => !stale(t));
   const extra = new Set(fresh.filter((t) => t.done !== undefined).slice(KEEP_FINISHED));
   for (const t of extra) removeTransfer(store, t.id);
   const mine = account.toLowerCase();

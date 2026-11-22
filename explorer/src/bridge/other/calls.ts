@@ -39,12 +39,21 @@ export function depositMade(logs: Log[], bridgeAddress: string, topic0: string, 
   return found.length === 1 ? found[0]! : null;
 }
 
-/** Whether `data` is a claim of exactly `amount` to `receiver` on `destinationNetwork`: what the page checks before its wallet is asked to sign what the server handed over. */
-export function isClaimFor(data: string, want: { destinationNetwork: number; receiver: string; amount: bigint }): boolean {
+/** The network id of the L1 chain that ether comes from: a claim of ether names it as the origin, with the zero address as the token. */
+export const ETHER_ORIGIN_NETWORK = 0;
+
+/**
+ * Whether `data` is a claim of exactly `amount` to `receiver` on `destinationNetwork`: what the page checks before its wallet is asked to sign what the server handed over. With `ether` it must also
+ * be a claim of the L1's own ether (origin network 0, token the zero address), and with `count` its global index must end in that deposit number (the low 32 bits are the deposit's number on its
+ * own network), so that it is the claim of the deposit the page read from its own receipt.
+ */
+export function isClaimFor(data: string, want: { destinationNetwork: number; receiver: string; amount: bigint; ether?: boolean; count?: number }): boolean {
   try {
     const call = decodeFunctionData({ abi: bridge, data: data as Hex });
     if (call.functionName !== "claimAsset") return false;
     const a = call.args as readonly unknown[];
+    if (want.ether && (a[5] !== ETHER_ORIGIN_NETWORK || String(a[6]).toLowerCase() !== zeroAddress)) return false;
+    if (want.count !== undefined && ((a[2] as bigint) & 0xffffffffn) !== BigInt(want.count)) return false;
     return a[7] === want.destinationNetwork && String(a[8]).toLowerCase() === want.receiver.toLowerCase() && a[9] === want.amount;
   } catch { return false; }
 }

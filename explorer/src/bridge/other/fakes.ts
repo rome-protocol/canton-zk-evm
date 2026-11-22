@@ -54,8 +54,9 @@ export function eventLog(o: { bridge: string; dest: number; to?: string; amount:
 }
 const claimAbi = parseAbi(["function claimAsset(bytes32[32] smtProofLocalExitRoot, bytes32[32] smtProofRollupExitRoot, uint256 globalIndex, bytes32 mainnetExitRoot, bytes32 rollupExitRoot, uint32 originNetwork, address originTokenAddress, uint32 destinationNetwork, address destinationAddress, uint256 amount, bytes metadata)"]);
 const proof = Array<Hex>(32).fill(("0x" + "00".repeat(32)) as Hex);
-export const claimData = (dest: number, to: string, amount: bigint): Hex =>
-  encodeFunctionData({ abi: claimAbi, functionName: "claimAsset", args: [proof as never, proof as never, 1n, ("0x" + "01".repeat(32)) as Hex, ("0x" + "02".repeat(32)) as Hex, 0, zeroAddress, dest, to as Hex, amount, "0x"] });
+/** A claim of ether for the deposit numbered `count` (the low 32 bits of the global index). */
+export const claimData = (dest: number, to: string, amount: bigint, count: number): Hex =>
+  encodeFunctionData({ abi: claimAbi, functionName: "claimAsset", args: [proof as never, proof as never, BigInt(count), ("0x" + "01".repeat(32)) as Hex, ("0x" + "02".repeat(32)) as Hex, 0, zeroAddress, dest, to as Hex, amount, "0x"] });
 
 export const hash = (n: number): Hex => ("0x" + n.toString(16).padStart(64, "0")) as Hex;
 

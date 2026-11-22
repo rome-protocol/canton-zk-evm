@@ -9,7 +9,7 @@ import { definitelyNotSent } from "../evm/adapter.ts";
 import type { LocksLike } from "../moves/moves.ts";
 import type { StoreLike } from "../moves/state.ts";
 import { bridgeCall, depositMade, isClaimFor, type Call } from "./calls.ts";
-import { loadTransfer, removeTransfer, saveTransfer, type Attempt, type Dir, type Transfer } from "./record.ts";
+import { loadTransfer, removeTransfer, saveTransfer, storeWorks, type Attempt, type Dir, type Transfer } from "./record.ts";
 import { ReadError, type Claim, type Deposit } from "./reads.ts";
 import type { Asset, OpenRow, OstiaChain } from "./setup.ts";
 
@@ -77,26 +77,50 @@ function patch(env: Env, id: string, change: Partial<Transfer>): Transfer | null
 
 const kept = (env: Env, id: string) => loadTransfer(env.store, id);
 
+const NO_STORE = "This browser does not keep data for this site, so the transfer could not be carried on to its claim. Allow site data for this page, then try again. Nothing was sent.";
+const NO_STORE_CLAIM = "This browser does not keep data for this site, so the claim could not be recorded. Allow site data for this page, then try again. Nothing was sent.";
+
+// The steps this tab is asking the wallet for right now, by transfer id. A record whose step has no hash may be one the wallet is still being asked (the pop-up is open) or one it did not answer
+// (after a reload): only this tab knows which, so the page asks here.
+const asking = new Map<string, "send" | "claim">();
+const watchers = new Set<() => void>();
+/** The step of the transfer that this tab is asking the wallet for now, or null. */
+export const askingOf = (id: string): "send" | "claim" | null => asking.get(id) ?? null;
+/** Calls `listener` whenever a step starts or stops being asked of the wallet; returns the way to stop. */
+export function watchAsking(listener: () => void): () => void { watchers.add(listener); return () => void watchers.delete(listener); }
+const mark = (id: string, which: "send" | "claim" | null) => { if (which) asking.set(id, which); else asking.delete(id); for (const w of [...watchers]) w(); };
+
 /** Writes the step before the wallet is asked, asks, and writes the hash. A refusal that certainly sent nothing leaves the record as it was (`restore`); any other failure leaves the step open and is `Unsure`. */
 async function ask(env: Env, t: Transfer, which: "send" | "claim", chainId: number, call: Call): Promise<Transfer> {
-  const why = await env.ensure(chainId);
-  if (why) throw new Stop(why);
-  const nonce = (await env.nonces(chainId))?.pending ?? null;
-  const before = loadTransfer(env.store, t.id);
-  const planned: Attempt = { chainId, to: call.to, data: call.data, value: call.value, nonce, tx: null };
-  // What a look wrote since the record was read (a deposit number, a finished claim) is kept: only the step is added to it.
-  saveTransfer(env.store, { ...(before ?? t), [which]: planned });
-  let tx: Hex;
+  mark(t.id, which);
   try {
-    tx = await env.send(chainId, call);
-  } catch (e) {
-    if (!definitelyNotSent(e)) throw new Unsure(e);
-    if (before) saveTransfer(env.store, before); else removeTransfer(env.store, t.id);
-    throw e;
-  }
-  const next = { ...(loadTransfer(env.store, t.id) ?? t), [which]: { ...planned, tx } };
-  saveTransfer(env.store, next);
-  return next;
+    const why = await env.ensure(chainId);
+    if (why) throw new Stop(why);
+    const nonce = (await env.nonces(chainId))?.pending ?? null;
+    const before = loadTransfer(env.store, t.id);
+    const planned: Attempt = { chainId, to: call.to, data: call.data, value: call.value, nonce, tx: null };
+    // What a look wrote since the record was read (a deposit number, a finished claim) is kept: only the step is added to it.
+    saveTransfer(env.store, { ...(before ?? t), [which]: planned });
+    // The wallet is asked only once the record is read back from the store: a step that cannot be picked up again after a reload is not started.
+    const written = loadTransfer(env.store, t.id)?.[which];
+    if (!written || written.data !== planned.data || written.tx !== null) {
+      if (before) saveTransfer(env.store, before); else removeTransfer(env.store, t.id);
+      throw new Stop(which === "send" ? NO_STORE : NO_STORE_CLAIM);
+    }
+    // Said again, now that the record has the step in it, so that a page that watches reads it.
+    mark(t.id, which);
+    let tx: Hex;
+    try {
+      tx = await env.send(chainId, call);
+    } catch (e) {
+      if (!definitelyNotSent(e)) throw new Unsure(e);
+      if (before) saveTransfer(env.store, before); else removeTransfer(env.store, t.id);
+      throw e;
+    }
+    const next = { ...(loadTransfer(env.store, t.id) ?? t), [which]: { ...planned, tx } };
+    saveTransfer(env.store, next);
+    return next;
+  } finally { mark(t.id, null); }
 }
 
 export interface SendInput { dir: Dir; asset: Asset; amount: bigint }
@@ -110,6 +134,7 @@ export function sendCall(plan: Plan, account: string, dir: Dir, asset: Asset, am
 /** Starts a transfer: asks the wallet for the send. The record is kept from the moment the wallet is asked; a send the wallet certainly did not make leaves no record. */
 export async function startSend(env: Env, input: SendInput): Promise<Transfer> {
   if (input.amount <= 0n || input.amount >= MAX) throw new Stop("The amount must be more than zero.");
+  if (!storeWorks(env.store)) throw new Stop(NO_STORE);
   const t: Transfer = {
     id: env.newId(), account: env.account, at: env.now(), route: env.plan.other.id, dir: input.dir, symbol: input.asset.symbol, decimals: input.asset.decimals, native: input.asset.sepolia === "native",
     amount: input.amount.toString(), send: null, count: null, claim: null,
@@ -145,7 +170,7 @@ export async function signClaim(env: Env, id: string): Promise<Transfer> {
       throw new Stop("Already arrived.");
     }
     if (claim.data === null || claim.to.toLowerCase() !== s.claimBridge.toLowerCase() || claim.chainId !== s.claimChain || claim.destinationNetwork !== s.claimNetwork
-      || !isClaimFor(claim.data, { destinationNetwork: s.claimNetwork, receiver: t.account, amount: BigInt(t.amount) })) {
+      || !isClaimFor(claim.data, { destinationNetwork: s.claimNetwork, receiver: t.account, amount: BigInt(t.amount), ether: t.native, count: t.count })) {
       throw new Stop("The bridge sent back a claim that is not yours, so nothing was signed. Try again in a moment.");
     }
     return ask(env, patch(env, id, { claimFailed: undefined }) ?? t, "claim", s.claimChain, { to: claim.to, data: claim.data as Hex, value: "0" });
