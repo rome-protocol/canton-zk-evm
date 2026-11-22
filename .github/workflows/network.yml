@@ -43,7 +43,8 @@ jobs:
         run: tests/canton_network.sh
 
   # Ostia on an existing participant, for real: the same pinned Canton, started without Ostia's bootstrap and with a login on its Ledger API;
-  # network/external/setup.py twice (the second changes nothing), the users' rights, and one Advance against one stand-in sidecar.
+  # network/external/setup.py twice (the second changes nothing), the users' rights, one Advance against one stand-in sidecar, and the custody cases
+  # of tests/custody_cases.py (an Advance that names 50 inputs; the custody read at two offsets).
   canton-external:
     runs-on: ubuntu-latest
     steps:
@@ -52,8 +53,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Install the builder's one dependency, by hash
+        run: |
+          python3 --version | grep -q '^Python 3\.12\.'
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r builder/requirements.txt
       - name: Ostia on an existing participant
-        run: tests/canton_external.sh
+        run: PYTHON="$RUNNER_TEMP/venv/bin/python" tests/canton_external.sh
 
   # What Canton's rejection says when one participant stops answering, on the pinned Canton: the mediator's timeout names the unresponsive parties,
   # in the JSON API's answer and in the command's completion, and the builder's readers find them (tests/canton_timeout.sh; a probe package, not Ostia's).
