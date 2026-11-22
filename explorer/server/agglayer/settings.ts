@@ -22,6 +22,15 @@ export interface RouteSetting {
   claimedForYou: { ostia: boolean; remote: boolean };
   offered: TokenSetting[];
 }
+/** The settings of the message routes; `messages` of the settings is null while AGGLAYER_MESSAGES is off. */
+export interface MessageSettings {
+  /** The longest message the form sends, in bytes. */
+  maxBytes: number;
+  /** The longest message (and note) the explorer reads; one above it is "too large for this page" and no claim is built. */
+  readMaxBytes: number;
+  /** The note board (a demo receiver) on each chain, or null where none is set. */
+  noteBoards: { ostia: string | null; sepolia: string | null };
+}
 export interface AgglayerSettings {
   aggkitUrl: string;
   sepoliaRpc: Secret;
@@ -36,6 +45,7 @@ export interface AgglayerSettings {
   settlementMaxAgeSeconds: number;
   /** How many blocks AggKit's Ostia syncers may trail Ostia's finalized block before the bridge is "not available". */
   aggkitMaxLagBlocks: number;
+  messages: MessageSettings | null;
 }
 
 type Env = Record<string, string | undefined>;
@@ -48,7 +58,10 @@ export const OPEN_ROUTE = "sepolia";
 
 export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null {
   const raw = env.AGGLAYER_BRIDGE;
-  if (raw === undefined || raw === "" || raw === "0") return null;
+  if (raw === undefined || raw === "" || raw === "0") {
+    if (env.AGGLAYER_MESSAGES === "1") throw fail("AGGLAYER_MESSAGES needs AGGLAYER_BRIDGE=1");
+    return null;
+  }
   if (raw !== "1") throw fail(`AGGLAYER_BRIDGE must be 1 or 0, not "${raw}"`);
 
   const whole = (name: string, fallback: number, min: number, max = Number.MAX_SAFE_INTEGER): number => {
@@ -142,6 +155,22 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     return { id: r.id, name: r.name, open, times: { in: range(t.in), out: range(t.out) }, claimedForYou: { ostia: flagIn(c.ostia), remote: flagIn(c.remote) }, offered: r.id === OPEN_ROUTE ? tokens : [] };
   });
 
+  const messages = ((): MessageSettings | null => {
+    const on = env.AGGLAYER_MESSAGES;
+    if (on === undefined || on === "" || on === "0") return null;
+    if (on !== "1") throw fail(`AGGLAYER_MESSAGES must be 1 or 0, not "${on.slice(0, 40)}"`);
+    const boards = env.AGGLAYER_NOTE_BOARDS?.trim() ? object("AGGLAYER_NOTE_BOARDS", json("AGGLAYER_NOTE_BOARDS", env.AGGLAYER_NOTE_BOARDS), ["ostia", "sepolia"]) : {};
+    const board = (k: string): string | null => {
+      const v = boards[k];
+      if (v === undefined) return null;
+      if (typeof v !== "string" || !ADDRESS.test(v)) throw fail(`AGGLAYER_NOTE_BOARDS: "${k}" must be 0x and 40 hex digits`);
+      return v.toLowerCase();
+    };
+    const maxBytes = whole("AGGLAYER_MESSAGE_MAX_BYTES", 280, 1, 16384), readMaxBytes = whole("AGGLAYER_MESSAGE_READ_MAX_BYTES", 4096, 1, 16384);
+    if (maxBytes > readMaxBytes) throw fail("AGGLAYER_MESSAGE_MAX_BYTES must not be above AGGLAYER_MESSAGE_READ_MAX_BYTES: a message the form sends must be one the page can read");
+    return { maxBytes, readMaxBytes, noteBoards: { ostia: board("ostia"), sepolia: board("sepolia") } };
+  })();
+
   return {
     aggkitUrl: loopbackUrl("AGGKIT_BRIDGE_URL", "http://127.0.0.1:5578"),
     sepoliaRpc: new Secret(rpc),
@@ -154,5 +183,6 @@ export function agglayerSettings(env: Env, fail: Fail): AgglayerSettings | null 
     routes,
     settlementMaxAgeSeconds: whole("AGGLAYER_SETTLEMENT_MAX_AGE_SECONDS", 1800, 1),
     aggkitMaxLagBlocks: whole("AGGLAYER_AGGKIT_MAX_LAG_BLOCKS", 30, 1),
+    messages,
   };
 }

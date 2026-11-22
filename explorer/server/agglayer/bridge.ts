@@ -2,21 +2,29 @@
  * The routes of the AggLayer bridge page: its setup, the stage of a deposit and the claim receipt. The server reads and the person's wallet signs: nothing here claims for anyone or
  * holds a key. The facts come from AggKit's bridge service, from Ethereum Sepolia (through an endpoint kept secret) and from Ostia's own reth.
  */
+import { keccak256, type Hex } from "viem";
 import type { Answer } from "../api.ts";
 import { createLimiter, REST_REFUSED, retryAfter } from "../limits.ts";
 import type { HealthRow } from "../indexer/health.ts";
 import { cached } from "../rest/cache.ts";
 import { REST_FIELDS as F, pick } from "../rest/fields.ts";
 import { BadRequest } from "../rest/paging.ts";
-import type { Reth } from "../reth.ts";
-import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, depositCountCall, isClaimedCall, type ClaimArgs } from "./abi.ts";
+import { RethError, type Reth } from "../reth.ts";
+import { BRIDGE_EVENT, BRIDGE_EVENT_TOPIC, claimAssetCall, claimMessageCall, depositCountCall, emergencyStateCall, isClaimedCall, noteOf, noteOfCall, type ClaimArgs } from "./abi.ts";
 import { AggkitError, type AggkitReader, type BridgeLeaf } from "./aggkit.ts";
-import { SepoliaBusy, SepoliaError, type SepoliaReader } from "./sepolia.ts";
-import type { AgglayerSettings } from "./settings.ts";
+import { SepoliaBusy, SepoliaError, SIMULATE_FROM, SIMULATE_GAS, type SepoliaReader } from "./sepolia.ts";
+import { OPEN_ROUTE, type AgglayerSettings } from "./settings.ts";
 
 /** Ethereum's network id in AggLayer. */
 const ETHEREUM = 0;
 export const AGGLAYER_PATHS = ["/api/agglayer/setup", "/api/agglayer/deposit", "/api/agglayer/claim"] as const;
+/** The two routes that exist only with AGGLAYER_MESSAGES on. */
+export const AGGLAYER_MESSAGE_PATHS = ["/api/agglayer/messages", "/api/agglayer/note"] as const;
+export const MESSAGES_OFF = "AggLayer messages are off on this explorer.";
+export const TOO_LARGE = "This message is too large for this page.";
+export const NOT_AVAILABLE = (chain: string): string => `${chain} is not available right now. Nothing is lost.`;
+export const NO_CODE = (chain: string): string => `There is no contract at this address on ${chain} yet. The message can be claimed once one is there.`;
+export const WOULD_FAIL = (chain: string): string => `The claim would fail on ${chain}, so nothing was sent. The message stays ready to claim.`;
 export const AGGLAYER_OFF = "The AggLayer bridge is off on this explorer.";
 export const NOT_SERVED = "That deposit is not on a route this page serves.";
 export const NOT_READY = "That deposit is not ready to claim yet.";
@@ -33,7 +41,7 @@ export interface BridgeDeps {
   chainName: string;
   aggkit: AggkitReader;
   sepolia: SepoliaReader;
-  reth: Pick<Reth, "block" | "callAt">;
+  reth: Pick<Reth, "block" | "callAt"> & Partial<Pick<Reth, "rpc" | "code">>;
   now?: () => number;
 }
 
@@ -50,7 +58,8 @@ interface Status {
 }
 
 const ok = (body: unknown): Answer => ({ status: 200, body });
-const fail = (status: number, error: string, headers?: Record<string, string>): Answer => ({ status, body: { error }, ...(headers ? { headers } : {}) });
+const fail = (status: number, error: string, headers?: Record<string, string>, code?: string): Answer => ({ status, body: { error, ...(code ? { code } : {}) }, ...(headers ? { headers } : {}) });
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString();
 const range = (r: { minSeconds: number; maxSeconds: number } | null) => r && pick(r, F.agglayerRange);
 
@@ -59,6 +68,33 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
   const networks = [ETHEREUM, settings.ostiaNetworkId];
   const bridgeOn = (network: number) => (network === ETHEREUM ? settings.sepoliaBridge : settings.ostiaBridge);
   const chainOn = (network: number) => (network === ETHEREUM ? settings.sepoliaChainId : chainId);
+
+  const chainName_ = (network: number) => (network === ETHEREUM ? settings.routes.find((r) => r.id === OPEN_ROUTE)?.name ?? "Ethereum Sepolia" : chainName);
+  const msg = settings.messages;
+
+  /** One eth_call of Ostia's reth at its latest block; "reverted" when reth answers with an error (a revert), an error when it cannot be read. */
+  async function ostiaCall(to: string, data: string, simulate = false): Promise<string | "reverted"> {
+    if (!reth.rpc) throw new RethError("reth cannot be asked for a call");
+    try {
+      const out = await reth.rpc("eth_call", [{ ...(simulate ? { from: SIMULATE_FROM, gas: SIMULATE_GAS } : {}), to, data }, "latest"]);
+      if (typeof out !== "string" || !/^0x([0-9a-fA-F]{2})*$/.test(out)) throw new RethError("eth_call: reth answered with something that is not data");
+      return out;
+    } catch (e) {
+      if (e instanceof RethError && e.answered) return "reverted";
+      throw e;
+    }
+  }
+  const pausedOn = async (network: number): Promise<boolean> => {
+    if (network === ETHEREUM) return sepolia.paused();
+    const out = await ostiaCall(settings.ostiaBridge, emergencyStateCall());
+    return out !== "reverted" && /^0x[0-9a-f]{64}$/.test(out) && BigInt(out) !== 0n;
+  };
+  const hasCodeOn = async (network: number, address: string): Promise<boolean> => {
+    if (network === ETHEREUM) return sepolia.hasCode(address);
+    if (!reth.code) throw new RethError("reth cannot be asked for code");
+    return (await reth.code(address)) !== "0x";
+  };
+  const wouldPassOn = async (network: number, data: string): Promise<boolean> => (network === ETHEREUM ? sepolia.wouldPass(data) : (await ostiaCall(settings.ostiaBridge, data, true)) !== "reverted");
 
   let statusAt = -Infinity;
   let statusNow: Promise<Status> | null = null;
@@ -109,6 +145,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     });
     return cached(ok(pick({
       on: true, chain: pick({ chainId, name: chainName, networkId: settings.ostiaNetworkId, bridge: settings.ostiaBridge }, F.agglayerChain), bridgeEvent: pick({ signature: BRIDGE_EVENT, topic0: BRIDGE_EVENT_TOPIC }, F.agglayerBridgeEvent), routes,
+      ...(msg ? { messages: pick({ on: true, maxBytes: msg.maxBytes, noteBoards: pick(msg.noteBoards, F.agglayerNoteBoards) }, F.agglayerMessages) } : {}),
     }, F.agglayerSetup)), "composite");
   }
 
@@ -146,14 +183,14 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
   interface ClaimArgsParts { l1InfoTreeIndex: number; proofLocal: string[]; proofRollup: string[]; mainnetExitRoot: string; rollupExitRoot: string }
 
   /**
-   * Where a deposit is. A deposit that is not between Ethereum and Ostia, or is a message, is not served. `forClaim` is for the route that hands out calldata: a deposit into Ostia
+   * Where a deposit is. A deposit that is not between Ethereum and Ostia, or is a message while messages are off, is not served. `forClaim` is for the route that hands out calldata: a deposit into Ostia
    * counts as paid as soon as Ostia's latest block shows it, not only its finalized one, so a claim already sent is not offered again, and a read that fails is `unreadable`.
    */
   async function look(network: number, count: number, forClaim = false): Promise<Look | "not served"> {
     const leaf = await aggkit.bridge(network, count);
     if (!leaf) return { stage: "unknown" };
     const other = network === ETHEREUM ? settings.ostiaNetworkId : ETHEREUM;
-    if (leaf.leafType !== 0 || leaf.destinationNetwork !== other) return "not served";
+    if (!(leaf.leafType === 0 || (leaf.leafType === 1 && msg)) || leaf.destinationNetwork !== other) return "not served";
     const index = await aggkit.l1InfoTreeIndex(network, count);
     if (index === undefined) return { stage: "sent", leaf, confirmedAt: null, readyAt: null };
     const [l1, injected] = await Promise.all([aggkit.injectedLeaf(ETHEREUM, index), other === ETHEREUM ? undefined : aggkit.injectedLeaf(other, index)]);
@@ -168,6 +205,9 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     return { stage: claimed ? "claimed" : "ready", leaf, confirmedAt, readyAt, proof: parts, ...(claimed === null ? { unreadable: true as const } : {}) };
   }
 
+  /** What a message carries: its bytes and their hash, or neither (`tooLarge`) when they are longer than the page takes. */
+  const messageBody = (leaf: BridgeLeaf) => (leaf.tooLarge ? { dataHash: null, data: null, tooLarge: true } : { dataHash: keccak256(leaf.metadata as Hex), data: leaf.metadata, tooLarge: false });
+
   async function deposit(q: URLSearchParams): Promise<Answer> {
     const { network, count } = asked(q);
     const l = await look(network, count);
@@ -176,7 +216,9 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     const { leaf } = l;
     return ok(pick({
       network, count, stage: l.stage, destinationNetwork: leaf.destinationNetwork, sentAt: iso(leaf.blockTimestamp), confirmedAt: l.confirmedAt === null ? null : iso(l.confirmedAt), readyAt: l.readyAt === null ? null : iso(l.readyAt),
-      leaf: pick({ txHash: leaf.txHash, originNetwork: leaf.originNetwork, originTokenAddress: leaf.originAddress, destinationNetwork: leaf.destinationNetwork, destinationAddress: leaf.destinationAddress, amount: leaf.amount }, F.agglayerLeaf),
+      leaf: leaf.leafType === 1
+        ? pick({ kind: "message", txHash: leaf.txHash, originNetwork: leaf.originNetwork, sender: leaf.originAddress, destinationNetwork: leaf.destinationNetwork, destinationAddress: leaf.destinationAddress, value: leaf.amount, ...messageBody(leaf) }, F.agglayerMessageLeaf)
+        : pick({ txHash: leaf.txHash, originNetwork: leaf.originNetwork, originTokenAddress: leaf.originAddress, destinationNetwork: leaf.destinationNetwork, destinationAddress: leaf.destinationAddress, amount: leaf.amount }, F.agglayerLeaf),
     }, F.agglayerDeposit));
   }
 
@@ -194,7 +236,42 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
       smtProofLocalExitRoot: proof.proofLocal, smtProofRollupExitRoot: proof.proofRollup, globalIndex: leaf.globalIndex, mainnetExitRoot: proof.mainnetExitRoot, rollupExitRoot: proof.rollupExitRoot,
       originNetwork: leaf.originNetwork, originTokenAddress: leaf.originAddress, destinationNetwork: destination, destinationAddress: leaf.destinationAddress, amount: leaf.amount, metadata: leaf.metadata,
     };
-    return ok(pick({ ...base, claimed: false, data: claimAssetCall(args), args: pick(args, F.agglayerClaimArgs) }, F.agglayerClaim));
+    if (leaf.leafType === 0) return ok(pick({ ...base, claimed: false, data: claimAssetCall(args), args: pick(args, F.agglayerClaimArgs) }, F.agglayerClaim));
+    // A message: too large to build, a paused bridge, a receiver with no code, and the claim simulated on the destination.
+    const where = chainName_(destination), data = claimMessageCall(args);
+    if (leaf.tooLarge) return fail(409, TOO_LARGE, undefined, "message_too_large");
+    if (await pausedOn(destination)) return fail(503, NOT_AVAILABLE(where), undefined, "bridge_paused");
+    if (!(await hasCodeOn(destination, leaf.destinationAddress))) return fail(409, NO_CODE(where), undefined, "receiver_has_no_code");
+    if (!(await wouldPassOn(destination, data))) return fail(409, WOULD_FAIL(where), undefined, "message_would_fail");
+    return ok(pick({ ...base, claimed: false, data, args: pick(args, F.agglayerClaimArgs) }, F.agglayerClaim));
+  }
+
+  /** A wallet's messages, newest first, at most 20 each way: AggKit lists a wallet's sends by `from_address`, and the reader pages until 20 messages are found (tokens are skipped). */
+  async function messages(q: URLSearchParams): Promise<Answer> {
+    const wallet = q.get("wallet");
+    if (wallet === null || !ADDRESS.test(wallet)) throw new BadRequest("wallet is 0x and 40 hex digits.");
+    const ostia = settings.ostiaNetworkId;
+    const [in_, out] = await Promise.all([aggkit.messagesFrom(ETHEREUM, wallet, ostia, 20), aggkit.messagesFrom(ostia, wallet, ETHEREUM, 20)]);
+    const rows = [...in_.map((l) => ({ network: ETHEREUM, l })), ...out.map((l) => ({ network: ostia, l }))]
+      .sort((a, b) => b.l.blockTimestamp - a.l.blockTimestamp || a.network - b.network || b.l.depositCount - a.l.depositCount)
+      .map(({ network, l }) => pick({ network, count: l.depositCount, txHash: l.txHash, destinationNetwork: l.destinationNetwork, receiver: l.destinationAddress, sentAt: iso(l.blockTimestamp), ...messageBody(l) }, F.agglayerMessage));
+    return ok(pick({ wallet: wallet.toLowerCase(), items: rows }, F.agglayerMessageList));
+  }
+
+  /** The note the note board on `network` keeps for `sender` (who sent it from the other chain). */
+  async function note(q: URLSearchParams): Promise<Answer> {
+    const network = Number(q.get("network") ?? "");
+    if (!/^\d{1,10}$/.test(q.get("network") ?? "") || !networks.includes(network)) throw new BadRequest(`network is ${ETHEREUM} (Ethereum) or ${settings.ostiaNetworkId} (${chainName}).`);
+    const sender = q.get("sender");
+    if (sender === null || !ADDRESS.test(sender)) throw new BadRequest("sender is 0x and 40 hex digits.");
+    const board = (network === ETHEREUM ? msg?.noteBoards.sepolia : msg?.noteBoards.ostia) ?? null;
+    if (board === null) return fail(404, `There is no note board on ${chainName_(network)}.`);
+    const origin = network === ETHEREUM ? settings.ostiaNetworkId : ETHEREUM;
+    const out = network === ETHEREUM ? await sepolia.noteOf(board, origin, sender) : await ostiaCall(board, noteOfCall(origin, sender));
+    const got = out === null || out === "reverted" ? null : noteOf(out);
+    if (!got) throw new AggkitError("the note board did not answer with a note");
+    const none = got.number === "0", big = !none && (got.text.length - 2) / 2 > (msg?.readMaxBytes ?? 0);
+    return ok(pick({ network, sender: sender.toLowerCase(), board, found: !none, data: none || big ? null : got.text, tooLarge: big, at: none ? null : iso(got.at), number: got.number }, F.agglayerNote));
   }
 
   /** The route's own errors in words: a request that is wrong is 400, Sepolia reads over the total cap are 503 "busy" with Retry-After (no call was made), and a service or a chain that cannot be read is 503, and the cause is logged without any address. */
@@ -204,7 +281,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     } catch (e) {
       if (e instanceof BadRequest) return fail(400, e.message);
       if (e instanceof SepoliaBusy) return fail(503, BUSY(e.retryAfterSeconds), retryAfter(e.retryAfterSeconds));
-      if (e instanceof AggkitError || e instanceof SepoliaError) {
+      if (e instanceof AggkitError || e instanceof SepoliaError || e instanceof RethError) {
         console.error(`agglayer: ${e.message}`);
         return fail(503, UNREADABLE);
       }
@@ -214,8 +291,8 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
 
   const routes = (parts: string[], q: URLSearchParams, ip: string | undefined): (() => Promise<Answer>) | undefined => {
     if (parts.length !== 3 || parts[0] !== "api" || parts[1] !== "agglayer") return undefined;
-    const run = { setup: () => setup(), deposit: () => deposit(q), claim: () => claim(q) }[parts[2]!];
-    if (!run) return undefined;
+    const run = { setup: () => setup(), deposit: () => deposit(q), claim: () => claim(q), ...(msg ? { messages: () => messages(q), note: () => note(q) } : {}) }[parts[2]!];
+    if (!run) return AGGLAYER_MESSAGE_PATHS.some((p) => p.endsWith(`/${parts[2]}`)) ? async () => fail(404, MESSAGES_OFF) : undefined;
     if (parts[2] === "setup") return () => guarded(run);
     return async () => {
       const wait = limiter.take(ip ?? "unknown");
@@ -242,7 +319,7 @@ export function createAgglayerBridge({ settings, chainId, chainName, aggkit, sep
     };
   }
 
-  return { routes, healthRow, status };
+  return { routes, healthRow, status, messagePaths: msg ? AGGLAYER_MESSAGE_PATHS : [] };
 }
 
 export type AgglayerBridge = ReturnType<typeof createAgglayerBridge>;
@@ -253,7 +330,7 @@ export function agglayerRoutes(bridge: Pick<AgglayerBridge, "routes"> | null): A
   return (parts) => {
     if (parts.length !== 3 || parts[0] !== "api" || parts[1] !== "agglayer") return undefined;
     if (parts[2] === "setup") return async () => ok(pick({ on: false }, F.agglayerOff));
-    if (parts[2] === "deposit" || parts[2] === "claim") return async () => fail(404, AGGLAYER_OFF);
+    if (parts[2] === "deposit" || parts[2] === "claim" || parts[2] === "messages" || parts[2] === "note") return async () => fail(404, AGGLAYER_OFF);
     return undefined;
   };
 }
