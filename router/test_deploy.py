@@ -29,8 +29,9 @@ class Local(unittest.TestCase):
         cls.who = {}
         for name in ("deployer", "proposer", "other"):
             out = json.loads(sh("cast", "wallet", "new", str(cls.tmp), name, "--unsafe-password", PASSWORD, "--json").stdout)
-            cls.who[name] = out[0]["address"]
-            sh("cast", "rpc", "anvil_setBalance", out[0]["address"], "0x56BC75E2D63100000", "--rpc-url", cls.url)
+            out = out[0] if isinstance(out, list) else out  # the shape differs between Foundry releases
+            cls.who[name] = out["address"]
+            sh("cast", "rpc", "anvil_setBalance", out["address"], "0x56BC75E2D63100000", "--rpc-url", cls.url)
 
     @classmethod
     def tearDownClass(cls):
