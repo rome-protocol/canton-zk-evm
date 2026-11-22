@@ -132,10 +132,8 @@ def intake(raw: bytes, ctx, records, now: float) -> tuple:
             return 422, {"error": "a coin cannot be sent back to that network"}
         if not r.in_open():
             return 503, {"error": "sending to Canton is not available right now"}
-        if party not in ctx.canton.snapshot().accepted:
-            return 422, {"error": "this Canton account has not accepted withdrawals"}
         inbox = r.inbox_of(party, net, refund)
-    except (chain.ChainError, canton.Fail, OSError, KeyError, ValueError):
+    except (chain.ChainError, OSError, KeyError, ValueError):
         return 502, {"error": "this cannot be checked right now"}
     with records.lock:
         if records.get("inbox:" + inbox):
@@ -143,8 +141,15 @@ def intake(raw: bytes, ctx, records, now: float) -> tuple:
         if records.get("open:" + inbox).get("state") in ("queued", "sent"):
             return 200, {"inbox": inbox, "status": "queued"}
         if sum(1 for v in list(records.data["items"].values()) if v.get("kind") == "open" and now - v["asked"] < 3600) >= ctx.cfg["open_per_hour"]:
-            return 429, {"error": "too many inboxes asked for; try again later"}
-        records.put("open:" + inbox, kind="open", state="queued", party=party, net=net, refund=refund, asked=now)
+            return 429, {"error": "too many inboxes asked for; try again later"}   # before the ledger is read, so a flood costs no ledger read
+    try:
+        if party not in ctx.canton.snapshot().accepted:
+            return 422, {"error": "this Canton account has not accepted withdrawals"}
+    except (canton.Fail, OSError, KeyError, ValueError):
+        return 502, {"error": "this cannot be checked right now"}
+    with records.lock:
+        if not records.get("open:" + inbox):
+            records.put("open:" + inbox, kind="open", state="queued", party=party, net=net, refund=refund, asked=now)
     return 202, {"inbox": inbox, "status": "queued"}
 
 
@@ -156,6 +161,8 @@ def serve(port: int, handle) -> http.server.ThreadingHTTPServer:
         def do_POST(self):
             try:
                 size = int(self.headers.get("content-length") or 0)
+                if size < 0:
+                    raise ValueError("negative length")
                 body = self.rfile.read(min(size, 65536))   # read (and drop) what was sent, so the answer is not lost to a reset
                 status, answer = (404, {}) if self.path != "/open" else (413, {}) if size > MAX_BODY else handle(body)
             except Exception:
@@ -219,7 +226,7 @@ def plan_open(ctx, records, key: str, item: dict) -> dict:
     return job("open", OPEN, ["string", "uint32", "address"], [item["party"], item["net"], item["refund"]], inbox, "queued")
 
 
-def plan_leaf(ctx, records, snap, waiting: set, key: str, item: dict, now: float) -> dict:
+def plan_leaf(ctx, records, snap, waiting: dict, key: str, item: dict, now: float) -> dict:
     r, cfg, inbox, coin, count, src = ctx.router, ctx.cfg, item["inbox"], item["coin"], item["count"], ctx.cfg["src_net"]
     where = records.get("inbox:" + inbox)
     if item["origin"] != r.network:
@@ -244,7 +251,8 @@ def plan_leaf(ctx, records, snap, waiting: set, key: str, item: dict, now: float
     if proof is None:
         raise Wait("it is not ready on Ostia yet")
     pay, fee = False, r.fee_in(coin)
-    if fee is not None and not item.get("hold") and not any(i != inbox and c == coin for i, c in waiting):   # coin of an older inbox is waiting for Canton: it has the quota first
+    if fee is not None and not item.get("hold") and not any(i != inbox and c == coin and bal > fee and records.get("inbox:" + i)["party"] in snap().accepted for (i, c), bal in waiting.items()):
+        # a held coin of another inbox has the quota first, when a cause shared with this send (quota, pause, a custody stop) can be holding it: not a dust balance, not a party with no acceptance
         total = r.balance(coin, inbox) + int(item["amount"])
         pay = canton_reason(snap(), where["party"], coin, total - min(fee, total), datetime.fromtimestamp(now, timezone.utc)) is None
     h = lambda xs: [bytes.fromhex(x[2:]) for x in xs]
@@ -313,7 +321,11 @@ def resolve(ctx, records, log, now: float) -> bool:
         else:
             records.put(key, state=state)
             if state != "done":
-                records.put(f"cool:{sent['pair']}", until=now + ctx.cfg["cooldown"], job=sent["job"])
+                cool = records.get(f"cool:{sent['pair']}")
+                tries = cool.get("tries", 0) + 1 if sent["job"] == "forward" else 1   # a forward left out again waits twice as long, up to one quota window
+                records.put(f"cool:{sent['pair']}", until=now + min(ctx.cfg["cooldown"] * 2 ** (tries - 1), max(ctx.cfg["cooldown"], ctx.cfg["cooldown_max"])), job=sent["job"], tries=tries)
+            elif sent["job"] == "forward":
+                records.put(f"cool:{sent['pair']}", tries=0)
         log(f"relay-in: {key[:14]} {sent['job']} {state}")
     return replaced
 
@@ -337,7 +349,7 @@ def run_once(ctx, records, log=print, now: float = None) -> None:
     cache = {}
     snap = lambda: cache.setdefault("s", ctx.canton.snapshot())   # Canton is read once a pass, and only when a step needs it
     coins = held(ctx, records, log, now)
-    waiting = {(e[1], e[2]) for e in coins}
+    waiting = {(e[1], e[2]): e[3] for e in coins}   # (inbox, coin) -> balance
     plans = [(k, k, lambda k=k, v=v: plan_open(ctx, records, k, v)) for k, v in sorted(records.where("queued"), key=lambda kv: kv[1]["asked"])]
     plans += [(f"{e[1][:10]}:{e[2][-4:]}", None, lambda e=e: plan_sweep(ctx, records, snap, e, now)) for e in coins]   # held coin first (oldest clock first), then the new sends
     plans += [(k, k, lambda k=k, v=v: plan_leaf(ctx, records, snap, waiting, k, v, now)) for k, v in sorted(records.where("pending"), key=lambda kv: kv[1]["count"])]

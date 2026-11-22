@@ -1,4 +1,4 @@
-"""The Sepolia claimer (flow A): claims on Ethereum Sepolia the transfers that the router sent, paid by the fee that the router took on Ostia. The user's own claim stays the fallback.
+"""The Sepolia claimer (flows A and C, refunds): claims on Ethereum Sepolia the transfers that the router sent, paid by the fee that the router took on Ostia. The user's own claim stays the fallback.
 
 It reads the router's RoutedOut events (its sends) and Refunded events (its refunds to a Sepolia address, from flow C) from Ostia's finalized blocks, asks AggKit's bridge service (loopback only, not trusted: every answer is checked, and the leaf must be the one the
 router's event describes) for the leaf and its proof, and sends claimAsset once the transfer is ready and nobody has claimed it. Guards: a floor, caps by the hour, the day and the recipient,

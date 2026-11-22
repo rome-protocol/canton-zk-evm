@@ -73,7 +73,7 @@ def run(argv: list) -> None:
             raise SystemExit("OSTIA_RELAY_IN_TOKENS must be a comma-separated list of token addresses")
         n = lambda name, default: whole_setting("OSTIA_RELAY_IN_" + name, default)
         cfg = {**settings("OSTIA_RELAY_IN_"), "coins": coins, "floor": n("FLOOR", 0), "chunk": max(1, n("CHUNK_BLOCKS", 2000)), "from_block": first_block("OSTIA_RELAY_IN_FROM_BLOCK"), "ostia_from": first_block("OSTIA_RELAY_IN_OSTIA_FROM_BLOCK"),
-               "cooldown": n("COOLDOWN_SECONDS", 300), "open_per_hour": n("OPEN_PER_HOUR", 20), "src_net": n("SOURCE_NETWORK", 0)}
+               "cooldown": n("COOLDOWN_SECONDS", 300), "cooldown_max": n("COOLDOWN_MAX_SECONDS", 86400), "open_per_hour": n("OPEN_PER_HOUR", 20), "src_net": n("SOURCE_NETWORK", 0)}
         signer, records = chain.load_signer(need("OSTIA_RELAY_IN_KEY_FILE")), Records(state / "relay-in.json")
         source, bridge = chain.Rpc("source chain", need("OSTIA_RELAY_IN_SOURCE_RPC_URL")), address("OSTIA_RELAY_IN_SOURCE_BRIDGE")
         net = canton.Network()

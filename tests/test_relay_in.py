@@ -1,7 +1,7 @@
 """Tests for worker/relay_in.py (the Canton router's in-relayer, flow C) against stand-ins only: the fake chain of test_worker.py for Ostia and for the source chain, a fake Canton snapshot, and a
 local stand-in for the bridge service. No real endpoint is used.
 Run: python3 -W error::ResourceWarning -m unittest tests/test_relay_in.py"""
-import contextlib, io, json, os, sys, unittest, urllib.error, urllib.request
+import contextlib, io, json, os, socket, sys, unittest, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +18,7 @@ import canton, chain, claim_sepolia, main as worker_main, relay_in, relay_out
 PARTY, REFUND, TOKEN, UNLISTED = "alice::1220" + "ab" * 32, "0x" + "5b" * 20, "0x" + "11" * 20, "0x" + "22" * 20
 SOURCE_BRIDGE, OSTIA_BRIDGE, ROUTER, BOOK = tw.SEPOLIA_BRIDGE, "0x" + "e5" * 20, tw.ROUTER, tw.BOOK
 NET = 75
-CFG = {**tw.CFG, "coins": [TOKEN], "floor": 0, "chunk": 50, "from_block": 0, "ostia_from": 0, "cooldown": 300, "open_per_hour": 3, "src_net": 0}
+CFG = {**tw.CFG, "coins": [TOKEN], "floor": 0, "chunk": 50, "from_block": 0, "ostia_from": 0, "cooldown": 300, "cooldown_max": 86400, "open_per_hour": 3, "src_net": 0}
 NOW = 1_800_000_000.0
 FORWARD, MARK, REFUND_SIG = ("%s(string,uint32,address,address)" % n for n in ("forward", "mark", "refund"))
 FOUR = ["string", "uint32", "address", "address"]
@@ -137,7 +137,11 @@ class IntakeTests(InBase):
         self.canton = SimpleNamespace(snapshot=lambda: self.snap)
         for n in range(3):
             self.assertEqual(self.ask(refundAddress="0x" + f"{n + 1:040x}")[0], 202)
+        reads = []
+        self.canton = SimpleNamespace(snapshot=lambda: reads.append(1) or self.snap)
         self.assertEqual(self.ask(refundAddress="0x" + "99" * 20)[0], 429)
+        self.assertEqual(reads, [])   # a request over the hourly limit costs no ledger read
+        self.assertEqual(self.ask(refundAddress="0x" + "01".rjust(40, "0"))[0], 200)   # one already queued is still answered
 
     def test_the_intake_answers_over_loopback_with_a_size_limit_and_no_other_path(self):
         server = relay_in.serve(0, lambda raw: relay_in.intake(raw, self.ctx(), self.records, NOW))
@@ -146,6 +150,9 @@ class IntakeTests(InBase):
         post = lambda path, body: urllib.request.urlopen(urllib.request.Request(url + path, body, {"content-type": "application/json"}), timeout=5)
         with post("/open", json.dumps({"party": PARTY, "refundNetwork": 0, "refundAddress": REFUND}).encode()) as r:
             self.assertEqual((r.status, json.load(r)["inbox"]), (202, INBOX))
+        with contextlib.closing(socket.create_connection(("127.0.0.1", server.server_address[1]), 5)) as c:   # a negative length reads nothing
+            c.sendall(b"POST /open HTTP/1.0\r\ncontent-length: -1\r\n\r\n")
+            self.assertIn(b" 400 ", c.recv(64))
         for path, body, code in (("/other", b"{}", 404), ("/open", b"x" * 5000, 413)):
             with self.assertRaises(urllib.error.HTTPError) as why:
                 post(path, body)
@@ -378,6 +385,38 @@ class SweepTests(InBase):
         self.run_once(NOW + 301)
         self.assertEqual(self.selector(), chain.selector(FORWARD))
 
+    def settle(self, now):
+        """Let what the relayer has out (the transfer of nothing, then the mark) land, with the refund clock far away, so the next pass is free to forward again."""
+        self.b["at"][INBOX] = int(NOW) + 10**6
+        for _ in range(4):
+            self.ostia.mine(len(self.ostia.sent) - 1)
+            self.run_once(now + 1)
+            if not self.records.where("sent"):
+                return
+
+    def test_a_forward_that_is_left_out_again_waits_twice_as_long_up_to_the_cap_and_one_that_lands_starts_over(self):
+        self.cfg["cooldown_max"] = 1000
+        cool, now = lambda: self.records.get(f"cool:{INBOX}:{TOKEN}"), NOW
+        self.run_once(now)
+        self.stick()
+        self.run_once(now)
+        self.assertEqual((cool()["until"] - now, cool()["tries"]), (300, 1))
+        for want in (600, 1000, 1000):   # each time the cooldown ends, the forward goes out again and is left out again
+            self.settle(now)
+            now = cool()["until"] + 1
+            self.run_once(now)
+            self.assertEqual(self.selector(), chain.selector(FORWARD))
+            self.stick()
+            self.run_once(now)
+            self.assertEqual(cool()["until"] - now, want)
+        self.settle(now)
+        now = cool()["until"] + 1
+        self.run_once(now)
+        self.assertEqual(self.selector(), chain.selector(FORWARD))
+        self.ostia.mine(len(self.ostia.sent) - 1)
+        self.run_once(now + 1)   # it lands in a final block: the next one starts at the base again
+        self.assertEqual(cool()["tries"], 0)
+
     def test_the_oldest_clock_is_served_first(self):
         other = inbox_of("bob::1", 0, REFUND)
         self.records.put("inbox:" + other, kind="inbox", party="bob::1", net=0, refund=REFUND)
@@ -416,6 +455,18 @@ class SweepTests(InBase):
         self.b["bal"][INBOX] = 0
         self.run_once()
         self.assertEqual(self.selector(), chain.selector(relay_in.CLAIM_PAY))   # nobody else waits: it is paid
+
+
+    def test_a_held_coin_that_only_its_own_party_or_its_size_holds_back_does_not_slow_a_new_send_of_the_same_coin(self):
+        for why in ("the party has no acceptance", "the balance is dust"):
+            with self.subTest(why):
+                self.setUp()
+                other = self.other_inbox(bal=1000 if "party" in why else 100)
+                if "party" in why:
+                    self.snap.accepted = {PARTY}
+                self.records.put(f"cool:{other}:{TOKEN}", until=NOW + 300, job="mark")   # the held coin's own step is cooling, so the claim is looked at
+                self.run_once()
+                self.assertEqual(self.selector(), chain.selector(relay_in.CLAIM_PAY))
 
 
 class CantonSnapshotTests(unittest.TestCase):
