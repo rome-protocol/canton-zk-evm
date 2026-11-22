@@ -13,6 +13,7 @@ describe("copy that must match the trust model", () => {
     for (const text of [ACCOUNT_KEY_WORDS, SIGN_IN_SAME_ACCOUNT, SIGN_IN_NO_RECOVERY, TWINS_HOLDERS]) expect(text).not.toMatch(/only your (MetaMask|key|wallet)|any device|cannot sign/i);
     expect(ACCOUNT_KEY_WORDS).toMatch(/Rome runs the node that hosts this account/);
     expect(ACCOUNT_KEY_WORDS).toMatch(/you trust Rome/);
+    for (const text of [ACCOUNT_KEY_WORDS, SIGN_IN_NO_RECOVERY]) expect(text).not.toMatch(/DevNet/);   // Ostia runs on TestNet now
     expect(TWINS_HOLDERS).toMatch(/Rome's participants/);
     expect(TWINS_HOLDERS).not.toMatch(/Bridge account/);   // the account made from a wallet signature is not offered in every build
   });

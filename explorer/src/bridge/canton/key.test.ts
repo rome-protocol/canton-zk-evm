@@ -129,7 +129,7 @@ describe("the Canton key from a wallet signature", () => {
 });
 
 describe("the chain the page signs for", () => {
-  it("is DevNet's, 770101, unless the build names another chain", () => {
+  it("is Ostia's, 770101, unless the build names another chain", () => {
     expect(chainIdFromEnv({})).toBe(770101);
     expect(chainIdFromEnv(undefined)).toBe(770101);
     expect(chainIdFromEnv({ VITE_CHAIN_ID: "770101" })).toBe(770101);

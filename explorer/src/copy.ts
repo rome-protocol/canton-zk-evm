@@ -26,9 +26,9 @@ export const TRUST_MODEL_URL = "https://docs.rome.builders/canton-zk-evm/trust-m
 
 /** What the sign-in sheet says of the account: it depends on the wallet, and nothing can bring it back. */
 export const SIGN_IN_SAME_ACCOUNT = "If your wallet gives the same signature again, the same account opens on another device. Not every wallet does: MetaMask, Rabby and OKX on a computer have been tested.";
-export const SIGN_IN_NO_RECOVERY = "No recovery: DevNet test tokens only.";
+export const SIGN_IN_NO_RECOVERY = "No recovery: test tokens only.";
 /** What the page says of the account on Canton once it is open: whose key it is, and who else can act. */
-export const ACCOUNT_KEY_WORDS = "This is your address on Canton. Canton Coin can be sent to it from any Canton address. Its key is made from your wallet's signature, and this browser keeps it and signs your Canton steps. Rome runs the node that hosts this account and issues the twins it holds, so on DevNet you trust Rome with what the account holds.";
+export const ACCOUNT_KEY_WORDS = "This is your address on Canton. Canton Coin can be sent to it from any Canton address. Its key is made from your wallet's signature, and this browser keeps it and signs your Canton steps. Rome runs the node that hosts this account and issues the twins it holds, so you trust Rome with what the account holds.";
 /** The tokens that cross are public on Ostia, and who sees what. */
 export const MOVES_ARE_PUBLIC = "Moves are public on Ostia. A move back to Canton shows your Canton account next to your Ostia address.";
 /** Twins: who can hold them today. */

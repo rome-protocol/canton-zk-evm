@@ -1,6 +1,6 @@
 # Pinned versions. Plain key=value, read by the scripts and checked by CI.
 CHAIN_ID=770101
-# TestNet's chain id. CHAIN_ID is DevNet's and stays the default; a TestNet build is made from network/genesis-770102.json (its guest, prover/build-guest.sh network/genesis-770102.json), with the Bridge page built with VITE_CHAIN_ID=770102 and the Permit2 hash pinned in network/standard-contracts/contracts.json. tests/static.sh checks that they agree.
+# CHAIN_ID is Ostia's chain id and the default: the live chain, on Canton TestNet, signs for it. TESTNET_CHAIN_ID is the id of a second genesis (network/genesis-770102.json), which is Ostia's settings under another chain id. A chain built from it has its guest made with prover/build-guest.sh network/genesis-770102.json, its Bridge page built with VITE_CHAIN_ID=770102 and the Permit2 hash pinned in network/standard-contracts/contracts.json. tests/static.sh checks that they agree.
 TESTNET_CHAIN_ID=770102
 # The chain's gas limit and block gas cap: genesis gasLimit 0x1c9c380. tests/static.sh checks they agree. This is the cap a new chain starts with:
 # the cap can be raised on a live chain (setup.py --gas-cap-step), and the setup's chain check accepts a chain whose cap is this or higher.
