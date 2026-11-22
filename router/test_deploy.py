@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests of deploy.py against a local chain (anvil), with throwaway keystores. Run by deploy-test.sh after `forge build`."""
-import copy, importlib.util, json, os, shutil, socket, subprocess, tempfile, time, unittest
+import copy, http.server, importlib.util, json, os, shutil, socket, subprocess, tempfile, threading, time, unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -126,6 +126,37 @@ class Local(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("inboxCodeHash", out)
 
+    def test_more_cancellers_are_granted_in_the_deploy_and_read_back(self):
+        t = {"minDelay": 300, "proposers": [self.who["proposer"]], "executors": [self.who["proposer"]], "cancellers": [self.who["other"]]}
+        cfg = self.config(settingsTimelock=t, upgradeTimelock={**t, "minDelay": 600})
+        st = self.fresh_state()
+        rc, out = self.run_deploy("deploy", cfg=cfg, state=st)
+        self.assertEqual(rc, 0, out)
+        s = json.loads(st.read_text())
+        canceller = sh("cast", "keccak", "CANCELLER_ROLE").stdout.strip()
+        for tl in (s["settingsTimelock"], s["upgradeTimelock"]):
+            self.assertEqual(self.call(tl, "hasRole(bytes32,address)(bool)", canceller, self.who["other"]), "true")
+            self.assertEqual(self.call(tl, "hasRole(bytes32,address)(bool)", "0x" + "00" * 32, self.who["deployer"]), "false")
+        self.assertEqual(self.run_deploy("check", cfg=cfg, state=st)[0], 0)
+        rc, out = self.run_deploy("check", state=st)  # the config without the canceller
+        self.assertEqual(rc, 1)
+        self.assertIn("CANCELLER_ROLE", out)
+
+    def test_the_deployed_code_is_read_against_the_checked_in_build(self):
+        st = self.fresh_state()
+        self.assertEqual(self.run_deploy("deploy", state=st)[0], 0)
+        other = self.tmp / "other-build"
+        other.mkdir(exist_ok=True)
+        info = json.loads((HERE / "artifacts" / "deployed-v1" / "build-info.json").read_text())
+        info["output"]["contracts"]["src/CantonBook.sol"]["CantonBook"]["evm"]["deployedBytecode"]["object"] += "00"
+        (other / "build-info.json").write_text(json.dumps(info))
+        rc, out = self.run_deploy("check", "--reference", str(other), state=st)
+        self.assertEqual(rc, 1)
+        self.assertIn("book implementation code hash", out)
+        rc, out = self.run_deploy("deploy", "--reference", str(other), state=self.fresh_state())
+        self.assertEqual(rc, 1)
+        self.assertIn("checked-in build", out)
+
     def test_check_fails_when_initialize_does_not_revert(self):
         st = self.fresh_state()
         self.assertEqual(self.run_deploy("deploy", state=st)[0], 0)
@@ -153,6 +184,24 @@ class Local(unittest.TestCase):
         self.assertNotIn("key-8f3a", out)
         self.assertFalse(st.exists())
 
+    def test_a_live_chain_on_loopback_is_not_a_test_chain(self):
+        class Node(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": "reth/v1.0.0/x86_64-linux"}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *_):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Node)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            st = self.fresh_state()
+            rc, out = self.run_deploy("deploy", state=st, url=f"http://127.0.0.1:{srv.server_address[1]}")
+        finally:
+            srv.shutdown()
+        self.assertEqual(rc, 1)
+        self.assertIn("--live", out)
+        self.assertFalse(st.exists())
+
     def test_live_checks_the_chain_id(self):
         rc, out = self.run_deploy("--live", "check", state=self.fresh_state())
         self.assertEqual(rc, 1)
@@ -164,6 +213,13 @@ class Local(unittest.TestCase):
         rc, out = self.run_deploy("deploy", state=st)
         self.assertEqual(rc, 1)
         self.assertIn("already", out)
+
+
+class TestChain(unittest.TestCase):
+    def test_only_anvil_is_a_test_chain(self):
+        m = Config.module()
+        for v, want in (("anvil/v1.5.1", True), ('"anvil/v1.5.1"', True), ("reth/v1.0.0/x86_64-linux", False), ("Geth/v1.14", False), ("hardhat/2.0", False), ("", False)):
+            self.assertEqual(m.is_test_chain(v), want, v)
 
 
 class Config(unittest.TestCase):

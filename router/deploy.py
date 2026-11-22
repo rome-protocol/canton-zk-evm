@@ -8,11 +8,10 @@ its own deploy transaction, then the ProxyAdmin's hand-over to the timelock, the
 owned by the timelock, so listing the asset, the destinations and the claim parts go through it as one batch (execute after the delay). check: the
 read-backs alone, against what is on the chain.
 
-Nothing is written to a chain that is not on this machine unless --live is given, and --live also requires the chain id of the config. Keys are keystore
+Nothing is written to a chain unless it is a local test chain (anvil) or --live is given, and --live also requires the chain id of the config. Keys are keystore
 files with password files (paths, never values); the chain's address comes from ROUTER_RPC_URL or --rpc-url-file and is never printed. Needs cast."""
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
-from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
 SLOT_ADMIN = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"  # EIP-1967
@@ -47,8 +46,8 @@ def validate(c):
             bad.append(t)
             continue
         num(v.get("minDelay"), t + ".minDelay")
-        for role in ("proposers", "executors"):
-            if not v.get(role):
+        for role in ("proposers", "executors", "cancellers"):  # cancellers: more than the proposers, optional
+            if not v.get(role) and role != "cancellers":
                 bad.append(f"{t}.{role}")
             for a in v.get(role) or []:
                 addr(a, f"{t}.{role}")
@@ -64,6 +63,11 @@ def validate(c):
         num(f.get("network"), "claimFees.network"); num(f.get("fee"), "claimFees.fee")
     if bad:
         raise Fail("the config is missing or has a bad value for: " + ", ".join(dict.fromkeys(bad)))
+
+
+def is_test_chain(client_version):
+    """Only anvil counts as a test chain, never an address: a live node can sit on loopback too (on its own host, or behind a tunnel)."""
+    return client_version.strip().strip('"').lower().startswith("anvil/")
 
 
 def secret(env, file_flag):
@@ -84,14 +88,19 @@ class Deploy:
         self.url = secret("ROUTER_RPC_URL", a.rpc_url_file)
         self.n = 0
         self.problems = []
-        host = urlparse(self.url).hostname
-        if host not in ("127.0.0.1", "localhost", "::1") and not a.live:
-            raise Fail("the chain is not on this machine; nothing is sent unless --live is given")
-        self.local = host in ("127.0.0.1", "localhost", "::1")
+        self.local = is_test_chain(self.client_version())
+        if not self.local and not a.live:
+            raise Fail("the chain is not a local test chain (anvil); nothing is sent unless --live is given")
         if a.live and int(self.cast("chain-id")) != int(self.cfg["chainId"]):
             raise Fail("the chain id of the chain is not the config's chainId")
 
     # ---- cast
+
+    def client_version(self):
+        try:
+            return self.cast("rpc", "web3_clientVersion")
+        except Fail:
+            return ""
 
     def cast(self, *args):
         p = subprocess.run(["cast", *map(str, args)], capture_output=True, text=True, env={**os.environ, "ETH_RPC_URL": self.url})
@@ -144,18 +153,40 @@ class Deploy:
         j = json.loads((Path(self.a.out) / f"{name}.sol" / f"{name}.json").read_text())
         return j["bytecode"]["object"], j["deployedBytecode"]["object"]
 
+    def checked_in(self, name):
+        """The deployed code of `name` in the checked-in build (artifacts/<reference>/build-info.json): what the upgrade-safety check compares against."""
+        info = json.loads((HERE / "artifacts" / self.a.reference / "build-info.json").read_text())
+        for contracts in info["output"]["contracts"].values():
+            if name in contracts:
+                return "0x" + contracts[name]["evm"]["deployedBytecode"]["object"]
+        raise Fail(f"{name} is not in the checked-in build {self.a.reference}")
+
     # ---- deploy
 
+    def extra_cancellers(self, t):
+        return [x for x in t.get("cancellers") or [] if x.lower() not in {p.lower() for p in t["proposers"]}]  # a proposer is a canceller already
+
     def timelock(self, label, t):
-        return self.send(label, "deployer", sig="constructor(uint256,address[],address[],address)", code=self.creation("TimelockController"),
-                         args=(t["minDelay"], "[" + ",".join(t["proposers"]) + "]", "[" + ",".join(t["executors"]) + "]", ZERO))
+        """The proposers are made cancellers by the contract. Further cancellers need the admin role, which the deployer holds only inside this call."""
+        extra = self.extra_cancellers(t)
+        deployer = self.address_of("deployer")
+        tl = self.send(label, "deployer", sig="constructor(uint256,address[],address[],address)", code=self.creation("TimelockController"),
+                       args=(t["minDelay"], "[" + ",".join(t["proposers"]) + "]", "[" + ",".join(t["executors"]) + "]", deployer if extra else ZERO))
+        for x in extra:
+            self.send(f"{label}: canceller", "deployer", tl, "grantRole(bytes32,address)", (self.cast("keccak", "CANCELLER_ROLE"), x))
+        if extra:
+            self.send(f"{label}: the deployer gives up the admin role", "deployer", tl, "renounceRole(bytes32,address)", ("0x" + "00" * 32, deployer))
+        return tl
 
     def deploy(self):
         c = self.cfg
         if self.state.get("book"):
             raise Fail("this state file already holds a deploy")
+        (book_code, book_runtime), (router_code, router_runtime) = self.built("CantonBook"), self.built("CantonRouter")
+        if book_runtime != self.checked_in("CantonBook") or router_runtime != self.checked_in("CantonRouter"):
+            raise Fail(f"the build in {self.a.out} is not the checked-in build {self.a.reference}: run snapshot.sh and check it in, or build the same source")
         deployer = self.address_of("deployer")
-        holders = {x.lower() for t in ("settingsTimelock", "upgradeTimelock") for r in ("proposers", "executors") for x in (c.get(t) or {}).get(r, [])}
+        holders = {x.lower() for t in ("settingsTimelock", "upgradeTimelock") for r in ("proposers", "executors", "cancellers") for x in (c.get(t) or {}).get(r) or []}
         if deployer in holders:
             raise Fail("the deployer key may not be a proposer or an executor: it must hold no role")
         s = self.state
@@ -164,8 +195,6 @@ class Deploy:
         s["settingsTimelock"] = self.timelock("settings timelock", c["settingsTimelock"])
         s["upgradeTimelock"] = self.timelock("upgrade timelock", c["upgradeTimelock"]) if c.get("upgradeTimelock") else s["settingsTimelock"]
         self.save()
-        book_code, s["bookImplCode"] = self.built("CantonBook")
-        router_code, s["routerImplCode"] = self.built("CantonRouter")
         s["bookImpl"] = self.send("book implementation", "deployer", code=book_code)
         s["routerImpl"] = self.send("router implementation", "deployer", code=router_code)
         self.save()
@@ -176,7 +205,7 @@ class Deploy:
         s["router"] = self.send("router proxy (initialised)", "deployer", sig=proxy[0], code=proxy[1], args=(s["routerImpl"], s["proxyAdmin"], init))
         self.save()
         self.send("ProxyAdmin to its timelock", "deployer", s["proxyAdmin"], "transferOwnership(address)", (s["upgradeTimelock"],))
-        print(json.dumps({k: v for k, v in s.items() if not k.endswith("Code")}, indent=2))
+        print(json.dumps(s, indent=2))
         self.check()
 
     # ---- read-backs
@@ -200,7 +229,7 @@ class Deploy:
     def check_timelock(self, name, t, tl, from_block):
         self.expect(f"{name} minDelay", self.call(tl, "getMinDelay()(uint256)"), t["minDelay"])
         keccak = lambda x: self.cast("keccak", x)
-        roles = {"PROPOSER_ROLE": (keccak("PROPOSER_ROLE"), t["proposers"]), "CANCELLER_ROLE": (keccak("PROPOSER_ROLE".replace("PROPOSER", "CANCELLER")), t["proposers"]),
+        roles = {"PROPOSER_ROLE": (keccak("PROPOSER_ROLE"), t["proposers"]), "CANCELLER_ROLE": (keccak("CANCELLER_ROLE"), [*t["proposers"], *self.extra_cancellers(t)]),
                  "EXECUTOR_ROLE": (keccak("EXECUTOR_ROLE"), t["executors"]), "DEFAULT_ADMIN_ROLE": ("0x" + "00" * 32, [tl])}
         for role, (h, want) in roles.items():
             got = self.holders(tl, h, from_block)
@@ -228,8 +257,8 @@ class Deploy:
         for who, proxy, impl in (("book", s["book"], s["bookImpl"]), ("router", s["router"], s["routerImpl"])):
             self.expect(f"{who} proxy admin", "0x" + self.read("storage", proxy, SLOT_ADMIN)[-40:], s["proxyAdmin"])
             self.expect(f"{who} implementation slot", "0x" + self.read("storage", proxy, SLOT_IMPL)[-40:], impl)
-        for who, impl, code in (("book", s["bookImpl"], s["bookImplCode"]), ("router", s["routerImpl"], s["routerImplCode"])):
-            self.expect(f"{who} implementation code hash", self.cast("keccak", self.read("code", impl)), self.cast("keccak", code))
+        for who, impl, name in (("book", s["bookImpl"], "CantonBook"), ("router", s["routerImpl"], "CantonRouter")):
+            self.expect(f"{who} implementation code hash (against the checked-in build)", self.cast("keccak", self.read("code", impl)), self.cast("keccak", self.checked_in(name)))
         self.expect("ProxyAdmin owner", self.call(s["proxyAdmin"], "owner()(address)"), s["upgradeTimelock"])
         self.expect("book owner", self.call(s["book"], "owner()(address)"), s["settingsTimelock"])
         self.check_timelock("settings timelock", c["settingsTimelock"], s["settingsTimelock"], s["block"])
@@ -306,7 +335,8 @@ def main():
     p.add_argument("--state", default="router-deploy-state.json")
     p.add_argument("--out", default=str(HERE / "out"), help="forge's output folder (forge build)")
     p.add_argument("--vectors", default=str(HERE / "test" / "vectors" / "r1.json"), help="the file with the pinned inboxCodeHash")
-    p.add_argument("--live", action="store_true", help="allow a chain that is not on this machine")
+    p.add_argument("--live", action="store_true", help="allow a chain that is not a local test chain (anvil)")
+    p.add_argument("--reference", default="deployed-v1", help="the checked-in build the deployed code is read against: a folder name under artifacts/, or a path")
     p.add_argument("--rpc-url-file")
     for who in ("deployer", "proposer"):
         p.add_argument(f"--{who}-keystore")

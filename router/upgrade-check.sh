@@ -23,11 +23,12 @@ printf '00%s' "$(cat artifacts/CantonInbox.creation.hex)" > "$WORK/changed.hex"
 ! inbox_check "$WORK/changed.hex" test/vectors/r1.json || fail "the inbox check accepted changed bytes"
 echo "ok: inbox artifact"
 
+rm -rf out-upgrade cache-upgrade  # old build info files make the check name a contract twice
 FOUNDRY_PROFILE=upgrade "$FORGE" build
 (cd upgrade-check && npm ci --ignore-scripts --no-audit --no-fund --silent)
 validate() { # contract reference
   node upgrade-check/node_modules/@openzeppelin/upgrades-core/dist/cli/cli.js validate out-upgrade/build-info --contract "$1" --reference "$REFERENCE:$2" \
-    --referenceBuildInfoDirs "artifacts/$REFERENCE" --unsafeAllow constructor 2>&1  # the constructor only locks the initializer
+    --referenceBuildInfoDirs "artifacts/$REFERENCE" 2>&1  # a constructor passes only where it is marked (@custom:oz-upgrades-unsafe-allow)
 }
 for pair in CantonRouter:CantonRouter CantonBook:CantonBook CantonRouterV2:CantonRouter CantonBookV2:CantonBook; do
   validate "${pair%%:*}" "${pair##*:}" > "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "${pair%%:*} is not an upgrade-safe version of ${pair##*:}"; }
@@ -38,3 +39,6 @@ for pair in CantonRouterReordered:CantonRouter CantonBookReordered:CantonBook; d
   grep -q "Inserted\|Deleted\|Replaced" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "${pair%%:*} failed, but not on the storage layout"; }
   echo "ok: ${pair%%:*} is refused"
 done
+if validate CantonBookUnmarked CantonBook > "$WORK/out.txt"; then fail "a constructor that is not marked passed the check"; fi
+grep -q "constructor" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "CantonBookUnmarked failed, but not on its constructor"; }
+echo "ok: an unmarked constructor is refused"

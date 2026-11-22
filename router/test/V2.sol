@@ -47,6 +47,7 @@ contract CantonRouterV2 is Initializable {
     event Forwarded(address indexed inbox, address indexed token, uint256 amount, uint256 fee);
     event Refunded(address indexed inbox, address indexed token, uint256 amount, uint256 fee, uint256 depositCount);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
@@ -298,6 +299,7 @@ contract CantonBookV2 is Initializable, IBook {
     event SwitchChanged(bool indexed out, bool open);
     event Updated(bytes32 indexed what);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }

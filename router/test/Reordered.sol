@@ -3,6 +3,7 @@
 pragma solidity 0.8.28;
 
 import {Initializable} from "../src/vendor/Initializable.sol";
+import {CantonBook} from "../src/CantonBook.sol";
 import {IBook, IGateway, IOstiaBridge, Asset, Destination} from "../src/Interfaces.sol";
 
 // Versions that break the storage rule, for the upgrade-safety check (upgrade-check.sh): each swaps two fields of its version 1 struct,
@@ -48,4 +49,11 @@ contract CantonBookReordered is Initializable {
     }
 
     function owner() external view returns (address) { return _s().owner; }
+}
+
+// A version whose constructor writes state and is not marked as safe: the check must refuse it, so the allowance stays on the two constructors of version 1.
+contract CantonBookUnmarked is CantonBook {
+    constructor() {
+        assembly { sstore(0xdb606f7749e64ed4d4b6a293d752c25e07a0655476e1e7853f3a60d213c4fa00, 1) }
+    }
 }
