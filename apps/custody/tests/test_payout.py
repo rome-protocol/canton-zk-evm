@@ -1,6 +1,7 @@
 """Tests for payout.py: the worker against a fake Ledger API and a fake token registry, for Canton Coin (registry, expiring holdings) and a token with no registry (the test token).
 Run: python3 -m unittest discover -s apps/custody/tests"""
 import contextlib, io, json, os, sys, tempfile, unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -311,7 +312,12 @@ class Recovery(PayoutCase):
             with unittest.mock.patch.object(payout.it, "call", lost):
                 self.worker.poll()
 
-    def test_a_send_that_never_committed_is_sent_again(self):
+    def canton_time(self, seconds):
+        """Canton's own time, as the completions stream shows it: an offset checkpoint with a record time."""
+        stamp = datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.net.completions.append({"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9, "synchronizerTimes": [{"recordTime": stamp}]}}}})
+
+    def test_a_send_that_never_committed_is_sent_again_once_canton_time_is_past_the_window(self):
         self.payout()
         self.poll_with_lost_answer()
         self.net.completions.clear()
@@ -319,11 +325,56 @@ class Recovery(PayoutCase):
         self.net.instructions.clear()
         self.assertEqual(self.poll(), ([], []))   # no completion yet: it may still commit
         self.now += self.worker.ledger.cfg.resolve_seconds + 1
+        self.canton_time(self.now)
         self.poll()
         self.assertEqual(self.entry()["state"], "ended")
         said, _ = self.poll()
         self.assertEqual([list(line)[0] for line in said], ["offered"])
         self.assertEqual(len(self.net.transfers), 1)
+
+    def test_a_participant_that_lags_behind_this_clock_gets_no_second_send(self):
+        self.payout()
+        self.poll_with_lost_answer()
+        self.net.completions.clear()
+        self.net.transfers.clear()
+        self.net.instructions.clear()
+        self.canton_time(self.now + 10)   # Canton's time is before the end of the window
+        self.now += 3 * self.worker.ledger.cfg.resolve_seconds   # this clock is far past it
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual((self.entry()["state"], len(self.net.transfers)), ("sending", 0))
+
+    def test_a_canton_time_far_ahead_of_this_clock_is_a_skew_and_sends_nothing_again(self):
+        self.payout()
+        self.poll_with_lost_answer()
+        self.net.completions.clear()
+        self.net.transfers.clear()
+        self.net.instructions.clear()
+        self.canton_time(self.now + 10 * self.worker.ledger.cfg.resolve_seconds)
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual((self.entry()["state"], len(self.net.transfers)), ("sending", 0))
+
+    def test_a_committed_completion_without_an_update_id_waits_and_sends_nothing_again(self):
+        self.payout()
+        self.poll_with_lost_answer()
+        self.net.completions.clear()
+        self.net.instructions.clear()
+        self.net.completions.append({"completionResponse": {"Completion": {"value": {"commandId": self.entry()["command"], "offset": 9, "status": {}}}}})
+        self.now += 3 * self.worker.ledger.cfg.resolve_seconds
+        self.canton_time(self.now)
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual((self.entry()["state"], len(self.net.transfers)), ("sending", 1))
+
+    def test_a_failed_completion_ends_the_send_and_it_is_offered_again(self):
+        self.payout()
+        self.poll_with_lost_answer()
+        self.net.completions.clear()
+        self.net.transfers.clear()
+        self.net.instructions.clear()
+        self.net.completions.append({"completionResponse": {"Completion": {"value": {"commandId": self.entry()["command"], "offset": 9, "status": {"code": 3, "message": "refused"}}}}})
+        self.poll()
+        self.assertEqual(self.entry()["state"], "ended")
+        said, _ = self.poll()
+        self.assertEqual([list(line)[0] for line in said], ["offered"])
 
     def test_a_transfer_that_completed_and_was_not_marked_is_marked_without_another_transfer(self):
         self.net.mode = "completed"

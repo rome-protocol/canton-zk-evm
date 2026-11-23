@@ -164,10 +164,11 @@ class Payouts:
         if entry is None:
             return self.offer(p, registered, contexts, 0)
         if entry["state"] == "sending":   # the worker stopped, or the answer was lost, between the send and its record: the command's own completion says what happened
-            found, _ = self.ledger.completion_and_time(entry["command"], entry["begin"])
-            if found and found["committed"] and found["updateId"]:
-                return self.sent(p, registered, self.update(updateId=found["updateId"]), entry["factory"])
-            if found or (found is None and now > entry["at"] + self.ledger.cfg.resolve_seconds):
+            found, reached = self.ledger.completion_and_time(entry["command"], entry["begin"])
+            if found and found["committed"]:
+                return self.sent(p, registered, self.update(updateId=found["updateId"]), entry["factory"]) if found["updateId"] else None
+            # a failed completion ends it; no completion ends it only when Canton's own time (not this clock) is past the last moment it could commit
+            if found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= now + b.SKEW_SECONDS):
                 self.journal.keep(pid, state="ended", at=0)   # it did not commit: offered again now
             return None
         if entry["state"] == "offered":   # the instruction is gone: the choice that archived it says how it ended
