@@ -268,7 +268,8 @@ describe("the human check", () => {
     const client = fake({ info: info({ captcha }) });
     const user = await open(client);
     await screen.findByLabelText("Your address");
-    expect(document.querySelectorAll(`script[src="${captcha.scriptUrl}"]`)).toHaveLength(1);
+    // The page runs the script in an effect, which can come a moment after the form is on the screen.
+    await waitFor(() => expect(document.querySelectorAll(`script[src="${captcha.scriptUrl}"]`)).toHaveLength(1));
     const widget = document.querySelector(".human-check")!;
     expect(widget).toHaveAttribute("data-sitekey", "site-key-1");
     const field = Object.assign(document.createElement("input"), { name: "some-response", value: "token-9" });
@@ -282,23 +283,22 @@ describe("the human check", () => {
     const first = render(<MemoryRouter><FaucetPage client={client} coin={{ symbol: "tROME", decimals: 18 }} pollMs={FAST} /></MemoryRouter>);
     await screen.findByLabelText("Your address");
     const scripts = () => Array.from(document.scripts).filter((s) => s.getAttribute("src") === captcha.scriptUrl);
+    await waitFor(() => expect(scripts()).toHaveLength(1));
     const firstScript = scripts()[0];
-    expect(scripts()).toHaveLength(1);
     const firstWidget = document.querySelector(".human-check");
     // Leaving the page and coming back runs the script again, into the new form.
     first.unmount();
     const user = await open(client);
     await screen.findByLabelText("Your address");
-    expect(scripts()).toHaveLength(1);
-    expect(scripts()[0]).not.toBe(firstScript);
+    // The script is run again in an effect after the form is drawn, so the new script is waited for, not read at once.
+    await waitFor(() => { expect(scripts()).toHaveLength(1); expect(scripts()[0]).not.toBe(firstScript); });
     // A request uses up the token: the widget is a new one, and the script runs again to draw it.
     const before = scripts()[0], widget = document.querySelector(".human-check");
     expect(widget).not.toBe(firstWidget);
     await ask(user);
     await screen.findByRole("status");
     expect(document.querySelector(".human-check")).not.toBe(widget);
-    expect(scripts()).toHaveLength(1);
-    expect(scripts()[0]).not.toBe(before);
+    await waitFor(() => { expect(scripts()).toHaveLength(1); expect(scripts()[0]).not.toBe(before); });
   });
 
   it("shows the faucet's words when the check is not passed", async () => {

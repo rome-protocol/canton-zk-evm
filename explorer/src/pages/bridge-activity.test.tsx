@@ -8,6 +8,7 @@ import type { Hex } from "viem";
 import type { ApiTx } from "../api.ts";
 import { entryOf, finished, remember } from "../bridge/activity.ts";
 import { pairsOf } from "../bridge/tokens.ts";
+import { dateTime } from "../format.ts";
 import { depositIdOf, keptMoves, releaseIdOf, saveCheckpoint, type Checkpoint, type MoveState } from "../bridge/moves/state.ts";
 import type { Session } from "../bridge/session.ts";
 import { Activity, type ActivityProps } from "./Activity.tsx";
@@ -18,6 +19,8 @@ afterEach(cleanup);
 const pairs = pairsOf(config, GATEWAY_PARTY);
 const TX = ("0x" + "ab".repeat(32)) as Hex;
 const NOW = Date.now();   // kept records older than 30 days are dropped, so the times are recent
+const DONE_AT = NOW - 2 * 24 * 60 * 60 * 1000;   // a finished move from two days ago, whatever day the test runs on
+const DONE_AT_TEXT = dateTime(DONE_AT);
 
 const answer = (o: Record<string, unknown>) => ({ status: "waiting", success: null, lifecycle: null, block: null, legs: [], ...o }) as unknown as ApiTx;
 const lifecycle = (proofEndedAt: string | null) => ({ state: "x", reason: null, acceptedAt: null, acceptedVia: null, includedAt: null, attempts: 1, leftOutReason: null, proofStartedAt: "2026-11-07T10:00:00Z", proofEndedAt, submittedAt: null, committedAt: null, finalAt: null, finalBlock: null, timeToFinalMs: null });
@@ -105,7 +108,7 @@ describe("the Activity list", () => {
   });
   it("has one row per move: when, what moved, its marks, and links to its block on Ostia and its update on Canton", async () => {
     const store = memoryStore();
-    remember(store, { ...entryOf(ck({ ref: "done-1", input: { kind: "lock", asset: TKA, amount: "1.5", receiver: PARTY }, stage: "sent", at: Date.UTC(2026, 10, 7, 9, 30, 15) })), tx: TX, block: 36512 });
+    remember(store, { ...entryOf(ck({ ref: "done-1", input: { kind: "lock", asset: TKA, amount: "1.5", receiver: PARTY }, stage: "sent", at: DONE_AT })), tx: TX, block: 36512 });
     saveCheckpoint(store, ck({ ref: "open-1", input: deposit, stage: "start", at: NOW }));
     show({ store, read: async () => answer({ status: "final", success: true, block: { ...IN_BLOCK, updateId: "1220abcd" } }) });
     const [open, done] = rows();
@@ -113,7 +116,7 @@ describe("the Activity list", () => {
     expect(within(open!).getByText("Saved. Not signed on Canton yet.")).toBeInTheDocument();
     expect(within(open!).getByRole("listitem", { name: "Final: waiting" })).toBeInTheDocument();
     expect(within(done!).getByText("1.5 TKA to Canton")).toBeInTheDocument();
-    expect(within(done!).getByText("07 Nov 2026, 09:30:15 UTC")).toBeInTheDocument();
+    expect(within(done!).getByText(DONE_AT_TEXT)).toBeInTheDocument();
     expect(within(done!).getAllByRole("listitem").map((l) => l.getAttribute("aria-label"))).toEqual(["Sent: done", "Proven: done", "Final: done"]);
     expect(within(done!).getByRole("link", { name: "Ostia block 36512" })).toHaveAttribute("href", "/block/36512");
     expect(await within(done!).findByRole("link", { name: "Canton update" })).toHaveAttribute("href", "/canton/1220abcd");
@@ -121,7 +124,7 @@ describe("the Activity list", () => {
     expect(within(done!).getAllByText(/block 36512/)).toHaveLength(1);
     // The date sits under the title in every row, never beside it.
     const top = (r: HTMLElement) => r.querySelector(".act-top")!;
-    expect(top(done!).children[0]!.tagName).toBe("B"); expect(top(done!).children[1]!.textContent).toBe("07 Nov 2026, 09:30:15 UTC");
+    expect(top(done!).children[0]!.tagName).toBe("B"); expect(top(done!).children[1]!.textContent).toBe(DONE_AT_TEXT);
     expect(top(open!).children).toHaveLength(2);
   });
   it("does not read an approval as the move: a lock waiting on its approval shows no block and no Final", async () => {
