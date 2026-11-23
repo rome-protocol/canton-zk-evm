@@ -4,15 +4,19 @@ Usage: canton_receipt_payout.py <state dir> <evm token> prepare   Proposes and a
                                                                   Splice test token to the gateway (demo/canton.py send-to-gateway, with an address and a label as its memo): the receipt is made by the accept,
                                                                   with the memo's label and recipient.
        canton_receipt_payout.py <state dir> <evm token> receipt   One Advance with a receipt leg: the receipt is gone, the head moves on.
-       canton_receipt_payout.py <state dir> <evm token> payout    One Advance with a payout leg: a payout is there, with the leg's fields; the gateway marks it paid.
+       canton_receipt_payout.py <state dir> <evm token> payout    One Advance with a payout leg: a payout is there, with the leg's fields. The custody worker (apps/custody/payout.py) offers it to U as a
+                                                                  token-standard transfer, U accepts the offer (as demo/canton.py return-tkb has U accept one), and the worker marks the payout paid.
 The stand-in sidecars' answers are set by the caller for each block."""
-import argparse, os, sys, time
+import argparse, json, os, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "network" / "canton"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps" / "custody"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "demo"))
+import canton
 import propose
 import intake
+import payout
 
 state, token_address, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 parties = propose.read_env_file(state / "canton" / "parties.env")
@@ -42,7 +46,7 @@ if mode == "prepare":
     confirmer.submit({"ExerciseCommand": {"templateId": propose.PKG + "IntakeProposal", "contractId": proposal["contractId"], "choice": "AcceptIntake", "choiceArgument": {}}})
     as_gateway.wait_for("Intake")
     bearer_file = os.environ.get("CZE_TOKEN_FILE_OPERATOR", "")
-    args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=bearer_file, gateway_party=parties["GATEWAY_PARTY"])
+    args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=bearer_file, gateway_party=parties["GATEWAY_PARTY"], work_dir="")
     [taken] = intake.Intake(intake.ledger_of(args), intake.Settings(parties["GATEWAY_PARTY"])).poll()   # no registry: the test token needs no choice context
     assert taken["label"] == "intake-1" and taken["recipient"] == "44" * 20, taken
     [receipt] = builder.wait_for("Receipt")
@@ -53,11 +57,23 @@ elif mode == "receipt":
     assert builder.active("Receipt") == [], "the receipt is still there after its leg"
 elif mode == "payout":
     advance([{"tag": "PayoutLeg", "value": {"id": "c1" * 32, "gatewayToken": registered["contractId"], "from": "55" * 20, "amount": "4.0", "party": who}}])
-    [payout] = as_gateway.wait_for("Payout")
-    assert (payout["payoutId"], payout["party"], float(payout["amount"])) == ("c1" * 32, who, 4.0), payout
-    as_gateway.submit({"ExerciseCommand": {"templateId": propose.PKG + "Payout", "contractId": payout["contractId"], "choice": "Payout_Paid", "choiceArgument": {}}})
-    time.sleep(1)
-    assert as_gateway.active("Payout") == [], "the payout is still there after it was marked paid"
+    [made] = as_gateway.wait_for("Payout")
+    assert (made["payoutId"], made["party"], float(made["amount"])) == ("c1" * 32, who, 4.0), made
+    with tempfile.TemporaryDirectory() as work:
+        args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=os.environ.get("CZE_TOKEN_FILE_OPERATOR", ""), gateway_party=parties["GATEWAY_PARTY"], work_dir=work)
+        ledger = intake.ledger_of(args)
+        ledger.cfg.disclosed = json.loads((state / "demo" / "disclosed.json").read_text())   # the test token's rules, which the gateway's transfer needs
+        worker = payout.Payouts(ledger, intake.Settings(parties["GATEWAY_PARTY"]), work, 24)
+        [offered] = worker.poll()
+        assert offered["offered"] == "c1" * 32 and offered["party"] == who and float(offered["amount"]) == 4.0, offered
+        assert worker.poll() == [], "the offer is out: nothing is sent again"
+        assert len(as_gateway.active("Payout")) == 1, "the payout is marked paid before U accepted the offer"
+        canton.Network().submit("users", ["u"], {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": offered["instruction"], "choice": "TransferInstruction_Accept",
+                                                                     "choiceArgument": {"extraArgs": canton.NO_EXTRA_ARGS}}})   # U accepts the offer
+        [paid] = worker.poll()
+        assert paid["paid"] == "c1" * 32 and paid["party"] == who, paid
+        time.sleep(1)
+        assert as_gateway.active("Payout") == [], "the payout is still there after it was paid"
 else:
     sys.exit("mode: prepare, receipt or payout")
 print("ok")

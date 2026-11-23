@@ -10,6 +10,7 @@ LABEL_KEY = "romeprotocol.com/ostia-label"
 ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 DECIMAL = r"(?:0|[1-9][0-9]*)"   # as the router writes a number: no leading zeros
 ROUTE = re.compile(rf"r1:({DECIMAL}):0x([0-9a-f]{{40}}):({DECIMAL}):({DECIMAL})")   # r1:<network>:<address>:<most fee>:<nonce>
+ROUTE_BITS = (32, 256, 64)   # the bits of the network, the most fee and the nonce, as the router's Labels.parse takes them
 MAX_LABEL = 200   # characters of an outside party's label that are kept
 
 
@@ -45,8 +46,8 @@ def read(meta: dict, instruction: str, router: str = None) -> tuple:
         found = ROUTE.fullmatch(memo)
         if not router:
             raise Unreadable("the memo is a route and no router is set")
-        if not found or not int(found.group(2), 16):
-            raise Unreadable("the memo is not a route: r1:<network>:<0x address>:<most fee>:<nonce>")
+        if not found or not int(found.group(2), 16) or any(int(found.group(n)) >> bits for n, bits in zip((1, 3, 4), ROUTE_BITS)):
+            raise Unreadable("the memo is not a route: r1:<network>:<0x address>:<most fee>:<nonce>, the network under 2^32, the fee under 2^256 and the nonce under 2^64")
         return memo, address_of(router)
     recipient = address_of(memo)
     label = meta.get(LABEL_KEY, instruction)

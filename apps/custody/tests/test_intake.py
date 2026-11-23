@@ -280,8 +280,63 @@ class Settings(unittest.TestCase):
 
     def test_the_router_must_be_an_address(self):
         args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", "0x12"])
-        with self.assertRaises(memo.Unreadable):
+        with self.assertRaisesRegex(SystemExit, "--router must be an EVM address"):
             intake.settings_of(args)
+
+    def test_the_rpc_and_the_gateway_address_go_together_and_the_address_must_be_one(self):
+        base = ["--gateway-party", GATEWAY, "--ledger-user", "operator"]
+        for more, words in ((["--ostia-rpc", "http://127.0.0.1:1"], "go together"), (["--gateway-address", ADDRESS], "go together"),
+                            (["--ostia-rpc", "http://127.0.0.1:1", "--gateway-address", "0x12"], "--gateway-address must be an EVM address")):
+            with self.subTest(more=more), self.assertRaisesRegex(SystemExit, words):
+                intake.settings_of(intake.parser().parse_args(base + more))
+        got = intake.settings_of(intake.parser().parse_args(base + ["--ostia-rpc", "http://127.0.0.1:1", "--gateway-address", ADDRESS]))
+        self.assertTrue(callable(got.used))
+
+
+class Used(IntakeCase):
+    def rpc(self, answer):
+        self.asked = []
+
+        def handle(method, path, body, headers):
+            self.asked.append((body["method"], body["params"], headers.get("User-Agent")))
+            return answer
+        server = Server(handle)
+        self.addCleanup(server.stop)
+        return server
+
+    def test_the_gateways_used_slot_is_read_and_a_set_slot_is_used(self):
+        deposit_id = b.deposit_id_of(ALICE, "label")
+        slot = "0x" + b.keccak256(bytes.fromhex(deposit_id) + (1).to_bytes(32, "big")).hex()
+        for result, expected in (("0x" + "00" * 32, False), ("0x" + "00" * 31 + "01", True)):
+            with self.subTest(result=result):
+                server = self.rpc((200, {"jsonrpc": "2.0", "id": 1, "result": result}))
+                self.assertIs(intake.gateway_used(server.url, "ab" * 20)(deposit_id), expected)
+                self.assertEqual(self.asked, [("eth_getStorageAt", ["0x" + "ab" * 20, slot, "latest"], "Rome Protocol rome@romeprotocol.com")])
+
+    def test_an_answer_that_cannot_be_read_is_an_error_that_does_not_name_the_url(self):
+        for answer in ((500, {}), (200, {"error": "x"}), (200, {"result": "nonsense"})):
+            server = self.rpc(answer)
+            with self.subTest(answer=answer), self.assertRaises(RuntimeError) as caught:
+                intake.gateway_used(server.url, "ab" * 20)("cd" * 32)
+            self.assertNotIn(server.url, str(caught.exception))
+
+    def test_a_route_send_whose_deposit_id_the_gateway_used_stays_pending_and_the_others_are_taken(self):
+        used = b.deposit_id_of(ALICE, ROUTE)
+        self.settings.router = ROUTER
+        self.settings.used = lambda deposit_id: deposit_id == used
+        self.views = [instruction(1, meta={memo.REASON_KEY: ROUTE}), instruction(2, meta={memo.REASON_KEY: ROUTE.replace(":17", ":18")})]
+        accepted, lines = self.poll()
+        self.assertEqual([a["accepted"] for a in accepted], [cid(2)])
+        self.assertEqual([(line["pending"], line["why"]) for line in lines if "pending" in line], [(cid(1), "a deposit with this id was claimed already")])
+
+    def test_a_used_read_that_fails_leaves_the_transfer_pending(self):
+
+        def down(deposit_id):
+            raise RuntimeError("the gateway's used(id) cannot be read on Ostia")
+        self.settings.used = down
+        self.views = [instruction(1)]
+        accepted, lines = self.poll()
+        self.assertEqual((accepted, self.submitted, lines[0]["why"]), ([], [], "the gateway's used(id) cannot be read on Ostia"))
 
 
 if __name__ == "__main__":

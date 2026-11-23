@@ -63,6 +63,14 @@ class RouteMemo(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(memo.Unreadable):
                 read(text, ROUTER)
 
+    def test_a_number_the_router_cannot_read_is_refused_and_the_largest_is_taken(self):
+        address = "0x" + "e3" * 20
+        for text in (f"r1:{2**32}:{address}:1:1", f"r1:0:{address}:{2**256}:1", f"r1:0:{address}:1:{2**64}"):
+            with self.subTest(text=text), self.assertRaisesRegex(memo.Unreadable, "under 2\\^32"):
+                read(text, ROUTER)
+        biggest = f"r1:{2**32 - 1}:{address}:{2**256 - 1}:{2**64 - 1}"
+        self.assertEqual(read(biggest, ROUTER), (biggest, "7a" * 20))
+
 
 if __name__ == "__main__":
     unittest.main()

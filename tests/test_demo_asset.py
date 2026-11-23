@@ -20,6 +20,7 @@ REGISTRY_TOKEN = "registry-secret-" + "4" * 20
 ROOT_PATH = "/issuer-registry"
 FACTORY_PATH = ROOT_PATH + "/registry/transfer-instruction/v1/transfer-factory"
 WITHDRAW_PATH = ROOT_PATH + "/registry/transfer-instruction/v1/%s/choice-contexts/withdraw"
+ACCEPT_PATH = ROOT_PATH + "/registry/transfer-instruction/v1/%s/choice-contexts/accept"
 RULES = {**base.contract("rules", PKG + ":Issuer.Rules:TransferRules"), "contractId": FACTORY}
 
 
@@ -38,6 +39,7 @@ class AssetCase(base.CcCase):
         FakeScan.answers[FACTORY_PATH] = lambda body: factory_answer("offer" if body["choiceArguments"]["transfer"]["sender"] != body["choiceArguments"]["transfer"]["receiver"] else "self")
         self.context = {"choiceContextData": {"values": {"w": {"tag": "AV_Text", "value": "x"}}}, "disclosedContracts": [dict(RULES)]}
         FakeScan.answers[WITHDRAW_PATH % INSTRUCTION] = lambda body: self.context
+        FakeScan.answers[ACCEPT_PATH % INSTRUCTION] = lambda body: self.context
         FakeLedger.holdings = {U: [held("00u1", "5.0", instrument=TKB), held("00u2", "2.5", instrument=TKB), held("00u3", "9.0", locked=True, instrument=TKB),
                                    held("00u4", "100.0"), held("00u5", "1.0", instrument={"admin": ISSUER, "id": "OTHER"})], GW: []}
         patcher = mock.patch.object(FakeLedger, "transaction", staticmethod(self.transaction))
@@ -145,7 +147,7 @@ class SendMemoTests(AssetCase):
 
     def test_a_bad_command_line_prints_the_usage(self):
         for argv in (("send-memo", INSTRUMENT, "1"), ("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--label"), ("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--other", "x"),
-                     ("instructions", INSTRUMENT, "x"), ("instructions", "--registry", "a=b"), ("take-back", INSTRUMENT), ("factory",), ("nothing",), ()):
+                     ("instructions", INSTRUMENT, "x"), ("instructions", "--registry", "a=b"), ("take-back", INSTRUMENT), ("accept", INSTRUMENT), ("factory",), ("nothing",), ()):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 self.run_asset(*argv)
 
@@ -197,6 +199,29 @@ class TakeBackTests(AssetCase):
         self.context = {"choiceContextData": {"values": {}}}
         with self.assertRaises(canton.Fail):
             self.run_asset("take-back", INSTRUMENT, INSTRUCTION, *self.reg)
+        self.assertEqual(self.commands(), [])
+
+
+class AcceptTests(AssetCase):
+    def test_u_accepts_with_the_registrys_accept_context(self):
+        got = self.run_asset("accept", INSTRUMENT, INSTRUCTION, *self.reg)
+        [request] = self.commands()
+        command = request["commands"]["commands"][0]["ExerciseCommand"]
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_INSTRUCTION, INSTRUCTION, "TransferInstruction_Accept"))
+        self.assertEqual(command["choiceArgument"], {"extraArgs": {"context": self.context["choiceContextData"], "meta": {"values": {}}}})
+        self.assertEqual((request["commands"]["actAs"], request["commands"]["disclosedContracts"]), ([U], [RULES]))
+        self.assertEqual((got["instrument"], got["result"]), (TKB, "TransferInstructionResult_Failed"))   # the fake ledger answers every other choice with this result
+        self.assertEqual(len(self.registry_requests(ACCEPT_PATH % INSTRUCTION)), 1)
+
+    def test_a_token_with_no_registry_accepts_with_no_context(self):
+        self.run_asset("accept", INSTRUMENT, INSTRUCTION)
+        [request] = self.commands()
+        self.assertEqual((request["commands"]["commands"][0]["ExerciseCommand"]["choice"], request["commands"]["disclosedContracts"]), ("TransferInstruction_Accept", []))
+        self.assertEqual(FakeScan.seen, [])
+
+    def test_a_cid_that_is_not_one_sends_nothing(self):
+        with self.assertRaises(canton.Fail):
+            self.run_asset("accept", INSTRUMENT, "not-a-contract", *self.reg)
         self.assertEqual(self.commands(), [])
 
 

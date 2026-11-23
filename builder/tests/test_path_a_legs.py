@@ -130,11 +130,12 @@ class Payouts(tb.LegCase):
         s, t = self.setup_payout(Leg(WITHDRAWAL, tb.WD_ID, WTKB, PAYEE, 4 * UNIT, "not a party"))
         self.assert_left_out(s, t, "not a Canton party")
 
-    def test_a_party_off_the_operators_participants_is_left_out(self):
+    def test_the_receiver_is_not_a_stakeholder_so_no_hosting_or_blame_check_applies(self):
         s, t = self.setup_payout(PAY_OUT)
         s.cfg.hosted_on = ("PAR::rome::1220" + "aa" * 32,)
         s.cfg.hosting = b.Hosting(s.cfg, s.cfg.hosted_on)
-        self.assert_left_out(s, t, "not hosted with the right to confirm")
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
 
     def test_an_unregistered_token_is_left_out(self):
         s, t = self.setup_payout(PAY_OUT, registered=[])
@@ -146,10 +147,9 @@ class Payouts(tb.LegCase):
         result = self.build(s)
         self.assertEqual(result["legs"], 1)
 
-    def test_a_payout_of_an_expiring_instrument_asks_for_no_rounds_and_waits_for_no_check(self):
+    def test_a_payout_of_an_expiring_instrument_waits_for_no_stop_and_no_check_and_writes_none(self):
         s, t = self.setup_payout(PAY_OUT)
-        s.cfg.expiring = ("adm",)
-        s.cfg.registries, s.cfg.registry_tokens = {"adm": "http://127.0.0.1:1"}, {}   # nothing listens there: a leg that read the open rounds would be unreadable
+        self.expiring(s, 10)
         Path(s.cfg.work_dir).mkdir(parents=True, exist_ok=True)
         b.custody_stop_path(s.cfg).write_text("{}")
         b.custody_check_path(s.cfg).write_text("{}")
@@ -158,6 +158,51 @@ class Payouts(tb.LegCase):
         self.assertEqual(self.attached(s, "PayoutLeg"), PAY_VALUE)
         self.assertEqual(s.advance_argument().get("custody"), None)
         self.assertEqual(b.custody_check_path(s.cfg).read_text(), "{}")   # no check was written or removed for it
+
+    def expiring(self, s, custody, open_payouts=()):
+        """The token's instrument runs out, a scan proxy gives the round (floor 1.118016), the gateway holds `custody` coins, and `open_payouts` are open (in coins)."""
+        import test_custody_expiry as ce
+        s.scan = ce.Scan()
+        self.addCleanup(s.scan.close)
+        s.cfg.registries, s.cfg.registry_tokens, s.cfg.expiring = {"adm": s.scan.url}, {}, ("adm",)
+        s.ledger.holdings = [ce.hold("h-1", custody * UNIT)]
+        s.ledger.payouts = [(f"pay-{i}", {**named, "gateway": "gw", "gatewayToken": "tok-1", "payoutId": f"{i:064x}", "party": PARTY, "amount": f"{a}.0"}) for i, a in enumerate(open_payouts)]
+
+    def test_a_payout_of_an_expiring_instrument_that_leaves_less_than_the_floor_is_left_out_with_the_floor_reason(self):
+        s, t = self.setup_payout(PAY_OUT)   # 4 coins
+        self.expiring(s, 5)                 # 1 would be left, under 1.118016
+        self.assert_left_out(s, t, "This withdrawal would leave 1.0 CC of Canton Coin in the bridge, under its minimum of 1.118016 CC")
+
+    def test_a_payout_that_leaves_zero_or_at_least_the_floor_is_a_leg(self):
+        for custody in (4, 6):
+            with self.subTest(custody=custody):
+                s, t = self.setup_payout(PAY_OUT)
+                self.expiring(s, custody)
+                self.assertEqual(self.build(s)["legs"], 1)
+
+    def test_open_payouts_count_against_custody_and_a_short_custody_is_refused(self):
+        s, t = self.setup_payout(PAY_OUT)
+        self.expiring(s, 10, open_payouts=[4])   # 10 - 4 open - 4 = 2: fine
+        self.assertEqual(self.build(s)["legs"], 1)
+        s, t = self.setup_payout(PAY_OUT)
+        self.expiring(s, 10, open_payouts=[5])   # 10 - 5 open - 4 = 1: under the floor
+        self.assert_left_out(s, t, "would leave 1.0 CC")
+        s, t = self.setup_payout(PAY_OUT)
+        self.expiring(s, 6, open_payouts=[3])    # 6 - 3 - 4 < 0
+        self.assert_left_out(s, t, "does not cover the amount")
+
+    def test_two_payouts_of_a_block_count_together_against_the_floor(self):
+        s = self.setup({tb.ALICE: [], tb.BOB: []})
+        s.cfg.payout_offers = True
+        s.ledger.tokens.extend([tb.TOKEN])
+        self.expiring(s, 9)   # the first leaves 5, the second would leave 1
+        first = self.leg_tx(s, PAY_OUT, tb.ALICE, price=9)
+        second = self.leg_tx(s, Leg(WITHDRAWAL, "cd" * 32, WTKB, PAYEE, 4 * UNIT, PARTY), tb.BOB, price=5)
+        s.reth.pool[tb.ALICE], s.reth.pool[tb.BOB] = [first], [second]
+        result = self.build(s)
+        self.assertEqual([l["tag"] for l in s.advance_argument()["legs"]], ["PayoutLeg"])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [second["hash"]])
+        self.assertIn("would leave 1.0 CC", result["leftOut"][0]["reason"])
 
     def test_two_payouts_that_fit_the_quota_one_by_one_but_not_together_leave_the_second_out(self):
         s = self.setup({tb.ALICE: [], tb.BOB: []})

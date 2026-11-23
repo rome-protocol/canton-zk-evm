@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The custody worker, part 1: the intake. See README.md.
+"""The custody worker, part 1: the intake (part 2, the payouts, is payout.py and runs in the same process with --payout-offers). See README.md.
 
-  intake.py --intake [--once] --gateway-party PARTY [--poll-seconds 10] [--min-deposit ADMIN/ID=AMOUNT]... [--router 0xADDRESS]
+  intake.py --intake [--once] --gateway-party PARTY [--poll-seconds 10] [--min-deposit ADMIN/ID=AMOUNT]... [--router 0xADDRESS] [--ostia-rpc URL --gateway-address 0xADDRESS]
             [--registry ADMIN=URL]... [--registry-token-file ADMIN=FILE]...
 
 Every poll it reads the transfers to the gateway that wait for their receiver, and for each one whose instrument is a registered GatewayToken, whose memo it can read and whose amount
@@ -27,30 +27,41 @@ class Contexts(b.ChoiceContexts):
     """The builder's registry reader, with the choice context of a receiver's accept."""
 
     @b.registry_guard("token registry")
-    def accept(self, admin: str, instruction: str):
-        """(context, disclosed contracts) for `TransferInstruction_Accept` of this instruction."""
-        reply = self.ask(admin, f"/registry/transfer-instruction/v1/{urllib.parse.quote(instruction, safe='')}/choice-contexts/accept", {"meta": {}, "excludeDebugFields": True})
+    def accept(self, admin: str, instruction: str, choice: str = "accept"):
+        """(context, disclosed contracts) for `TransferInstruction_Accept` of this instruction (with choice "withdraw", for the sender's `TransferInstruction_Withdraw`)."""
+        reply = self.ask(admin, f"/registry/transfer-instruction/v1/{urllib.parse.quote(instruction, safe='')}/choice-contexts/{choice}", {"meta": {}, "excludeDebugFields": True})
         return self.read(reply)
+
+    def withdraw(self, admin: str, instruction: str):
+        return self.accept(admin, instruction, "withdraw")
+
+    @b.registry_guard("token registry")
+    def transfer_factory(self, admin: str, transfer: dict):
+        """(factory id, context, disclosed contracts) of the factory the registry names for this transfer. The standard's own `expectedAdmin` check, made by the factory, is what ties it to the token."""
+        args = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
+        reply = self.ask(admin, "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": args, "excludeDebugFields": True})
+        factory = reply.get("factoryId") if isinstance(reply, dict) else None
+        if not isinstance(factory, str) or not factory:
+            raise b.NoCantonSide("the token registry named no transfer factory")
+        return (factory, *self.read(reply.get("choiceContext")))
 
 
 class Settings:
-    """`minimums` is {(instrument admin, instrument id): the least amount, a Fraction}; `router` the address that a route memo's receipt is for, or None."""
+    """`minimums` is {(instrument admin, instrument id): the least amount, a Fraction}; `router` the address that a route memo's receipt is for, or None; `used` a function from a
+    deposit id to whether the gateway has used it already, or None (then only the ids that a Receipt or DepositRequest holds are known to be taken)."""
 
-    def __init__(self, gateway: str, registries: dict = None, registry_tokens: dict = None, minimums: dict = None, router: str = None):
-        self.gateway, self.registries, self.registry_tokens, self.minimums, self.router = gateway, registries or {}, registry_tokens or {}, minimums or {}, router
+    def __init__(self, gateway: str, registries: dict = None, registry_tokens: dict = None, minimums: dict = None, router: str = None, used=None):
+        self.gateway, self.registries, self.registry_tokens, self.minimums, self.router, self.used = gateway, registries or {}, registry_tokens or {}, minimums or {}, router, used
 
 
 def say(line: dict) -> None:
     print(json.dumps(line, sort_keys=True), flush=True)
 
 
-def submit(ledger: "b.Ledger", gateway: str, command: dict, disclosed: list) -> dict:
-    """The command as the gateway, in one transaction, waiting for it. Raises with the participant's reason when it is refused."""
-    body = {"commands": [command], "commandId": str(uuid.uuid4()), "userId": ledger.cfg.ledger_user, "actAs": [gateway], "readAs": [gateway]}
-    if disclosed:
-        body["disclosedContracts"] = disclosed
+def call(ledger: "b.Ledger", path: str, body: dict) -> dict:
+    """A POST to the Ledger API as the ledger user. Raises with the participant's reason when it is refused."""
     try:
-        answer = b.post_json(ledger.cfg.ledger_url + "/v2/commands/submit-and-wait", body, ledger.auth)
+        answer = b.post_json(ledger.cfg.ledger_url + path, body, ledger.auth)
     except urllib.error.HTTPError as e:
         try:
             why = b.bounded_text(e.read(500).decode("utf-8", "replace"))
@@ -58,6 +69,14 @@ def submit(ledger: "b.Ledger", gateway: str, command: dict, disclosed: list) -> 
             e.close()
         raise RuntimeError(f"the participant refused it (HTTP {e.code}): {why}") from None
     return answer if isinstance(answer, dict) else {}
+
+
+def submit(ledger: "b.Ledger", gateway: str, command: dict, disclosed: list, command_id: str = None) -> dict:
+    """The command as the gateway, in one transaction, waiting for it. Raises with the participant's reason when it is refused."""
+    body = {"commands": [command], "commandId": command_id or str(uuid.uuid4()), "userId": ledger.cfg.ledger_user, "actAs": [gateway], "readAs": [gateway]}
+    if disclosed:
+        body["disclosedContracts"] = disclosed
+    return call(ledger, "/v2/commands/submit-and-wait", body)
 
 
 class Intake:
@@ -117,6 +136,8 @@ class Intake:
                 taken = self.open_ids() if taken is None else taken
                 if deposit_id in taken:
                     raise memos.Unreadable("a deposit with this id is open already")
+                if self.settings.used is not None and self.settings.used(deposit_id):
+                    raise memos.Unreadable("a deposit with this id was claimed already")
                 context, disclosed = contexts.accept(instrument["admin"], cid) if contexts.wants(instrument["admin"]) else (None, [])
                 answer = self.send({"ExerciseCommand": {"templateId": INTAKE, "contractId": intake["contractId"], "choice": "Intake_Accept",
                                                         "choiceArgument": {"gatewayToken": entry["contractId"], "instruction": cid, "label": label, "recipient": recipient, "choiceContext": context}}}, disclosed)
@@ -168,14 +189,40 @@ def parser() -> argparse.ArgumentParser:
                     help="a file with the bearer token that the registry of ADMIN wants (repeatable; also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated)")
     ap.add_argument("--min-deposit", action="append", default=[], metavar="ADMIN/ID=AMOUNT", help="the least amount of an instrument that is accepted (repeatable); a transfer below it stays pending. Default: no minimum")
     ap.add_argument("--router", default=env.get("CZE_ROUTER_ADDRESS", ""), metavar="0xADDRESS", help="the router: a memo that is a route text (r1:...) is accepted, with the router as the receipt's recipient (also CZE_ROUTER_ADDRESS). Default: route memos stay pending")
+    ap.add_argument("--ostia-rpc", default=env.get("CZE_OSTIA_RPC_URL", ""), metavar="URL", help="Ostia's JSON-RPC, with --gateway-address: a transfer whose deposit id the gateway has used already stays pending (also CZE_OSTIA_RPC_URL). Never printed. Default: only the open ids are checked")
+    ap.add_argument("--gateway-address", default=env.get("CZE_GATEWAY_ADDRESS", ""), metavar="0xADDRESS", help="the chain's gateway contract on Ostia (also CZE_GATEWAY_ADDRESS)")
+    ap.add_argument("--payout-offers", action="store_true", default=env.get("CZE_PAYOUT_OFFERS") == "1",
+                    help="pay each open Payout as one transfer offer from the gateway (also CZE_PAYOUT_OFFERS=1); needs --work-dir. Default: off")
+    ap.add_argument("--offer-hours", type=float, default=float(env.get("CZE_OFFER_HOURS", 24)), metavar="HOURS", help="how long a payout's offer stays open before it is withdrawn and offered again; a rejected offer is offered again after the same time (default 24; also CZE_OFFER_HOURS)")
+    ap.add_argument("--work-dir", default=env.get("CZE_WORK_DIR", ""), metavar="DIR", help="the builder's work folder (also CZE_WORK_DIR): the worker keeps payouts.json there and reads custody-stop.json from it")
+    ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN", help="as the builder's: an instrument whose holdings run out (Canton Coin), paid with the builder's input choice, floor and custody check; needs its --registry and --registry-token-file")
+    ap.add_argument("--custody-floor-days", type=float, default=30, metavar="DAYS", help="as the builder's (default 30)")
+    ap.add_argument("--custody-due-days", type=float, default=7, metavar="DAYS", help="as the builder's (default 7); only checked against the other two")
+    ap.add_argument("--custody-alert-days", type=float, default=3, metavar="DAYS", help="as the builder's (default 3); only checked against the other two")
+    ap.add_argument("--max-transfer-inputs", type=int, default=50, metavar="N", help="as the builder's (default 50)")
+    ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts that a token with no registry needs for its transfer factory, as the builder takes it")
     return ap
+
+
+def gateway_used(url: str, address: str):
+    """A function from a deposit id (64 hex digits) to whether the gateway's `used` mapping (slot 1) has it set, read on Ostia at the latest block. An unreadable answer is a RuntimeError that does not name the URL."""
+    def used(deposit_id: str) -> bool:
+        slot = "0x" + b.keccak256(bytes.fromhex(deposit_id) + (1).to_bytes(32, "big")).hex()
+        try:
+            answer = b.post_json(url, {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt", "params": ["0x" + address, slot, "latest"]}, {"user-agent": "Rome Protocol rome@romeprotocol.com"}, timeout=30)
+            return int(answer["result"], 16) != 0
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
+            raise RuntimeError("the gateway's used(id) cannot be read on Ostia") from None
+    return used
 
 
 def ledger_of(args) -> "b.Ledger":
     """A builder ledger client that reads as the gateway, with the ledger user's token."""
     bearer, bearer_file = os.environ.get("CZE_LEDGER_TOKEN", ""), args.bearer_file
     fields = {"ws_url": "", "engine_url": "", "jwt_secret": b"", "ledger_url": args.ledger_url, "ledger_user": args.ledger_user, "ledger_token": bearer,
-              "party": args.gateway_party, "fee_recipient": "", "genesis": "", "work_dir": "", "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": bearer_file}
+              "party": args.gateway_party, "fee_recipient": "", "genesis": "", "work_dir": args.work_dir, "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": bearer_file}
     return b.Ledger(b.Config(**fields))
 
 
@@ -183,24 +230,38 @@ def settings_of(args) -> Settings:
     if not b.canton_party_text(args.gateway_party) or not args.ledger_user:
         raise SystemExit("set --gateway-party (a party id) and --ledger-user")
     registries = b.parse_registries(args.registry)
-    router = memos.address_of(args.router) if args.router else None
-    return Settings(args.gateway_party, registries, b.read_registry_tokens(args.registry_token_file, registries), parse_minimums(args.min_deposit), router)
+    try:
+        router = memos.address_of(args.router) if args.router else None
+    except memos.Unreadable:
+        raise SystemExit("--router must be an EVM address (0x and 40 hex digits)") from None
+    if bool(args.ostia_rpc) != bool(args.gateway_address):
+        raise SystemExit("--ostia-rpc and --gateway-address go together")
+    try:
+        used = gateway_used(args.ostia_rpc, memos.address_of(args.gateway_address)) if args.ostia_rpc else None
+    except memos.Unreadable:
+        raise SystemExit("--gateway-address must be an EVM address (0x and 40 hex digits)") from None
+    return Settings(args.gateway_party, registries, b.read_registry_tokens(args.registry_token_file, registries), parse_minimums(args.min_deposit), router, used)
 
 
 def main(argv: list) -> int:
     args = parser().parse_args(argv)
-    if not args.intake:
-        print("the intake is off: pass --intake (or CZE_INTAKE=1) to switch it on", file=sys.stderr)
+    if not (args.intake or args.payout_offers):
+        print("the custody worker is off: pass --intake and/or --payout-offers (or CZE_INTAKE=1, CZE_PAYOUT_OFFERS=1) to switch it on", file=sys.stderr)
         return 0
     try:
-        worker = Intake(ledger_of(args), settings_of(args))
+        ledger, settings = ledger_of(args), settings_of(args)
+        workers = [Intake(ledger, settings)] if args.intake else []
+        if args.payout_offers:
+            import payout
+            workers.append(payout.Payouts.from_args(args, ledger, settings))
     except b.BuilderError as e:
         raise SystemExit(str(e)) from None
     while True:
-        try:
-            worker.poll()
-        except Exception as e:   # the ledger cannot be read now: try again at the next poll
-            say({"error": b.bounded_text(f"{type(e).__name__}: {e}")})
+        for worker in workers:
+            try:
+                worker.poll()
+            except Exception as e:   # the ledger cannot be read now: try again at the next poll
+                say({"error": b.bounded_text(f"{type(e).__name__}: {e}")})
         if args.once:
             return 0
         time.sleep(args.poll_seconds)

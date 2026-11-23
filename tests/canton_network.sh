@@ -15,7 +15,8 @@
 #     both confirming participants when it validates it, and never needs a sidecar for the users participant.
 #   - the demo's Canton helpers (demo/canton.py) make an acceptance, DvP terms and a deposit request that the real package takes;
 #   - the intake, a receipt and a payout of Daml 0.6.0 work between the participants: the gateway's Intake_Accept accepts a real token-standard
-#     transfer of the Splice test token from U and makes the receipt; a block with a receipt leg and one with a payout leg commit.
+#     transfer of the Splice test token from U and makes the receipt; a block with a receipt leg and one with a payout leg commit; the custody
+#     worker pays the payout as an offer, U accepts it, and the worker marks it paid.
 # Needs Java 21 and network access to the registry in PINS. No GPU, no reth, no ZisK.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -142,7 +143,7 @@ done
 ! grep -qvE ' (verify2?|legs) ' "$FAKE_LOG" || fail "a call other than verify, verify2 and legs"
 # The legs of transfers to the gateway (Daml 0.6.0): the intake is proposed and accepted, U sends the gateway 10 TKB by the token standard's plain transfer
 # and the custody worker (apps/custody) has the gateway accept it with Intake_Accept, reading the memo, which makes the receipt; a block with a receipt leg
-# settles it (block 2), and a block with a payout leg makes a payout, which the gateway marks paid (block 3). The stand-in sidecars answer for each block.
+# settles it (block 2), and a block with a payout leg makes a payout, which the custody worker pays as an offer that U accepts, and then marks paid (block 3). The stand-in sidecars answer for each block.
 H2=$(printf 'cc%.0s' $(seq 32)); H3=$(printf 'dd%.0s' $(seq 32))
 leg_block() {   # number, its hash, its parent: the sidecars answer for a block of one leg
   answers
