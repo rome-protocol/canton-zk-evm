@@ -401,7 +401,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       const t = body(await get(`/api/tokens/${T1}`));
       same(t, F.tokenDetail);
       same(t.canton, F.cantonCustody);
-      expect(t.canton).toEqual({ instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, supply: "123000000", supplyBlock: 7, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z" });
+      expect(t.canton).toEqual({ instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, openReceipts: "0", openPayouts: "0", supply: "123000000", supplyBlock: 7, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z" });
       expect(body(await get(`/api/tokens/${T2}`)).canton).toBeNull();
       // The list does not carry it: one read of the table is for the one token's page.
       for (const i of body(await get("/api/tokens")).items) expect(i).not.toHaveProperty("canton");
@@ -474,13 +474,13 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       same(d, F.deposits);
       expect(d.items).toHaveLength(1);
       same(d.items[0], F.deposit);
-      expect(d.items[0]).toEqual({ depositId: "0x" + "02".repeat(32), token: h(0xb2), symbol: null, instrumentId: "TKB", amount: "125000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z" });
+      expect(d.items[0]).toEqual({ depositId: "0x" + "02".repeat(32), token: h(0xb2), symbol: "GDG", instrumentId: "TKB", amount: "125000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z" });
       expect((await get(`/api/canton/deposits?recipient=${h(0xe1)}`)).headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
       expect(body(await get(`/api/canton/deposits?recipient=${h(0xe2)}`)).items).toEqual([]);
       for (const bad of ["", "?recipient=0x12", `?recipient=${h(0xe1).toUpperCase().replace("0X", "0x")}`]) expect((await get(`/api/canton/deposits${bad}`)).status, bad).toBe(400);
       const p = body(await get(`/api/canton/payouts/0x${"04".repeat(32)}`));
       same(p, F.payout);
-      expect(p).toEqual({ id: "0x" + "04".repeat(32), status: "offered", token: h(0xb2), symbol: null, instrumentId: "TKB", amount: "30000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z", until: "2026-11-24T10:00:00.000Z", paidAt: null });
+      expect(p).toEqual({ id: "0x" + "04".repeat(32), status: "offered", token: h(0xb2), symbol: "GDG", instrumentId: "TKB", amount: "30000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z", until: "2026-11-24T10:00:00.000Z", paidAt: null });
       expect((await get(`/api/canton/payouts/0x${"04".repeat(32)}`)).headers?.["cache-control"]).toBe(CACHE_CONTROL.composite);
       expect(body(await get(`/api/canton/payouts/0x${"09".repeat(32)}`))).toEqual({ error: NO_PAYOUT });
       expect((await get(`/api/canton/payouts/0x${"09".repeat(32)}`)).status).toBe(404);
