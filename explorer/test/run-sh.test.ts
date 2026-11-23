@@ -146,6 +146,15 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(start()).not.toContain("AGGLAYER_NOTE_BOARDS");
   });
 
+  it("passes the Solgate route's settings to the explorer only, and leaves them out when not set", () => {
+    const solgate = { AGGLAYER_SOLGATE_URL: "https://solgate.example/", AGGLAYER_HADRIAN_RPC_URL: "https://hadrian.example/rpc", AGGLAYER_HADRIAN_CHAIN_ID: "200010", AGGLAYER_HADRIAN_NETWORK_ID: "74" };
+    const cmd = start(solgate);
+    for (const [name, value] of Object.entries(solgate)) expect(cmd).toContain(` -e ${name}=${value}`);
+    expect(indexerCommand(solgate).cmd).not.toContain("AGGLAYER");
+    expect(start()).not.toContain("AGGLAYER_SOLGATE");
+    expect(start()).not.toContain("AGGLAYER_HADRIAN");
+  });
+
   it("passes the Canton route's settings to the explorer only, and gives it the gateway party's token only with the route on", () => {
     const file = join(state, "gw-auth");
     writeFileSync(file, "t\n", { mode: 0o600 });
