@@ -5,13 +5,15 @@ Usage: canton_receipt_payout.py <state dir> <evm token> prepare   Proposes and a
                                                                   with the memo's label and recipient.
        canton_receipt_payout.py <state dir> <evm token> receipt   One Advance with a receipt leg: the receipt is gone, the head moves on.
        canton_receipt_payout.py <state dir> <evm token> payout    One Advance with a payout leg: a payout is there, with the leg's fields. The custody worker (apps/custody/payout.py) offers it to U as a
-                                                                  token-standard transfer, U accepts the offer (demo/asset.py accept), and the worker marks the payout paid.
+                                                                  token-standard transfer, U accepts the offer (as demo/canton.py return-tkb has U accept one), and the worker marks the payout paid.
 The stand-in sidecars' answers are set by the caller for each block."""
-import argparse, json, os, subprocess, sys, tempfile, time
+import argparse, json, os, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "network" / "canton"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps" / "custody"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "demo"))
+import canton
 import propose
 import intake
 import payout
@@ -66,10 +68,8 @@ elif mode == "payout":
         assert offered["offered"] == "c1" * 32 and offered["party"] == who and float(offered["amount"]) == 4.0, offered
         assert worker.poll() == [], "the offer is out: nothing is sent again"
         assert len(as_gateway.active("Payout")) == 1, "the payout is marked paid before U accepted the offer"
-        instrument = offered["instrument"]
-        done = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "demo" / "asset.py"), "accept", f"{instrument['admin']}/{instrument['id']}", offered["instruction"]],
-                              capture_output=True, text=True, timeout=300)
-        assert done.returncode == 0, f"U's accept stopped: {(done.stderr or done.stdout)[-600:]}"
+        canton.Network().submit("users", ["u"], {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": offered["instruction"], "choice": "TransferInstruction_Accept",
+                                                                     "choiceArgument": {"extraArgs": canton.NO_EXTRA_ARGS}}})   # U accepts the offer
         [paid] = worker.poll()
         assert paid["paid"] == "c1" * 32 and paid["party"] == who, paid
         time.sleep(1)
