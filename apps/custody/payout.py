@@ -105,7 +105,7 @@ class Payouts:
 
     def outcome(self, instruction: str):
         """How an instruction that is no longer active ended, from the choice that archived it: (update id, offset) when it completed the transfer, False when it did not (rejected,
-        withdrawn, failed), None when that cannot be read yet."""
+        withdrawn, failed), the successor's id (a string) when it handed the transfer on (the issuer's own step), None when that cannot be read yet."""
         body = {"contractId": instruction, "eventFormat": {"filtersByParty": {self.settings.gateway: EVERYTHING}, "verbose": False}}
         archived = (it.call(self.ledger, "/v2/events/events-by-contract-id", body).get("archived") or {}).get("archivedEvent")
         offset = archived.get("offset") if isinstance(archived, dict) else None
@@ -117,7 +117,12 @@ class Payouts:
             if isinstance(ex, dict) and ex.get("contractId") == instruction and ex.get("consuming"):
                 result = ex.get("exerciseResult")
                 output = result.get("output") if isinstance(result, dict) else None
-                return (tx["updateId"], offset) if isinstance(output, dict) and output.get("tag") == COMPLETED else False
+                output = output if isinstance(output, dict) else {}
+                if output.get("tag") == PENDING:   # handed on: the transfer is still out, never ended
+                    value = output.get("value")
+                    successor = value.get("transferInstructionCid") if isinstance(value, dict) else None
+                    return successor if isinstance(successor, str) else None
+                return (tx["updateId"], offset) if output.get("tag") == COMPLETED else False
         return None
 
     # ---- one pass
@@ -174,6 +179,9 @@ class Payouts:
         if entry["state"] == "offered":   # the instruction is gone: the choice that archived it says how it ended
             ended = self.outcome(entry["instruction"])
             if ended is None:
+                return None
+            if isinstance(ended, str):   # the issuer's step made a new instruction: follow it
+                self.journal.keep(pid, instruction=ended)
                 return None
             self.journal.keep(pid, **({"state": "completed", "update": ended[0], "offset": ended[1]} if ended else {"state": "ended"}))
             entry = self.journal.entries[pid]
@@ -238,7 +246,7 @@ class Payouts:
         check = None
         if instrument["admin"] in self.ledger.cfg.expiring:
             record = {"commandId": entry["command"] or pid, "gateway": gateway, "number": None, "plan": [{"instrument": instrument, "withdrawn": b.base_units(p["amount"]), "deposits": 0}]}
-            check = b.run_custody_check(self.ledger.cfg, record, entry["offset"], entry["update"])
+            check = b.run_custody_check(self.ledger.cfg, record, entry["offset"], entry["update"], clear=False)   # the builder's own pending check stays
             if check == "pending":
                 raise RuntimeError("the custody check of the completed transfer could not be read yet")
         answer = it.submit(self.ledger, gateway, {"ExerciseCommand": {"templateId": PAYOUT, "contractId": p["contractId"], "choice": "Payout_Paid", "choiceArgument": {}}}, [])

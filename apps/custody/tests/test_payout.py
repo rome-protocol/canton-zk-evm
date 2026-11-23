@@ -71,10 +71,10 @@ class Net:
         self.submitted, self.transfers, self.refuse = [], [], None
         self.kinds = {}
 
-    def archive(self, instruction, choice, tag):
+    def archive(self, instruction, choice, tag, successor=None):
         self.instructions.pop(instruction, None)
         self.next_offset += 1
-        self.archived[instruction] = {"offset": self.next_offset, "choice": choice, "tag": tag}
+        self.archived[instruction] = {"offset": self.next_offset, "choice": choice, "tag": tag, "value": {"transferInstructionCid": successor} if successor else {}}
         return self.next_offset
 
     def accept(self, instruction):
@@ -101,7 +101,7 @@ class Net:
             return 200, {"archived": {"archivedEvent": {"offset": done["offset"]}}} if done else {"created": {"createdEvent": {}}}
         if path == "/v2/updates/update-by-offset":
             [(c, done)] = [(c, d) for c, d in self.archived.items() if d["offset"] == body["offset"]]
-            event = {"ExercisedEvent": {"contractId": c, "choice": done["choice"], "consuming": True, "exerciseResult": {"output": {"tag": done["tag"]}}}}
+            event = {"ExercisedEvent": {"contractId": c, "choice": done["choice"], "consuming": True, "exerciseResult": {"output": {"tag": done["tag"], "value": done["value"]}}}}
             return 200, {"update": {"Transaction": {"value": {"updateId": f"update-{done['offset']}", "offset": done["offset"], "events": [event]}}}}
         if path == "/v2/updates/update-by-id":
             return 200, {"update": {"Transaction": {"value": self.updates[body["updateId"]]}}}
@@ -267,6 +267,21 @@ class Offers(PayoutCase):
         self.net.instructions[cid(0x70)] = (transfer, INTERNAL)
         self.assertEqual(self.poll(), ([], []))
         self.assertEqual(self.entry()["instruction"], cid(0x70))
+        offset = self.net.archive(cid(0x70), "TransferInstruction_Update", DONE)
+        said, _ = self.poll()
+        self.assertEqual([(line["paid"], line["transferUpdateId"]) for line in said], [(PID, f"update-{offset}")])
+        self.assertEqual((len(self.net.transfers), self.sent_choices()), (1, ["Payout_Paid"]))
+
+    def test_a_step_that_hands_the_offer_on_is_followed_to_its_successor_and_never_offered_again(self):
+        self.payout()
+        self.poll()
+        self.net.archive(cid(0x61), "TransferInstruction_Accept", PENDING_TAG, successor=cid(0x70))   # the successor is not visible to the gateway (no meta, or not yet)
+        self.now += HOURS * 3600 * 2
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual((len(self.net.transfers), self.entry()["state"], self.entry()["instruction"]), (1, "offered", cid(0x70)))
+        self.now += HOURS * 3600 * 2
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual(len(self.net.transfers), 1)
         offset = self.net.archive(cid(0x70), "TransferInstruction_Update", DONE)
         said, _ = self.poll()
         self.assertEqual([(line["paid"], line["transferUpdateId"]) for line in said], [(PID, f"update-{offset}")])
@@ -458,6 +473,16 @@ class CantonCoin(PayoutCase):
         said, _ = self.poll()
         self.assertEqual([(list(line)[0], line["custodyCheck"]) for line in said], [("paid", "ok")])
         self.assertFalse((self.work / b.CUSTODY_STOP_FILE).exists())
+
+    def test_the_worker_leaves_the_builders_pending_custody_check_alone(self):
+        self.payout(TOKEN_CC)
+        self.poll()
+        record = self.work / "custody-check.json"
+        record.write_text('{"commandId": "builder"}')
+        self.custody(self.net.accept(cid(0x61)), 16 * UNIT)
+        said, _ = self.poll()
+        self.assertEqual([(list(line)[0], line["custodyCheck"]) for line in said], [("paid", "ok")])
+        self.assertEqual(record.read_text(), '{"commandId": "builder"}')
 
     def test_a_custody_that_did_not_fall_by_the_amount_stops_canton_coin_payouts(self):
         self.payout(TOKEN_CC)

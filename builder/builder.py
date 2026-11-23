@@ -2123,10 +2123,11 @@ def stop_custody(cfg: Config, rec: dict, update_id, reason: str, plan: dict | No
     return "stopped"
 
 
-def run_custody_check(cfg: Config, rec: dict, offset: int, update_id=None) -> str:
+def run_custody_check(cfg: Config, rec: dict, offset: int, update_id=None, clear: bool = True) -> str:
     """The check of a committed Advance, at its completion `offset`: for each expiring instrument it withdrew, the gateway's custody read at the offset before
     it and at it must differ by exactly what the block took out less what its deposits put in. "ok", or "stopped" (a difference, or a read the participant
-    refused: it fails closed), or "pending" (a read that failed in a way that may clear by itself: the record stays, and Canton Coin withdrawals wait)."""
+    refused: it fails closed), or "pending" (a read that failed in a way that may clear by itself: the record stays, and Canton Coin withdrawals wait).
+    With clear=False an "ok" leaves the folder's custody-check.json alone (a check of another writer, which is not this record)."""
     ledger = Ledger(cfg)
     try:
         for plan in rec["plan"]:
@@ -2141,7 +2142,8 @@ def run_custody_check(cfg: Config, rec: dict, offset: int, update_id=None) -> st
         return stop_custody(cfg, rec, update_id, f"the participant refused to show the holdings at offset {offset - 1} or {offset} (HTTP {e.code})")
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
         return "pending"
-    custody_check_path(cfg).unlink(missing_ok=True)
+    if clear:
+        custody_check_path(cfg).unlink(missing_ok=True)
     return "ok"
 
 
