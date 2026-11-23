@@ -317,6 +317,7 @@ On DevNet, 0.4.0 (package id `4f57b2ae083bf65b23d90f90aca64bab42ba4269a16c77a023
 | Package | Version | Package id | Vetted |
 |---|---|---|---|
 | `splice-test-token-v1` | 1.0.1 | `da294b5651ed00af8565fd31351d0c1d8778f10393d250e32c9844311f681436` | 2026-11-23 |
+| `canton-zk-evm` | 0.6.0 | `7fb03e1d1a1d421246dcb1a41e48f749363adeb5b834fcf060cf1a4940b52a3c` | 2026-11-23 18:25:51 UTC |
 
 ### The gas cap
 
