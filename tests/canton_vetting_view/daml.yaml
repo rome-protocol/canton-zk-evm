@@ -1,0 +1,13 @@
+sdk-version: __SDK__
+name: vetting-probe
+version: 0.0.1
+source: src
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - __DARS__/splice-api-token-metadata-v1-1.0.0.dar
+  - __DARS__/splice-api-token-holding-v1-1.0.0.dar
+  - __DARS__/splice-api-token-transfer-instruction-v1-1.0.0.dar
+build-options:
+  - --target=__TARGET__

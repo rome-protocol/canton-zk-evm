@@ -1,0 +1,33 @@
+module Vetting where
+
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+import Splice.Api.Token.TransferInstructionV1
+
+-- Rome's own package: signed by Rome alone. `Accept` takes a pending transfer in the same transaction that records it; `Record` is the second half alone.
+template Intake
+  with
+    rome : Party
+  where
+    signatory rome
+    nonconsuming choice Accept : ContractId Receipt
+      with
+        instruction : ContractId TransferInstruction
+        extraArgs : ExtraArgs
+        user : Party
+      controller rome
+      do
+        _ <- exercise instruction TransferInstruction_Accept with extraArgs
+        create Receipt with rome, user
+    nonconsuming choice Record : ContractId Receipt
+      with
+        user : Party
+      controller rome
+      do create Receipt with rome, user
+
+-- The user is a plain field: not a stakeholder.
+template Receipt
+  with
+    rome : Party
+    user : Party
+  where
+    signatory rome
