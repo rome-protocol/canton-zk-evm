@@ -50,8 +50,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asset, canton, evm, twin
-from asset import (USER_AGENT, HOLDING_VIEW, HOLDING_INTERFACE, INSTRUCTION_VIEW, REASON_KEY, LABEL_KEY, CONTRACT_ID, PARTY_ID, MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_INPUTS,
-                   TRANSFER_KINDS, TRANSFER_PENDING, TOKEN_FILE_VARIABLE, checked_context, amount_of, balance_of, gateway_tokens, scrubbed)
+from asset import (HOLDING_VIEW, HOLDING_INTERFACE, INSTRUCTION_VIEW, CONTRACT_ID, PARTY_ID, MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_INPUTS,
+                   TRANSFER_PENDING, TOKEN_FILE_VARIABLE, checked_context, balance_of, gateway_tokens, scrubbed)
 
 AMULET = "Amulet"
 WRAPPED_NAME, WRAPPED_SYMBOL = "Canton Coin (Ostia)", "CC"   # the defaults of `register --name --symbol`
@@ -107,7 +107,7 @@ class Scan(asset.Registry):
         factory = answer.get("factoryId")
         if not isinstance(factory, str) or not CONTRACT_ID.fullmatch(factory):
             raise canton.Fail("the scan proxy's answer has no factoryId that is a contract id")
-        data, disclosed = checked_context(answer.get("choiceContext"))
+        data, disclosed = checked_context(answer.get("choiceContext"), self.what)
         named = [d for d in disclosed if d["contractId"] == factory]
         if len(named) != 1:
             raise canton.Fail("the scan proxy did not disclose the factory it named")
@@ -115,10 +115,9 @@ class Scan(asset.Registry):
             raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
         return {"factory": factory, "data": data, "disclosed": disclosed}
 
+
 def transfer_of(sender: str, receiver: str, amount: str, dso: str, inputs: list) -> dict:
     return asset.transfer_of(sender, receiver, amount, {"admin": dso, "id": AMULET}, inputs)
-
-
 
 
 def wrapped_at(gateway: str, token: str) -> bool:
@@ -310,7 +309,7 @@ def deposit(net: canton.Network, scan: Scan, label: str, recipient: str, amount:
 
 
 def send_memo(net: canton.Network, scan: Scan, amount: str, address: str, label: str = None) -> dict:
-    return asset.send_memo(net, scan, {"admin": scan.dso_party(), "id": AMULET}, amount, address, label)
+    return asset.send_memo(net, scan, {"admin": scan.dso_party(), "id": AMULET}, amount, address, label, name="Canton Coin", hint=" (`cc.py fund u <amount>` gives it some)")
 
 
 def take_back(net: canton.Network, scan: Scan, instruction: str) -> dict:

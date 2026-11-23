@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Part of tests/canton_network.sh, on the real Canton network: the legs of Daml 0.6.0 for transfers to the gateway.
-Usage: canton_receipt_payout.py <state dir> <evm token> prepare <offer>   Proposes and accepts the intake, then the gateway accepts <offer>, U's token-standard transfer of the
-                                                                  Splice test token to the gateway (demo/canton.py send-to-gateway), with Intake_Accept: the receipt is made by the accept.
+Usage: canton_receipt_payout.py <state dir> <evm token> prepare   Proposes and accepts the intake, then the custody worker (apps/custody/intake.py) takes U's token-standard transfer of the
+                                                                  Splice test token to the gateway (demo/canton.py send-to-gateway, with an address and a label as its memo): the receipt is made by the accept,
+                                                                  with the memo's label and recipient.
        canton_receipt_payout.py <state dir> <evm token> receipt   One Advance with a receipt leg: the receipt is gone, the head moves on.
        canton_receipt_payout.py <state dir> <evm token> payout    One Advance with a payout leg: a payout is there, with the leg's fields; the gateway marks it paid.
 The stand-in sidecars' answers are set by the caller for each block."""
-import os, sys, time
+import argparse, os, sys, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "network" / "canton"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps" / "custody"))
 import propose
+import intake
 
 state, token_address, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 parties = propose.read_env_file(state / "canton" / "parties.env")
@@ -37,11 +40,13 @@ if mode == "prepare":
     confirmer = propose.confirmer_ledger(CONFIRMER_URL, parties)
     [proposal] = confirmer.wait_for("IntakeProposal")
     confirmer.submit({"ExerciseCommand": {"templateId": propose.PKG + "IntakeProposal", "contractId": proposal["contractId"], "choice": "AcceptIntake", "choiceArgument": {}}})
-    [intake] = as_gateway.wait_for("Intake")
-    as_gateway.submit({"ExerciseCommand": {"templateId": propose.PKG + "Intake", "contractId": intake["contractId"], "choice": "Intake_Accept",
-                                           "choiceArgument": {"gatewayToken": registered["contractId"], "instruction": sys.argv[4], "label": "m1", "recipient": "44" * 20, "choiceContext": None}}})
+    as_gateway.wait_for("Intake")
+    bearer_file = os.environ.get("CZE_TOKEN_FILE_OPERATOR", "")
+    args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=bearer_file, gateway_party=parties["GATEWAY_PARTY"])
+    [taken] = intake.Intake(intake.ledger_of(args), intake.Settings(parties["GATEWAY_PARTY"])).poll()   # no registry: the test token needs no choice context
+    assert taken["label"] == "intake-1" and taken["recipient"] == "44" * 20, taken
     [receipt] = builder.wait_for("Receipt")
-    assert (receipt["sender"], float(receipt["amount"]), receipt["recipient"], receipt["label"]) == (who, 10.0, "44" * 20, "m1"), receipt
+    assert (receipt["sender"], float(receipt["amount"]), receipt["recipient"], receipt["label"]) == (who, 10.0, "44" * 20, "intake-1"), receipt
 elif mode == "receipt":
     [receipt] = builder.active("Receipt")
     advance([{"tag": "ReceiptLeg", "value": {"receipt": receipt["contractId"]}}])

@@ -12,8 +12,8 @@
   asset.py factory <instrument> [REGISTRY]
                                         the transfer factory that the registry names for the instrument (for `propose.py token --factory`): its contract id and template, and the transferKind
 
-REGISTRY is the instrument's token registry: `--registry ADMIN=URL` (the root of its CIP-0056 off-ledger API; also CZE_TOKEN_REGISTRIES, comma-separated, as the builder takes it) and its bearer token
-`--registry-token-file ADMIN=FILE` (a file, mode 0600; also CZE_TOKEN_REGISTRY_TOKEN_FILES). A token with no registry needs none: send-memo and take-back then use the factory of the instrument's
+REGISTRY is the instrument's token registry: `--registry ADMIN=URL` (the root of its CIP-0056 off-ledger API, no query or user; repeatable; also CZE_TOKEN_REGISTRIES, comma-separated, as the builder takes it) and its bearer token
+`--registry-token-file ADMIN=FILE` (a file, mode 0600; repeatable; also CZE_TOKEN_REGISTRY_TOKEN_FILES). A token with no registry needs none: send-memo and take-back then use the factory of the instrument's
 registered GatewayToken and no choice context, and `--disclosed FILE` (a JSON list of disclosed contracts) adds the contracts that the factory needs.
 Tokens are read from their files at every call and are never printed. Requests carry the User-Agent "Rome Protocol rome@romeprotocol.com". A registry is a server that this tool does not trust: each
 answer is size-capped and checked before it is used. Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
@@ -21,6 +21,7 @@ answer is size-capped and checked before it is used. Every command prints one JS
 import json, os, re, sys
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canton, twin
@@ -42,6 +43,7 @@ TRANSFER_KINDS = ("self", "direct", "offer")
 TRANSFER_PENDING = "TransferInstructionResult_Pending"
 COMMAND_ROLES = {"send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",), "factory": ()}
 NO_CONTEXT = {"values": {}}
+REPEATABLE = ("--registry", "--registry-token-file")
 ARGS = {"send-memo": (3, 3), "instructions": (0, 1), "take-back": (2, 2), "factory": (1, 1)}   # the fewest and most arguments of each command
 
 
@@ -53,6 +55,9 @@ class Registry:
         url = (url or "").rstrip("/")
         if not canton.https_or_on_this_machine(url):
             raise SystemExit(f"the registry must be https (or http on this machine), not {url!r}")
+        parts = urlsplit(url)
+        if parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+            raise SystemExit(f"the registry's URL must have no query, fragment or user and password, not {url!r}")
         self.url, self.bearer_file = url, token_file
         if token_file:
             canton.propose.read_token(token_file)   # a missing or unsafe file stops the command before anything is sent
@@ -177,8 +182,8 @@ def transfer_factory(net: canton.Network, registry, instrument: dict, transfer: 
     return {"factory": made[0]["createArgument"]["factory"], "kind": None, "data": NO_CONTEXT, "disclosed": disclosed_contracts(disclosed or [])}
 
 
-def send_memo(net: canton.Network, registry, instrument: dict, amount: str, address: str, label: str = None, disclosed: list = None) -> dict:
-    """U sends `amount` of the instrument to the gateway's party through the registry's transfer factory, with the EVM address as the memo (transfer.meta). The result is pending when the
+def send_memo(net: canton.Network, registry, instrument: dict, amount: str, address: str, label: str = None, disclosed: list = None, name: str = None, hint: str = "") -> dict:
+    """U sends `amount` of the instrument to the gateway's party through the registry's transfer factory, with the EVM address as the memo (transfer.meta). `name` and `hint` are for the message of a shortfall. The result is pending when the
     gateway holds no pre-approval: the instruction's contract id is what `instructions` shows and `take-back` withdraws."""
     if not canton.CANTON_AMOUNT.fullmatch(amount) or not twin.ledger_units(amount):
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
@@ -188,7 +193,7 @@ def send_memo(net: canton.Network, registry, instrument: dict, amount: str, addr
     u, gateway = net.party("u"), net.party("gateway")
     held = sorted((h for h in holdings(net, "users", "demo", u, instrument) if not h[2]), key=lambda h: -h[1])
     if sum(a for _, a, _ in held) < twin.ledger_units(amount):
-        raise canton.Fail(f"U holds {twin.amount_text(sum(a for _, a, _ in held))} {instrument['id']}, less than {amount}")
+        raise canton.Fail(f"U holds {twin.amount_text(sum(a for _, a, _ in held))} {name or instrument['id']}, less than {amount}{hint}")
     before = u_balance(net, instrument)
     transfer = {**transfer_of(u, gateway, amount, instrument, [cid for cid, _, _ in held[:MAX_INPUTS]]), "meta": {"values": meta}}   # the fee may come out of more than the amount's own holdings
     asked = transfer_factory(net, registry, instrument, transfer, disclosed)
@@ -297,12 +302,28 @@ def main(argv: list) -> dict:
         raise canton.Fail(scrubbed(str(e), secret_files(pairs(os.environ.get(REGISTRY_TOKEN_FILES), options.get("--registry-token-file")).values()))) from None
 
 
+def repeatable(argv: list, names: tuple) -> tuple:
+    """The arguments without the options `--name value` of `names`, each of which may be given more than once (as the builder takes them), and {name: its values joined by commas}."""
+    rest, found, i = [], {}, 0
+    while i < len(argv):
+        if argv[i] in names:
+            if i + 1 >= len(argv):
+                raise SystemExit(__doc__)
+            found[argv[i]] = ",".join(filter(None, (found.get(argv[i]), argv[i + 1])))
+            i += 2
+        else:
+            rest.append(argv[i])
+            i += 1
+    return rest, found
+
+
 def run(argv: list, options: dict) -> dict:
     cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
         names = {"send-memo": ("--label",), "instructions": (), "take-back": (), "factory": ()}[cmd[0]]
-        args, found = twin.split_options(argv[1:], names + (() if cmd[0] == "instructions" else ("--registry", "--registry-token-file", "--disclosed")), __doc__)
-        options.update(found)
+        rest, repeated = repeatable(argv[1:], () if cmd[0] == "instructions" else REPEATABLE)
+        args, found = twin.split_options(rest, names + (() if cmd[0] == "instructions" else ("--disclosed",)), __doc__)
+        options.update(found, **repeated)
         if not ARGS[cmd[0]][0] <= len(args) <= ARGS[cmd[0]][1]:
             raise SystemExit(__doc__)
         instrument = parse_instrument(args[0]) if args else None

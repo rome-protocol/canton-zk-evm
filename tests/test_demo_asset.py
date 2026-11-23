@@ -108,6 +108,17 @@ class SendMemoTests(AssetCase):
             self.run_asset("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--registry", f"{ISSUER}={self.registry}")
         self.assertEqual(len(self.registry_requests(FACTORY_PATH)), 1)   # the option's URL, not the environment's
 
+    def test_the_registry_options_can_be_given_more_than_once_as_the_builder_takes_them(self):
+        self.run_asset("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--registry", f"{V}={self.registry}x", "--registry", f"{ISSUER}={self.registry}",
+                       "--registry-token-file", f"{V}={self.bearer_file}", "--registry-token-file", f"{ISSUER}={self.bearer_file}")
+        self.assertEqual(len(self.registry_requests(FACTORY_PATH)), 1)
+
+    def test_a_registry_url_with_a_query_or_a_user_is_refused(self):
+        for url in (self.registry + "?x=1", self.registry.replace("://", "://user:pw@")):
+            with self.subTest(url=url), self.assertRaises(SystemExit):
+                self.run_asset("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--registry", f"{ISSUER}={url}")
+        self.assertEqual(self.commands(), [])
+
     def test_a_registry_with_no_token_file_gets_no_authorization(self):
         self.run_asset("send-memo", INSTRUMENT, "1", MEMO_ADDRESS, "--registry", f"{ISSUER}={self.registry}")
         [(headers, _)] = self.registry_requests(FACTORY_PATH)

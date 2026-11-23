@@ -2,10 +2,10 @@ name: network
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/requirements.txt", "demo/results/**", "prover/fixtures/**", "prover/make-block.py", "builder/keccak.py", "builder/builder.py", "builder/requirements.txt", "gateway/Gateway.bin-runtime", "gateway/Vault.bin-runtime", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "apps/custody/**", "PINS", "demo/canton.py", "demo/requirements.txt", "demo/results/**", "prover/fixtures/**", "prover/make-block.py", "builder/keccak.py", "builder/builder.py", "builder/requirements.txt", "gateway/Gateway.bin-runtime", "gateway/Vault.bin-runtime", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/requirements.txt", "demo/results/**", "prover/fixtures/**", "prover/make-block.py", "builder/keccak.py", "builder/builder.py", "builder/requirements.txt", "gateway/Gateway.bin-runtime", "gateway/Vault.bin-runtime", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "apps/custody/**", "PINS", "demo/canton.py", "demo/requirements.txt", "demo/results/**", "prover/fixtures/**", "prover/make-block.py", "builder/keccak.py", "builder/builder.py", "builder/requirements.txt", "gateway/Gateway.bin-runtime", "gateway/Vault.bin-runtime", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
 
 permissions:
   contents: read
@@ -32,15 +32,20 @@ jobs:
   # The Canton side for real: the pinned released Canton and Daml compiler (PINS), the real form of the Daml package,
   # the config and bootstrap, the chain proposal, and one Advance, against a stand-in for the sidecars.
   canton:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # the Python 3.12 the builder's dependency is installed for
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
+      - name: Install the builder's one dependency, by hash (the custody worker uses the builder's ledger client)
+        run: |
+          python3 --version | grep -q '^Python 3\.12\.'
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r builder/requirements.txt
       - name: Canton, the real Daml package and one Advance
-        run: tests/canton_network.sh
+        run: PYTHON="$RUNNER_TEMP/venv/bin/python" tests/canton_network.sh
 
   # Ostia on an existing participant, for real: the same pinned Canton, started without Ostia's bootstrap and with a login on its Ledger API;
   # network/external/setup.py twice (the second changes nothing), the users' rights, one Advance against one stand-in sidecar, and the custody cases
