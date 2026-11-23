@@ -9,6 +9,8 @@
                                         sender, amount, instrument, status, meta (as the gateway sees it) and the memo (the reason, or null)
   asset.py take-back <instrument> <instruction> [REGISTRY]
                                         U withdraws its own pending transfer instruction (the registry's choice context for "withdraw"), so that the receiver can no longer accept it. Prints U's balance
+  asset.py accept <instrument> <instruction> [REGISTRY]
+                                        U accepts a transfer instruction that has U as its receiver (the gateway's payout offer): the registry's choice context for "accept". Prints U's balance
   asset.py factory <instrument> [REGISTRY]
                                         the transfer factory that the registry names for the instrument (for `propose.py token --factory`): its contract id and template, and the transferKind
 
@@ -41,10 +43,10 @@ MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_BLOB = 16, 64, 500_000
 MAX_INPUTS = 50   # the holdings that a transfer takes as inputs, the largest first
 TRANSFER_KINDS = ("self", "direct", "offer")
 TRANSFER_PENDING = "TransferInstructionResult_Pending"
-COMMAND_ROLES = {"send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",), "factory": ()}
+COMMAND_ROLES = {"send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",), "accept": ("demo",), "factory": ()}
 NO_CONTEXT = {"values": {}}
 REPEATABLE = ("--registry", "--registry-token-file")
-ARGS = {"send-memo": (3, 3), "instructions": (0, 1), "take-back": (2, 2), "factory": (1, 1)}   # the fewest and most arguments of each command
+ARGS = {"send-memo": (3, 3), "instructions": (0, 1), "take-back": (2, 2), "accept": (2, 2), "factory": (1, 1)}   # the fewest and most arguments of each command
 
 
 class Registry:
@@ -238,14 +240,23 @@ def instructions(net: canton.Network, instrument: dict = None) -> dict:
     return {"gateway": gateway, "instructions": found}
 
 
+def use_instruction(net: canton.Network, registry, instrument: dict, instruction: str, choice: str, context_of: str, disclosed: list = None) -> dict:
+    """U exercises `choice` of a transfer instruction with the registry's choice context `context_of` (none for a token with no registry)."""
+    context = registry.accept_context(instruction, context_of) if registry else {"data": NO_CONTEXT, "disclosed": disclosed_contracts(disclosed or [])}
+    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": instruction, "choice": choice, "choiceArgument": {"extraArgs": {"context": context["data"], "meta": {"values": {}}}}}}
+    tx = twin.submit_for_transaction(net, "u", command, context["disclosed"])
+    output = twin.exercise_output(tx, instruction, choice) or {}
+    return {"updateId": tx["updateId"], "instruction": instruction, "result": output.get("tag"), "balance": u_balance(net, instrument)}
+
+
 def take_back(net: canton.Network, registry, instrument: dict, instruction: str, disclosed: list = None) -> dict:
     """U withdraws its own pending transfer instruction: TransferInstruction_Withdraw with the registry's choice context for "withdraw" (none for a token with no registry)."""
-    context = registry.accept_context(instruction, "withdraw") if registry else {"data": NO_CONTEXT, "disclosed": disclosed_contracts(disclosed or [])}
-    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": instruction, "choice": "TransferInstruction_Withdraw",
-                                   "choiceArgument": {"extraArgs": {"context": context["data"], "meta": {"values": {}}}}}}
-    tx = twin.submit_for_transaction(net, "u", command, context["disclosed"])
-    output = twin.exercise_output(tx, instruction, "TransferInstruction_Withdraw") or {}
-    return {"updateId": tx["updateId"], "instruction": instruction, "result": output.get("tag"), "balance": u_balance(net, instrument)}
+    return use_instruction(net, registry, instrument, instruction, "TransferInstruction_Withdraw", "withdraw", disclosed)
+
+
+def accept(net: canton.Network, registry, instrument: dict, instruction: str, disclosed: list = None) -> dict:
+    """U accepts a transfer instruction that has U as its receiver (an offer, such as the gateway's payout): TransferInstruction_Accept with the registry's choice context for "accept"."""
+    return use_instruction(net, registry, instrument, instruction, "TransferInstruction_Accept", "accept", disclosed)
 
 
 def factory(net: canton.Network, registry, instrument: dict) -> dict:
@@ -320,7 +331,7 @@ def repeatable(argv: list, names: tuple) -> tuple:
 def run(argv: list, options: dict) -> dict:
     cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
-        names = {"send-memo": ("--label",), "instructions": (), "take-back": (), "factory": ()}[cmd[0]]
+        names = {"send-memo": ("--label",), "instructions": (), "take-back": (), "accept": (), "factory": ()}[cmd[0]]
         rest, repeated = repeatable(argv[1:], () if cmd[0] == "instructions" else REPEATABLE)
         args, found = twin.split_options(rest, names + (() if cmd[0] == "instructions" else ("--disclosed",)), __doc__)
         options.update(found, **repeated)
@@ -345,6 +356,8 @@ def run(argv: list, options: dict) -> dict:
             return {"instrument": instrument, **send_memo(net, registry, instrument, args[1], args[2], options.get("--label"), disclosed)}
         if cmd == ["take-back"]:
             return {"instrument": instrument, **take_back(net, registry, instrument, args[1], disclosed)}
+        if cmd == ["accept"]:
+            return {"instrument": instrument, **accept(net, registry, instrument, args[1], disclosed)}
         return {"instrument": instrument, **factory(net, registry, instrument)}
     raise SystemExit(__doc__)
 

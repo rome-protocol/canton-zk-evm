@@ -2324,6 +2324,9 @@ class Canton:
     def redeems(self): return self.listed("redeem requests", lambda: self.active_if_uploaded(REDEEM))
 
     @property
+    def payouts(self): return self.listed("payouts", lambda: self.active_if_uploaded(PAYOUT))
+
+    @property
     def receipts(self): return self.listed("receipts", lambda: self.active_if_uploaded(RECEIPT)) if self.ledger.cfg.receipts else []
 
     @property
@@ -2560,15 +2563,38 @@ def receipt_leg(leg: LegEvent, canton: Canton, claimed: dict | None, receipts: l
     return leg_out
 
 
-def payout_leg(leg: LegEvent, canton: Canton) -> dict:
+def largest_first_inputs(usable: list, needed: int) -> list:
+    """The contract ids of the holdings (Holding views whose amounts are whole base units) a transfer of `needed` base units takes: the largest first, no more than needed. A NoCantonSide when they do not cover it."""
+    inputs, total = [], 0
+    for h in sorted(usable, key=lambda h: (-base_units(h["amount"]), h["contractId"])):
+        if total >= needed:
+            break
+        inputs.append(h["contractId"])
+        total += base_units(h["amount"])
+    if total < needed:
+        raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    return inputs
+
+
+def payout_leg(leg: LegEvent, canton: Canton, claimed: dict | None = None) -> dict:
     """With --payout-offers a withdrawal is a payout to the party the holder named: no acceptance, no holdings, no choice context. The party must be a Canton party
-    (Canton refuses the whole Advance that names another text) and one the builder may take a leg for (`party_problem`). Several payouts of one token go in a block."""
+    (Canton refuses the whole Advance that names another text); it is not a stakeholder of the payout, so no hosting or blame check applies to it. Several payouts of one token go in a block.
+    For an expiring instrument (Canton Coin) custody less the open payouts less this amount must be zero or at least the floor, so that nothing is burnt that cannot be paid."""
     registered = canton.token(leg)
     if not canton_party_text(leg.party):
         raise NoCantonSide("the receiver is not a Canton party")
-    found = canton.party_problem(leg.party)
-    if found is not None:
-        raise NoCantonSide(found)
+    instrument, rules = registered["instrumentId"], canton.expiry
+    if rules is not None and rules.covers(instrument["admin"]):
+        key = (instrument["admin"], instrument["id"])
+        promised = claimed["payouts"] if claimed is not None else {}
+        kept = custody_sum(canton.holdings, canton.chain["gateway"], instrument) - promised.get(key, 0) - sum(
+            base_units(p["amount"]) for p in canton.payouts if p["gatewayToken"] == registered["contractId"] and names_chain(p, canton.chain, "gateway"))
+        floor, left = rules.floor(instrument["admin"]), kept - leg.amount
+        if left < 0:
+            raise NoCantonSide("the gateway's custody of the token, less its open payouts, does not cover the amount")
+        if left and left < floor:
+            raise NoCantonSide(custody_reason(("left", left), kept, floor, 0))
+        promised[key] = promised.get(key, 0) + leg.amount
     leg_out = {"tag": "PayoutLeg", "value": {"id": leg.id, "gatewayToken": registered["contractId"], "from": leg.account, "amount": canton_amount(leg.amount), "party": leg.party}}
     canton.note_parties(leg_out)
     return leg_out
@@ -2578,7 +2604,7 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     """With --payout-offers a withdrawal is a payout (`payout_leg`). Otherwise it needs the registered token, the named party's standing acceptance and unlocked gateway holdings of the instrument that
     cover the amount. A holding made earlier in the same transaction cannot be named in advance, so one withdrawal of an instrument goes in a block."""
     if canton.ledger.cfg.payout_offers:
-        return payout_leg(leg, canton)
+        return payout_leg(leg, canton, claimed)
     chain = canton.chain
     token = canton.token(leg)
     instrument = (token["instrumentId"]["admin"], token["instrumentId"]["id"])
@@ -2595,15 +2621,7 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     if canton.expiry is not None and canton.expiry.covers(instrument[0]):
         inputs = expiring_inputs(canton, leg, instrument[0], usable)
     else:
-        usable.sort(key=lambda h: (-base_units(h["amount"]), h["contractId"]))
-        needed, inputs, total = leg.amount, [], 0
-        for h in usable:
-            if total >= needed:
-                break
-            inputs.append(h["contractId"])
-            total += base_units(h["amount"])
-        if total < needed:
-            raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+        inputs = largest_first_inputs(usable, leg.amount)
     leg_out = {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
                                                  "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
     transfer = {"sender": chain["gateway"], "receiver": leg.party, "amount": canton_amount(leg.amount), "instrumentId": token["instrumentId"],
@@ -2958,7 +2976,7 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     finders = {DEPOSIT: deposit_leg, WITHDRAWAL: withdrawal_leg, PAYMENT: payment_leg}
     canton.quota_limits = limits
     state = canton.quota if limits and any(e.kind == WITHDRAWAL for e in events) else None
-    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "receipts": set(), "redeems": set(), "holdings": set(), "quota": {}}):
+    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "receipts": set(), "redeems": set(), "holdings": set(), "quota": {}, "payouts": {}}):
         legs, missing = [], []
         canton.leg_context_bytes.clear()   # each pass counts the legs it keeps, and only those
         canton.leg_disclosed.clear()
