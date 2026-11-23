@@ -8,7 +8,7 @@ import { LoadingCard } from "../components/Cards.tsx";
 /**
  * The explorer's /bridge address. While the Bridge is a page of the explorer (no VITE_BRIDGE_ORIGIN) it is that page, as it was. Once the Bridge has its own site, the address sends the visitor there,
  * with the query and the hash kept, so /bridge?tab=other-chains lands on the same view: unless this browser keeps a move that is not over. Storage belongs to one site, so the Bridge site cannot see
- * that move; the page then shows here as it was, with a line that says where the Bridge is now. The check's code is fetched only when the Bridge has its own site, so the explorer's first load does not carry it.
+ * that move; the page then shows here as it was, with a line that says where the Bridge is now. The check's code is fetched only when the Bridge has its own site, so the explorer's first load does not carry it. If that code cannot be fetched or run, the page shows here as it was, with the line, and does not send the visitor away.
  */
 export function BridgeMoved({ children, store, go = (to: string) => window.location.replace(to) }: { children: ReactNode; store?: StoreLike | null; go?: (to: string) => void }) {
   const { search, hash } = useLocation();
@@ -19,7 +19,7 @@ export function BridgeMoved({ children, store, go = (to: string) => window.locat
     let live = true;
     void Promise.all([import("../bridge/unfinished.ts"), import("../bridge/moves/state.ts")]).then(([u, s]) => {
       if (live) setKeeps(u.hasUnfinished(store === undefined ? s.moveStore() : store));
-    });
+    }).catch(() => { if (live) setKeeps(true); });
     return () => { live = false; };
   }, [origin, store]);
   useEffect(() => { if (origin !== null && keeps === false) go(bridgeHref(search) + hash); }, [origin, keeps, search, hash, go]);
