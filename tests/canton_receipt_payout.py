@@ -44,7 +44,7 @@ if mode == "prepare":
     confirmer.submit({"ExerciseCommand": {"templateId": propose.PKG + "IntakeProposal", "contractId": proposal["contractId"], "choice": "AcceptIntake", "choiceArgument": {}}})
     as_gateway.wait_for("Intake")
     bearer_file = os.environ.get("CZE_TOKEN_FILE_OPERATOR", "")
-    args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=bearer_file, gateway_party=parties["GATEWAY_PARTY"])
+    args = argparse.Namespace(ledger_url=URL, ledger_user=propose.user_id("operator"), bearer_file=bearer_file, gateway_party=parties["GATEWAY_PARTY"], work_dir="")
     [taken] = intake.Intake(intake.ledger_of(args), intake.Settings(parties["GATEWAY_PARTY"])).poll()   # no registry: the test token needs no choice context
     assert taken["label"] == "intake-1" and taken["recipient"] == "44" * 20, taken
     [receipt] = builder.wait_for("Receipt")
