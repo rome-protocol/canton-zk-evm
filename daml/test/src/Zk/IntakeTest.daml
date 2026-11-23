@@ -151,19 +151,15 @@ testABadRecipientIsRefused = do
   Some _ <- queryContractId f.gateway offer
   pure ()
 
-testRecordMakesAReceiptForTheTokensChainOnly : Script ()
-testRecordMakesAReceiptForTheTokensChainOnly = do
+testTheIntakeRefusesATokenOfAnotherChain : Script ()
+testTheIntakeRefusesATokenOfAnotherChain = do
   f <- fixture
   intake <- makeIntake f
-  r <- submit (actAs f.gateway) $ exerciseCmd intake Intake_Record with
-    gatewayToken = f.token; sender = f.d; amount = 10.0; label = "m1"; recipient = recipientAddr
-  Some rc <- queryContractId f.operator r
-  (rc.sender, rc.depositId, rc.amount) === (f.d, depositIdOf f.d "m1", 10.0)
   otherChain <- makeTokenOf "TKB" f.operator f.confirmer f.gateway f.builder 770102 f.reg tokenAddr
-  gatewayRefused "another chain" f $ exerciseCmd intake Intake_Record with
-    gatewayToken = otherChain; sender = f.d; amount = 10.0; label = "m2"; recipient = recipientAddr
   offer <- offerOf f f.d f.gateway "TKB" 10.0
   gatewayRefused "another chain" f $ accept intake otherChain (asInstruction offer) "m2"
+  Some _ <- queryContractId f.gateway offer
+  query @Receipt f.operator >>= \rs -> length rs === 0
 
 -- Two registered instruments: the one's transfer is refused against the other's token, and both receipts settle in one block, with the
 -- `deposit` lines that a `DepositLeg` of the same deposits would write.

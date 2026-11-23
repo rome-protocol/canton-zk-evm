@@ -1200,8 +1200,8 @@ template IntakeProposal
       controller confirmer
       do create Intake with ..
 
--- Signed by the operator, the confirmer and the gateway, so that no one of them can make a `Receipt` alone: only the gateway's choice below does,
--- and only for a transfer that it has accepted. The gateway's user runs it; the sender is a plain field of the receipt, never a stakeholder.
+-- Signed by the operator, the confirmer and the gateway: the only way to a `Receipt` is the gateway's `Intake_Accept` below, which makes one
+-- only when the registry completes the accept of a pending transfer to the gateway. The sender is a plain field of the receipt, never a stakeholder.
 template Intake
   with
     operator : Party
@@ -1240,23 +1240,6 @@ template Intake
         create Receipt with
           operator; confirmer; gateway; builder; chainId; gatewayToken
           sender = v.transfer.sender; depositId = depositIdOf v.transfer.sender label; label; recipient; amount = v.transfer.amount
-
-    -- The second half alone, for a registry whose accept cannot share a transaction with this package (the accept is made first, by itself).
-    -- No transfer is left to read, so the worker's journal and the custody check stand in for the transfer's checks.
-    nonconsuming choice Intake_Record : ContractId Receipt
-      with
-        gatewayToken : ContractId GatewayToken
-        sender : Party
-        amount : Decimal
-        label : Text
-        recipient : Text
-      controller gateway
-      do
-        t <- fetch gatewayToken
-        checkIntakeToken this t
-        create Receipt with
-          operator; confirmer; gateway; builder; chainId; gatewayToken
-          sender; depositId = depositIdOf sender label; label; recipient; amount
 
 checkIntakeToken : Intake -> GatewayToken -> Update ()
 checkIntakeToken i t = assertMsg "the token is for another chain, operator, confirmer or gateway than this intake's"

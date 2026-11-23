@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Part of tests/canton_network.sh, on the real Canton network: the legs of Daml 0.6.0 for transfers to the gateway.
-Usage: canton_receipt_payout.py <state dir> <evm token> prepare   Proposes and accepts the intake, then the gateway records a receipt (Intake_Record) for the token.
+Usage: canton_receipt_payout.py <state dir> <evm token> prepare <offer>   Proposes and accepts the intake, then the gateway accepts <offer>, U's token-standard transfer of the
+                                                                  Splice test token to the gateway (demo/canton.py send-to-gateway), with Intake_Accept: the receipt is made by the accept.
        canton_receipt_payout.py <state dir> <evm token> receipt   One Advance with a receipt leg: the receipt is gone, the head moves on.
        canton_receipt_payout.py <state dir> <evm token> payout    One Advance with a payout leg: a payout is there, with the leg's fields; the gateway marks it paid.
 The stand-in sidecars' answers are set by the caller for each block."""
@@ -17,7 +18,7 @@ CONFIRMER_URL = os.environ.get("CZE_CONFIRMER_LEDGER_URL", "http://127.0.0.1:757
 operator = propose.operator_ledger(URL, parties)
 as_gateway = propose.Ledger(URL, propose.user_id("operator"), parties["GATEWAY_PARTY"], (), propose.role_token("operator"))
 builder = propose.Ledger(URL, propose.user_id("builder"), parties["BUILDER_PARTY"], (), propose.role_token("builder"))
-who = parties["REGISTRY_PARTY"]   # any party: the sender of the receipt and the payee of the payout are plain fields
+who = parties["U_PARTY"]   # the sender of the receipt and the payee of the payout are plain fields
 [chain] = builder.active("ZkChain")
 [registered] = [t for t in builder.active("GatewayToken") if t["evmToken"] == token_address]
 
@@ -37,8 +38,8 @@ if mode == "prepare":
     [proposal] = confirmer.wait_for("IntakeProposal")
     confirmer.submit({"ExerciseCommand": {"templateId": propose.PKG + "IntakeProposal", "contractId": proposal["contractId"], "choice": "AcceptIntake", "choiceArgument": {}}})
     [intake] = as_gateway.wait_for("Intake")
-    as_gateway.submit({"ExerciseCommand": {"templateId": propose.PKG + "Intake", "contractId": intake["contractId"], "choice": "Intake_Record",
-                                           "choiceArgument": {"gatewayToken": registered["contractId"], "sender": who, "amount": "10.0", "label": "m1", "recipient": "44" * 20}}})
+    as_gateway.submit({"ExerciseCommand": {"templateId": propose.PKG + "Intake", "contractId": intake["contractId"], "choice": "Intake_Accept",
+                                           "choiceArgument": {"gatewayToken": registered["contractId"], "instruction": sys.argv[4], "label": "m1", "recipient": "44" * 20, "choiceContext": None}}})
     [receipt] = builder.wait_for("Receipt")
     assert (receipt["sender"], float(receipt["amount"]), receipt["recipient"], receipt["label"]) == (who, 10.0, "44" * 20, "m1"), receipt
 elif mode == "receipt":
