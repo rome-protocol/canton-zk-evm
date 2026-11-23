@@ -49,53 +49,36 @@ from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import canton, evm, twin
+import asset, canton, evm, twin
+from asset import (USER_AGENT, HOLDING_VIEW, HOLDING_INTERFACE, INSTRUCTION_VIEW, REASON_KEY, LABEL_KEY, CONTRACT_ID, PARTY_ID, MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_INPUTS,
+                   TRANSFER_KINDS, TRANSFER_PENDING, TOKEN_FILE_VARIABLE, checked_context, amount_of, balance_of, gateway_tokens, scrubbed)
 
 AMULET = "Amulet"
 WRAPPED_NAME, WRAPPED_SYMBOL = "Canton Coin (Ostia)", "CC"   # the defaults of `register --name --symbol`
-USER_AGENT = "Rome Protocol rome@romeprotocol.com"
 SCAN_PROXY_URL = "CZE_SCAN_PROXY_URL"
 SCAN_TOKEN_FILE = "CZE_SCAN_TOKEN_FILE"
 ROUTER_ADDRESS = "OSTIA_ROUTER"
-HOLDING_VIEW = ":Splice.Api.Token.HoldingV1:Holding"
-HOLDING_INTERFACE = "#splice-api-token-holding-v1" + HOLDING_VIEW
-INSTRUCTION_VIEW = ":Splice.Api.Token.TransferInstructionV1:TransferInstruction"
-REASON_KEY = "splice.lfdecentralizedtrust.org/reason"   # the memo that wallets write
-LABEL_KEY = "romeprotocol.com/ostia-label"
 FACTORY_TEMPLATE = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):Splice\.ExternalPartyAmuletRules:ExternalPartyAmuletRules")
-TEMPLATE_ID = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):[A-Za-z0-9_.]+:[A-Za-z0-9_]+")
-CONTRACT_ID = re.compile(r"00[0-9a-f]{20,200}")
-PARTY_ID = re.compile(r"[A-Za-z0-9._-]{1,185}::[0-9a-f]{8,200}")
-MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_BLOB = 16, 64, 500_000
-MAX_INPUTS = 50   # the holdings that a transfer takes as inputs, the largest first (Canton Coin allows 100)
-TRANSFER_KINDS = ("self", "direct", "offer")
-TRANSFER_PENDING = "TransferInstructionResult_Pending"
 COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "route": ("demo", "operator"), "withdraw": ("demo", "operator"),
                  "send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",)}
 ALLOCATION_COMPLETED = "AllocationInstructionResult_Completed"
 WITHDRAW_WAIT_SECONDS = 600   # the longest that withdraw waits for the builder's Receive leg to reach U
 SENDER_ROLE = "sender"   # the role whose token file is --sender-token-file
 OTHER_ROLE = "admin"     # the role that reads the holdings of a party that is not u or v
-TOKEN_FILE_VARIABLE = "CZE_TOKEN_FILE_"
 
 
-class Scan:
-    """The validator's scan proxy and validator API, with the bearer token that the validator API wants, read from its file at every call."""
+class Scan(asset.Registry):
+    """The validator's scan proxy (a token registry) and validator API, with the bearer token that the validator API wants, read from its file at every call."""
+    what = "the scan proxy"
+
     def __init__(self, url: str, token_file: str):
         url = (url or "").rstrip("/")
         if not canton.https_or_on_this_machine(url) or not url.endswith("/scan-proxy"):
             raise SystemExit(f"--scan-proxy must be the validator's scan proxy, https (or http on this machine) and ending in /scan-proxy, not {url!r}")
         if not token_file:
             raise SystemExit(f"a scan token file is needed: --scan-token-file or {SCAN_TOKEN_FILE}")
-        self.url, self.root, self.token_file = url, url[:-len("/scan-proxy")], token_file
-        canton.propose.read_token(token_file)   # a missing or unsafe file stops the command before anything is sent
-
-    def call(self, send, url: str, *args) -> dict:
-        token = canton.propose.read_token(self.token_file)
-        try:
-            return send(url, *args, {"user-agent": USER_AGENT, **canton.propose.auth(token)})
-        except canton.Fail as e:
-            raise canton.Fail(str(e).replace(token, "<token>")) from None
+        super().__init__(url, token_file)
+        self.root = self.url[:-len("/scan-proxy")]
 
     def dso_party(self) -> str:
         return self.party(self.call(twin.get_json, self.url + "/dso-party-id"), "dso_party_id", "the DSO party")
@@ -111,22 +94,11 @@ class Scan:
         return party
 
     def factory(self, transfer: dict, expected_admin: str) -> dict:
-        """The transfer factory for this transfer, as the token standard's registry API gives it, checked (see checked_context)."""
-        arguments = {"expectedAdmin": expected_admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
-        answer = self.call(twin.post_json, self.url + "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": arguments, "excludeDebugFields": True})
-        factory = answer.get("factoryId")
-        if not isinstance(factory, str) or not CONTRACT_ID.fullmatch(factory):
-            raise canton.Fail("the scan proxy's answer has no factoryId that is a contract id")
-        kind = answer.get("transferKind")
-        if kind not in TRANSFER_KINDS or (kind == "self") != (transfer["sender"] == transfer["receiver"]):
-            raise canton.Fail(f"the scan proxy's transferKind is {str(kind)[:20]!r}, which does not fit a transfer from {transfer['sender'][:20]} to {transfer['receiver'][:20]}")
-        data, disclosed = checked_context(answer.get("choiceContext"))
-        named = [d for d in disclosed if d["contractId"] == factory]
-        if len(named) != 1:
-            raise canton.Fail("the scan proxy did not disclose the factory it named")
-        if not FACTORY_TEMPLATE.fullmatch(named[0]["templateId"]):
-            raise canton.Fail(f"the scan proxy's factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
-        return {"factory": factory, "kind": kind, "data": data, "disclosed": disclosed}
+        """The registry's transfer factory for this transfer (see asset.Registry.factory), which for Canton Coin must be an ExternalPartyAmuletRules."""
+        asked = super().factory(transfer, expected_admin)
+        if not FACTORY_TEMPLATE.fullmatch(asked["template"]):
+            raise canton.Fail(f"the scan proxy's factory is a {asked['template'][:120]}, not an ExternalPartyAmuletRules")
+        return asked
 
     def allocation_factory(self, allocation: dict, requested_at: str, inputs: list, expected_admin: str) -> dict:
         """The allocation factory for this allocation, as the token standard's registry API gives it, checked: a contract id that is disclosed, whose template is ExternalPartyAmuletRules, the same contract as the transfer factory."""
@@ -143,44 +115,10 @@ class Scan:
             raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
         return {"factory": factory, "data": data, "disclosed": disclosed}
 
-    def accept_context(self, instruction: str, choice: str = "accept") -> dict:
-        """The choice context for the receiver's TransferInstruction_Accept (or, with choice "withdraw", the sender's TransferInstruction_Withdraw) of this instruction, checked."""
-        if not CONTRACT_ID.fullmatch(instruction):
-            raise canton.Fail(f"the transfer instruction {instruction[:40]!r} is not a contract id")
-        answer = self.call(twin.post_json, f"{self.url}/registry/transfer-instruction/v1/{instruction}/choice-contexts/{choice}", {"meta": {}, "excludeDebugFields": True})
-        data, disclosed = checked_context(answer)
-        return {"data": data, "disclosed": disclosed}
-
-
-def checked_context(context) -> tuple:
-    """(choiceContextData, disclosed contracts) of a registry's choice context, from a server that is not trusted. The data is a map of at most 64 values; each disclosed contract
-    (at most 16, each once) must have its templateId, contractId, createdEventBlob and synchronizerId, and only those four go on to the ledger."""
-    data = context.get("choiceContextData") if isinstance(context, dict) else None
-    disclosed = context.get("disclosedContracts") if isinstance(context, dict) else None
-    if not isinstance(data, dict) or not isinstance(data.get("values"), dict) or not isinstance(disclosed, list):
-        raise canton.Fail("the scan proxy's choice context has no choiceContextData with values and disclosedContracts")
-    if len(data["values"]) > MAX_CONTEXT_VALUES or not 0 < len(disclosed) <= MAX_DISCLOSED:
-        raise canton.Fail(f"the scan proxy's choice context has {len(data['values'])} values and {len(disclosed)} disclosed contracts: too many, or none")
-    contracts = []
-    for d in disclosed:
-        if not isinstance(d, dict) or any(not isinstance(d.get(k), str) or not d[k] or len(d[k]) > MAX_BLOB for k in twin.DISCLOSED_KEYS):
-            raise canton.Fail(f"the scan proxy gave a disclosed contract without {', '.join(twin.DISCLOSED_KEYS)}")
-        if not TEMPLATE_ID.fullmatch(d["templateId"]) or not CONTRACT_ID.fullmatch(d["contractId"]):
-            raise canton.Fail("the scan proxy gave a disclosed contract whose templateId or contractId is not one")
-        contracts.append({k: d[k] for k in twin.DISCLOSED_KEYS})
-    if len({c["contractId"] for c in contracts}) != len(contracts):
-        raise canton.Fail("the scan proxy disclosed a contract twice")
-    return data, contracts
-
-
 def transfer_of(sender: str, receiver: str, amount: str, dso: str, inputs: list) -> dict:
-    return {"sender": sender, "receiver": receiver, "amount": amount, "instrumentId": {"admin": dso, "id": AMULET}, "requestedAt": canton.utc(timedelta(minutes=-1)),
-            "executeBefore": canton.utc(timedelta(hours=1)), "inputHoldingCids": inputs, "meta": {"values": {}}}
+    return asset.transfer_of(sender, receiver, amount, {"admin": dso, "id": AMULET}, inputs)
 
 
-def gateway_tokens(net: canton.Network, template: str, instrument: dict) -> list:
-    """The GatewayTokens (or proposals) of the operator's view for this instrument."""
-    return [e for e in net.template("operator", "operator", canton.CHAIN + template) if e["createArgument"]["instrumentId"] == instrument]
 
 
 def wrapped_at(gateway: str, token: str) -> bool:
@@ -232,35 +170,8 @@ def register(net: canton.Network, scan: Scan, name: str = WRAPPED_NAME, symbol: 
             "factoryIsScanProxys": True, "registerTx": tx}
 
 
-def amount_of(text) -> int:
-    """A Canton Coin amount as the ledger writes it, in units of 10^-10 (Canton Coin has 10 decimals, as the wrapped token): anything else stops the command."""
-    if not isinstance(text, str):
-        raise canton.Fail(f"the ledger gave the amount {text!r}: not a Canton Coin amount")
-    return twin.ledger_units(text)
-
-
 def holdings(net: canton.Network, node: str, role: str, party: str, dso: str) -> list:
-    """The Canton Coin holdings that `party` owns, as the token standard's Holding views of the active contracts that `party` sees on `node` (read with `role`'s token): a list of
-    (contract id, units of 10^-10, locked). Holdings of other instruments, other owners and contracts with no Holding view are not counted."""
-    offset = net.get(node, "/v2/state/ledger-end", role)["offset"]
-    view = {"InterfaceFilter": {"value": {"interfaceId": HOLDING_INTERFACE, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
-    body = {"eventFormat": {"filtersByParty": {party: {"cumulative": [{"identifierFilter": view}]}}, "verbose": False}, "activeAtOffset": offset}
-    found = []
-    for entry in net.post(node, "/v2/state/active-contracts", body, role):
-        active = entry["contractEntry"].get("JsActiveContract")
-        for v in (active["createdEvent"].get("interfaceViews") or []) if active else []:
-            if not str(v.get("interfaceId", "")).endswith(HOLDING_VIEW):
-                continue
-            value = v.get("viewValue")
-            if not isinstance(value, dict) or not isinstance(value.get("instrumentId"), dict):
-                raise canton.Fail(f"{active['createdEvent'].get('contractId')} has a Holding view that is not a holding")
-            if value.get("owner") == party and value["instrumentId"].get("admin") == dso and value["instrumentId"].get("id") == AMULET:
-                found.append((active["createdEvent"]["contractId"], amount_of(value.get("amount")), value.get("lock") is not None))
-    return found
-
-
-def balance_of(held: list) -> dict:
-    return {"unlocked": twin.amount_text(sum(a for _, a, locked in held if not locked)), "locked": twin.amount_text(sum(a for _, a, locked in held if locked))}
+    return asset.holdings(net, node, role, party, {"admin": dso, "id": AMULET})
 
 
 def party_balance(net: canton.Network, name: str, dso: str, other_role: str = OTHER_ROLE) -> dict:
@@ -399,70 +310,14 @@ def deposit(net: canton.Network, scan: Scan, label: str, recipient: str, amount:
 
 
 def send_memo(net: canton.Network, scan: Scan, amount: str, address: str, label: str = None) -> dict:
-    """U sends `amount` Canton Coin to the gateway's party through the scan proxy's transfer factory, with the EVM address as the memo (transfer.meta). The result is pending when the
-    gateway holds no pre-approval: the instruction's contract id is what `instructions` shows and `take-back` withdraws."""
-    if not canton.CANTON_AMOUNT.fullmatch(amount) or not twin.ledger_units(amount):
-        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
-    amount = amount if "." in amount else amount + ".0"
-    canton.evm_address(address)   # checks the form; the memo keeps the text as given
-    meta = {REASON_KEY: address, **({LABEL_KEY: canton.read_label(label)} if label is not None else {})}
-    dso = scan.dso_party()
-    u, gateway = net.party("u"), net.party("gateway")
-    held = sorted((h for h in holdings(net, "users", "demo", u, dso) if not h[2]), key=lambda h: -h[1])
-    if sum(a for _, a, _ in held) < twin.ledger_units(amount):
-        raise canton.Fail(f"U holds {twin.amount_text(sum(a for _, a, _ in held))} Canton Coin, less than {amount} (`cc.py fund u <amount>` gives it some)")
-    before = party_balance(net, "u", dso)
-    transfer = {**transfer_of(u, gateway, amount, dso, [cid for cid, _, _ in held[:MAX_INPUTS]]), "meta": {"values": meta}}   # as in fund: the fee may come out of more than the amount's own holdings
-    asked = scan.factory(transfer, dso)
-    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_FACTORY, "contractId": asked["factory"], "choice": "TransferFactory_Transfer",
-                                   "choiceArgument": {"expectedAdmin": dso, "transfer": transfer, "extraArgs": {"context": asked["data"], "meta": {"values": {}}}}}}
-    tx = twin.submit_for_transaction(net, "u", command, asked["disclosed"])
-    output = twin.exercise_output(tx, asked["factory"], "TransferFactory_Transfer") or {}
-    tag, instruction = output.get("tag"), None
-    if tag == TRANSFER_PENDING:
-        value = output.get("value")
-        instruction = value.get("transferInstructionCid") if isinstance(value, dict) else None
-        if not isinstance(instruction, str) or not CONTRACT_ID.fullmatch(instruction):
-            raise canton.Fail(f"the transfer in update {tx['updateId']} is pending, and the result names no transfer instruction")
-    elif tag != twin.TRANSFER_COMPLETED:
-        raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {twin.TRANSFER_COMPLETED} or {TRANSFER_PENDING}")
-    return {"updateId": tx["updateId"], "from": u, "to": gateway, "amount": amount, "meta": meta, "kind": asked["kind"], "result": tag, "instruction": instruction,
-            "balance": {"before": before, "after": party_balance(net, "u", dso)}}
-
-
-def instructions(net: canton.Network) -> dict:
-    """The gateway's party's active TransferInstruction views (read as the gateway, on the operator's participant) that have it as the receiver."""
-    gateway = net.party("gateway")
-    offset = net.get("operator", "/v2/state/ledger-end", "operator")["offset"]
-    view = {"InterfaceFilter": {"value": {"interfaceId": canton.TRANSFER_INSTRUCTION, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
-    body = {"eventFormat": {"filtersByParty": {gateway: {"cumulative": [{"identifierFilter": view}]}}, "verbose": False}, "activeAtOffset": offset}
-    found = []
-    for entry in net.post("operator", "/v2/state/active-contracts", body, "operator"):
-        active = entry["contractEntry"].get("JsActiveContract")
-        for v in (active["createdEvent"].get("interfaceViews") or []) if active else []:
-            if not str(v.get("interfaceId", "")).endswith(INSTRUCTION_VIEW):
-                continue
-            value = v.get("viewValue")
-            transfer = value.get("transfer") if isinstance(value, dict) else None
-            if not isinstance(transfer, dict):
-                raise canton.Fail(f"{active['createdEvent'].get('contractId')} has a TransferInstruction view that has no transfer")
-            if transfer.get("receiver") != gateway:
-                continue
-            meta = (transfer.get("meta") or {}).get("values") or {}
-            found.append({"instruction": active["createdEvent"]["contractId"], "sender": transfer.get("sender"), "amount": transfer.get("amount"), "instrumentId": transfer.get("instrumentId"),
-                          "executeBefore": transfer.get("executeBefore"), "status": value.get("status"), "meta": meta, "instructionMeta": (value.get("meta") or {}).get("values") or {},
-                          "memo": meta.get(REASON_KEY)})
-    return {"gateway": gateway, "instructions": found}
+    return asset.send_memo(net, scan, {"admin": scan.dso_party(), "id": AMULET}, amount, address, label)
 
 
 def take_back(net: canton.Network, scan: Scan, instruction: str) -> dict:
-    """U withdraws its own pending transfer instruction: TransferInstruction_Withdraw with the scan proxy's choice context for "withdraw"."""
-    context = scan.accept_context(instruction, "withdraw")
-    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": instruction, "choice": "TransferInstruction_Withdraw",
-                                   "choiceArgument": {"extraArgs": {"context": context["data"], "meta": {"values": {}}}}}}
-    tx = twin.submit_for_transaction(net, "u", command, context["disclosed"])
-    output = twin.exercise_output(tx, instruction, "TransferInstruction_Withdraw") or {}
-    return {"updateId": tx["updateId"], "instruction": instruction, "result": output.get("tag"), "balance": party_balance(net, "u", scan.dso_party())}
+    return asset.take_back(net, scan, {"admin": scan.dso_party(), "id": AMULET}, instruction)
+
+
+instructions = asset.instructions
 
 
 def route(net: canton.Network, scan: Scan, network: str, address: str, max_fee: str, amount: str, router: str, nonce: str = None) -> dict:
@@ -508,20 +363,7 @@ def withdraw(net: canton.Network, scan: Scan, amount: str) -> dict:
 
 def secret_files(options: dict) -> set:
     """The token files that this run may read: the environment's and the options'."""
-    named = {v for k, v in os.environ.items() if k.startswith(TOKEN_FILE_VARIABLE) or k == SCAN_TOKEN_FILE}
-    return named | {v for k, v in options.items() if k.endswith("token-file")}
-
-
-def scrubbed(message: str, files: set) -> str:
-    """The message without any of the tokens in these files: a server's error text may echo a header."""
-    for path in files:
-        try:
-            token = Path(path).read_text().strip()
-        except OSError:
-            continue
-        if len(token) >= 8:
-            message = message.replace(token, "<token>")
-    return message
+    return asset.secret_files({os.environ[SCAN_TOKEN_FILE]} if SCAN_TOKEN_FILE in os.environ else set()) | {v for k, v in options.items() if k.endswith("token-file")}
 
 
 def scan_of(options: dict) -> Scan:
