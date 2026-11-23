@@ -122,6 +122,54 @@ export interface EvaluateOptions {
   started?: boolean;
 }
 
+/**
+ * What a row's text may show to the public: the row's own words with anything that names this machine or its tools taken out: a URL, a path (`/home/...`, `/Users/...`, `~/...`), an IP address, a
+ * `localhost` or a `host:port`. The writers say fixed sentences already, and the full detail of a failure stays in the log of the machine; this is the last guard, so that no writer, old or new, can
+ * put such a thing in the answer of `/api/health` or `/api/status`.
+ */
+export function publicText(text: string | null): string | null {
+  if (text === null) return null;
+  return text
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, "[hidden]")
+    .replace(/(^|[^\w/.])(?:~|\.{1,2})?(?:\/[\w.@+~=-]+){2,}\/?/g, "$1[hidden]")
+    .replace(/(^|[^\w/.])\/(?:home|Users|root|tmp|var|run|opt|etc|usr|srv|mnt|data)\b[\w.@+~=/-]*/g, "$1[hidden]")
+    .replace(/(^|[^\w/.])~\/[\w.@+~=/-]*/g, "$1[hidden]")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, "[hidden]")
+    .replace(/\blocalhost(?::\d+)?\b/gi, "[hidden]")
+    .replace(/\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
+}
+
+/** The sentence a held-back transaction carries when the proof of it failed: the tool's own output is never stored or served. */
+export const UNPROVABLE_REASON = "it could not be proven";
+
+/** The tool's own words after the fixed part of a pre-check reason: kept out of the public text, for rows stored before the writer dropped them. */
+const TOOL_DETAIL = /(the input tool cannot make an input of this block|the guest program fails on this block) \(.*$/s;
+
+/**
+ * A transaction's reason (why it was held back, left out or lost) as it may be stored and served: the fixed sentence for an unprovable hold, any other with a path, host or URL taken out. The time of a
+ * "held back until <time>: " prefix is kept when it looks like one, else it says "later".
+ */
+export function lifecycleReason(reason: string | null): string | null {
+  if (reason === null) return null;
+  const hold = /^held back until (.{0,40}?): (.*)$/s.exec(reason);
+  if (!hold) return publicText(reason.replace(TOOL_DETAIL, "$1"));
+  const time = /^[0-9TZ:.+-]{4,40}$/.test(hold[1] ?? "") ? hold[1] : "later";
+  const rest = hold[2] ?? "";
+  return `held back until ${time}: ${rest.startsWith(UNPROVABLE_REASON) ? UNPROVABLE_REASON : publicText(rest.replace(TOOL_DETAIL, "$1"))}`;
+}
+
+/** The sentence a failed attempt carries in public: the output of the producer's own tools is never stored or served. */
+export const FAILED_ATTEMPT_REASON = "the block failed before Canton answered";
+
+/**
+ * The reason of a block attempt, as it may be stored and served. A failed attempt (reth, the ledger, the proof or an input tool failed it) has the fixed sentence, never the producer's text. Any other
+ * outcome keeps the producer's words (Canton's own reason for a refused or not taken block), with a path, a host or a URL taken out.
+ */
+export function attemptReason(outcome: string | null, reason: string | null): string | null {
+  if (outcome === "failed") return FAILED_ATTEMPT_REASON;
+  return publicText(reason);
+}
+
 const synthetic = (id: string, role: Role, status: Status, detail: string): HealthEntry => ({
   id, role, status, value: null, threshold: null, detail, sinceSeconds: 0, changedAt: null, refreshedAt: null, refreshedAgoSeconds: 0, intervalSeconds: null, stale: false, elsewhere: false,
 });
@@ -141,9 +189,9 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     const elsewhere = !spec.advisory && spec.role === "api" && (owner === null || owner !== instance) && capped === "down";
     const status: Status = elsewhere ? "degraded" : capped;
     const who = spec.role === "indexer" ? "the indexer" : spec.role === "verifier" ? "the verifier" : "the API";
-    const detail = stale
+    const detail = publicText(stale
       ? `${who} has not checked in ${Math.round(r.ageSeconds)} s${r.detail && written !== "ok" ? `; it last said: ${r.detail}` : ""}`
-      : r.detail;
+      : r.detail);
     checks.push({
       id: r.id, role: spec.role, status, ...(r.status !== status ? { written: r.status } : {}), value: r.value, threshold: r.threshold, detail,
       sinceSeconds: Math.max(0, Math.round(r.sinceSeconds)), changedAt: r.changedAt, refreshedAt: r.refreshedAt, refreshedAgoSeconds: Math.max(0, Math.round(r.ageSeconds * 10) / 10),

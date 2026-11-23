@@ -174,7 +174,8 @@ class TestVerdicts(Case):
             raise pc.InputToolFailed("Response is too big")
         v = pc.check_block(self.emu, self.budgets, refuse)
         self.assertEqual(v.verdict, pc.INPUT_TOOL)
-        self.assertIn("too big", v.reason())
+        self.assertIn("too big", v.detail)   # the tool's words stay in the detail, for the log
+        self.assertNotIn("too big", v.reason())
         self.assertFalse(v.ok)
 
     def test_check_block_runs_the_input_tool_then_the_checks(self):

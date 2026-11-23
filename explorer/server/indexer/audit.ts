@@ -92,8 +92,9 @@ export async function runAudit(pool: Pool, reads: AuditReads, kind: AuditKind, r
       for (const m of found) if (m) bad.push(m);
     }
   } catch (e) {
+    console.error(`C6: the audit could not read reth: ${(e as Error).message}`);   // the reason stays in the log: the row says only that it could not
     const row: HealthRow = { id: "C6", status: "degraded", value: { kind, checked: numbers.length, suspect: [...new Set([...named, ...bad.map((m) => m.block)])] },
-      threshold: { sample: count, window: "previous UTC day" }, detail: `the audit could not read reth: ${(e as Error).message}` };
+      threshold: { sample: count, window: "previous UTC day" }, detail: "the audit could not read reth" };
     await setHealth(pool, [row]);
     return { ...row, complete: false };
   }

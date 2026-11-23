@@ -84,6 +84,11 @@ class ReaderMissing(BuilderError):
     """--twin-registry-url is set but --read-as does not give the chain's gateway: no acceptance can be read, so a producer stops."""
 
 
+class InputToolError(BuilderError):
+    """The input tool (make-input) ran and failed. Its message holds the tool's own output, which is for the private log and the journal on this machine only:
+    the status file's `kind` says what failed, and that is all a public page may show."""
+
+
 class ProvingError(BuilderError):
     """The input tool or the prover failed, or gave back a proof that is not this block's. `kept` is the hashes of the block's
     transactions: the loop uses them to find a transaction that cannot be proven."""
@@ -1202,7 +1207,7 @@ def run(cmd: str, *args: str) -> None:
     # Its own session: a Ctrl-C or a service manager's signal to the builder's group must not cut a proof short.
     done = subprocess.run([*cmd.split(), *args], capture_output=True, text=True, start_new_session=True)
     if done.returncode != 0:
-        raise BuilderError(f"{Path(cmd.split()[0]).name} failed: {(done.stderr or done.stdout).strip()[-400:]}")
+        raise InputToolError(f"{Path(cmd.split()[0]).name} failed: {(done.stderr or done.stdout).strip()[-400:]}")
 
 
 def run_prover(cmd: str, args: list, env: dict | None = None, timeout: float | None = None) -> None:
@@ -4227,8 +4232,21 @@ def prune_work(work_dir: str, number: int, keep: int = KEEP_BLOCKS) -> None:
             shutil.rmtree(Path(work_dir) / name, ignore_errors=True)
 
 
-def failure_report(e: Exception) -> dict:
-    report = {"committed": False, "error": str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"}
+def failure_kind(e: BaseException) -> str:
+    """What failed, in one fixed word, for the status file: the explorer shows a fixed sentence for it and never the text of the error."""
+    if isinstance(e, InputToolError) or isinstance(e.__cause__, InputToolError):
+        return "input_tool"
+    if isinstance(e, ProvingError):
+        return "proof"
+    if isinstance(e, HeadMismatch):
+        return "head"
+    return "other"
+
+
+def failure_report(e: Exception, number: int | None = None) -> dict:
+    report = {"committed": False, "kind": failure_kind(e), "error": str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"}
+    if number is not None:
+        report["number"] = number
     if getattr(e, "lost_transactions", None):
         report["lostTransactions"] = e.lost_transactions
     if getattr(e, "rewind_error", None):   # moving reth back after the failure failed too: the original stays in "error"
@@ -4527,7 +4545,7 @@ class Producer:
             if isinstance(e, ReaderMissing):   # a wrong --read-as: retrying cannot help, so the producer ends, with its status naming why
                 self.fatal = str(e)
                 self.stop.set()
-            self.fail(failure_report(e))
+            self.fail(failure_report(e, attempt.number if attempt else None))
             return
         failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
         if not failing:
@@ -4548,7 +4566,9 @@ class Producer:
         self.previous_kept = set()
         self.limit_kept = set()
         self.limit_legs = set()
-        self.last_error = {"time": iso(self.clock()), "error": report.get("error") or report.get("reason", "")}
+        self.last_error = {"time": iso(self.clock()), "kind": report.get("kind") or "canton_not_taken", "error": report.get("error") or report.get("reason", "")}
+        if report.get("number") is not None:
+            self.last_error["number"] = report["number"]
         if report.get("rewindError"):
             self.last_error["rewindError"] = report["rewindError"]
         self.emit(report)
@@ -4680,7 +4700,8 @@ class Producer:
         cooldown = min(self.cooldown * 2 ** (self.convictions[tx] - 1), max(self.cooldown, 86400))
         self.excluded[tx] = now + cooldown
         self.excluded_why[tx] = f"it could not be proven: {why[:200]}"
-        self.journal.event("excluded", transaction=tx, until=iso(now + cooldown), reason=self.excluded_why[tx])
+        # The tool's own text stays in the log and the status file here; the journal, which the explorer serves from, carries the fixed sentence.
+        self.journal.event("excluded", transaction=tx, until=iso(now + cooldown), reason="it could not be proven")
         self.emit({"excluded": tx, "until": iso(now + cooldown), "reason": self.excluded_why[tx]})
 
     def settle_unknown(self) -> None:
@@ -4760,7 +4781,9 @@ class Producer:
                 self.probe = self.suspects[0] if self.suspects else None
             prune_work(self.cfg.work_dir, result["number"])
         else:
-            self.last_error = {"time": iso(now), "error": result.get("reason", "")}
+            self.last_error = {"time": iso(now), "kind": "canton_refused" if result["committed"] is False else "canton_unresolved", "error": result.get("reason", "")}
+            if result.get("number") is not None:
+                self.last_error["number"] = result["number"]
             if result.get("rewindError"):
                 self.last_error["rewindError"] = result["rewindError"]
             if result["committed"] is False:
@@ -5188,20 +5211,20 @@ class Pipeline(Producer):
             if isinstance(e, (ForeignHead, ReaderMissing)):   # nothing here knows what to build on, or the --read-as is wrong: the producer ends, with its status naming why
                 self.fatal = str(e)
                 self.stop.set()
-            self.fail(failure_report(e))
+            self.fail(failure_report(e, attempt.number if attempt else None))
 
     def cut_failed(self, fault: tuple, wait: bool = True) -> None:
         """A block that failed while it was cut, with blocks in flight: reported, and the step ends in the failure back-off (`wait` False: one
         was taken already for another failure of the step)."""
         if wait:
             fault[1].failed(failure_report(fault[0])["error"])
-            self.fail(failure_report(fault[0]))
+            self.fail(failure_report(fault[0], fault[1].number))
         else:
             self.tell_cut_failed(fault)
 
     def tell_cut_failed(self, fault: tuple) -> None:
         """The report of a failed cut, with no back-off of its own."""
-        report = failure_report(fault[0])
+        report = failure_report(fault[0], fault[1].number)
         fault[1].failed(report["error"])
         self.note_lost(report.get("lostTransactions"), self.clock())
         self.emit(report)

@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { migrate } from "../db/migrate.ts";
+import { createChainDb } from "../chain-db.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
@@ -56,6 +57,57 @@ describe("a journal line", () => {
 describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () => {
   checkRequired();
 
+  it("stores and serves an unprovable hold with the fixed sentence, whatever the tool said and however the row was written", async () => {
+    await inDb(async (pool) => {
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 60_000, { gather_ms: 0, heartbeat_seconds: 0, test: true });
+      const raw = "it could not be proven: make-input failed: cannot open /home/ops/x at 10.1.2.3:8545";
+      const held = "0x" + "e1".repeat(32), lostTx = "0x" + "e2".repeat(32), rawRow = "0x" + "e3".repeat(32);
+      r.add(T0 + 1_000, "excluded", { transaction: held, until: iso(T0 + 601_000), reason: raw });
+      r.add(T0 + 2_000, "lost", { transactions: [{ transaction: lostTx, error: "dial tcp 10.1.2.3:8545: refused, see /home/ops/reth.log" }] });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      await loader(pool, dir).load();
+      const BAD = /\/home|10\.1\.2\.3|8545|make-input/;
+      const stored = await lifecycle(pool, held);
+      expect(stored.last_left_out_reason).toBe(`held back until ${iso(T0 + 601_000)}: it could not be proven`);
+      expect(String((await lifecycle(pool, lostTx)).state_reason)).not.toMatch(BAD);
+      // a row stored by an earlier version holds the raw text: the serving side cleans it too
+      await pool.query("insert into tx_lifecycle (tx_hash, state, state_reason, last_left_out_reason, updated_at) values ($1, 'lost', $2, $3, now())", [hb(rawRow), "dial tcp 10.1.2.3:8545 refused", `held back until later: ${raw}`]);
+      const db = createChainDb(pool);
+      for (const h of [held, lostTx, rawRow]) {
+        const life = await db.lifecycleOf(h);
+        expect(JSON.stringify(life), h).not.toMatch(BAD);
+      }
+      expect((await db.lifecycleOf(held))?.leftOutReason).toBe(`held back until ${iso(T0 + 601_000)}: it could not be proven`);
+      expect((await db.lifecycleOf(rawRow))?.leftOutReason).toBe("held back until later: it could not be proven");
+    });
+  });
+
+  it("stores and serves a time inside a reason unchanged, and no tool text of an over-budget pre-check row", async () => {
+    await inDb(async (pool) => {
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 60_000, { gather_ms: 0, heartbeat_seconds: 0, test: true });
+      const refused = "0x" + "f1".repeat(32), paused = "0x" + "f2".repeat(32), rawTool = "0x" + "f3".repeat(32);
+      const pausedReason = `the Canton legs are paused until ${iso(T0 + 900_000)}`;
+      r.add(T0 + 1_000, "excluded", { transaction: refused, until: iso(T0 + 601_000), reason: "it was alone in a block Canton refused" });
+      r.add(T0 + 1_500, "cut", { attempt: 1, number: 1, strategy: "on_demand", cut_reason: "retry", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      r.add(T0 + 2_000, "skipped", { attempt: 1, left_out: [{ transaction: paused, reason: pausedReason }], rebuilds: 0 });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      await loader(pool, dir).load();
+      expect((await lifecycle(pool, refused)).last_left_out_reason).toBe(`held back until ${iso(T0 + 601_000)}: it was alone in a block Canton refused`);
+      expect((await lifecycle(pool, paused)).last_left_out_reason).toBe(pausedReason);
+      // a row stored by an earlier version holds the tool's words after the fixed part
+      const tool = "over the proving budget: the input tool cannot make an input of this block (make-input failed: cannot open /home/ops/x at 10.1.2.3:8545)";
+      await pool.query("insert into tx_lifecycle (tx_hash, state, last_left_out_reason, updated_at) values ($1, 'pending', $2, now())", [hb(rawTool), tool]);
+      const db = createChainDb(pool);
+      expect((await db.lifecycleOf(refused))?.leftOutReason).toBe(`held back until ${iso(T0 + 601_000)}: it was alone in a block Canton refused`);
+      expect((await db.lifecycleOf(paused))?.leftOutReason).toBe(pausedReason);
+      expect((await db.lifecycleOf(rawTool))?.leftOutReason).toBe("over the proving budget: the input tool cannot make an input of this block");
+    });
+  });
+
   it("keeps every event of a run: the run, the attempts, their transactions, the pool and the states of the transactions", async () => {
     await inDb(async (pool) => {
       const chain = makeChain([{ txs: 2 }, { txs: 1 }]);
@@ -104,7 +156,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const a2 = await one(pool, "select * from block_attempts where run_id = $1 and attempt_seq = 2", [RUN1]);
       expect(a2).toMatchObject({ outcome: "skipped", cut_reason: "retry", tx_count: 0, left_out_count: 1, rebuilds: 1, block_hash: null });
       const a3 = await one(pool, "select * from block_attempts where run_id = $1 and attempt_seq = 3", [RUN1]);
-      expect(a3).toMatchObject({ outcome: "failed", proof_outcome: "failed", reason: "the prover failed", update_id: null, completion_offset: null });
+      expect(a3).toMatchObject({ outcome: "failed", proof_outcome: "failed", reason: "the block failed before Canton answered", update_id: null, completion_offset: null });
       // the transactions of attempt 1: in order, then the one left out
       const rows = (await pool.query("select position, tx_hash, left_out_reason from attempt_transactions where attempt_id = $1 order by position", [a1.attempt_id])).rows;
       expect(rows.map((x) => [x.position, x.tx_hash.toString("hex").slice(0, 8), x.left_out_reason])).toEqual([

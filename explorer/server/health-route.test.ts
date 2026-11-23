@@ -86,6 +86,17 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
     expect(await get()).toMatchObject({ status: 503, body: { status: "down" } });
   });
 
+  it("never shows a path, a URL or a host in /api/health or /api/status, whatever a writer put in its row", async () => {
+    const { get, asked, pool } = await boot();
+    const dirty = "make-input.sh failed: cannot run /home/runner/.cargo/bin/cc, see /Users/someone/log.txt and http://builder-1.internal:8080/x on 10.0.0.5:22";
+    await put(pool, "producer_state", "degraded", dirty);
+    await put(pool, "prover", "degraded", dirty, "900 seconds");
+    await put(pool, "C3", "down", dirty);
+    const { body } = await get();
+    for (const text of [JSON.stringify(body), JSON.stringify((await asked("/api/status")).body)]) expect(text).not.toMatch(/\/home|\/Users|\.cargo|builder-1|10\.0\.0\.5|https?:/);
+    expect(body.problems.length).toBe(3);
+  });
+
   it.each(["C4", "C6", "C8", "C9", "C10", "derive_lag", "producer_alive", "producer_state", "prover"])("is degraded, and 200, for a failure of %s", async (id) => {
     const { get, pool } = await boot();
     await put(pool, id, "degraded", `${id} failed`);

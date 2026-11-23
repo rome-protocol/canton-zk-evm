@@ -4,6 +4,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { attemptReason } from "../health.ts";
 import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.ts";
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 import { addHists, quantile } from "../indexer/stats-hist.ts";
@@ -381,7 +382,7 @@ export function createChainRest(pool: Pool, now: () => number = Date.now) {
            from block_attempts x left join producer_runs r on r.run_id = x.run_id
           where x.number = $1 and (x.attempt_id = $2 or (${sameTry("x", "r", "$3::timestamptz", "$5::bytea", "$4")})) order by x.cut_at, x.attempt_id`, [b.number, b.attempt_id, b.cut_at_raw, ATTEMPT_SPAN_HOURS, b.parent_raw]);
       attempts = rows.map((x, i) => ({
-        number: i + 1, outcome: Number(x.attempt_id) === Number(b.attempt_id) ? "committed" : x.outcome ?? (x.resolved_outcome === "committed" ? "committed" : x.resolved_outcome) ?? "unknown", reason: x.reason,
+        number: i + 1, outcome: Number(x.attempt_id) === Number(b.attempt_id) ? "committed" : x.outcome ?? (x.resolved_outcome === "committed" ? "committed" : x.resolved_outcome) ?? "unknown", reason: attemptReason(x.outcome === "failed" || x.resolved_outcome === "failed" ? "failed" : x.outcome ?? null, x.reason),
         committed: Number(x.attempt_id) === Number(b.attempt_id), cutAt: isoTime(x.cut_at), builtAt: x.built_at, proofStartedAt: x.proof_started_at, proofEndedAt: x.proof_ended_at, proofOutcome: x.proof_outcome, submittedAt: x.submitted_at, answeredAt: x.answered_at,
       }));
     }

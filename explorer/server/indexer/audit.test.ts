@@ -112,7 +112,7 @@ describe.skipIf(!TEST_URL)("C6, the audit, on the pinned PostgreSQL", () => {
       chain.reads.receipts = async () => { throw new RethError("eth_getBlockReceipts: cannot reach reth (timeout)"); };
       const r = await indexer.auditOnce("sample");
       expect(r.status).toBe("degraded");
-      expect((await row(pool)).detail).toMatch(/^the audit could not read reth: .*cannot reach reth/);
+      expect((await row(pool)).detail).toBe("the audit could not read reth");
       expect((await row(pool)).value.suspect).toEqual([3]);
     });
   });

@@ -120,6 +120,14 @@ suite("the verifier role", () => {
     expect(await rows()).toEqual({ "verifier/compilers": "degraded", "verifier/queue": "degraded" });
   });
 
+  it("says only that the compiler cache cannot be used, and keeps the reason (a path) in the log", async () => {
+    const lines: string[] = [];
+    await worker({ verify: async () => { throw new Error("unused"); } }, { log: (l: string) => lines.push(l), cacheUsable: async () => "the compiler cache folder /home/ops/cache cannot be written: EACCES" }).health();
+    const detail = (await db.pool.query("select detail from health_checks where check_id = 'verifier/compilers'")).rows[0].detail;
+    expect(detail).toBe("the compiler cache cannot be used");
+    expect(lines.join("\n")).toContain("/home/ops/cache");
+  });
+
   it("stops a job that is over its time: the compile is told to stop, nothing is stored, and the next job starts after it", async () => {
     let running = 0, most = 0, aborted = 0;
     const slow = {

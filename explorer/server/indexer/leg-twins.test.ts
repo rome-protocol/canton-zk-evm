@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
-import { createLedger, CUSTODY_ENDPOINTS } from "../ledger.ts";
+import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
 import { FAKE_GATEWAY, registered, startFakeLedger, zkChain, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce } from "./custody.ts";
@@ -31,7 +31,7 @@ const pin = (token: string, decimals: number) => ({ twinToken: token.slice(2), t
 const pay = (id: string, token: string, account: string, amount: bigint) => ({ gateway: GW2, kind: 3, id, token, account, amount });
 /** The call that reads what a vault holds of a token, as reth is asked for it. */
 const balanceKey = (token: string, vault: string) => `${token}:0x70a08231${"0".repeat(24)}${vault.slice(2)}`;
-async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances: [string, string, bigint][] = []): Promise<SyntheticChain> {
+async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances: [string, string, bigint][] = [], tweak: (c: SyntheticChain) => void = () => undefined): Promise<SyntheticChain> {
   await migrate(pool);
   const chain = makeChain(shapes);
   for (const [t, v, n] of balances) chain.reads.callResults[balanceKey(t, v)] = "0x" + n.toString(16).padStart(64, "0");
@@ -50,6 +50,7 @@ async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances
     await pool.query("insert into tokens (address, standard, name, symbol, decimals, first_transfer_block, metadata_status) values ($1, 'ERC-20', 'T', 'T', $2, 1, 'read')", [Buffer.from(t.slice(2), "hex"), dec]);
   }
   for (const n of [1, 2, 3]) chain.reads.storage[`${GW2}:${legsSlot(n)}`] = "0x" + "00".repeat(32);
+  tweak(chain);
   if (viaLoop) {
     // the indexer's own custody loop reads the registry, indexes the registered gateway's legs and counts the twin sums, with no call of the steps here
     const halt = indexer.start();
@@ -260,6 +261,14 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
     });
   }, 30_000);
 
+  it("says a fixed sentence in the lag row when the legs of the registered gateways cannot be indexed, never the reason", async () => {
+    await inDb(async (pool) => {
+      await setUp(pool, threeBlocks(), true, [], (c) => { (c.reads as any).storageAt = async () => { throw new Error("reth at 10.1.2.3:8545 refused /home/ops/reth.ipc"); }; });
+      const r = (await pool.query("select status, detail from health_checks where check_id = 'registered_legs'")).rows[0];
+      expect(r).toEqual({ status: "degraded", detail: "the legs of the registered gateways cannot be indexed" });
+    });
+  }, 30_000);
+
   it("keeps the registered gateways' legs when a block is indexed again, and counts the twin sums again", async () => {
     await inDb(async (pool) => {
       const chain = await setUp(pool, threeBlocks());
@@ -275,6 +284,44 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       await twinTotalsOnce(pool, chain.reads);
       expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
       expect(await twinLegs(pool)).toHaveLength(4);
+    });
+  });
+});
+
+describe.skipIf(!TEST_URL)("the custody row", () => {
+  checkRequired();
+
+  it("says a fixed sentence when the registry read or the custody read fails, never the failure's own words", async () => {
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const chain = makeChain([{ txs: 1 }]);
+      chain.reads.rethHead = 1;
+      chain.ledger.ledgerHead = 1;
+      const raw = "cannot read /home/ops/state at 10.1.2.3:8545";
+      const mode = { registry: true };
+      const ledger = {
+        chainRegistry: async () => { if (mode.registry) throw new Error(raw); return null; },
+        gatewayTokens: async () => { if (!mode.registry) throw new Error(raw); return []; },
+        holdingPages: async function* () { /* none */ },
+      } as unknown as Ledger;
+      const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", custody: { ledger, ms: 50 } });
+      opened.push(indexer);
+      await indexer.open();
+      await indexer.runOnce();
+      const detail = async (want: string) => {
+        for (let i = 0; i < 200; i++) {
+          const d = (await pool.query("select detail from health_checks where check_id = 'custody'")).rows[0]?.detail as string | undefined;
+          if (d === want) return d;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return (await pool.query("select detail from health_checks where check_id = 'custody'")).rows[0]?.detail;
+      };
+      const halt = indexer.start();
+      try {
+        expect(await detail("the chain record's registry cannot be read")).toBe("the chain record's registry cannot be read");
+        mode.registry = false;
+        expect(await detail("the custody cannot be read")).toBe("the custody cannot be read");
+      } finally { await halt(); }
     });
   });
 });

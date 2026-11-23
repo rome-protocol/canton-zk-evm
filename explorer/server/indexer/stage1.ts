@@ -298,7 +298,9 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
 export async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null, gateway: string | null = null): Promise<void> {
   const of = gateway === null ? "the gateway" : `the registered gateway ${gateway}`;
   if (problem) {
-    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, ...(gateway === null ? {} : { gateway }) }, detail: gateway === null ? problem.message : `${of}: ${problem.message}` }]);
+    console.error(`C10: ${of}, block ${n}: ${problem.message}`);   // the reason stays in the log: the row says only that a Leg event cannot be read
+    const what = `block ${n}: a Leg event of ${of} cannot be read`;
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, ...(gateway === null ? {} : { gateway }) }, detail: what }]);
     return;
   }
   if (legs.length === 0) return;

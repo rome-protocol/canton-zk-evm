@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluate, httpStatusOf, specOf, type RawRow } from "./health.ts";
+import { evaluate, httpStatusOf, lifecycleReason, publicText, specOf, type RawRow } from "./health.ts";
 
 /** A row as the database reads it: `age` seconds since it was refreshed. */
 const row = (id: string, status: string, age = 1, detail: string | null = null): RawRow => ({
@@ -152,3 +152,61 @@ describe("the health model (design 6.5)", () => {
     expect(e.checks.find((c) => c.id === "C5")).toMatchObject({ sinceSeconds: 120, refreshedAgoSeconds: 1, changedAt: "2026-10-22T10:00:00.000Z", refreshedAt: "2026-10-22T10:00:00.000Z" });
   });
 });
+
+describe("what a row's text may show (no path, no URL, no host)", () => {
+  const LEAKS = [
+    "make-input.sh failed: error: failed to run custom build command for `aws-lc-sys` (/home/runner/.cargo/registry/src/aws-lc-sys/build.rs)",
+    "cannot read /Users/someone/work/state/builder/status.json",
+    "see ~/work/log.txt and /tmp",
+    "connect ECONNREFUSED 127.0.0.1:8545",
+    "http://ledger.invalid:7575/v2/state refused",
+    "no answer from ledger.internal:7575 or localhost:8545",
+  ];
+  const BAD = /\/home|\/Users|\/tmp|~\/|127\.0\.0\.1|localhost|ledger\.|https?:|\.cargo|status\.json|:\d{4}/;
+
+  it("takes a path, a URL, an address and a host out of any text", () => {
+    for (const t of LEAKS) expect(publicText(t), t).not.toMatch(BAD);
+    expect(publicText(null)).toBeNull();
+  });
+
+  it("gives an unprovable hold the fixed sentence and cleans any other reason of a transaction", () => {
+    const raw = "held back until 2026-11-24T10:00:00.000Z: it could not be proven: make-input failed: cannot open /home/ops/x at 10.1.2.3:8545";
+    expect(lifecycleReason(raw)).toBe("held back until 2026-11-24T10:00:00.000Z: it could not be proven");
+    expect(lifecycleReason("it could not be proven")).toBe("it could not be proven");
+    for (const t of LEAKS) expect(lifecycleReason(t), t).not.toMatch(BAD);
+    expect(lifecycleReason("nonce too low")).toBe("nonce too low");
+    expect(lifecycleReason(null)).toBeNull();
+  });
+
+  it("keeps a time as it is: an ISO time is not a host and a port", () => {
+    expect(publicText("2026-11-24T10:00:00.000Z")).toBe("2026-11-24T10:00:00.000Z");
+    expect(publicText("the Canton legs are paused until 2026-11-24T10:00:00Z")).toBe("the Canton legs are paused until 2026-11-24T10:00:00Z");
+    expect(publicText("connect to ledger.internal:7575")).not.toMatch(/ledger|7575/);
+  });
+
+  it("keeps a held-back time and a left-out reason, and drops the tool's words from a pre-check reason", () => {
+    const iso = "2026-11-24T10:00:00.000Z";
+    expect(lifecycleReason(`held back until ${iso}: it was alone in a block Canton refused`)).toBe(`held back until ${iso}: it was alone in a block Canton refused`);
+    expect(lifecycleReason("the Canton legs are paused until 2026-11-24T10:00:00Z")).toBe("the Canton legs are paused until 2026-11-24T10:00:00Z");
+    expect(lifecycleReason("over the proving budget: the input tool cannot make an input of this block (make-input failed: cannot open /home/ops/x at 10.1.2.3:8545)")).toBe("over the proving budget: the input tool cannot make an input of this block");
+    expect(lifecycleReason("over the proving budget: the guest program fails on this block (panicked at /home/ops/guest.rs:12)")).toBe("over the proving budget: the guest program fails on this block");
+    expect(lifecycleReason(`held back until ${iso}: over the proving budget: the guest program fails on this block (panicked at /home/ops/guest.rs:12)`)).toBe(`held back until ${iso}: over the proving budget: the guest program fails on this block`);
+  });
+
+  it("leaves the words of a row as they are", () => {
+    for (const t of ["the index is 2 blocks behind", "reth's finalized block cannot be read", "the proof failed (block 7)", "3 blocks in a row have failed; the last: the input tool failed (block 12)", "reth/geth and/or 3/4 of the blocks"]) {
+      expect(publicText(t)).toBe(t);
+    }
+  });
+
+  it("keeps a failure message that holds a path out of the answer, for any writer and in the stale text and in the problems", () => {
+    for (const t of LEAKS) {
+      for (const age of [1, 600]) {
+        const e = evaluate([...fresh(), row("producer_state", "degraded", age, t), row("somewhere", "down", age, t)]);
+        expect(JSON.stringify(e), t).not.toMatch(BAD);
+        expect(e.problems.length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+

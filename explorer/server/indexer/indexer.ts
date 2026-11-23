@@ -378,7 +378,8 @@ export function createIndexer(o: IndexerOptions) {
       c4Row = { id: "C4", status: c4 ? "degraded" : "ok", value: { finalized, newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS },
         detail: c4 ? `reth's finalized block ${finalized} is ${behind} blocks behind the newest record, block ${newest}` : null };
     } catch (e) {
-      c4Row = { id: "C4", status: "degraded", value: { newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS }, detail: `reth's finalized block cannot be read: ${(e as Error).message}` };
+      log(`C4: reth's finalized block cannot be read: ${(e as Error).message}`);   // the reason stays in the log: the row says only that it cannot be read
+      c4Row = { id: "C4", status: "degraded", value: { newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS }, detail: "reth's finalized block cannot be read" };
     }
     // The lag in seconds is the longer of two: the record the walk is on, and the time since the ledger end was ahead of the cursor with no progress (a walk that cannot read yields no record).
     const waited = Math.max(pending ? t - pending.since : 0, waitingSince !== null ? t - waitingSince : 0);
@@ -392,7 +393,8 @@ export function createIndexer(o: IndexerOptions) {
     try {
       idsRow = await checkIds(o.pool);
     } catch (e) {
-      idsRow = { id: "db_ids", status: "degraded", detail: `the id columns cannot be read: ${(e as Error).message}` };
+      log(`db_ids: the id columns cannot be read: ${(e as Error).message}`);
+      idsRow = { id: "db_ids", status: "degraded", detail: "the id columns cannot be read" };
     }
     await setHealth(o.pool, [
       c4Row,
@@ -598,16 +600,18 @@ export function createIndexer(o: IndexerOptions) {
       while (running && o.custody) {
         try {
           const read = await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
-          const problem = read.registryError !== null ? `the chain record's registry cannot be read: ${read.registryError}` : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
+          // The row says a fixed sentence; the registry's own message goes to the log only.
+          const problem = read.registryError !== null ? "the chain record's registry cannot be read" : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
+          const said = read.registryError !== null ? `${problem}: ${read.registryError}` : problem;
           await setHealth(o.pool, [{ id: "custody", status: problem === null ? "ok" : "degraded", value: { tokens: read.tokens, holdings: read.holdings, block: read.block, offset: read.offset }, threshold: { intervalSeconds }, detail: problem }]);
           // Said once for each kind of failure, not on every pass.
-          if (problem !== null && failing !== problem) log(`indexer (custody): ${problem}`);
-          failing = problem ?? "";
+          if (said !== null && failing !== said) log(`indexer (custody): ${said}`);
+          failing = said ?? "";
         } catch (e) {
           if (failing !== (e as Error).message) log(`indexer (custody): ${(e as Error).message}`);
           failing = (e as Error).message;
           // The row says what failed, and its time moves: the last rows of the custody stay, with the time they were read at.
-          await setHealth(o.pool, [{ id: "custody", status: "degraded", threshold: { intervalSeconds }, detail: `the custody cannot be read: ${failing}` }]).catch(() => undefined);
+          await setHealth(o.pool, [{ id: "custody", status: "degraded", threshold: { intervalSeconds }, detail: "the custody cannot be read" }]).catch(() => undefined);
         }
         // The Canton side of the swaps (a venue's trades and the funded claims) is read the same way, as the gateway party, and fails on its own.
         try {
@@ -633,7 +637,7 @@ export function createIndexer(o: IndexerOptions) {
         try {
           const lag0 = await registeredLegsHealth(o.pool);
           const lag = lag0 && { ...lag0, threshold: { ...lag0.threshold, intervalSeconds } };
-          if (lag) await setHealth(o.pool, [registeredError === null ? lag : { ...lag, status: "degraded", detail: `the legs of the registered gateways cannot be indexed: ${registeredError}` }]);
+          if (lag) await setHealth(o.pool, [registeredError === null ? lag : { ...lag, status: "degraded", detail: "the legs of the registered gateways cannot be indexed" }]);
         } catch (e) {
           log(`indexer (registered gateways health): ${(e as Error).message}`);
         }

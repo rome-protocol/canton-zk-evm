@@ -20,14 +20,15 @@ export function genesisContracts(file: string): GenesisContract[] {
   try {
     alloc = (JSON.parse(readFileSync(file, "utf8")) as { alloc?: unknown }).alloc;
   } catch (e) {
-    throw new IndexerStop("genesis", `the genesis file ${file} cannot be read: ${(e as Error).message}`, null);
+    console.error(`genesis: the genesis file ${file} cannot be read: ${(e as Error).message}`);   // the reason and the path stay in the log
+    throw new IndexerStop("genesis", "the genesis file cannot be read", null);
   }
-  if (typeof alloc !== "object" || alloc === null || Array.isArray(alloc)) throw new IndexerStop("genesis", `the genesis file ${file} has no alloc`, null);
+  if (typeof alloc !== "object" || alloc === null || Array.isArray(alloc)) throw new IndexerStop("genesis", "the genesis file has no alloc", null);
   const out: GenesisContract[] = [];
   for (const [key, account] of Object.entries(alloc)) {
     const address = "0x" + key.replace(/^0x/i, "").toLowerCase();
     const code = (account as { code?: unknown } | null)?.code;
-    if (!/^0x[0-9a-f]{40}$/.test(address)) throw new IndexerStop("genesis", `the genesis file has an account named "${key}", which is not an address`, null);
+    if (!/^0x[0-9a-f]{40}$/.test(address)) throw new IndexerStop("genesis", "the genesis file has an account whose name is not an address", null);
     if (code === undefined || code === null || code === "" || code === "0x") continue;
     if (typeof code !== "string" || !isHexBytes(code, { upper: true, empty: false })) throw new IndexerStop("genesis", `the code of ${address} in the genesis file is not hex`, null);
     out.push({ address, code: code.toLowerCase() });
@@ -41,7 +42,7 @@ const bytea = (h: string): Buffer => Buffer.from(h.slice(2), "hex");
 export async function seedGenesis(pool: Pool, reads: Pick<FinalReads, "code">, file: string, gateway: string): Promise<number> {
   if ((await pool.query("select 1 from meta where key = 'genesis_seeded'")).rowCount) return 0;
   const contracts = genesisContracts(file);
-  if (!contracts.some((c) => c.address === gateway)) throw new IndexerStop("genesis", `the genesis file ${file} has no code at the gateway's address ${gateway}`, null, { gateway });
+  if (!contracts.some((c) => c.address === gateway)) throw new IndexerStop("genesis", `the genesis file has no code at the gateway's address ${gateway}`, null, { gateway });
   for (const c of contracts) {
     const onChain = await reads.code(c.address, 0);
     if (onChain !== c.code) throw new IndexerStop("genesis", `${c.address}: the genesis file's code is not the code reth holds at block 0`, null, { address: c.address });
@@ -71,15 +72,16 @@ export function genesisSupply(file: string): bigint {
   try {
     alloc = (JSON.parse(readFileSync(file, "utf8")) as { alloc?: unknown }).alloc;
   } catch (e) {
-    throw new IndexerStop("genesis", `the genesis file ${file} cannot be read: ${(e as Error).message}`, null);
+    console.error(`genesis: the genesis file ${file} cannot be read: ${(e as Error).message}`);   // the reason and the path stay in the log
+    throw new IndexerStop("genesis", "the genesis file cannot be read", null);
   }
-  if (typeof alloc !== "object" || alloc === null || Array.isArray(alloc)) throw new IndexerStop("genesis", `the genesis file ${file} has no alloc`, null);
+  if (typeof alloc !== "object" || alloc === null || Array.isArray(alloc)) throw new IndexerStop("genesis", "the genesis file has no alloc", null);
   let sum = 0n;
   for (const [key, account] of Object.entries(alloc)) {
     const balance = (account as { balance?: unknown } | null)?.balance;
     if (balance === undefined || balance === null || balance === "") continue;
-    if (typeof balance !== "string" && typeof balance !== "number") throw new IndexerStop("genesis", `the balance of ${key} in the genesis file is not a number`, null);
-    try { sum += BigInt(balance); } catch { throw new IndexerStop("genesis", `the balance of ${key} in the genesis file is not a number`, null); }
+    if (typeof balance !== "string" && typeof balance !== "number") throw new IndexerStop("genesis", "the genesis file has a balance that is not a number", null);
+    try { sum += BigInt(balance); } catch { throw new IndexerStop("genesis", "the genesis file has a balance that is not a number", null); }
   }
   return sum;
 }

@@ -92,7 +92,8 @@ export class VerifierWorker {
   /** The role's rows of health_checks. */
   async health(): Promise<void> {
     const bad = await this.o.cacheUsable().catch((e: Error) => e.message);
-    await this.row("verifier/compilers", bad ? "degraded" : "ok", { usable: !bad }, bad);
+    if (bad) this.o.log(`verifier: the compiler cache cannot be used: ${bad}`);   // the reason stays in the log: the row says only that it cannot be used
+    await this.row("verifier/compilers", bad ? "degraded" : "ok", { usable: !bad }, bad ? "the compiler cache cannot be used" : null);
     const s = await this.queue.stats();
     const stuck = s.oldestWaitingSeconds > this.o.stuckSeconds;
     await this.row("verifier/queue", stuck ? "degraded" : "ok", s, stuck ? `the oldest job has waited ${Math.round(s.oldestWaitingSeconds)} s` : null,

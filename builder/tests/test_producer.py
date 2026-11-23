@@ -492,7 +492,7 @@ class Failures(Loop):
         def down(cfg): raise OSError("connection refused")
         p = self.producer(s, pending=down)
         p.step()
-        self.assertEqual(self.reports, [{"committed": False, "error": "OSError: connection refused"}])
+        self.assertEqual(self.reports, [{"committed": False, "kind": "other", "error": "OSError: connection refused"}])
         self.assertEqual(self.waits, [1])
 
     def test_failed_blocks_do_not_count_toward_the_two_in_a_row(self):
@@ -540,6 +540,28 @@ class NeverDies(Loop):
         self.assertIn("wrong program key", err["error"])
         self.assertNotIn("no state found", err["error"])
         self.assertIn("no state found", err["rewindError"])
+
+    def test_the_status_names_the_kind_and_the_number_of_a_failed_block(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        p = self.producer(s)
+        p.step()
+        err = self.status()["lastError"]
+        self.assertEqual((err["kind"], err["number"]), ("proof", HEAD_NUMBER + 1))
+
+    def test_a_failed_input_tool_is_its_own_kind_even_when_it_is_wrapped_in_a_proving_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            tool = Path(d) / "make-input.sh"
+            tool.write_text("#!/bin/sh\necho 'error: cannot run /home/someone/.cargo/bin/cargo' >&2\nexit 1\n")
+            tool.chmod(0o755)
+            with self.assertRaises(b.InputToolError) as raised:
+                b.run(str(tool), "a", "b")
+        self.assertEqual(b.failure_kind(raised.exception), "input_tool")
+        try:
+            raise b.ProvingError(str(raised.exception), []) from raised.exception
+        except b.ProvingError as e:
+            self.assertEqual(b.failure_kind(e), "input_tool")
+        self.assertEqual(b.failure_kind(b.ProvingError("x", [])), "proof")
+        self.assertEqual(b.failure_kind(ValueError("x")), "other")
 
     def test_a_failure_without_a_failed_move_back_has_no_rewind_error_in_the_status(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
@@ -887,6 +909,10 @@ class Unprovable(Loop):
         self.assertEqual((ex["transaction"], ex["until"]), (bad["hash"], b.iso(self.now[0] + 600)))
         self.assertIn("could not be proven", ex["reason"])
         self.assertTrue(any(r.get("excluded") == bad["hash"] for r in self.reports))   # said in the log too
+        folder = os.path.join(s.cfg.work_dir, "journal")
+        lines = [json.loads(l) for f in sorted(os.listdir(folder)) if f.endswith(".jsonl") for l in open(os.path.join(folder, f)).read().splitlines()]
+        (held,) = [x for x in lines if x.get("event") == "excluded"]
+        self.assertEqual(held["reason"], "it could not be proven")   # the journal, which the explorer serves from, carries only the fixed sentence
         good = tx(BOB, 0)
         s.reth.pool[BOB] = [good]   # the chain is not wedged: a good transaction goes in
         p.step()

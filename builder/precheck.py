@@ -109,8 +109,8 @@ class Verdict:
         return self.verdict == OK
 
     def reason(self) -> str:
-        """What the explorer shows for a transaction left out because of this verdict."""
-        return "over the proving budget: " + WHY[self.verdict] + (f" ({self.detail})" if self.detail else "")
+        """What the explorer shows for a transaction left out because of this verdict: the why, never a tool's own output (that stays in `detail`, for the log and the status entry)."""
+        return "over the proving budget: " + WHY[self.verdict]
 
     def fields(self) -> dict:
         """The journal line's fields."""

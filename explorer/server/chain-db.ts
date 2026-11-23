@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { blockLegs as legsOfBlock, txLegs as legsOfTx, type BlockLeg } from "./indexer/leg-canton.ts";
-import { evaluate, specOf, withNotStarted, type Evaluation, type RawRow } from "./health.ts";
+import { evaluate, lifecycleReason, specOf, withNotStarted, type Evaluation, type RawRow } from "./health.ts";
 
 /** The database could not be read. The routes answer 502 for it, like a read that reth failed. */
 export class ChainDbError extends Error {}
@@ -200,7 +200,7 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
       [bytes(hash)],
     );
     return r && {
-      state: r.state, reason: r.state_reason, acceptedAt: r.accepted_at, acceptedVia: r.accepted_via, includedAt: r.included_at, attempts: r.attempts, leftOutReason: r.last_left_out_reason,
+      state: r.state, reason: lifecycleReason(r.state_reason), acceptedAt: r.accepted_at, acceptedVia: r.accepted_via, includedAt: r.included_at, attempts: r.attempts, leftOutReason: lifecycleReason(r.last_left_out_reason),
       proofStartedAt: r.proof_started_at, proofEndedAt: r.proof_ended_at, submittedAt: r.submitted_at, committedAt: r.committed_at, finalAt: r.final_at,
       finalBlock: r.final_block === null ? null : Number(r.final_block), timeToFinalMs: r.time_to_final === null ? null : Number(r.time_to_final),
     };
