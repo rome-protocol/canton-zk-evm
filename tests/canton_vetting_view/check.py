@@ -1,7 +1,7 @@
 """Does Canton check package vetting per view? Needs the nodes of tests/canton_vetting_view.sh running; argv: the work folder.
 Rome takes a pending token-standard transfer from a user, with a choice of a package the user's participant has not vetted. The choice's own view is Rome's alone;
 the token's accept is a view of its own that the user's participant takes part in. Once in one transaction (`Intake.Accept`), once as two (the accept, then `Record`).
-A user whose participant has vetted the probe package is the control. Prints "ok: ..." for each check, then the answer, and exits 1 at the first check that fails."""
+A user whose participant has vetted the probe package is the control. Prints "ok: ..." for each check, and exits 1 at the first check that fails, including the question itself: vetting is checked per view."""
 import json, os, sys, time, urllib.error, urllib.request, uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -102,11 +102,13 @@ must("rome", {"ExerciseCommand": {"templateId": INSTRUCTION, "contractId": offer
 must("rome", {"ExerciseCommand": {"templateId": f"{PROBE}:Intake", "contractId": intake, "choice": "Record", "choiceArgument": {"user": USERS["lacking"][0]}}}, [ROME], "the record alone")
 print("ok: the two-transaction form commits where the user's participant lacks the probe package")
 
-# 3. The question: one transaction, the user's participant lacks the probe package.
+# 3. The question: one transaction, the user's participant lacks the probe package. Canton checks vetting per view, so it commits: the one-transaction
+# intake does not need the user's participant to have vetted Rome's package.
 status, text = accept_in_one("lacking", intake, make_offer("lacking", rules["lacking"]))
-per_view = status == 200
-print(f"ok: one transaction, user's participant without the probe package: {'committed' if per_view else f'refused {status} {text[:400]}'}")
-print(f"RESULT: package vetting is checked {'per view: the user participant needs only the packages of its own views' if per_view else 'for the whole transaction: the user participant needs every package in it'}")
+if status != 200:
+    fail(f"one transaction was refused where the user's participant lacks the probe package, so vetting is not checked per view: {status} {text[:500]}")
+print("ok: one transaction, user's participant without the probe package: committed")
+print("RESULT: package vetting is checked per view: the user participant needs only the packages of its own views")
 summary = os.environ.get("GITHUB_STEP_SUMMARY")
 if summary:
-    Path(summary).open("a").write(f"Package vetting per view: **{'yes' if per_view else 'no'}**\n")
+    Path(summary).open("a").write("Package vetting per view: **yes**\n")

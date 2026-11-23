@@ -101,6 +101,17 @@ data Leg
       releaseRequest : ContractId RedeemRequest
       releaseRules : ContractId TW.TwinRules
       releaseVault : Text
+  -- From package 0.6.0, at the end again. A deposit that the gateway has accepted as a transfer (`Intake`) leaves a `Receipt`; the leg that
+  -- the block's claim of that deposit needs settles it, with the same `deposit` line as a `DepositLeg`. A withdrawal makes a `Payout`, which
+  -- moves no holding: Rome pays it after the block. Its line is a `WithdrawalLeg`'s, from the same fields, and `party` is whom it is paid to.
+  | ReceiptLeg with
+      receipt : ContractId Receipt
+  | PayoutLeg with
+      id : Text
+      gatewayToken : ContractId GatewayToken
+      from : Text
+      amount : Decimal
+      party : Party
   deriving (Eq, Show)
 
 noExtraArgs : ExtraArgs
@@ -611,6 +622,9 @@ withdrawalsOf legs = fmap concat (mapA one legs)
     one (WithdrawalLeg _ tokenCid _ amount _ _ _) = do
       t <- fetch tokenCid
       pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
+    one (PayoutLeg _ tokenCid _ amount _) = do
+      t <- fetch tokenCid
+      pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
     -- A release counts against the quota like a withdrawal, under the twin's instrument.
     one (ReleaseLeg requestCid rulesCid _) = do
       q <- fetch requestCid
@@ -906,7 +920,19 @@ legLine chain (ClaimLeg claimCid tokenCid) = do
   checkToken chain t
   assertMsg "the funded claim is for another token than the leg's" (c.gatewayToken == tokenCid)
   pure (legField "deposit" c.claimId t.evmToken c.recipient (show c.amount) "")
-
+legLine chain (ReceiptLeg receiptCid) = do
+  r <- fetch receiptCid
+  t <- fetch r.gatewayToken
+  checkChain "the receipt" chain r.chainId r.operator r.confirmer
+  checkGateway "the receipt" chain r.gateway
+  checkToken chain t
+  pure (legField "deposit" r.depositId t.evmToken r.recipient (show r.amount) "")
+legLine chain (PayoutLeg id tokenCid from amount party) = do
+  t <- fetch tokenCid
+  checkToken chain t
+  assertMsg "the withdrawal's id must be 64 lowercase hex digits and its burner 40" (hexOfLength 64 id && hexOfLength 40 from)
+  assertMsg "the withdrawal is of no amount" (amount > 0.0)
+  pure (legField "withdrawal" id t.evmToken from (show amount) (toHex (partyToText party)))
 legLine chain (LockLeg rulesCid receiver ref vault amountHex) = do
   r <- fetch rulesCid
   checkTwin chain r
@@ -1015,6 +1041,13 @@ settle (LockLeg rulesCid receiver ref _ amountHex) = do
   _ <- exercise rulesCid TW.Mint with owner = receiver; amount = a; reference = lockId receiver ref
   pure ()
 settle (ReleaseLeg requestCid rulesCid _) = exercise requestCid BurnForRelease with rules = rulesCid
+settle (ReceiptLeg receiptCid) = exercise receiptCid Receipt_Claim
+settle (PayoutLeg id tokenCid _ amount party) = do
+  t <- fetch tokenCid
+  _ <- create Payout with
+    operator = t.operator; confirmer = t.confirmer; gateway = t.gateway; builder = t.builder; chainId = t.chainId
+    withdrawalId = id; gatewayToken = tokenCid; party; amount
+  pure ()
 
 -- One per block: everything a third party needs to replay the chain and re-check each proof.
 template BlockRecord
@@ -1148,6 +1181,138 @@ template WithdrawalAcceptance
               TransferInstructionResult_Completed _ -> pure ()
               _ -> abort "the transfer to the receiver did not complete"
           TransferInstructionResult_Failed -> abort "the registry failed the transfer"
+
+-- From package 0.6.0: a deposit that is a plain transfer to the gateway, for any registered token. The operator and the gateway propose the
+-- intake, the confirmer accepts it, as for a token.
+template IntakeProposal
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+  where
+    signatory operator, gateway
+    observer confirmer
+    ensure chainId > 0
+
+    choice AcceptIntake : ContractId Intake
+      controller confirmer
+      do create Intake with ..
+
+-- Signed by the operator, the confirmer and the gateway, so that no one of them can make a `Receipt` alone: only the gateway's choice below does,
+-- and only for a transfer that it has accepted. The gateway's user runs it; the sender is a plain field of the receipt, never a stakeholder.
+template Intake
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+  where
+    signatory operator, confirmer, gateway
+    observer builder
+
+    -- Accepts a pending transfer to the gateway of the token's instrument and records it, in one transaction. `label` and `recipient` (the EVM
+    -- address as 40 lowercase hex digits) come from the transfer's memo, which the worker reads; the deposit's id is `depositIdOf sender label`.
+    -- A registry's accept may leave the transfer pending or fail: then nothing is recorded, and the transfer stays as it was.
+    nonconsuming choice Intake_Accept : ContractId Receipt
+      with
+        gatewayToken : ContractId GatewayToken
+        instruction : ContractId TransferInstruction
+        label : Text
+        recipient : Text
+        choiceContext : Optional ChoiceContext
+      controller gateway
+      do
+        t <- fetch gatewayToken
+        checkIntakeToken this t
+        v <- fmap view (fetch instruction)
+        assertMsg "the transfer is of another instrument than the token's" (v.transfer.instrumentId == t.instrumentId)
+        assertMsg "the transfer is not to the gateway" (v.transfer.receiver == gateway)
+        case v.status of
+          TransferPendingReceiverAcceptance -> pure ()
+          _ -> abort "the transfer is not waiting for its receiver"
+        accepted <- exercise instruction TransferInstruction_Accept with extraArgs = extraArgsOf choiceContext
+        case accepted.output of
+          TransferInstructionResult_Completed _ -> pure ()
+          _ -> abort "the accept did not complete the transfer"
+        create Receipt with
+          operator; confirmer; gateway; builder; chainId; gatewayToken
+          sender = v.transfer.sender; depositId = depositIdOf v.transfer.sender label; label; recipient; amount = v.transfer.amount
+
+    -- The second half alone, for a registry whose accept cannot share a transaction with this package (the accept is made first, by itself).
+    -- No transfer is left to read, so the worker's journal and the custody check stand in for the transfer's checks.
+    nonconsuming choice Intake_Record : ContractId Receipt
+      with
+        gatewayToken : ContractId GatewayToken
+        sender : Party
+        amount : Decimal
+        label : Text
+        recipient : Text
+      controller gateway
+      do
+        t <- fetch gatewayToken
+        checkIntakeToken this t
+        create Receipt with
+          operator; confirmer; gateway; builder; chainId; gatewayToken
+          sender; depositId = depositIdOf sender label; label; recipient; amount
+
+checkIntakeToken : Intake -> GatewayToken -> Update ()
+checkIntakeToken i t = assertMsg "the token is for another chain, operator, confirmer or gateway than this intake's"
+  (t.chainId == i.chainId && t.operator == i.operator && t.confirmer == i.confirmer && t.gateway == i.gateway)
+
+-- "This transfer to the gateway was accepted: claim it with `depositId`." Rome's own record, which the leg of the block that records the claim
+-- settles. Until then the operator can return it: a `Payout` of the same amount to the sender, after which a claim of the id finds nothing.
+template Receipt
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    gatewayToken : ContractId GatewayToken
+    sender : Party
+    depositId : Text
+    label : Text
+    recipient : Text
+    amount : Decimal
+  where
+    signatory operator, confirmer, gateway
+    observer builder
+    ensure chainId > 0 && amount > 0.0 && hexOfLength 40 recipient && isDerived sender depositId (Some label)
+
+    choice Receipt_Claim : ()
+      controller operator, confirmer, gateway
+      do pure ()
+
+    choice Receipt_Return : ContractId Payout
+      controller operator
+      do create Payout with
+           operator; confirmer; gateway; builder; chainId; gatewayToken
+           withdrawalId = depositId; party = sender; amount
+
+-- "Pay this to `party`": what a withdrawal leaves for Rome to send after the block, as a standard transfer from the gateway's custody, or what a
+-- returned receipt leaves (its `withdrawalId` is the deposit's id). The gateway marks it paid once the party has the token.
+template Payout
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    gatewayToken : ContractId GatewayToken
+    withdrawalId : Text
+    party : Party
+    amount : Decimal
+  where
+    signatory operator, confirmer, gateway
+    observer builder
+    ensure chainId > 0 && amount > 0.0 && withdrawalId /= ""
+
+    choice Payout_Paid : ()
+      controller gateway
+      do pure ()
 
 -- The EVM payment id of terms between u and v: the SHA-256 of their two party ids and a label, so only terms that
 -- u and v both signed can carry the id the payer pays against.

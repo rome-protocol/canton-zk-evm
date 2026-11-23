@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Does Canton check package vetting per view, on the pinned Canton? Three participants on one synchronizer: Rome's, and two for users, one of which has not vetted
 # the probe package (tests/canton_vetting_view/, a package of Rome's own with a choice that takes a token-standard transfer and records it). The same choice runs as
-# one transaction and, as two, the accept and then the record. The test checks the controls and prints the answer: the user's participant takes part in the accept
-# only, so if vetting is checked per view the one transaction commits, and if it is checked for the whole transaction it is refused.
+# one transaction and, as two, the accept and then the record. The test checks the controls and asserts the answer: the user's participant takes part in the accept
+# only, so with vetting checked per view the one transaction commits, and it fails if the one transaction is refused.
 # Needs Java 21, network access to the registries in PINS, and PYTHON (default python3) to be a Python 3.12. No GPU, no reth, no ZisK.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

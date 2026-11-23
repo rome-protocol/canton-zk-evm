@@ -1899,6 +1899,77 @@ class Twins(unittest.TestCase):
         self.assertIn("16 twins", self.refused("propose", *self.A))
 
 
+class IntakeParticipant(FakeParticipant):
+    """The participant of the intake steps: the IntakeProposal and Intake templates, as the Daml of 0.6.0 does them."""
+    def __init__(self):
+        super().__init__()
+        self.contracts["IntakeProposal"], self.contracts["Intake"] = [], []
+
+    def route(self, method, path, body, raw):
+        if path == "/v2/commands/submit-and-wait":
+            command = body["commands"][0]
+            create, exercise = command.get("CreateCommand") or {}, command.get("ExerciseCommand") or {}
+            if create.get("templateId", "").endswith("IntakeProposal") or exercise.get("choice") == "AcceptIntake":
+                self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+                if create:
+                    self.contracts["IntakeProposal"].append({"contractId": "ip1", "args": create["createArguments"]})
+                else:
+                    [proposal] = self.contracts["IntakeProposal"]
+                    self.contracts["IntakeProposal"] = []
+                    self.contracts["Intake"].append({"contractId": "i1", "args": proposal["args"]})
+                return {}
+        return super().route(method, path, body, raw)
+
+
+class Intake(unittest.TestCase):
+    """setup.py --intake-step: the intake of transfers to the gateway."""
+    run_setup = Setup.run_setup
+
+    def sent(self):
+        return getattr(self.node, "submitted", [])[self.base:]
+
+    def setUp(self):
+        Setup.setUp(self)
+        self.node.close()
+        self.node = IntakeParticipant()
+        self.addCleanup(self.node.close)
+        self.base = 0
+        self.run_setup()
+        self.base = len(getattr(self.node, "submitted", []))
+
+    def step(self, step, *extra):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--intake-step", step, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_the_operator_and_the_gateway_propose_and_the_confirmer_accepts(self):
+        dry = self.step("propose", "--dry-run")
+        self.assertEqual((dry["submitted"], dry["dryRun"], self.sent()), (False, True, []))
+        self.assertEqual(self.step("propose")["submitted"], True)
+        [(command, acts)] = self.sent()
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])
+        fields = command["CreateCommand"]["createArguments"]
+        self.assertEqual((command["CreateCommand"]["templateId"].split(":")[-1], sorted(fields)), ("IntakeProposal", ["builder", "chainId", "confirmer", "gateway", "operator"]))
+        self.assertEqual(self.step("propose")["alreadyProposed"], True)   # the same proposal again sends nothing
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.node.contracts["Intake"], [])
+        self.assertEqual(self.step("accept")["submitted"], True)
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "AcceptIntake")
+        self.assertEqual(len(self.node.contracts["Intake"]), 1)
+        self.assertEqual(self.step("accept")["alreadyAccepted"], True)    # a re-run after the accept
+        self.assertEqual(self.step("propose")["alreadyProposed"], True)   # and a proposal once the intake exists
+
+    def test_an_accept_without_a_proposal_and_a_step_with_another_step_are_refused(self):
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.step("accept")
+        self.assertIn("no intake proposal", str(ctx.exception))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.step("propose", "--twin-step", "propose", "--twin-token", "11" * 20)
+
+
 class Timing(unittest.TestCase):
     def test_the_proposal_time_and_the_accept_time_print_in_one_form(self):
         # the ledger drops trailing zeros of the fraction ("24.1737Z"); both times must print the same way, so a reader can compare them as text
