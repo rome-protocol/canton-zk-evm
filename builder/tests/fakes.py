@@ -423,7 +423,9 @@ class FakeLedger:
         self.trades: list = []        # ... of the VenueTrade contracts (their allocation is executed by the trade's venue)
         self.claims: list = []        # ... of the FundedClaim contracts
         self.redeems: list = []       # ... of the RedeemRequest contracts (a twin's release)
-        self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
+        self.receipts: list = []      # ... of the Receipt contracts (a transfer the gateway accepted; 0.6.0)
+        self.payouts: list = []       # ... of the Payout contracts (a withdrawal Rome pays after the block; 0.6.0)
+        self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade, FundedClaim, Receipt or Payout template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.holdings_at: dict = {}   # offset -> the holdings it shows as of that offset (a read that names the offset); any other offset: `holdings`
         self.refuse_offsets: set = set()   # a read of the holdings as of one of these offsets is refused (HTTP 400, as for a pruned offset)
@@ -596,7 +598,7 @@ class FakeLedger:
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
-        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems), ("Amulet", self.amulets)):
+        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims), ("RedeemRequest", self.redeems), ("Receipt", self.receipts), ("Payout", self.payouts), ("Amulet", self.amulets)):
             if template.endswith(":" + name):
                 return [entry(c, name, a) for c, a in found]
         return []
@@ -667,7 +669,7 @@ class FakeLedger:
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
                     if tmpl.endswith(":TwinAcceptance"):   # a list of every acceptance: what the builder never asks for (anyone may make 201 of them, and the participant refuses a list that long)
                         return self._reply(413, {"code": "JSON_API_MAX_LIST_ELEMENTS_NUMBER_REACHED"})
-                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules")):
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim", ":RedeemRequest", ":TwinRules", ":Receipt", ":Payout")):
                         return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     failure = next((f for name, f in ledger.list_failure.items() if tmpl.endswith(":" + name)), None)
                     token = str(body.get("pageToken") or "")
