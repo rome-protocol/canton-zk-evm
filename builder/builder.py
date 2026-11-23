@@ -1458,8 +1458,8 @@ def quota_state(chain: dict, now: datetime) -> tuple | None:
 
 
 def quota_problem(state: tuple, name: str, amount: int) -> Said | None:
-    """Why a withdrawal of `amount` base units of the instrument `name` would be refused for the quota on its own, or None. A block carries at
-    most one withdrawal of an instrument (withdrawal_leg), so what each one is held to is the quota less what is counted already."""
+    """Why `amount` base units of the instrument `name` would be refused for the quota, or None. `amount` is the withdrawal's own, and in the second
+    pass of match_legs it is added to what the block's earlier legs of the instrument count, so each is held to the quota less what is counted."""
     limit, live = state
     counted = sorted(live.get(name, []))
     over = sum(a for _, a in counted) + amount - limit   # what must stop counting before it fits
@@ -2975,6 +2975,11 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
                         continue
                 if claimed is not None and state is not None and event.kind == WITHDRAWAL:   # what the release legs of this block add to is counted with it
                     name = instrument_name(canton.token(event))
+                    found = quota_problem(state, name, claimed["quota"].get(name, 0) + event.amount)   # with what this block's earlier legs of it count
+                    if found:
+                        forget_leg(canton, leg)
+                        missing.append((event, found))
+                        continue
                     claimed["quota"][name] = claimed["quota"].get(name, 0) + event.amount
                 legs.append(leg)
             except NoCantonSide as e:

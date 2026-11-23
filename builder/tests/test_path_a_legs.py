@@ -146,6 +146,32 @@ class Payouts(tb.LegCase):
         result = self.build(s)
         self.assertEqual(result["legs"], 1)
 
+    def test_a_payout_of_an_expiring_instrument_asks_for_no_rounds_and_waits_for_no_check(self):
+        s, t = self.setup_payout(PAY_OUT)
+        s.cfg.expiring = ("adm",)
+        s.cfg.registries, s.cfg.registry_tokens = {"adm": "http://127.0.0.1:1"}, {}   # nothing listens there: a leg that read the open rounds would be unreadable
+        Path(s.cfg.work_dir).mkdir(parents=True, exist_ok=True)
+        b.custody_stop_path(s.cfg).write_text("{}")
+        b.custody_check_path(s.cfg).write_text("{}")
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+        self.assertEqual(self.attached(s, "PayoutLeg"), PAY_VALUE)
+        self.assertEqual(s.advance_argument().get("custody"), None)
+        self.assertEqual(b.custody_check_path(s.cfg).read_text(), "{}")   # no check was written or removed for it
+
+    def test_two_payouts_that_fit_the_quota_one_by_one_but_not_together_leave_the_second_out(self):
+        s = self.setup({tb.ALICE: [], tb.BOB: []})
+        s.cfg.payout_offers = True
+        s.ledger.tokens.extend([tb.TOKEN])
+        s.ledger.chain_extra = {"withdrawalQuota": "5.0", "quotaWindow": {"microseconds": "86400000000"}, "withdrawn": None}
+        first = self.leg_tx(s, Leg(WITHDRAWAL, tb.WD_ID, WTKB, PAYEE, 3 * UNIT, PARTY), tb.ALICE, price=9)
+        second = self.leg_tx(s, Leg(WITHDRAWAL, "cd" * 32, WTKB, PAYEE, 3 * UNIT, PARTY), tb.BOB, price=5)
+        s.reth.pool[tb.ALICE], s.reth.pool[tb.BOB] = [first], [second]
+        result = self.build(s)
+        self.assertEqual([l["tag"] for l in s.advance_argument()["legs"]], ["PayoutLeg"])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [second["hash"]])
+        self.assertIn("withdrawal quota", result["leftOut"][0]["reason"])
+
     def test_the_leg_check_accepts_a_payout_to_any_party(self):
         s = self.setup({})
         s.cfg.payout_offers = True
