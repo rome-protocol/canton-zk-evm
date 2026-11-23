@@ -23,6 +23,13 @@
                                         operator is the executor, the gateway the receiver), then signs the DepositRequest with the label, whose deposit id is the one derived from U and the label.
                                         Prints the deposit id, the allocation and the request's contract id. The claim on Ostia stays `evm.py claim u <deposit id> <evm token> <amount>`; the builder
                                         attaches the deposit leg's choice context when it runs with --registry <DSO party>=<scan proxy>
+  cc.py send-memo <amount> <0x address> [--label LABEL]
+                                        U sends <amount> Canton Coin (at most 10 decimals) to the gateway's party through the token standard's transfer factory (the scan proxy's), with the EVM
+                                        address as the memo: the standard reason, in the transfer's meta under splice.lfdecentralizedtrust.org/reason. --label adds romeprotocol.com/ostia-label. The gateway
+                                        holds no pre-approval, so the transfer is pending: it prints the instruction's contract id, and U's balance before and after
+  cc.py instructions                    the transfer instructions that have the gateway's party as the receiver, read as the gateway: each one's contract id, sender, amount, instrument, status,
+                                        meta (as the gateway sees it) and the memo (the reason, or null)
+  cc.py take-back <instruction>         U withdraws its own pending transfer instruction (the scan proxy's choice context for "withdraw"), so that the receiver can no longer accept it. Prints U's balance
   cc.py route <network> <evm address> <max fee> <amount> [--router ADDRESS] [--nonce N]
                                         `deposit` for the Canton router (router/): U deposits <amount> Canton Coin to the router (--router, or OSTIA_ROUTER; the router's proxy address) with the
                                         label r1:<network>:<address>:<max fee in base units>:<nonce>, which the router's relayer reads from the ledger and sends on to <address> on that AggLayer network
@@ -52,6 +59,9 @@ SCAN_TOKEN_FILE = "CZE_SCAN_TOKEN_FILE"
 ROUTER_ADDRESS = "OSTIA_ROUTER"
 HOLDING_VIEW = ":Splice.Api.Token.HoldingV1:Holding"
 HOLDING_INTERFACE = "#splice-api-token-holding-v1" + HOLDING_VIEW
+INSTRUCTION_VIEW = ":Splice.Api.Token.TransferInstructionV1:TransferInstruction"
+REASON_KEY = "splice.lfdecentralizedtrust.org/reason"   # the memo that wallets write
+LABEL_KEY = "romeprotocol.com/ostia-label"
 FACTORY_TEMPLATE = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):Splice\.ExternalPartyAmuletRules:ExternalPartyAmuletRules")
 TEMPLATE_ID = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):[A-Za-z0-9_.]+:[A-Za-z0-9_]+")
 CONTRACT_ID = re.compile(r"00[0-9a-f]{20,200}")
@@ -60,7 +70,8 @@ MAX_DISCLOSED, MAX_CONTEXT_VALUES, MAX_BLOB = 16, 64, 500_000
 MAX_INPUTS = 50   # the holdings that a transfer takes as inputs, the largest first (Canton Coin allows 100)
 TRANSFER_KINDS = ("self", "direct", "offer")
 TRANSFER_PENDING = "TransferInstructionResult_Pending"
-COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "route": ("demo", "operator"), "withdraw": ("demo", "operator")}
+COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "route": ("demo", "operator"), "withdraw": ("demo", "operator"),
+                 "send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",)}
 ALLOCATION_COMPLETED = "AllocationInstructionResult_Completed"
 WITHDRAW_WAIT_SECONDS = 600   # the longest that withdraw waits for the builder's Receive leg to reach U
 SENDER_ROLE = "sender"   # the role whose token file is --sender-token-file
@@ -132,11 +143,11 @@ class Scan:
             raise canton.Fail(f"the scan proxy's allocation factory is a {named[0]['templateId'][:120]}, not an ExternalPartyAmuletRules")
         return {"factory": factory, "data": data, "disclosed": disclosed}
 
-    def accept_context(self, instruction: str) -> dict:
-        """The choice context for the receiver's TransferInstruction_Accept of this instruction, checked."""
+    def accept_context(self, instruction: str, choice: str = "accept") -> dict:
+        """The choice context for the receiver's TransferInstruction_Accept (or, with choice "withdraw", the sender's TransferInstruction_Withdraw) of this instruction, checked."""
         if not CONTRACT_ID.fullmatch(instruction):
             raise canton.Fail(f"the transfer instruction {instruction[:40]!r} is not a contract id")
-        answer = self.call(twin.post_json, f"{self.url}/registry/transfer-instruction/v1/{instruction}/choice-contexts/accept", {"meta": {}, "excludeDebugFields": True})
+        answer = self.call(twin.post_json, f"{self.url}/registry/transfer-instruction/v1/{instruction}/choice-contexts/{choice}", {"meta": {}, "excludeDebugFields": True})
         data, disclosed = checked_context(answer)
         return {"data": data, "disclosed": disclosed}
 
@@ -387,6 +398,73 @@ def deposit(net: canton.Network, scan: Scan, label: str, recipient: str, amount:
             "request": request["contractId"], "claim": f"evm.py claim <u or v> {deposit_id} 0x{token} {amount}"}
 
 
+def send_memo(net: canton.Network, scan: Scan, amount: str, address: str, label: str = None) -> dict:
+    """U sends `amount` Canton Coin to the gateway's party through the scan proxy's transfer factory, with the EVM address as the memo (transfer.meta). The result is pending when the
+    gateway holds no pre-approval: the instruction's contract id is what `instructions` shows and `take-back` withdraws."""
+    if not canton.CANTON_AMOUNT.fullmatch(amount) or not twin.ledger_units(amount):
+        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
+    amount = amount if "." in amount else amount + ".0"
+    canton.evm_address(address)   # checks the form; the memo keeps the text as given
+    meta = {REASON_KEY: address, **({LABEL_KEY: canton.read_label(label)} if label is not None else {})}
+    dso = scan.dso_party()
+    u, gateway = net.party("u"), net.party("gateway")
+    held = sorted((h for h in holdings(net, "users", "demo", u, dso) if not h[2]), key=lambda h: -h[1])
+    if sum(a for _, a, _ in held) < twin.ledger_units(amount):
+        raise canton.Fail(f"U holds {twin.amount_text(sum(a for _, a, _ in held))} Canton Coin, less than {amount} (`cc.py fund u <amount>` gives it some)")
+    before = party_balance(net, "u", dso)
+    transfer = {**transfer_of(u, gateway, amount, dso, [cid for cid, _, _ in held[:MAX_INPUTS]]), "meta": {"values": meta}}   # as in fund: the fee may come out of more than the amount's own holdings
+    asked = scan.factory(transfer, dso)
+    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_FACTORY, "contractId": asked["factory"], "choice": "TransferFactory_Transfer",
+                                   "choiceArgument": {"expectedAdmin": dso, "transfer": transfer, "extraArgs": {"context": asked["data"], "meta": {"values": {}}}}}}
+    tx = twin.submit_for_transaction(net, "u", command, asked["disclosed"])
+    output = twin.exercise_output(tx, asked["factory"], "TransferFactory_Transfer") or {}
+    tag, instruction = output.get("tag"), None
+    if tag == TRANSFER_PENDING:
+        value = output.get("value")
+        instruction = value.get("transferInstructionCid") if isinstance(value, dict) else None
+        if not isinstance(instruction, str) or not CONTRACT_ID.fullmatch(instruction):
+            raise canton.Fail(f"the transfer in update {tx['updateId']} is pending, and the result names no transfer instruction")
+    elif tag != twin.TRANSFER_COMPLETED:
+        raise canton.Fail(f"the transfer in update {tx['updateId']} did not complete: its result is {tag or 'not there'}, not {twin.TRANSFER_COMPLETED} or {TRANSFER_PENDING}")
+    return {"updateId": tx["updateId"], "from": u, "to": gateway, "amount": amount, "meta": meta, "kind": asked["kind"], "result": tag, "instruction": instruction,
+            "balance": {"before": before, "after": party_balance(net, "u", dso)}}
+
+
+def instructions(net: canton.Network) -> dict:
+    """The gateway's party's active TransferInstruction views (read as the gateway, on the operator's participant) that have it as the receiver."""
+    gateway = net.party("gateway")
+    offset = net.get("operator", "/v2/state/ledger-end", "operator")["offset"]
+    view = {"InterfaceFilter": {"value": {"interfaceId": canton.TRANSFER_INSTRUCTION, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
+    body = {"eventFormat": {"filtersByParty": {gateway: {"cumulative": [{"identifierFilter": view}]}}, "verbose": False}, "activeAtOffset": offset}
+    found = []
+    for entry in net.post("operator", "/v2/state/active-contracts", body, "operator"):
+        active = entry["contractEntry"].get("JsActiveContract")
+        for v in (active["createdEvent"].get("interfaceViews") or []) if active else []:
+            if not str(v.get("interfaceId", "")).endswith(INSTRUCTION_VIEW):
+                continue
+            value = v.get("viewValue")
+            transfer = value.get("transfer") if isinstance(value, dict) else None
+            if not isinstance(transfer, dict):
+                raise canton.Fail(f"{active['createdEvent'].get('contractId')} has a TransferInstruction view that has no transfer")
+            if transfer.get("receiver") != gateway:
+                continue
+            meta = (transfer.get("meta") or {}).get("values") or {}
+            found.append({"instruction": active["createdEvent"]["contractId"], "sender": transfer.get("sender"), "amount": transfer.get("amount"), "instrumentId": transfer.get("instrumentId"),
+                          "executeBefore": transfer.get("executeBefore"), "status": value.get("status"), "meta": meta, "instructionMeta": (value.get("meta") or {}).get("values") or {},
+                          "memo": meta.get(REASON_KEY)})
+    return {"gateway": gateway, "instructions": found}
+
+
+def take_back(net: canton.Network, scan: Scan, instruction: str) -> dict:
+    """U withdraws its own pending transfer instruction: TransferInstruction_Withdraw with the scan proxy's choice context for "withdraw"."""
+    context = scan.accept_context(instruction, "withdraw")
+    command = {"ExerciseCommand": {"templateId": canton.TRANSFER_INSTRUCTION, "contractId": instruction, "choice": "TransferInstruction_Withdraw",
+                                   "choiceArgument": {"extraArgs": {"context": context["data"], "meta": {"values": {}}}}}}
+    tx = twin.submit_for_transaction(net, "u", command, context["disclosed"])
+    output = twin.exercise_output(tx, instruction, "TransferInstruction_Withdraw") or {}
+    return {"updateId": tx["updateId"], "instruction": instruction, "result": output.get("tag"), "balance": party_balance(net, "u", scan.dso_party())}
+
+
 def route(net: canton.Network, scan: Scan, network: str, address: str, max_fee: str, amount: str, router: str, nonce: str = None) -> dict:
     """`deposit` with the label of the Canton router and the router as recipient (the label's form is canton.route_label's). The most fee is a Canton Coin amount, in the label in base units."""
     if not evm.WHOLE.fullmatch(network) or not canton.CANTON_AMOUNT.fullmatch(max_fee) or not (nonce is None or evm.WHOLE.fullmatch(nonce)):
@@ -462,11 +540,12 @@ def main(argv: list) -> dict:
 def run(argv: list, options: dict) -> dict:
     cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
-        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",), "register": ("--name", "--symbol"), "route": ("--router", "--nonce")}.get(cmd[0], ())
+        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",), "register": ("--name", "--symbol"), "route": ("--router", "--nonce"), "send-memo": ("--label",)}.get(cmd[0], ())
         args, found = twin.split_options(argv[1:], names, __doc__)
         options.update(found)
         shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options,
-                 "deposit": len(args) == 3, "route": len(args) == 4, "withdraw": len(args) == 1}[cmd[0]]
+                 "deposit": len(args) == 3, "route": len(args) == 4, "withdraw": len(args) == 1,
+                 "send-memo": len(args) == 2, "instructions": not args, "take-back": len(args) == 1}[cmd[0]]
         if not shape:
             raise SystemExit(__doc__)
         net = canton.Network()
@@ -495,6 +574,12 @@ def run(argv: list, options: dict) -> dict:
             return route(net, scan_of(options), *args, options.get("--router") or os.environ.get(ROUTER_ADDRESS), options.get("--nonce"))
         if cmd == ["withdraw"]:
             return withdraw(net, scan_of(options), args[0])
+        if cmd == ["send-memo"]:
+            return send_memo(net, scan_of(options), *args, options.get("--label"))
+        if cmd == ["instructions"]:
+            return instructions(net)
+        if cmd == ["take-back"]:
+            return take_back(net, scan_of(options), args[0])
     raise SystemExit(__doc__)
 
 

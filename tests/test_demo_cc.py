@@ -82,6 +82,7 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
     requests: list = []
     commands: list = []
     on_submit = None         # called with the body of each submit-and-wait: what the command makes on the ledger
+    instruction_views: dict = {}   # party -> the TransferInstruction interface views (viewValue) that the party sees
 
     def log_message(self, *args):
         pass
@@ -105,7 +106,11 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
                 self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": e, "synchronizerId": SYNC}}} for e in found])
             else:
                 value = identifier["InterfaceFilter"]["value"]
-                assert value["includeInterfaceView"] and value["interfaceId"] == cc.HOLDING_INTERFACE
+                assert value["includeInterfaceView"]
+                if value["interfaceId"] == canton.TRANSFER_INSTRUCTION:
+                    return self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": cid, "templateId": PKG + ":Splice.Amulet:TransferInstruction", "interfaceViews": [
+                        {"interfaceId": PKG + cc.INSTRUCTION_VIEW, "viewStatus": {"code": 0}, "viewValue": view}]}, "synchronizerId": SYNC}}} for cid, view in FakeLedger.instruction_views.get(party, [])])
+                assert value["interfaceId"] == cc.HOLDING_INTERFACE
                 self.reply([{"contractEntry": {"JsActiveContract": {"createdEvent": holding_event(party, h), "synchronizerId": SYNC}}} for h in FakeLedger.holdings.get(party, [])])
         elif self.path == "/v2/commands/submit-and-wait":
             FakeLedger.commands.append(body)
@@ -189,6 +194,7 @@ class CcCase(unittest.TestCase):
         FakeScan.seen, FakeScan.answers = [], {
             BASE + "/scan-proxy/dso-party-id": {"dso_party_id": DSO}, BASE + "/validator-user": {"party_id": VALIDATOR}, FACTORY_PATH: lambda body: factory_answer("self" if body["choiceArguments"]["transfer"]["sender"] == body["choiceArguments"]["transfer"]["receiver"] else "direct")}
         FakeLedger.events, FakeLedger.holdings, FakeLedger.requests, FakeLedger.commands, FakeLedger.on_submit = {}, {}, [], [], None
+        FakeLedger.instruction_views = {}
         self.scan_url = serve(FakeScan, "scan", self) + BASE + "/scan-proxy"
         ledger = serve(FakeLedger, "ledger", self)
         environment = {"CZE_STATE_DIR": str(self.state), "CZE_CANTON": "external", "CZE_LEDGER_URL": ledger, "CZE_POLL_SECONDS": "0",
@@ -1049,6 +1055,168 @@ class WithdrawTests(WithdrawCase):
 
     def test_no_token_is_printed(self):
         result, out, err = self.run_printed("withdraw", "1.5")
+        self.assertNoSecrets(out, err, json.dumps(result))
+
+
+WITHDRAW_PATH = BASE + "/scan-proxy/registry/transfer-instruction/v1/%s/choice-contexts/withdraw"
+MEMO_ADDRESS = "0x3f5c" + "a1" * 18
+REASON = "splice.lfdecentralizedtrust.org/reason"
+
+
+class MemoCase(CcCase):
+    """U holds Canton Coin; the gateway holds no pre-approval, so U's transfer to it is pending (mode "pending") or completes (mode "completed")."""
+    INSTRUCTION = "00" + "2d" * 34
+
+    def setUp(self):
+        super().setUp()
+        FakeLedger.holdings = {U: [held("00u1", "5.0"), held("00u2", "2.5"), held("00u3", "9.0", locked=True), held("00u4", "100.0", instrument={"admin": DSO, "id": "TKB"})], GW: []}
+        self.mode = "pending"
+        patcher = mock.patch.object(FakeLedger, "transaction", staticmethod(self.transaction))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        FakeScan.answers[FACTORY_PATH] = lambda body: factory_answer("offer" if self.mode == "pending" else "direct")
+        self.context = {"choiceContextData": {"values": {"round": {"tag": "AV_ContractId", "value": "r1"}}}, "disclosedContracts": [dict(DISCLOSED[0]), dict(DISCLOSED[1])]}
+        FakeScan.answers[WITHDRAW_PATH % self.INSTRUCTION] = lambda body: self.context
+        self.withdraw_tag = "TransferInstructionResult_Failed"
+
+    def transaction(self, body):
+        command = body["commands"]["commands"][0]["ExerciseCommand"]
+        if command["choice"] == "TransferFactory_Transfer":
+            transfer = command["choiceArgument"]["transfer"]
+            gone = set(transfer["inputHoldingCids"])
+            FakeLedger.holdings[U] = [h for h in FakeLedger.holdings[U] if h["cid"] not in gone] + [held("00change", "0.5")]
+            if self.mode == "pending":   # the amount is locked for the instruction
+                FakeLedger.holdings[U].append(held("00lock", transfer["amount"], locked=True))
+                output = {"tag": cc.TRANSFER_PENDING, "value": {"transferInstructionCid": self.INSTRUCTION}}
+            else:
+                output = {"tag": twin.TRANSFER_COMPLETED, "value": {"receiverHoldingCids": ["00new"]}}
+        else:
+            assert command["choice"] == "TransferInstruction_Withdraw"
+            FakeLedger.holdings[U] = [h for h in FakeLedger.holdings[U] if h["cid"] != "00lock"] + [held("00back", "2.5")]
+            output = {"tag": self.withdraw_tag, "value": {}}
+        return {"transaction": {"updateId": "update-memo", "events": [{"ExercisedEvent": {"contractId": command["contractId"], "choice": command["choice"], "exerciseResult": {"output": output}}}]}}
+
+    def commands(self):
+        return [c for c in FakeLedger.commands if not isinstance(c["commands"], list)]
+
+
+class SendMemoTests(MemoCase):
+    def test_u_sends_to_the_gateway_with_the_address_as_the_reason_and_the_transfer_is_pending(self):
+        got = self.run_cc("send-memo", "2.5", MEMO_ADDRESS)
+        [asked] = [b for m, p, _, b in FakeScan.seen if p == FACTORY_PATH]
+        transfer = asked["choiceArguments"]["transfer"]
+        self.assertEqual((asked["choiceArguments"]["expectedAdmin"], transfer["sender"], transfer["receiver"], transfer["amount"], transfer["instrumentId"]), (DSO, U, GW, "2.5", {"admin": DSO, "id": "Amulet"}))
+        self.assertEqual(transfer["meta"], {"values": {REASON: MEMO_ADDRESS}})   # the registry sees the memo too
+        self.assertEqual(transfer["inputHoldingCids"], ["00u1", "00u2"])   # unlocked Canton Coin only, the largest first
+        [request] = self.commands()
+        command = request["commands"]["commands"][0]["ExerciseCommand"]
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_FACTORY, FACTORY, "TransferFactory_Transfer"))
+        self.assertEqual(command["choiceArgument"]["transfer"]["meta"], {"values": {REASON: MEMO_ADDRESS}})
+        self.assertEqual(command["choiceArgument"]["extraArgs"], {"context": factory_answer()["choiceContext"]["choiceContextData"], "meta": {"values": {}}})
+        self.assertEqual((request["commands"]["actAs"], request["commands"]["userId"], request["commands"]["disclosedContracts"]), ([U], "demo", DISCLOSED))
+        self.assertEqual([a for p, a, b in FakeLedger.requests if p == "/v2/commands/submit-and-wait-for-transaction"], ["Bearer " + TOKENS["DEMO"]])
+        self.assertEqual(got, {"updateId": "update-memo", "from": U, "to": GW, "amount": "2.5", "meta": {REASON: MEMO_ADDRESS}, "kind": "offer", "result": cc.TRANSFER_PENDING,
+                               "instruction": self.INSTRUCTION, "balance": {"before": {"party": U, "unlocked": "7.5", "locked": "9.0"}, "after": {"party": U, "unlocked": "0.5", "locked": "11.5"}}})
+
+    def test_a_label_is_a_second_meta_key(self):
+        got = self.run_cc("send-memo", "1", MEMO_ADDRESS, "--label", "t1")
+        self.assertEqual(got["meta"], {REASON: MEMO_ADDRESS, "romeprotocol.com/ostia-label": "t1"})
+        self.assertEqual(self.commands()[0]["commands"]["commands"][0]["ExerciseCommand"]["choiceArgument"]["transfer"]["meta"], {"values": got["meta"]})
+        self.assertEqual(got["amount"], "1.0")
+
+    def test_the_memo_keeps_the_address_as_given(self):
+        mixed = "0x" + "aB" * 20
+        self.assertEqual(self.run_cc("send-memo", "1", mixed)["meta"], {REASON: mixed})
+
+    def test_a_completed_transfer_has_no_instruction(self):
+        self.mode = "completed"
+        got = self.run_cc("send-memo", "1", MEMO_ADDRESS)
+        self.assertEqual((got["kind"], got["result"], got["instruction"]), ("direct", twin.TRANSFER_COMPLETED, None))
+
+    def test_a_result_that_is_not_completed_or_pending_stops_the_command(self):
+        self.mode = "failed"
+        with mock.patch.object(FakeLedger, "transaction", staticmethod(lambda body: {"transaction": {"updateId": "u1", "events": []}})):
+            with self.assertRaisesRegex(canton.Fail, "did not complete"):
+                self.run_cc("send-memo", "1", MEMO_ADDRESS)
+
+    def test_nothing_is_sent_for_a_bad_amount_address_label_or_too_little_coin(self):
+        for argv, error in ((("1", "0x1234"), SystemExit), (("0", MEMO_ADDRESS), SystemExit), (("1.00000000001", MEMO_ADDRESS), SystemExit), (("1", MEMO_ADDRESS, "--label", ""), SystemExit),
+                            (("8", MEMO_ADDRESS), canton.Fail)):
+            with self.subTest(argv=argv), self.assertRaises(error):
+                self.run_cc("send-memo", *argv)
+            self.assertEqual(self.commands(), [])
+
+    def test_a_bad_command_line_prints_the_usage_and_no_token_is_printed(self):
+        for argv in (("send-memo", "1"), ("send-memo", "1", MEMO_ADDRESS, "--label"), ("send-memo", "1", MEMO_ADDRESS, "--other", "x")):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                self.run_cc(*argv)
+        result, out, err = self.run_printed("send-memo", "1", MEMO_ADDRESS)
+        self.assertNoSecrets(out, err, json.dumps(result))
+
+
+def instruction_view(sender=U, receiver=GW, meta=None, **more):
+    transfer = {"sender": sender, "receiver": receiver, "amount": "0.1", "instrumentId": {"admin": DSO, "id": "Amulet"}, "requestedAt": "2026-11-23T10:00:00Z",
+                "executeBefore": "2026-11-23T11:00:00Z", "inputHoldingCids": [], "meta": {"values": meta or {}}}
+    return {"originalInstructionCid": None, "transfer": transfer, "status": {"tag": "TransferPendingReceiverAcceptance", "value": {}}, "meta": {"values": {}}, **more}
+
+
+class InstructionsTests(CcCase):
+    def test_the_instructions_to_the_gateway_are_read_as_the_gateway_with_the_memo(self):
+        FakeLedger.instruction_views = {GW: [("00i1", instruction_view(meta={REASON: MEMO_ADDRESS, "other": "x"})), ("00i2", instruction_view(sender=V)), ("00i3", instruction_view(sender=GW, receiver=U))]}
+        got = self.run_cc("instructions")
+        self.assertEqual(got["gateway"], GW)
+        [first, second] = got["instructions"]
+        self.assertEqual({k: first[k] for k in ("instruction", "sender", "amount", "instrumentId", "executeBefore", "meta", "memo")},
+                         {"instruction": "00i1", "sender": U, "amount": "0.1", "instrumentId": {"admin": DSO, "id": "Amulet"}, "executeBefore": "2026-11-23T11:00:00Z",
+                          "meta": {REASON: MEMO_ADDRESS, "other": "x"}, "memo": MEMO_ADDRESS})
+        self.assertEqual(first["status"], {"tag": "TransferPendingReceiverAcceptance", "value": {}})
+        self.assertEqual((second["instruction"], second["sender"], second["memo"], second["meta"]), ("00i2", V, None, {}))   # no memo: null
+        asked = [(a, b["eventFormat"]["filtersByParty"]) for p, a, b in FakeLedger.requests if p == "/v2/state/active-contracts"]
+        self.assertEqual([(a, list(f)) for a, f in asked], [("Bearer " + TOKENS["OPERATOR"], [GW])])
+
+    def test_none_pending_gives_an_empty_list(self):
+        self.assertEqual(self.run_cc("instructions"), {"gateway": GW, "instructions": []})
+
+    def test_a_view_that_is_not_a_transfer_stops_the_command_and_a_command_line_with_arguments_prints_the_usage(self):
+        FakeLedger.instruction_views = {GW: [("00i1", {"status": {}})]}
+        with self.assertRaisesRegex(canton.Fail, "no transfer"):
+            self.run_cc("instructions")
+        with self.assertRaises(SystemExit):
+            self.run_cc("instructions", "x")
+
+    def test_no_token_is_printed(self):
+        FakeLedger.instruction_views = {GW: [("00i1", instruction_view())]}
+        result, out, err = self.run_printed("instructions")
+        self.assertNoSecrets(out, err, json.dumps(result))
+
+
+class TakeBackTests(MemoCase):
+    def test_u_withdraws_the_instruction_with_the_scan_proxys_withdraw_context(self):
+        FakeLedger.holdings[U].append(held("00lock", "0.1", locked=True))
+        got = self.run_cc("take-back", self.INSTRUCTION)
+        [asked] = [(m, b) for m, p, _, b in FakeScan.seen if p == WITHDRAW_PATH % self.INSTRUCTION]
+        self.assertEqual(asked[0], "POST")
+        [request] = self.commands()
+        command = request["commands"]["commands"][0]["ExerciseCommand"]
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (canton.TRANSFER_INSTRUCTION, self.INSTRUCTION, "TransferInstruction_Withdraw"))
+        self.assertEqual(command["choiceArgument"], {"extraArgs": {"context": self.context["choiceContextData"], "meta": {"values": {}}}})
+        self.assertEqual((request["commands"]["actAs"], request["commands"]["userId"], request["commands"]["disclosedContracts"]), ([U], "demo", DISCLOSED[:2]))
+        self.assertEqual([a for p, a, b in FakeLedger.requests if p == "/v2/commands/submit-and-wait-for-transaction"], ["Bearer " + TOKENS["DEMO"]])
+        self.assertEqual(got, {"updateId": "update-memo", "instruction": self.INSTRUCTION, "result": "TransferInstructionResult_Failed",
+                               "balance": {"party": U, "unlocked": "10.0", "locked": "9.0"}})
+
+    def test_a_cid_that_is_not_one_or_a_malformed_context_sends_nothing(self):
+        with self.assertRaises(canton.Fail):
+            self.run_cc("take-back", "not-a-contract")
+        self.context = {"choiceContextData": {"values": {}}}
+        with self.assertRaises(canton.Fail):
+            self.run_cc("take-back", self.INSTRUCTION)
+        self.assertEqual(self.commands(), [])
+
+    def test_a_bad_command_line_prints_the_usage_and_no_token_is_printed(self):
+        with self.assertRaises(SystemExit):
+            self.run_cc("take-back")
+        result, out, err = self.run_printed("take-back", self.INSTRUCTION)
         self.assertNoSecrets(out, err, json.dumps(result))
 
 
