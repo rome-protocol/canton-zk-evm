@@ -21,16 +21,22 @@ export function compareCustody(decimals: number | null, c: Pick<Custody, "custod
   return custody > supply ? { state: "custody-higher", diff: (custody - supply).toString(), scale } : { state: "supply-higher", diff: (supply - custody).toString(), scale };
 }
 
+/** What of the custody is owed rather than backing supply: deposits accepted and not yet claimed, withdrawals burned and not yet paid (base units of the custody's decimals). */
+export function owedOf(c: Pick<Custody, "openReceipts" | "openPayouts">): bigint {
+  return BigInt(c.openReceipts) + BigInt(c.openPayouts);
+}
+
 function Verdict({ decimals, c }: { decimals: number | null; c: Custody }) {
   const { state, diff, scale } = compareCustody(decimals, c);
   const gap = <span className="num" title={exact(diff, scale)}>{units(diff, scale)}</span>;
+  const owed = owedOf(c) !== 0n;
   return (
     <>
       <dt className="kv-k">Check</dt>
       <dd className="kv-v" data-state={state}>
-        {state === "equal" ? `Equal at block ${count(c.supplyBlock)}: Canton holds exactly the wrapped supply.`
-          : state === "custody-higher" ? <>At block {count(c.supplyBlock)}, Canton holds {gap} more than the wrapped supply.</>
-          : state === "supply-higher" ? <>At block {count(c.supplyBlock)}, the wrapped supply is {gap} more than Canton holds.</>
+        {state === "equal" ? `Equal at block ${count(c.supplyBlock)}: Canton holds ${owed ? "the wrapped supply plus what is owed" : "exactly the wrapped supply"}.`
+          : state === "custody-higher" ? <>At block {count(c.supplyBlock)}, Canton holds {gap} more than the wrapped supply{owed ? " plus what is owed" : ""}.</>
+          : state === "supply-higher" ? <>At block {count(c.supplyBlock)}, the wrapped supply is {gap} more than Canton holds{owed ? " less what is owed" : ""}.</>
           : "The wrapped supply or its decimals are not known, so there is nothing to compare."}
       </dd>
     </>
@@ -55,6 +61,7 @@ export function CantonCustody({ t, canton: c }: { t: TokenDetail; canton: Custod
             : t.decimals === null ? <span className="num">{count(c.supply)}</span>
             : <><span className="num" title={exact(c.supply, t.decimals)}>{units(c.supply, t.decimals)}</span>{t.symbol ? ` ${t.symbol}` : ""}</>}
         </Item>
+        {owedOf(c) !== 0n ? <Item label="Owed"><span className="num" title={exact(owedOf(c).toString(), c.custodyDecimals)}>{units(owedOf(c).toString(), c.custodyDecimals)}</span> {instrumentName(c.instrumentId)} <span className="muted small">deposits not yet claimed, withdrawals not yet paid</span></Item> : null}
         <Verdict decimals={t.decimals} c={c} />
         <Item label="Instrument"><span className="mono">{c.instrumentId}</span> <span className="muted small">registered by</span> <span className="mono">{c.instrumentAdmin}</span></Item>
         <Item label="Read">Both at block {count(c.supplyBlock)} · Canton offset {count(c.ledgerOffset)} · {ago(c.readAt, now)}</Item>

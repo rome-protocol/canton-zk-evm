@@ -127,7 +127,7 @@ export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger
              update gateway_payouts set paid_at = $2 where contract_hash = $1`, [contractHash(ch.contractId), ch.at]);
         } else if (ch.kind === "receipt" || ch.kind === "payout") {
           const erc20 = evm.get(ch.gatewayToken);
-          if (!erc20) throw new Error("the gateway has a receipt or a payout of a token that is not registered");
+          if (!erc20) continue; // a token no longer registered has no custody row, so no total depends on it
           if (ch.kind === "receipt") await c.query("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at) values ($1, $2, $3, $4, $5, $6) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.depositId), bytea(ch.recipient), ch.amount.toString(), ch.createdAt]);
           else await c.query("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at) values ($1, $2, $3, $4, $5) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.payoutId), ch.amount.toString(), ch.createdAt]);
         } else if (ch.kind === "offer") await c.query("insert into gateway_offers (contract_hash, payout_id, execute_before) values ($1, $2, $3) on conflict do nothing", [contractHash(ch.contractId), bytea(ch.payoutId), ch.executeBefore]);

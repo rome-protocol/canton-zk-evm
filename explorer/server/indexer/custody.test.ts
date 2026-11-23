@@ -346,12 +346,15 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       });
     });
 
-    it("fails the read, and writes nothing of the walk, for a receipt of a token that is not registered", async () => {
+    it("skips a receipt and a payout of a token that is not registered, and reads on", async () => {
       await inDb(async (pool) => {
         const { chain } = await indexed(pool, 1, { [TKB]: 1n });
         const stray: HoldingChange = { kind: "receipt", contractId: "r9", gatewayToken: "nope", depositId: DEPOSIT, recipient: RECIPIENT, amount: UNITS, createdAt: AT };
-        await expect(custodyOnce(pool, ledgerOf([[10, [stray]]]), chain.reads, 500)).rejects.toThrow(/not registered/);
+        const strayPayout: HoldingChange = { kind: "payout", contractId: "p9", gatewayToken: "nope", payoutId: PAYOUT, amount: UNITS, createdAt: AT };
+        await custodyOnce(pool, ledgerOf([[10, [stray, strayPayout]]]), chain.reads, 500);
         expect(Number((await pool.query("select count(*) from gateway_receipts")).rows[0].count)).toBe(0);
+        expect(Number((await pool.query("select count(*) from gateway_payouts")).rows[0].count)).toBe(0);
+        expect((await pool.query("select erc20 from gateway_tokens")).rows).toHaveLength(1);
       });
     });
   });
