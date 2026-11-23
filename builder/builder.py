@@ -4,7 +4,7 @@
   builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>]
   builder.py run [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
                  [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--timeout-no-blame-limit 3]
-                 [--payout-offers] [--expiring-instrument <admin>]... [--custody-floor-days 30] [--custody-due-days 7] [--custody-alert-days 3] [--max-transfer-inputs 50]
+                 [--receipts] [--payout-offers] [--expiring-instrument <admin>]... [--custody-floor-days 30] [--custody-due-days 7] [--custody-alert-days 3] [--max-transfer-inputs 50]
   builder.py custody-clear dry-run|run
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
@@ -133,6 +133,7 @@ class Config:
     custody_due_days: float = 7       # --custody-due-days: a holding with less life left shows "due" in the status
     custody_alert_days: float = 3     # --custody-alert-days: ... and "alert" with less than this
     max_transfer_inputs: int = 50     # --max-transfer-inputs: the most inputs one transfer takes (the open round's maxNumInputs is the other limit)
+    receipts: bool = False            # --receipts: a deposit may be settled by a Receipt (a transfer to the gateway that it accepted: package 0.6.0), and the status file counts the open receipts and payouts. Off: the builder never reads a Receipt
     payout_offers: bool = False       # --payout-offers: a withdrawal is a PayoutLeg (Rome pays it after the block, as a transfer offer): it needs no acceptance, no holdings and no choice context. Off: the WithdrawalLeg of 0.5.0
 
     @classmethod
@@ -1121,20 +1122,6 @@ class Ledger:
         """The create arguments (with contract ids) of the active contracts of a template the builder can see."""
         flt = {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}
         return [{"contractId": e["contractId"], **e["createArgument"]} for e in self._created(flt)]
-
-    def active_if_uploaded(self, template: str) -> list:
-        """The active contracts of a template that a newer package version added. A participant that has not uploaded that version refuses the
-        query (the template is in no package it holds); then there are none. Any other refusal is raised."""
-        try:
-            return self.active(template)
-        except urllib.error.HTTPError as e:
-            try:
-                text = e.read().decode("utf-8", "replace")
-            finally:
-                e.close()
-            if any(code in text for code in NO_TEMPLATE_CODES):
-                return []
-            raise
 
     def interface_views(self, interface: str, offset: int | None = None) -> list:
         """(contract id, view) of the active contracts of a token standard interface that the builder can see (as of `offset`, the ledger end by
@@ -2224,13 +2211,28 @@ def custody_rows(cfg: Config, now: float) -> dict:
     return out
 
 
+def active_if_uploaded(ledger, template: str) -> list:
+    """The active contracts of a template that a newer package version added. A participant that has not uploaded that version refuses the
+    query (the template is in no package it holds); then there are none. Any other refusal is raised."""
+    try:
+        return ledger.active(template)
+    except urllib.error.HTTPError as e:
+        try:
+            text = e.read().decode("utf-8", "replace")
+        finally:
+            e.close()
+        if any(code in text for code in NO_TEMPLATE_CODES):
+            return []
+        raise
+
+
 def open_rows(ledger: Ledger, chain: dict, now: float) -> dict:
     """The status file's `open`: for each token registered with the chain's gateway, how many Receipts and Payouts are open and their amounts
     (decimal text), so that custody = wrapped supply + open receipts + open payouts can be read per token."""
     names = {t["contractId"]: instrument_name(t) for t in ledger.active(GATEWAY_TOKEN) if names_chain(t, chain, "gateway")}
     rows = {name: {"receipts": 0, "receiptAmount": 0, "payouts": 0, "payoutAmount": 0} for name in names.values()}
     for template, count, total in ((RECEIPT, "receipts", "receiptAmount"), (PAYOUT, "payouts", "payoutAmount")):
-        for c in ledger.active_if_uploaded(template):
+        for c in active_if_uploaded(ledger, template):
             row = rows.get(names.get(c["gatewayToken"])) if names_chain(c, chain, "gateway") else None
             units = base_units(c["amount"])
             if row is not None and units is not None:
@@ -2310,7 +2312,7 @@ class Canton:
     def terms(self): return self.listed("payment terms", lambda: self.ledger.active(TERMS))
 
     def active_if_uploaded(self, template: str) -> list:
-        return self.ledger.active_if_uploaded(template)
+        return active_if_uploaded(self.ledger, template)
 
     @property
     def trades(self): return self.listed("venue trades", lambda: self.active_if_uploaded(TRADE))
@@ -2322,7 +2324,7 @@ class Canton:
     def redeems(self): return self.listed("redeem requests", lambda: self.active_if_uploaded(REDEEM))
 
     @property
-    def receipts(self): return self.listed("receipts", lambda: self.active_if_uploaded(RECEIPT))
+    def receipts(self): return self.listed("receipts", lambda: self.active_if_uploaded(RECEIPT)) if self.ledger.cfg.receipts else []
 
     @property
     def rules(self) -> dict:
@@ -4241,6 +4243,7 @@ class Producer:
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": max_in_flight,
                          "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "timeout_no_blame_limit": no_blame_limit, "test": test, "traffic_read": bool(cfg.traffic_url),
                          **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {}),
+                         **({"receipts": True} if cfg.receipts else {}),
                          **({"payout_offers": True} if cfg.payout_offers else {}),
                          **({"expiring_instruments": list(cfg.expiring), "custody_floor_days": cfg.custody_floor_days, "custody_due_days": cfg.custody_due_days,
                              "custody_alert_days": cfg.custody_alert_days, "max_transfer_inputs": cfg.max_transfer_inputs} if cfg.expiring else {}),
@@ -4326,6 +4329,8 @@ class Producer:
 
     def open_step(self) -> None:
         """The status file's `open` is read again when it is due (every CUSTODY_ROWS_SECONDS, and after a block with legs). Nothing here fails the step."""
+        if not (self.cfg.receipts or self.cfg.payout_offers):
+            return
         now = self.clock()
         if self.open_read is not None and not self.open_dirty and now - self.open_read < CUSTODY_ROWS_SECONDS:
             return
@@ -4835,7 +4840,7 @@ class Producer:
                 "lostTransactions": self.lost,
                 "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total),
                 **({"custody": self.custody_status()} if self.cfg.expiring else {}),
-                "open": self.open,
+                **({"open": self.open} if self.cfg.receipts or self.cfg.payout_offers else {}),
                 **({"provers": pool_status} if (pool_status := self.cfg.pool.status() if self.cfg.pool else None) else {})}
 
     def write_status(self, state: str = "running", final: bool = False) -> None:
@@ -5579,6 +5584,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN",
                     help="an instrument whose holdings run out (for Canton Coin its admin, the DSO party; repeatable) needs a --registry and --registry-token-file of its own, which the builder asks for the open rounds. A deposit of it must have "
                          "--custody-floor-days of holding life, a withdrawal leaves zero or at least that in the bridge and takes its inputs nearest expiry first, and every withdrawal's effect on custody is checked. Default: none")
+    ap.add_argument("--receipts", action="store_true", default=os.environ.get("CZE_RECEIPTS", "") == "1",
+                    help="a deposit may be settled by a Receipt, a transfer to the gateway that it accepted (also CZE_RECEIPTS=1), and the status file counts the open receipts and payouts. Needs package 0.6.0, pinned with --package-id. Default: off")
     ap.add_argument("--payout-offers", action="store_true", default=os.environ.get("CZE_PAYOUT_OFFERS", "") == "1",
                     help="a withdrawal is a payout leg (also CZE_PAYOUT_OFFERS=1): the gateway records a Payout that Rome pays after the block as a token standard transfer offer, so the receiver needs no standing acceptance "
                          "and no holdings or choice context are named. Needs package 0.6.0, pinned with --package-id. Default: off, a withdrawal is the 0.5.0 leg")
@@ -5768,7 +5775,7 @@ def main() -> int:
         if args.package_id is not None:
             cfg.package_id = check_package_id(args.package_id)
         cfg.unlabelled_deposits = args.unlabelled_deposits
-        cfg.payout_offers = args.payout_offers
+        cfg.receipts, cfg.payout_offers = args.receipts, args.payout_offers
         if not PROOF_MARGIN.total_seconds() <= args.settle_margin_seconds < 86400:
             raise BuilderError(f"--settle-margin-seconds is from {PROOF_MARGIN.total_seconds():g} (the check before an Advance is sent drops a proof that close to a deposit's time) to less than a day")
         cfg.settle_margin_seconds = args.settle_margin_seconds

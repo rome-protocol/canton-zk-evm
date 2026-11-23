@@ -163,7 +163,7 @@ class PagedReads(tb.LegCase):
             with self.assertRaises(b.ListUnreadable):
                 b.payment_leg(pay, canton, None)
         with mock.patch.object(b, "names_chain", lambda *a: True), mock.patch.object(b, "request_leg", side_effect=unreadable):
-            canton = types.SimpleNamespace(chain={}, claims=[], trades=[], requests=[{"depositId": DEP.id, "recipient": DEP.account}])
+            canton = types.SimpleNamespace(chain={}, claims=[], trades=[], receipts=[], requests=[{"depositId": DEP.id, "recipient": DEP.account}])
             with self.assertRaises(b.ListUnreadable):   # not the plain NoCantonSide that a failed request gives
                 b.deposit_leg(dep, canton, None)
 

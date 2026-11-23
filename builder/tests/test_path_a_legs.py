@@ -23,8 +23,9 @@ PAY_VALUE = {"id": tb.WD_ID, "gatewayToken": "tok-1", "from": PAYEE, "amount": "
 
 
 class Receipts(tb.LegCase):
-    def setup_receipt(self, leg=RECEIVE, receipts=(RECEIPT,), requests=(), registered=(tb.TOKEN,), **k):
+    def setup_receipt(self, leg=RECEIVE, receipts=(RECEIPT,), requests=(), registered=(tb.TOKEN,), on=True, **k):
         s = self.setup({tb.ALICE: []}, **k)
+        s.cfg.receipts = on
         s.ledger.receipts, s.ledger.requests = list(receipts), list(requests)
         s.ledger.tokens.extend(registered)
         t = self.leg_tx(s, leg)
@@ -38,6 +39,11 @@ class Receipts(tb.LegCase):
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
         self.assertNotIn("deadline", str(s.advance_argument().get("legs")))
         self.assertTrue(all("Allocation" not in q for q in map(str, s.ledger.queries)))
+
+    def test_with_the_switch_off_a_receipt_is_never_read_and_the_deposit_is_left_out(self):
+        s, t = self.setup_receipt(on=False)
+        self.assert_left_out(s, t, "no deposit request or receipt")
+        self.assertFalse(any("Receipt" in str(q) for q in s.ledger.queries))
 
     def test_the_receipt_is_used_before_a_request_of_the_same_id(self):
         s, t = self.setup_receipt(requests=[("req-9", {**tb.REQUEST[1], "depositId": RID, "label": LABEL, "depositor": SENDER})])
@@ -81,7 +87,8 @@ class Receipts(tb.LegCase):
         return b.LegEvent(leg.kind, leg.id, leg.token, leg.account, leg.amount, leg.party, tx)
 
     def test_the_leg_check_refuses_with_the_receipt_words_and_accepts_a_good_one(self):
-        s = self.setup({}, )
+        s = self.setup({})
+        s.cfg.receipts = True
         s.reth.trace_legs[lc.TO] = [RECEIVE]
         s.ledger.tokens.extend([tb.TOKEN])
         result = b.leg_check(s.cfg, lc.CALL)
@@ -186,6 +193,7 @@ class OpenRows(tb.Case):
     def test_the_producer_status_carries_the_rows_and_reads_them_again_after_a_block_with_legs(self):
         s = self.setup({})
         s.ledger.tokens.extend([tb.TOKEN])
+        s.cfg.receipts = True
         now = [1_700_000_000.0]
         p = b.Producer(s.cfg, threading.Event(), status_file=str(Path(s.dir) / "status.json"), clock=lambda: now[0])
         self.assertIsNone(p.status()["open"])
@@ -202,9 +210,17 @@ class OpenRows(tb.Case):
         p.open_step()
         self.assertEqual(p.status()["open"]["tokens"]["adm/TKB"]["receipts"], 0)
 
+    def test_with_both_switches_off_the_status_has_no_rows_and_nothing_is_read(self):
+        s = self.setup({})
+        p = b.Producer(s.cfg, threading.Event(), status_file=str(Path(s.dir) / "status.json"))
+        p.open_step()
+        self.assertNotIn("open", p.status())
+        self.assertEqual(s.ledger.queries, [])
+
     def test_a_read_that_fails_keeps_the_old_rows_and_is_tried_again_in_a_minute(self):
         s = self.setup({})
         s.ledger.tokens.extend([tb.TOKEN])
+        s.cfg.payout_offers = True   # either switch reads the rows
         now = [1_700_000_000.0]
         p = b.Producer(s.cfg, threading.Event(), status_file=str(Path(s.dir) / "status.json"), clock=lambda: now[0])
         p.open_step()
@@ -221,8 +237,9 @@ class OpenRows(tb.Case):
 class Settings(unittest.TestCase):
     def test_the_switch_is_off_by_default_and_the_flag_turns_it_on(self):
         self.assertIs(b.Config.__dataclass_fields__["payout_offers"].default, False)
-        self.assertFalse(b.parser().parse_args(["run"]).payout_offers)
-        self.assertTrue(b.parser().parse_args(["run", "--payout-offers"]).payout_offers)
+        self.assertIs(b.Config.__dataclass_fields__["receipts"].default, False)
+        off, on = b.parser().parse_args(["run"]), b.parser().parse_args(["run", "--receipts", "--payout-offers"])
+        self.assertEqual((off.receipts, off.payout_offers, on.receipts, on.payout_offers), (False, False, True, True))
 
 
 if __name__ == "__main__":
