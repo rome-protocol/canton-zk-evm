@@ -825,7 +825,7 @@ class Holes(Rig):
 
     def test_the_kind_name_is_the_one_the_demo_checks_a_self_transfer_against(self):
         self.assertEqual(setup.SELF_KIND, "self")
-        self.assertIn('(kind == "self") != (transfer["sender"] == transfer["receiver"])', (ROOT / "demo" / "cc.py").read_text())
+        self.assertIn('(kind == "self") != (transfer["sender"] == transfer["receiver"])', (ROOT / "demo" / "asset.py").read_text())
 
     def test_a_stop_the_builder_writes_during_the_pass_ends_it_before_the_next_transfer(self):
         node = self.start(*[hold(f"h{i}", "2.0") for i in range(4)])

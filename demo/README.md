@@ -120,6 +120,7 @@ These are what the demo scripts call. Both programs print one JSON object per co
 | `canton.py settled <block> [u\|v\|gateway]` | The Canton update that made the block's `BlockRecord` and the one that made that party's newest TKB holding (V's if none is named). The runs check that they are the same update. |
 | `canton.py withdraw-allocation <label>` | U takes back its allocation with that label, as the token standard lets its sender do until the block that settles it commits. Run 4 uses it through `prove-then-withdraw.sh`. |
 | `canton.py return-tkb <label> <amount>` | V sends U that much TKB by the token standard's plain transfer (the factory is the token's rules; U accepts the offer if the token makes one). The live cycle uses it to give U the 10 TKB that a payment moved to V. |
+| `canton.py send-to-gateway <label> <amount>` | U sends the gateway that much TKB by the token standard's plain transfer (the factory is the token's rules) and waits until the gateway sees the offer. It does not accept: the gateway does, with the intake of package 0.6.0 (`Intake_Accept`). Prints the offer. |
 
 `canton.py setup` also writes the list of disclosed contracts (`state/demo/disclosed.json`) that holds the token's rules. The builder takes it with `--disclosed`. The rules are the registry's transfer factory, a withdrawal goes through it, and the participant that submits the block does not host the registry.
 

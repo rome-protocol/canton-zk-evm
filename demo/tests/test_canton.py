@@ -280,6 +280,29 @@ class ReturnTkbTests(LedgerTestCase):
         self.assertIn("NOT_ALLOWED", str(why.exception))
 
 
+class SendToGatewayTests(LedgerTestCase):
+    def setUp(self):
+        super().setUp()
+        FakeLedger.transfer_completes = False
+        self.addCleanup(setattr, FakeLedger, "transfer_completes", False)
+        FakeLedger.contracts[("u::1", canton.TOKEN)] = [holding("u::1", "6.0", "hu-1"), holding("u::1", "4.0", "hu-2")]
+
+    def test_u_offers_the_tkb_to_the_gateway_with_all_its_holdings_and_nothing_is_accepted(self):
+        out = canton.main(["send-to-gateway", "in-1", "10"])
+        [(node, body)] = self.exercised("TransferFactory_Transfer")
+        self.assertEqual((node, body["actAs"], body["userId"]), ("users", ["u::1"], "demo"))
+        transfer = body["commands"][0]["ExerciseCommand"]["choiceArgument"]["transfer"]
+        self.assertEqual({k: transfer[k] for k in ("sender", "receiver", "amount", "inputHoldingCids")},
+                         {"sender": "u::1", "receiver": "gw::1", "amount": "10.0", "inputHoldingCids": ["hu-1", "hu-2"]})
+        self.assertEqual(self.exercised("TransferInstruction_Accept"), [])
+        self.assertEqual((out["amount"], out["from"], out["to"], out["offer"] is not None), ("10.0", "u", "gateway", True))
+
+    def test_u_with_too_little_is_a_failure_and_nothing_is_sent(self):
+        with self.assertRaisesRegex(canton.Fail, "less than 11"):
+            canton.main(["send-to-gateway", "in-1", "11"])
+        self.assertEqual(FakeLedger.submitted, [])
+
+
 class WithdrawAllocationTests(LedgerTestCase):
     def setUp(self):
         super().setUp()

@@ -15,7 +15,7 @@ b=$here/build/$form
 rm -rf "$b"; mkdir -p "$b" "$here/dist"
 cp -r "$here/src" "$b/src"
 cp "$here/sidecar/$form.daml" "$b/src/Zk/Sidecar.daml"
-# The chain package depends on the twin app's DAR (from 0.5.0). While the chain package is 0.5.0, that is ostia-twin 0.1.0, as the
+# The chain package depends on the twin app's DAR (from 0.5.0). While the chain package is 0.5.0 or 0.6.0, that is ostia-twin 0.1.0, as the
 # live 0.5.0 was built (both package ids are in PINS), not the current twin source: it is built here from the source commit that
 # PINS names (TWIN_V0_1_0_COMMIT), with the same toolchain as the chain package. A new chain version moves this pin with it.
 commit=$(sed -n 's/^TWIN_V0_1_0_COMMIT=//p' "$here/../PINS")

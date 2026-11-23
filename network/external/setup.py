@@ -127,6 +127,13 @@
     at the token's address and its decimals() must be --twin-decimals, or the step is refused. The JSON line has the decimals read (tokenDecimals).
     With --dry-run nothing is submitted.
 
+  setup.py --ledger-url <URL> --intake-step propose|accept [--dry-run]
+
+    The intake of transfers to the gateway (Daml 0.6.0, `Intake`): the gateway's accept of a pending transfer, and the `Receipt` it makes, for any registered token. One per chain.
+      propose  the operator's token (which acts for the operator and the gateway party): creates the IntakeProposal. Nothing is done if the proposal or the intake is there already.
+      accept   the confirmer's token, which exercises AcceptIntake on the proposal and so creates the intake.
+    With --dry-run nothing is submitted.
+
   setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
 
     The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
@@ -518,6 +525,29 @@ def withdraw_step(url: str, kind: str, dry_run: bool) -> dict:
         for p in found:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + template, "contractId": p["contractId"], "choice": "Withdraw" + CHOICE_SUFFIX[kind], "choiceArgument": {}}}, "withdraw")
     return {"step": "withdraw", "kind": kind, "chainId": chain["chainId"], "pending": len(found), "withdrawn": 0 if dry_run else len(found), "dryRun": dry_run}
+
+
+def intake_step(url: str, step: str, dry_run: bool) -> dict:
+    """IntakeProposal by the operator and the gateway (the operator's user acts for both), AcceptIntake by the confirmer (Daml 0.6.0)."""
+    ledger, chain = step_chain(url, step, with_gateway=True)
+    ours = lambda c: all(c.get(k) == chain[k] for k in ("chainId", "operator", "confirmer", "gateway"))
+    made = [c for c in ledger.active("Intake") if ours(c)]
+    proposals = [c for c in ledger.active("IntakeProposal") if ours(c)]
+    result = {"step": step, "chainId": chain["chainId"], "dryRun": dry_run}
+    if step == "propose":
+        if made or proposals:
+            return {**result, "submitted": False, "alreadyProposed": True}
+        if not dry_run:
+            fields = {k: chain[k] for k in ("operator", "confirmer", "gateway", "builder", "chainId")}
+            submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "IntakeProposal", "createArguments": fields}}, "propose")
+        return {**result, "submitted": not dry_run, "alreadyProposed": False}
+    if not proposals:
+        if made:
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        raise SystemExit("no intake proposal is on this participant")
+    if not dry_run:
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "IntakeProposal", "contractId": proposals[0]["contractId"], "choice": "AcceptIntake", "choiceArgument": {}}}, "accept")
+    return {**result, "submitted": not dry_run}
 
 
 MAX_CHANGE_DELAY = 30 * 24 * 3600   # the Daml's maxChangeDelay (30 days), in seconds
@@ -1445,7 +1475,7 @@ def main(argv: list) -> int:
     ap.add_argument("--twin-dar", action="append", default=[], metavar="DAR", help="a twin app DAR (apps/twin/dist/ostia-twin-<version>.dar) to put on the participant before the chain DAR; give it once for each version (0.1.0 and 0.2.0)")
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step --contract-step or --twin-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step --contract-step, --twin-step or --intake-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
@@ -1465,6 +1495,7 @@ def main(argv: list) -> int:
     ap.add_argument("--contract-address", help="with --contract-step: the contract's address (40 lowercase hex digits without 0x)")
     ap.add_argument("--contract-kind", choices=("gateway", "vault"), help="with --contract-step propose, accept or add: what the contract is; its code must be the reviewed build of that kind")
     ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step or --twin-step propose, accept or add: reth's HTTP RPC, which the code at the address, or the token's decimals, is read from")
+    ap.add_argument("--intake-step", choices=("propose", "accept"), help="the intake of transfers to the gateway (Daml 0.6.0): the operator and the gateway propose, the confirmer accepts (see the top of this file)")
     ap.add_argument("--twin-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the pinned twins: the operator proposes a twin of an ERC-20, the confirmer accepts or rejects it, the operator withdraws it, or all three add it at once (see the top of this file)")
     ap.add_argument("--twin-token", help="with --twin-step: the ERC-20's address (40 lowercase hex digits without 0x)")
     ap.add_argument("--twin-decimals", type=int, help="with --twin-step propose, accept or add: the ERC-20's decimals (0 to 36), which must be the rules' own")
@@ -1514,6 +1545,16 @@ def main(argv: list) -> int:
         return 0 if result["ok"] else 1
     if any(refresh_values):
         ap.error("--instrument, --registry, --registry-token-file, --custody-floor-days and --max-transfer-inputs go with --custody-refresh-step")
+    if own.intake_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step or own.contract_step or own.twin_step
+                or own.withdraw_proposal or own.pause_step or own.leg_limits_step):
+            ap.error("--intake-step does only the intake's step: no other step, no --demo and no chain arguments")
+        check_settings(own.ledger_url, ("confirmer",) if own.intake_step == "accept" else ("operator",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(intake_step(own.ledger_url, own.intake_step, own.dry_run)))
+        return 0
     if own.twin_step:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
@@ -1638,7 +1679,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step, --twin-step or --withdraw-proposal")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step, --twin-step, --intake-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     twin_dars = [Path(p) for p in own.twin_dar]

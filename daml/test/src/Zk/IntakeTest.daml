@@ -1,0 +1,227 @@
+-- Daml Script tests of the transfers to the gateway (package 0.6.0): `Intake` makes a `Receipt` from a transfer that the gateway accepts,
+-- `ReceiptLeg` settles it, `PayoutLeg` makes a `Payout`, and a receipt can be returned. The registry is the Splice test token, driven through its
+-- own transfer offer; a small stub registry of the tests' own gives the transfers that the test token never makes (another status, an accept that
+-- stays pending). As in ChainTest, the stub sidecar takes the block's recorded lines as the proof.
+module Zk.IntakeTest where
+
+import DA.Assert ((===))
+import qualified DA.Map as Map
+import qualified DA.Text as T
+import DA.Time (addRelTime, days)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import qualified Splice.Api.Token.HoldingV1 as H
+import qualified Splice.Api.Token.TransferInstructionV1 as TI
+import Splice.Testing.Tokens.TestTokenV1 (TokenTransferOffer(..))
+import Zk.Chain
+import Zk.ChainTest
+
+-- A transfer of the stub registry: whatever status the test gives it, and an accept that completes or does not.
+template StubOffer with
+    admin : Party
+    transfer : TI.Transfer
+    status : TI.TransferInstructionStatus
+    completes : Bool
+    watcher : Party
+  where
+    signatory admin
+    observer transfer.sender, transfer.receiver, watcher
+    interface instance TI.TransferInstruction for StubOffer where
+      view = TI.TransferInstructionView with originalInstructionCid = None; transfer = transfer; status = status; meta = emptyMetadata
+      transferInstruction_acceptImpl _self _arg =
+        if completes
+          then pure TI.TransferInstructionResult with
+            output = TI.TransferInstructionResult_Completed with receiverHoldingCids = []
+            senderChangeCids = []; meta = emptyMetadata
+          else do
+            again <- create StubOffer with admin; transfer; status; completes; watcher
+            pure TI.TransferInstructionResult with
+              output = TI.TransferInstructionResult_Pending with transferInstructionCid = toInterfaceContractId again
+              senderChangeCids = []; meta = emptyMetadata
+      transferInstruction_rejectImpl _self _arg = abort "not used by the tests"
+      transferInstruction_withdrawImpl _self _arg = abort "not used by the tests"
+      transferInstruction_updateImpl _self _arg = abort "not used by the tests"
+
+makeIntake : F -> Script (ContractId Intake)
+makeIntake f = do
+  p <- submit (actAs [f.operator, f.gateway]) $ createCmd IntakeProposal with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+  submit f.confirmer $ exerciseCmd p AcceptIntake
+
+transferOf : F -> Party -> Party -> Text -> Decimal -> Script TI.Transfer
+transferOf f sender receiver inst amount = do
+  now <- getTime
+  pure TI.Transfer with
+    sender; receiver; amount; instrumentId = H.InstrumentId with admin = f.registry; id = inst
+    requestedAt = now; executeBefore = addRelTime now (days 1); inputHoldingCids = []; meta = emptyMetadata
+
+-- `sender` offers `amount` of `inst` to `receiver`, through the test token.
+offerOf : F -> Party -> Party -> Text -> Decimal -> Script (ContractId TokenTransferOffer)
+offerOf f sender receiver inst amount = do
+  transfer <- transferOf f sender receiver inst amount
+  submit (actAs [sender, f.registry]) $ createCmd TokenTransferOffer with transfer
+
+stubOffer : F -> TI.Transfer -> TI.TransferInstructionStatus -> Bool -> Script (ContractId StubOffer)
+stubOffer f transfer status completes =
+  submit f.registry $ createCmd StubOffer with admin = f.registry; transfer; status; completes; watcher = f.gateway
+
+receiptLeg : ContractId Receipt -> Leg
+receiptLeg r = ReceiptLeg with receipt = r
+
+-- U's withdrawal of `a` as a payout.
+payoutLeg : F -> Text -> Decimal -> Leg
+payoutLeg f id a = PayoutLeg with id; gatewayToken = f.token; from = burnerAddr; amount = a; party = f.u
+
+asInstruction : ContractId a -> ContractId TI.TransferInstruction
+asInstruction = coerceContractId
+
+accept : ContractId Intake -> ContractId GatewayToken -> ContractId TI.TransferInstruction -> Text -> Commands (ContractId Receipt)
+accept intake gatewayToken instruction label = exerciseCmd intake Intake_Accept with
+  gatewayToken; instruction; label; recipient = recipientAddr; choiceContext = None
+
+-- The gateway's command, which the intake must refuse for a reason that contains `why`.
+gatewayRefused : Text -> F -> Commands a -> Script ()
+gatewayRefused why f cmds = do
+  r <- trySubmit (actAs f.gateway) cmds
+  case r of
+    Left e -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show e) (why `T.isInfixOf` show e)
+    Right _ -> abort ("the intake committed what it should have refused (" <> why <> ")")
+
+testAcceptMakesAReceiptThatMatchesTheTransfer : Script ()
+testAcceptMakesAReceiptThatMatchesTheTransfer = do
+  f <- fixture
+  intake <- makeIntake f
+  offer <- offerOf f f.d f.gateway "TKB" 10.0
+  r <- submit (actAs f.gateway) $ accept intake f.token (asInstruction offer) "m1"
+  Some rc <- queryContractId f.operator r
+  rc.sender === f.d
+  rc.depositId === depositIdOf f.d "m1"
+  (rc.label, rc.recipient, rc.amount, rc.gatewayToken) === ("m1", recipientAddr, 10.0, f.token)
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+  None <- queryContractId f.gateway offer
+  -- the sender is a plain field: it sees nothing of the receipt
+  None <- queryContractId f.d r
+  pure ()
+
+testTheIntakeRefusesAWrongInstrumentReceiverOrStatus : Script ()
+testTheIntakeRefusesAWrongInstrumentReceiverOrStatus = do
+  f <- fixture
+  intake <- makeIntake f
+  other <- offerOf f f.d f.gateway "OTHER" 10.0
+  gatewayRefused "another instrument than the token's" f $ accept intake f.token (asInstruction other) "m1"
+  toU <- transferOf f f.d f.u "TKB" 10.0 >>= \t -> stubOffer f t TI.TransferPendingReceiverAcceptance True
+  gatewayRefused "not to the gateway" f $ accept intake f.token (asInstruction toU) "m1"
+  toGateway <- transferOf f f.d f.gateway "TKB" 10.0
+  inWorkflow <- stubOffer f toGateway (TI.TransferPendingInternalWorkflow with pendingActions = Map.empty) True
+  gatewayRefused "not waiting for its receiver" f $ accept intake f.token (asInstruction inWorkflow) "m1"
+  query @Receipt f.operator >>= \rs -> length rs === 0
+
+testAnAcceptThatStaysPendingMakesNoReceipt : Script ()
+testAnAcceptThatStaysPendingMakesNoReceipt = do
+  f <- fixture
+  intake <- makeIntake f
+  transfer <- transferOf f f.d f.gateway "TKB" 10.0
+  offer <- stubOffer f transfer TI.TransferPendingReceiverAcceptance False
+  gatewayRefused "did not complete" f $ accept intake f.token (asInstruction offer) "m1"
+  Some _ <- queryContractId f.gateway offer
+  query @Receipt f.operator >>= \rs -> length rs === 0
+
+testOnlyTheGatewayRunsTheIntakeAndNoOneMakesAReceiptAlone : Script ()
+testOnlyTheGatewayRunsTheIntakeAndNoOneMakesAReceiptAlone = do
+  f <- fixture
+  intake <- makeIntake f
+  offer <- offerOf f f.d f.gateway "TKB" 10.0
+  submitMustFail (actAs f.operator) $ accept intake f.token (asInstruction offer) "m1"
+  let receipt = Receipt with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101; gatewayToken = f.token
+        sender = f.d; depositId = depositIdOf f.d "m1"; label = "m1"; recipient = recipientAddr; amount = 10.0
+  submitMustFail (actAs f.gateway) $ createCmd receipt
+  submitMustFail (actAs [f.operator, f.gateway]) $ createCmd receipt
+  submitMustFail (actAs [f.operator, f.gateway]) $ createCmd Intake with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+
+testABadRecipientIsRefused : Script ()
+testABadRecipientIsRefused = do
+  f <- fixture
+  intake <- makeIntake f
+  offer <- offerOf f f.d f.gateway "TKB" 10.0
+  gatewayRefused "precondition" f $ exerciseCmd intake Intake_Accept with
+    gatewayToken = f.token; instruction = asInstruction offer; label = "m1"; recipient = "0xABC"; choiceContext = None
+  Some _ <- queryContractId f.gateway offer
+  pure ()
+
+testTheIntakeRefusesATokenOfAnotherChain : Script ()
+testTheIntakeRefusesATokenOfAnotherChain = do
+  f <- fixture
+  intake <- makeIntake f
+  otherChain <- makeTokenOf "TKB" f.operator f.confirmer f.gateway f.builder 770102 f.reg tokenAddr
+  offer <- offerOf f f.d f.gateway "TKB" 10.0
+  gatewayRefused "another chain" f $ accept intake otherChain (asInstruction offer) "m2"
+  Some _ <- queryContractId f.gateway offer
+  query @Receipt f.operator >>= \rs -> length rs === 0
+
+-- Two registered instruments: the one's transfer is refused against the other's token, and both receipts settle in one block, with the
+-- `deposit` lines that a `DepositLeg` of the same deposits would write.
+testTwoInstrumentsSettleInOneBlock : Script ()
+testTwoInstrumentsSettleInOneBlock = do
+  f <- fixture
+  intake <- makeIntake f
+  tkc <- makeTokenOf "TKC" f.operator f.confirmer f.gateway f.builder 770101 f.reg tokenAddr
+  offerB <- offerOf f f.d f.gateway "TKB" 10.0
+  offerC <- offerOf f f.d f.gateway "TKC" 10.0
+  gatewayRefused "another instrument than the token's" f $ accept intake f.token (asInstruction offerC) "c"
+  gatewayRefused "another instrument than the token's" f $ accept intake tkc (asInstruction offerB) "b"
+  rB <- submit (actAs f.gateway) $ accept intake f.token (asInstruction offerB) "b"
+  rC <- submit (actAs f.gateway) $ accept intake tkc (asInstruction offerC) "c"
+  let idB = depositIdOf f.d "b"
+  let idC = depositIdOf f.d "c"
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01"
+    [depositLine idB, line "deposit" idC tokenAddr recipientAddr "10.0" ""] [receiptLeg rB, receiptLeg rC]
+  None <- queryContractId f.operator rB
+  None <- queryContractId f.operator rC
+  [(_, c)] <- query @ZkChain f.operator
+  c.headNumber === 1
+
+-- A receipt is claimed once: after it is settled, or after it is returned, a leg for it is refused.
+testAReturnedReceiptHasNoLegAndPaysTheSenderBack : Script ()
+testAReturnedReceiptHasNoLegAndPaysTheSenderBack = do
+  f <- fixture
+  intake <- makeIntake f
+  offer <- offerOf f f.d f.gateway "TKB" 10.0
+  r <- submit (actAs f.gateway) $ accept intake f.token (asInstruction offer) "m1"
+  submitMustFail (actAs f.gateway) $ exerciseCmd r Receipt_Return
+  p <- submit f.operator $ exerciseCmd r Receipt_Return
+  Some payout <- queryContractId f.gateway p
+  (payout.party, payout.amount, payout.payoutId, payout.gatewayToken) === (f.d, 10.0, depositIdOf f.d "m1", f.token)
+  None <- queryContractId f.operator r
+  submitMustFail (asBuilder f) $ advance f.chain "01" [depositLine (depositIdOf f.d "m1")] [receiptLeg r]
+  submit f.gateway $ exerciseCmd p Payout_Paid
+  None <- queryContractId f.gateway p
+  pure ()
+
+-- A withdrawal's line is the one of a `WithdrawalLeg` (`withdrawalLine`), no holding moves, and the payout is Rome's record.
+testAPayoutLegMakesAPayout : Script ()
+testAPayoutLegMakesAPayout = do
+  f <- fixture
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [payoutLeg f withdrawalId 4.0]
+  [(_, p)] <- query @Payout f.gateway
+  (p.payoutId, p.party, p.amount, p.gatewayToken) === (withdrawalId, f.u, 4.0, f.token)
+  holds f.u "TKB" >>= \xs -> xs === []
+  -- the party is a plain field
+  query @Payout f.u >>= \ps -> length ps === 0
+
+testAPayoutLegIsRefusedForABadIdOrAnotherPartyInTheLine : Script ()
+testAPayoutLegIsRefusedForABadIdOrAnotherPartyInTheLine = do
+  f <- fixture
+  refused "64 lowercase hex digits" f $ advance f.chain "01" [withdrawalLine "xyz" burnerAddr "4.0" f.u] [payoutLeg f "xyz" 4.0]
+  refused notRecorded f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.v] [payoutLeg f withdrawalId 4.0]
+  refused "of no amount" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "0.0" f.u] [payoutLeg f withdrawalId 0.0]
+
+testAPayoutCountsAgainstTheWithdrawalQuota : Script ()
+testAPayoutCountsAgainstTheWithdrawalQuota = do
+  f <- fixture
+  chain <- quota5 f
+  refused "over the withdrawal quota" f $ advance chain "01" [wLine wTkb 6.0 f.u] [payoutLeg f withdrawalId 6.0]
+  (_, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 5.0 f.u] [payoutLeg f withdrawalId 5.0]
+  pure ()

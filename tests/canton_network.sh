@@ -13,7 +13,9 @@
 #     `no` and the operator's says `ok`;
 #   - Canton makes the external calls (verify/verify2, then legs) on the operator's participant when the block is submitted and on
 #     both confirming participants when it validates it, and never needs a sidecar for the users participant.
-#   - the demo's Canton helpers (demo/canton.py) make an acceptance, DvP terms and a deposit request that the real package takes.
+#   - the demo's Canton helpers (demo/canton.py) make an acceptance, DvP terms and a deposit request that the real package takes;
+#   - the intake, a receipt and a payout of Daml 0.6.0 work between the participants: the gateway's Intake_Accept accepts a real token-standard
+#     transfer of the Splice test token from U and makes the receipt; a block with a receipt leg and one with a payout leg commit.
 # Needs Java 21 and network access to the registry in PINS. No GPU, no reth, no ZisK.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -138,4 +140,19 @@ for function in verify2 legs; do
   grep -q "^8086 $function validation\$" "$FAKE_LOG" || fail "no validation-mode $function call on the confirmer's sidecar"
 done
 ! grep -qvE ' (verify2?|legs) ' "$FAKE_LOG" || fail "a call other than verify, verify2 and legs"
+# The legs of transfers to the gateway (Daml 0.6.0): the intake is proposed and accepted, U sends the gateway 10 TKB by the token standard's plain transfer
+# and the gateway accepts it with Intake_Accept, which makes the receipt; a block with a receipt leg
+# settles it (block 2), and a block with a payout leg makes a payout, which the gateway marks paid (block 3). The stand-in sidecars answer for each block.
+H2=$(printf 'cc%.0s' $(seq 32)); H3=$(printf 'dd%.0s' $(seq 32))
+leg_block() {   # number, its hash, its parent: the sidecars answer for a block of one leg
+  answers
+  echo "ok $VK $RC $2 $3 $1 $SR 1700000000 30000000 0 0" > "$FAKE_ANSWER.verify"; cp "$FAKE_ANSWER.verify" "$FAKE_ANSWER.verify2"
+  echo "ok $SR $1 $GW 1" > "$FAKE_ANSWER.legs"
+}
+legs() { python3 "$ROOT/tests/canton_receipt_payout.py" "$CZE_STATE_DIR" "$token" "$@" >/dev/null; }
+offer=$(canton send-to-gateway intake-1 10 | jq -r .offer) || fail "U's transfer to the gateway did not reach it"
+legs prepare "$offer" || fail "the intake did not accept the transfer and make the receipt"
+leg_block 2 "$H2" "$H1"; legs receipt || fail "a block with a receipt leg did not settle the receipt"
+leg_block 3 "$H3" "$H2"; legs payout || fail "a block with a payout leg did not make a payout"
+
 echo "canton network test passed"
