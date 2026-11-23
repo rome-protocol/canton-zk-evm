@@ -378,7 +378,8 @@ export function createIndexer(o: IndexerOptions) {
       c4Row = { id: "C4", status: c4 ? "degraded" : "ok", value: { finalized, newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS },
         detail: c4 ? `reth's finalized block ${finalized} is ${behind} blocks behind the newest record, block ${newest}` : null };
     } catch (e) {
-      c4Row = { id: "C4", status: "degraded", value: { newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS }, detail: `reth's finalized block cannot be read: ${(e as Error).message}` };
+      log(`C4: reth's finalized block cannot be read: ${(e as Error).message}`);   // the reason stays in the log: the row says only that it cannot be read
+      c4Row = { id: "C4", status: "degraded", value: { newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS }, detail: "reth's finalized block cannot be read" };
     }
     // The lag in seconds is the longer of two: the record the walk is on, and the time since the ledger end was ahead of the cursor with no progress (a walk that cannot read yields no record).
     const waited = Math.max(pending ? t - pending.since : 0, waitingSince !== null ? t - waitingSince : 0);
@@ -392,7 +393,8 @@ export function createIndexer(o: IndexerOptions) {
     try {
       idsRow = await checkIds(o.pool);
     } catch (e) {
-      idsRow = { id: "db_ids", status: "degraded", detail: `the id columns cannot be read: ${(e as Error).message}` };
+      log(`db_ids: the id columns cannot be read: ${(e as Error).message}`);
+      idsRow = { id: "db_ids", status: "degraded", detail: "the id columns cannot be read" };
     }
     await setHealth(o.pool, [
       c4Row,

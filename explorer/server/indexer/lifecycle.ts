@@ -12,8 +12,32 @@ export const C8_EVERY_MS = 10_000, C8_WITHIN_S = 10, C9_TOLERANCE_MS = 100, ALIV
 
 export interface ProducerStatus {
   state?: string; updatedAt?: string; consecutiveFailures?: number; blocksUnknown?: number; waitingToBeResolved?: { number?: number; hash?: string } | null; journalError?: { time?: string; error?: string } | null;
-  lastError?: { time?: string; error?: string } | null;
+  lastError?: { time?: string; error?: string; kind?: string; number?: number } | null;
 }
+
+/**
+ * What the public health answer says about a failed block: one fixed sentence per kind of failure, as the producer's status file names the kind (`lastError.kind`), and the block's number.
+ * The text of the error itself (a tool's own output, a path, a host name) is never passed on: it stays in the producer's log on its machine.
+ */
+export const FAILURE_REASONS: Record<string, string> = {
+  input_tool: "the input tool failed",
+  proof: "the proof failed",
+  canton_refused: "Canton refused the block",
+  canton_not_taken: "Canton did not take the block",
+  canton_unresolved: "Canton's answer to the block is not known",
+  head: "Canton's head is not the block's parent",
+};
+const FAILED = "the block failed";
+
+/** The fixed reason of a failure, with the block's number when the status file has one. */
+export function failureReason(e: ProducerStatus["lastError"]): string {
+  const kind = typeof e?.kind === "string" ? e.kind : "";
+  const number = typeof e?.number === "number" && Number.isSafeInteger(e.number) && e.number >= 0 ? e.number : null;
+  return `${Object.hasOwn(FAILURE_REASONS, kind) ? FAILURE_REASONS[kind] : FAILED}${number === null ? "" : ` (block ${number})`}`;
+}
+
+/** The outcome of a proof as the journal says it: one lowercase word (`failed`, `wrong_block`, `timeout`). Anything else is just `failed`. */
+const outcomeWord = (o: unknown): string => (typeof o === "string" && /^[a-z_]{1,24}$/.test(o) ? o : "failed");
 
 export interface LifecycleChecksOptions { pool: Pool; statusFile: string | null; now?: () => number }
 
@@ -29,7 +53,8 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
       if (typeof j !== "object" || j === null || Array.isArray(j)) return { error: "the producer's status file is not a JSON object" };
       return { status: j as ProducerStatus };
     } catch (e) {
-      return { error: `the producer's status file cannot be read: ${(e as Error).message}` };
+      console.error(`producer status: cannot read the status file: ${(e as Error).message}`);
+      return { error: "the producer's status file cannot be read" };
     }
   }
 
@@ -53,17 +78,17 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
       const failures = typeof s.consecutiveFailures === "number" ? s.consecutiveFailures : 0;
       const why: string[] = [];
       if (s.state !== undefined && s.state !== "running") why.push(`the producer is ${s.state}`);
-      if (failures >= FAILURES_DEGRADED) why.push(`${failures} blocks in a row have failed${s.lastError?.error ? `: ${s.lastError.error.slice(0, 200)}` : ""}`);
+      if (failures >= FAILURES_DEGRADED) why.push(`${failures} blocks in a row have failed; the last: ${failureReason(s.lastError)}`);
       if (unknownSince !== null && now() - unknownSince > UNKNOWN_FOR_MS) why.push(`the outcome of block ${waiting?.number ?? "?"} has not been known for ${Math.round((now() - unknownSince) / 1000)} s`);
-      if (s.journalError) why.push(`the producer cannot write its journal: ${String(s.journalError.error ?? "").slice(0, 200)}`);
-      rows.push({ id: "producer_state", status: why.length ? "degraded" : "ok", value: { state: s.state ?? null, consecutiveFailures: failures, blocksUnknown: unknown, waitingToBeResolved: waiting },
+      if (s.journalError) why.push("the producer cannot write its journal");
+      rows.push({ id: "producer_state", status: why.length ? "degraded" : "ok", value: { state: s.state ?? null, consecutiveFailures: failures, blocksUnknown: unknown, waitingToBeResolved: waiting && { number: waiting.number ?? null, hash: waiting.hash ?? null } },
         threshold: { consecutiveFailures: FAILURES_DEGRADED, unknownMs: UNKNOWN_FOR_MS }, detail: why.join("; ") || null });
     }
     // Only the last six hours of attempts is read: cut_at is indexed, and a proof that ended longer ago is no news.
     const last = await o.pool.query("select number, proof_outcome, reason from block_attempts where proof_outcome is not null and cut_at > to_timestamp($1 / 1000.0) - interval '6 hours' order by proof_ended_at desc nulls last, cut_at desc limit 1", [now()]);
     const bad = last.rowCount ? last.rows[0].proof_outcome !== "ok" : false;
-    rows.push({ id: "prover", status: bad ? "degraded" : "ok", value: last.rowCount ? { number: Number(last.rows[0].number), outcome: last.rows[0].proof_outcome } : null,
-      detail: bad ? `the last proof (block ${last.rows[0].number}) ended ${last.rows[0].proof_outcome}` : null });
+    rows.push({ id: "prover", status: bad ? "degraded" : "ok", value: last.rowCount ? { number: Number(last.rows[0].number), outcome: outcomeWord(last.rows[0].proof_outcome) } : null,
+      detail: bad ? `the last proof (block ${Number(last.rows[0].number)}) ended ${outcomeWord(last.rows[0].proof_outcome)}` : null });
     return rows;
   }
 

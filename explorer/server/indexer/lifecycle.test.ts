@@ -220,9 +220,9 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
       await c.run(true, true);
       expect(await health(pool, "producer_alive")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/last written 60 s ago/) });
 
-      const failing = checks(pool, statusFile({ consecutiveFailures: 3, lastError: { error: "the prover is down" } }), () => now);
+      const failing = checks(pool, statusFile({ consecutiveFailures: 3, lastError: { kind: "proof", number: 7, error: "the prover is down" } }), () => now);
       await failing.run(true, true);
-      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/3 blocks in a row have failed: the prover is down/) });
+      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: "3 blocks in a row have failed; the last: the proof failed (block 7)" });
 
       // `blocksUnknown` counts since the loop started and never goes down: it is no news by itself. `waitingToBeResolved` is the block not settled.
       const waiting = { number: 3, hash: "0x" + "ab".repeat(32) };
@@ -255,9 +255,39 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
       expect((await health(pool, "producer_state")).status).toBe("ok");
 
       await checks(pool, statusFile({ journalError: { time: iso(NOW), error: "disk full" } }), () => now).run(true, true);
-      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/cannot write its journal: disk full/) });
+      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: "the producer cannot write its journal" });
       await checks(pool, statusFile({ state: "stopped" }), () => now).run(true, true);
       expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/the producer is stopped/) });
+    });
+  });
+
+  it("never puts the text of a failure, a path or a host in a row: a fixed reason per kind of failure, and the detail stays in the producer's log", async () => {
+    await inDb(async (pool) => {
+      await world(pool);
+      const dirty = "make-input.sh failed: error: failed to run custom build command for `aws-lc-sys` (/home/runner/.cargo/registry/src/aws-lc-sys/build.rs) on host builder-1.internal:22, see /Users/someone/work/log.txt";
+      const wanted: [string, string][] = [
+        ["input_tool", "the input tool failed"], ["proof", "the proof failed"], ["canton_refused", "Canton refused the block"], ["canton_not_taken", "Canton did not take the block"],
+        ["head", "Canton's head is not the block's parent"], ["something_new", "the block failed"],
+      ];
+      for (const [kind, text] of wanted) {
+        await checks(pool, statusFile({ consecutiveFailures: 3, lastError: { kind, number: 12, error: dirty, rewindError: dirty } })).run(true, true);
+        const row = await health(pool, "producer_state");
+        expect(row.detail).toBe(`3 blocks in a row have failed; the last: ${text} (block 12)`);
+        expect(JSON.stringify(row)).not.toMatch(/home|Users|aws-lc|builder-1|make-input/);
+      }
+      // A status file from a producer that does not name the kind, or names it with a text, or gives no number, says only that the block failed.
+      await checks(pool, statusFile({ consecutiveFailures: 3, lastError: { error: dirty } })).run(true, true);
+      expect((await health(pool, "producer_state")).detail).toBe("3 blocks in a row have failed; the last: the block failed");
+      await checks(pool, statusFile({ consecutiveFailures: 3, lastError: { kind: dirty, number: dirty, error: dirty } })).run(true, true);
+      expect((await health(pool, "producer_state")).detail).toBe("3 blocks in a row have failed; the last: the block failed");
+      // The journal's error and the block waiting to be resolved carry no text of the producer either.
+      await checks(pool, statusFile({ journalError: { time: iso(NOW), error: dirty }, waitingToBeResolved: { number: 3, hash: "0xab", why: dirty, commandId: dirty } })).run(true, true);
+      const row = await health(pool, "producer_state");
+      expect(JSON.stringify(row)).not.toMatch(/home|Users|aws-lc|builder-1|make-input/);
+      // A proof whose outcome is not one plain word is just `failed`.
+      await pool.query("update block_attempts set proof_outcome = $1, proof_ended_at = $2 where number = 1", [dirty, new Date(NOW - 1000)]);
+      await checks(pool, statusFile({})).run(true, true);
+      expect(JSON.stringify(await health(pool, "prover"))).not.toMatch(/home|Users|aws-lc|builder-1|make-input/);
     });
   });
 
@@ -266,7 +296,7 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
       await checks(pool, null).run(false, true);
       expect(await health(pool, "producer_alive")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/no producer status file is set/) });
       await checks(pool, join(makeFolder(), "missing.json")).run(false, true);
-      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/cannot be read/) });
+      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: "the producer's status file cannot be read" });
       const f = join(makeFolder(), "s.json");
       writeFileSync(f, "[1]");
       await checks(pool, f).run(false, true);

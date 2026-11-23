@@ -71,6 +71,7 @@ class Attempt:
         self.journal, self.seq, self.fields, self.in_flight = journal, seq, cut or {}, in_flight
         self.cut_written = self.closed = False   # closed: the attempt has its last line (answered, skipped or failed)
         self.stage = "cut"
+        self.number: int | None = None   # the block's number, once the cut has it
 
     def now(self) -> float:
         """The journal's clock now: what a fact is stamped with when it is written down later (`event(..., at=)`)."""
@@ -85,6 +86,7 @@ class Attempt:
 
     def cut(self, number: int | None) -> None:
         """The decision to build, written once the number is known (it is Canton's head plus one)."""
+        self.number = number if number is not None else self.number
         if not self.cut_written:
             self.cut_written = True
             self.event("cut", number=number, **self.fields)

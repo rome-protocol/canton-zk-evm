@@ -122,6 +122,23 @@ export interface EvaluateOptions {
   started?: boolean;
 }
 
+/**
+ * What a row's text may show to the public: the row's own words with anything that names this machine or its tools taken out: a URL, a path (`/home/...`, `/Users/...`, `~/...`), an IP address, a
+ * `localhost` or a `host:port`. The writers say fixed sentences already, and the full detail of a failure stays in the log of the machine; this is the last guard, so that no writer, old or new, can
+ * put such a thing in the answer of `/api/health` or `/api/status`.
+ */
+export function publicText(text: string | null): string | null {
+  if (text === null) return null;
+  return text
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, "[hidden]")
+    .replace(/(^|[^\w/.])(?:~|\.{1,2})?(?:\/[\w.@+~=-]+){2,}\/?/g, "$1[hidden]")
+    .replace(/(^|[^\w/.])\/(?:home|Users|root|tmp|var|run|opt|etc|usr|srv|mnt|data)\b[\w.@+~=/-]*/g, "$1[hidden]")
+    .replace(/(^|[^\w/.])~\/[\w.@+~=/-]*/g, "$1[hidden]")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, "[hidden]")
+    .replace(/\blocalhost(?::\d+)?\b/gi, "[hidden]")
+    .replace(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
+}
+
 const synthetic = (id: string, role: Role, status: Status, detail: string): HealthEntry => ({
   id, role, status, value: null, threshold: null, detail, sinceSeconds: 0, changedAt: null, refreshedAt: null, refreshedAgoSeconds: 0, intervalSeconds: null, stale: false, elsewhere: false,
 });
@@ -141,9 +158,9 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     const elsewhere = !spec.advisory && spec.role === "api" && (owner === null || owner !== instance) && capped === "down";
     const status: Status = elsewhere ? "degraded" : capped;
     const who = spec.role === "indexer" ? "the indexer" : spec.role === "verifier" ? "the verifier" : "the API";
-    const detail = stale
+    const detail = publicText(stale
       ? `${who} has not checked in ${Math.round(r.ageSeconds)} s${r.detail && written !== "ok" ? `; it last said: ${r.detail}` : ""}`
-      : r.detail;
+      : r.detail);
     checks.push({
       id: r.id, role: spec.role, status, ...(r.status !== status ? { written: r.status } : {}), value: r.value, threshold: r.threshold, detail,
       sinceSeconds: Math.max(0, Math.round(r.sinceSeconds)), changedAt: r.changedAt, refreshedAt: r.refreshedAt, refreshedAgoSeconds: Math.max(0, Math.round(r.ageSeconds * 10) / 10),

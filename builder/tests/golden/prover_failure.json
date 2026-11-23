@@ -638,7 +638,9 @@
  "reports": [
   {
    "committed": false,
-   "error": "fake-prove.sh failed: the prover is down"
+   "error": "fake-prove.sh failed: the prover is down",
+   "kind": "proof",
+   "number": 5
   },
   {
    "advanceSeconds": "<advanceSeconds>",
