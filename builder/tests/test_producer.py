@@ -909,6 +909,10 @@ class Unprovable(Loop):
         self.assertEqual((ex["transaction"], ex["until"]), (bad["hash"], b.iso(self.now[0] + 600)))
         self.assertIn("could not be proven", ex["reason"])
         self.assertTrue(any(r.get("excluded") == bad["hash"] for r in self.reports))   # said in the log too
+        folder = os.path.join(s.cfg.work_dir, "journal")
+        lines = [json.loads(l) for f in sorted(os.listdir(folder)) if f.endswith(".jsonl") for l in open(os.path.join(folder, f)).read().splitlines()]
+        (held,) = [x for x in lines if x.get("event") == "excluded"]
+        self.assertEqual(held["reason"], "it could not be proven")   # the journal, which the explorer serves from, carries only the fixed sentence
         good = tx(BOB, 0)
         s.reth.pool[BOB] = [good]   # the chain is not wedged: a good transaction goes in
         p.step()

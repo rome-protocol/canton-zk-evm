@@ -139,6 +139,17 @@ export function publicText(text: string | null): string | null {
     .replace(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
 }
 
+/** The sentence a held-back transaction carries when the proof of it failed: the tool's own output is never stored or served. */
+export const UNPROVABLE_REASON = "it could not be proven";
+
+/** A transaction's reason (why it was held back, left out or lost) as it may be stored and served: the fixed sentence for an unprovable hold, any other with a path, host or URL taken out. */
+export function lifecycleReason(reason: string | null): string | null {
+  if (reason === null) return null;
+  const hold = /^held back until (.{0,40}?): it could not be proven/s.exec(reason);
+  // The time is kept as it is when it looks like one (an ISO time has colons that the host:port guard would take out), else it says "later".
+  return hold ? `held back until ${/^[0-9TZ:.+-]{4,40}$/.test(hold[1] ?? "") ? hold[1] : "later"}: ${UNPROVABLE_REASON}` : publicText(reason);
+}
+
 /** The sentence a failed attempt carries in public: the output of the producer's own tools is never stored or served. */
 export const FAILED_ATTEMPT_REASON = "the block failed before Canton answered";
 

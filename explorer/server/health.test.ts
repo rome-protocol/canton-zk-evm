@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluate, httpStatusOf, publicText, specOf, type RawRow } from "./health.ts";
+import { evaluate, httpStatusOf, lifecycleReason, publicText, specOf, type RawRow } from "./health.ts";
 
 /** A row as the database reads it: `age` seconds since it was refreshed. */
 const row = (id: string, status: string, age = 1, detail: string | null = null): RawRow => ({
@@ -167,6 +167,15 @@ describe("what a row's text may show (no path, no URL, no host)", () => {
   it("takes a path, a URL, an address and a host out of any text", () => {
     for (const t of LEAKS) expect(publicText(t), t).not.toMatch(BAD);
     expect(publicText(null)).toBeNull();
+  });
+
+  it("gives an unprovable hold the fixed sentence and cleans any other reason of a transaction", () => {
+    const raw = "held back until 2026-11-24T10:00:00.000Z: it could not be proven: make-input failed: cannot open /home/ops/x at 10.1.2.3:8545";
+    expect(lifecycleReason(raw)).toBe("held back until 2026-11-24T10:00:00.000Z: it could not be proven");
+    expect(lifecycleReason("it could not be proven")).toBe("it could not be proven");
+    for (const t of LEAKS) expect(lifecycleReason(t), t).not.toMatch(BAD);
+    expect(lifecycleReason("nonce too low")).toBe("nonce too low");
+    expect(lifecycleReason(null)).toBeNull();
   });
 
   it("leaves the words of a row as they are", () => {

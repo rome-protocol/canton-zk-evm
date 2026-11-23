@@ -12,7 +12,7 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { setHealth } from "./health.ts";
-import { attemptReason, publicText } from "../health.ts";
+import { UNPROVABLE_REASON, attemptReason, lifecycleReason, publicText } from "../health.ts";
 import { isHexBytes } from "../hex.ts";
 import { ATTEMPT_SPAN_HOURS, REOPEN } from "./canton-view.ts";
 
@@ -110,7 +110,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       [hs, time, state, reasons],
     );
   const leftOut = async (id: number, from: number, items: unknown[], time: string): Promise<void> => {
-    const rows = items.map((x) => ({ h: bytes((x as { transaction?: unknown })?.transaction), r: text((x as { reason?: unknown })?.reason, 300) ?? "left out" }))
+    const rows = items.map((x) => ({ h: bytes((x as { transaction?: unknown })?.transaction), r: lifecycleReason(text((x as { reason?: unknown })?.reason, 300)) ?? "left out" }))
       .filter((x): x is { h: Buffer; r: string } => x.h !== null && x.h.length === 32);
     if (rows.length === 0) return;
     await c.query(
@@ -269,7 +269,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         break;
       }
       case "lost": {
-        const items = list(ev.transactions).map((x) => ({ h: bytes((x as { transaction?: unknown })?.transaction), r: text((x as { error?: unknown })?.error, 300) ?? "reth would not take it back" }))
+        const items = list(ev.transactions).map((x) => ({ h: bytes((x as { transaction?: unknown })?.transaction), r: publicText(text((x as { error?: unknown })?.error, 300)) ?? "reth would not take it back" }))
           .filter((x): x is { h: Buffer; r: string } => x.h !== null && x.h.length === 32);
         if (items.length) await setState(items.map((x) => x.h), items.map((x) => x.r), "lost", t);
         break;
@@ -277,7 +277,8 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
       case "excluded": {
         const h = bytes(ev.transaction);
         if (h === null || h.length !== 32) break;
-        const why = `held back until ${text(ev.until, 40) ?? "later"}: ${text(ev.reason, 250) ?? "no reason given"}`;
+        const said = text(ev.reason, 250);
+        const why = `held back until ${text(ev.until, 40) ?? "later"}: ${said === null ? "no reason given" : said.startsWith(UNPROVABLE_REASON) ? UNPROVABLE_REASON : publicText(said)}`;
         await c.query(
           `insert into tx_lifecycle (tx_hash, last_left_out_reason, state, updated_at) values ($1, $2, 'pending', $3)
            on conflict (tx_hash) do update set last_left_out_reason = excluded.last_left_out_reason`,

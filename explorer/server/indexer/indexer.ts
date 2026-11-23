@@ -600,16 +600,18 @@ export function createIndexer(o: IndexerOptions) {
       while (running && o.custody) {
         try {
           const read = await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
-          const problem = read.registryError !== null ? `the chain record's registry cannot be read: ${read.registryError}` : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
+          // The row says a fixed sentence; the registry's own message goes to the log only.
+          const problem = read.registryError !== null ? "the chain record's registry cannot be read" : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
+          const said = read.registryError !== null ? `${problem}: ${read.registryError}` : problem;
           await setHealth(o.pool, [{ id: "custody", status: problem === null ? "ok" : "degraded", value: { tokens: read.tokens, holdings: read.holdings, block: read.block, offset: read.offset }, threshold: { intervalSeconds }, detail: problem }]);
           // Said once for each kind of failure, not on every pass.
-          if (problem !== null && failing !== problem) log(`indexer (custody): ${problem}`);
-          failing = problem ?? "";
+          if (said !== null && failing !== said) log(`indexer (custody): ${said}`);
+          failing = said ?? "";
         } catch (e) {
           if (failing !== (e as Error).message) log(`indexer (custody): ${(e as Error).message}`);
           failing = (e as Error).message;
           // The row says what failed, and its time moves: the last rows of the custody stay, with the time they were read at.
-          await setHealth(o.pool, [{ id: "custody", status: "degraded", threshold: { intervalSeconds }, detail: `the custody cannot be read: ${failing}` }]).catch(() => undefined);
+          await setHealth(o.pool, [{ id: "custody", status: "degraded", threshold: { intervalSeconds }, detail: "the custody cannot be read" }]).catch(() => undefined);
         }
         // The Canton side of the swaps (a venue's trades and the funded claims) is read the same way, as the gateway party, and fails on its own.
         try {

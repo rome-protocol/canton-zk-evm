@@ -4700,7 +4700,8 @@ class Producer:
         cooldown = min(self.cooldown * 2 ** (self.convictions[tx] - 1), max(self.cooldown, 86400))
         self.excluded[tx] = now + cooldown
         self.excluded_why[tx] = f"it could not be proven: {why[:200]}"
-        self.journal.event("excluded", transaction=tx, until=iso(now + cooldown), reason=self.excluded_why[tx])
+        # The tool's own text stays in the log and the status file here; the journal, which the explorer serves from, carries the fixed sentence.
+        self.journal.event("excluded", transaction=tx, until=iso(now + cooldown), reason="it could not be proven")
         self.emit({"excluded": tx, "until": iso(now + cooldown), "reason": self.excluded_why[tx]})
 
     def settle_unknown(self) -> None:
