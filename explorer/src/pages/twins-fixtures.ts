@@ -7,7 +7,7 @@ export const twinLine = (over: Partial<TwinLine> = {}): TwinLine => ({
 });
 /** A Canton token on Ostia: wTKB, 123 in custody on Canton (10 decimals) against 123 wrapped (6 decimals). */
 export const twinCanton = (over: Partial<TwinCanton> = {}): TwinCanton => ({
-  token: addr(0xd1), symbol: "wTKB", name: "Wrapped TKB", decimals: 6, instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3,
+  token: addr(0xd1), symbol: "wTKB", name: "Wrapped TKB", decimals: 6, instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, openReceipts: "0", openPayouts: "0",
   supply: "123000000", supplyBlock: 21, matched: true, ledgerOffset: 4242, readAt: "2026-10-25T10:00:00.000Z", ...over,
 });
 export const twinLeg = (n: number, over: Partial<TwinLeg> = {}): TwinLeg => ({

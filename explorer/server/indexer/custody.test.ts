@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
-import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
+import { createLedger, CUSTODY_ENDPOINTS, type HoldingChange, type Ledger } from "../ledger.ts";
+import { createReceiptsRest } from "../receipts.ts";
+import { custodyMatched } from "../rest/twins-rest.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { FAKE_GATEWAY, FAKE_REGISTRY, archivedEvent, gatewayToken, holding, holdingEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
@@ -287,6 +289,70 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       } finally {
         await halt();
       }
+    });
+  });
+  describe("the receipts and payouts the gateway has open", () => {
+    const UNITS = 10n ** 10n, RECIPIENT = "e1".repeat(20), DEPOSIT = "ab".repeat(32), PAYOUT = "cd".repeat(32), AT = "2026-11-23T10:00:00Z";
+    const tokens = [
+      { contractId: "tokB", evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB" },
+      { contractId: "tokC", evmToken: TKC, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKC" },
+    ];
+    const hold = (contractId: string, instrumentId: string, units: bigint): HoldingChange => ({ kind: "created", contractId, instrumentAdmin: FAKE_REGISTRY, instrumentId, amount: units * UNITS });
+    const standing = async (pool: Pool) => (await pool.query("select encode(evm_token, 'hex') as evm, custody::text, supply::text, open_receipts::text, open_payouts::text from gateway_tokens order by evm_token")).rows;
+    const stands = (r: { custody: string; supply: string; open_receipts: string; open_payouts: string }) => custodyMatched(r.custody, r.supply, 6, (BigInt(r.open_receipts) + BigInt(r.open_payouts)).toString());
+    const ledgerOf = (walk: [number, HoldingChange[]][], known = tokens) => ({
+      gatewayTokens: async () => known,
+      holdingPages: async function* (after: number, upTo: number) { for (const [offset, changes] of walk) if (offset > after && offset <= upTo) yield { offset, changes }; },
+    }) as unknown as Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">;
+
+    it("counts them into each token's custody check, lists a deposit for its recipient and a payout by its id, and follows a payout to paid", async () => {
+      await inDb(async (pool) => {
+        const { chain, indexer } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const walk: [number, HoldingChange[]][] = [[10, [
+          hold("h1", "TKB", 10n), hold("h2", "TKC", 3n),
+          { kind: "receipt", contractId: "r1", gatewayToken: "tokB", depositId: DEPOSIT, recipient: RECIPIENT, amount: 2n * UNITS, createdAt: AT },
+          { kind: "payout", contractId: "p1", gatewayToken: "tokC", payoutId: PAYOUT, amount: 3n * UNITS, createdAt: AT },
+          { kind: "offer", contractId: "o1", payoutId: PAYOUT, executeBefore: "2026-11-24T10:00:00Z" },
+        ]]];
+        const ledger = ledgerOf(walk);
+        await custodyOnce(pool, ledger, chain.reads, 500);
+        // TKB: 10 held = 8 in issue + 2 accepted and not yet claimed. TKC: 3 held = 0 in issue + 3 burned and not yet paid.
+        const first = await standing(pool);
+        expect(first).toMatchObject([{ open_receipts: "20000000000", open_payouts: "0" }, { open_receipts: "0", open_payouts: "30000000000" }]);
+        expect(first.map(stands)).toEqual([true, true]);
+        const listed = await rest.deposits("0x" + RECIPIENT);
+        expect(listed).toMatchObject([{ depositId: "0x" + DEPOSIT, symbol: null, instrumentId: "TKB", amount: "20000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z" }]);
+        expect(listed[0]!.token).toBe(TKB);
+        expect(await rest.deposits("0x" + "e2".repeat(20))).toEqual([]);
+        const offered = await rest.payout("0x" + PAYOUT);
+        expect(offered).toMatchObject({ status: "offered", instrumentId: "TKC", amount: "30000000000", until: "2026-11-24T10:00:00.000Z", paidAt: null });
+        expect(offered!.token).toBe(TKC);
+        // The claim is recorded (the receipt is archived and the supply is 10), and the payout is paid (its offer and it are archived, and the custody leaves).
+        walk.push([30, [{ kind: "archived", contractId: "r1", at: AT }, { kind: "archived", contractId: "o1", at: AT }, { kind: "archived", contractId: "p1", at: "2026-11-24T09:00:00Z" }, { kind: "archived", contractId: "h2", at: AT }]]);
+        chain.reads.callResults[`${TKB}:${SUPPLY}`] = word(10_000_000n);
+        chain.reads.rethHead = 3; chain.ledger.ledgerHead = 3;
+        await indexer.runOnce();
+        await custodyOnce(pool, ledger, chain.reads, 500);
+        const second = await standing(pool);
+        expect(second).toMatchObject([{ custody: "100000000000", open_receipts: "0", open_payouts: "0" }, { custody: "0", open_receipts: "0", open_payouts: "0" }]);
+        expect(second.map(stands)).toEqual([true, true]);
+        expect(await rest.deposits("0x" + RECIPIENT)).toEqual([]);
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", until: null, paidAt: "2026-11-24T09:00:00.000Z" });
+        expect(await rest.payout("0x" + "ee".repeat(32))).toBeNull();
+        // Only hashes of the contracts are kept.
+        const kept = JSON.stringify([(await pool.query("select * from gateway_receipts")).rows, (await pool.query("select * from gateway_payouts")).rows, (await pool.query("select * from gateway_offers")).rows]);
+        for (const secret of ["r1", "p1", "o1", "tokB", "tokC"]) expect(kept).not.toContain(`"${secret}"`);
+      });
+    });
+
+    it("fails the read, and writes nothing of the walk, for a receipt of a token that is not registered", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 1, { [TKB]: 1n });
+        const stray: HoldingChange = { kind: "receipt", contractId: "r9", gatewayToken: "nope", depositId: DEPOSIT, recipient: RECIPIENT, amount: UNITS, createdAt: AT };
+        await expect(custodyOnce(pool, ledgerOf([[10, [stray]]]), chain.reads, 500)).rejects.toThrow(/not registered/);
+        expect(Number((await pool.query("select count(*) from gateway_receipts")).rows[0].count)).toBe(0);
+      });
     });
   });
 });

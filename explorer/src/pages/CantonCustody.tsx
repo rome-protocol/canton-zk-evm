@@ -9,14 +9,14 @@ import { useNow } from "../useStatus.ts";
 export type CustodyState = "equal" | "custody-higher" | "supply-higher" | "unknown";
 
 /**
- * Canton's custody set against the wrapped supply, both brought to the finer of the two scales so that nothing is rounded: a state and the difference
+ * Canton's custody, less what is open on it (the deposits accepted and not yet claimed, the withdrawals burned and not yet paid), set against the wrapped supply, both brought to the finer of the two scales so that nothing is rounded: a state and the difference
  * (in whole units, the same on both sides), or "unknown" when the supply or the token's decimals are not known. Both numbers are the ones stored with the
  * custody, read at the same block, never the token's live supply.
  */
-export function compareCustody(decimals: number | null, c: Pick<Custody, "custody" | "custodyDecimals" | "supply">): { state: CustodyState; diff: string; scale: number } {
+export function compareCustody(decimals: number | null, c: Pick<Custody, "custody" | "custodyDecimals" | "supply" | "openReceipts" | "openPayouts">): { state: CustodyState; diff: string; scale: number } {
   if (c.supply === null || decimals === null) return { state: "unknown", diff: "0", scale: 0 };
   const scale = Math.max(decimals, c.custodyDecimals);
-  const supply = BigInt(c.supply) * 10n ** BigInt(scale - decimals), custody = BigInt(c.custody) * 10n ** BigInt(scale - c.custodyDecimals);
+  const supply = BigInt(c.supply) * 10n ** BigInt(scale - decimals), custody = (BigInt(c.custody) - BigInt(c.openReceipts) - BigInt(c.openPayouts)) * 10n ** BigInt(scale - c.custodyDecimals);
   if (supply === custody) return { state: "equal", diff: "0", scale };
   return custody > supply ? { state: "custody-higher", diff: (custody - supply).toString(), scale } : { state: "supply-higher", diff: (supply - custody).toString(), scale };
 }

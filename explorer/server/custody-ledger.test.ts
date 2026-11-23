@@ -3,8 +3,8 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALLOWED_ENDPOINTS, createLedger, CUSTODY_ENDPOINTS, READER_ENDPOINTS, GATEWAY_TOKEN_TEMPLATE, HOLDING_INTERFACE, LedgerError, type Ledger } from "./ledger.ts";
-import { FAKE_GATEWAY, FAKE_READER, FAKE_REGISTRY, archivedEvent, gatewayToken, holding, holdingEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger } from "../test/fake-ledger.ts";
+import { ALLOWED_ENDPOINTS, createLedger, CUSTODY_ENDPOINTS, READER_ENDPOINTS, GATEWAY_TOKEN_TEMPLATE, HOLDING_INTERFACE, INSTRUCTION_INTERFACE, PAYOUT_TEMPLATE, RECEIPT_TEMPLATE, WITHDRAWAL_KEY, LedgerError, type HoldingChange, type Ledger } from "./ledger.ts";
+import { FAKE_GATEWAY, FAKE_READER, FAKE_REGISTRY, FAKE_SELLER, archivedEvent, gatewayToken, holding, holdingEvent, offerEvent, payoutEvent, receiptEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger, type Json } from "../test/fake-ledger.ts";
 
 const TKB = "0x" + "d1".repeat(20), OTHER = "0x" + "d2".repeat(20);
 const SOMEONE = "alice::1220" + "ab".repeat(32);
@@ -22,7 +22,7 @@ async function read(l: Ledger, limit: number, offset: number) {
   const tokens = await l.gatewayTokens(limit, offset);
   const held = new Map<string, { admin: string; id: string; amount: bigint }>();
   for await (const page of l.holdingPages(0, offset)) {
-    for (const c of page.changes) { if (c.kind === "archived") held.delete(c.contractId); else held.set(c.contractId, { admin: c.instrumentAdmin, id: c.instrumentId, amount: c.amount }); }
+    for (const c of page.changes) { if (c.kind === "archived") held.delete(c.contractId); else if (c.kind === "created") held.set(c.contractId, { admin: c.instrumentAdmin, id: c.instrumentId, amount: c.amount }); }
   }
   return { offset, tokens: tokens.map((t) => {
     const mine = [...held.values()].filter((h) => h.admin === t.instrumentAdmin && h.id === t.instrumentId);
@@ -46,7 +46,7 @@ describe("the gateway's custody, read as the gateway", () => {
     expect(fake.requests).toEqual([]);
   });
 
-  it("asks for the gateway party's GatewayToken contracts in one call, and for the Holding views in the ACS delta of the updates, at the offsets it is given", async () => {
+  it("asks for the gateway party's GatewayToken contracts in one call, and for the Holding views, the transfer instructions, the receipts and the payouts in the ACS delta of the updates, at the offsets it is given", async () => {
     const l = await ledger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
     await read(l, 500, 12);
     expect(fake!.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /v2/state/active-contracts", "POST /v2/updates", "POST /v2/updates"]);
@@ -63,6 +63,9 @@ describe("the gateway's custody, read as the gateway", () => {
       beginExclusive: 0, endInclusive: 12,
       updateFormat: { includeTransactions: { eventFormat: { filtersByParty: { [FAKE_GATEWAY]: { cumulative: [
         { identifierFilter: { InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } } },
+        { identifierFilter: { InterfaceFilter: { value: { interfaceId: INSTRUCTION_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } } },
+        { identifierFilter: { TemplateFilter: { value: { templateId: RECEIPT_TEMPLATE, includeCreatedEventBlob: false } } } },
+        { identifierFilter: { TemplateFilter: { value: { templateId: PAYOUT_TEMPLATE, includeCreatedEventBlob: false } } } },
       ] } }, verbose: false }, transactionShape: "TRANSACTION_SHAPE_ACS_DELTA" } },
     });
     expect(JSON.stringify([tokens!.body, walk!.body])).not.toContain(FAKE_READER);
@@ -85,14 +88,14 @@ describe("the gateway's custody, read as the gateway", () => {
     const got = await read(l, 500, 12);
     expect(got.offset).toBe(12);
     expect(got.tokens).toEqual([
-      { evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 1070000000001n, holdings: 3 },
-      { evmToken: OTHER, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKC", custody: 25000000000n, holdings: 1 },
+      { contractId: "00" + TKB.slice(-8), evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 1070000000001n, holdings: 3 },
+      { contractId: "00" + OTHER.slice(-8), evmToken: OTHER, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKC", custody: 25000000000n, holdings: 1 },
     ]);
   });
 
   it("says zero for a registered token with no holdings, and takes the token's address in any case, with or without 0x", async () => {
     const l = await ledger([gatewayToken(TKB.slice(2).toUpperCase())]);
-    expect((await read(l, 500, 12)).tokens).toEqual([{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 0n, holdings: 0 }]);
+    expect((await read(l, 500, 12)).tokens).toEqual([{ contractId: "00D1D1D1D1", evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 0n, holdings: 0 }]);
   });
 
   it("keeps no owner, no contract id and no party but the instrument's admin", async () => {
@@ -138,7 +141,7 @@ describe("the gateway's custody, read as the gateway", () => {
     const mine = [1, 2, 3].map((n) => holding(n, FAKE_GATEWAY, "1"));
     const l = await ledger([gatewayToken(TKB), ...mine, ...twins], { cap: 4 });
     const got = await read(l, 3, 12);
-    expect(got.tokens).toEqual([{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 30000000000n, holdings: 3 }]);
+    expect(got.tokens).toEqual([{ contractId: "00" + TKB.slice(-8), evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 30000000000n, holdings: 3 }]);
   });
 
   it("walks the updates in pages, and a holding that was archived is gone from the total", async () => {
@@ -161,6 +164,62 @@ describe("the gateway's custody, read as the gateway", () => {
     const forged = holding(2, FAKE_GATEWAY, "900", FAKE_REGISTRY, "TKB", null, null, [SOMEONE, FAKE_GATEWAY]);
     const l = await ledger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1"), forged]);
     expect(await read(l, 500, 12)).toMatchObject({ tokens: [{ custody: 10000000000n, holdings: 1 }] });
+  });
+
+  describe("the gateway's receipts, payouts and offers", () => {
+    const TOKEN_CID = "00" + TKB.slice(-8), ID = "ab".repeat(32), ID2 = "cd".repeat(32), RECIPIENT = "e1".repeat(20);
+    const walk = async (items: Json[]) => {
+      fake = await startFakeLedger(items, { ledgerEnd: 99, active: [] });
+      const l = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
+      const out: HoldingChange[] = [];
+      for await (const p of l.holdingPages(0, 99)) out.push(...p.changes);
+      return out;
+    };
+
+    it("reads a receipt, a payout and an offer of the payout, with the time of each, and keeps no sender and no paid party", async () => {
+      const got = await walk([
+        transaction(3, "u3", [receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: "12.5" })]),
+        transaction(4, "u4", [payoutEvent(4, "p1", { gatewayToken: TOKEN_CID, payoutId: ID2, amount: "3" })]),
+        transaction(5, "u5", [offerEvent(5, "o1", FAKE_GATEWAY, { [WITHDRAWAL_KEY]: ID2 })]),
+        transaction(6, "u6", [archivedEvent("o1"), archivedEvent("p1")], "2026-11-24T09:00:00Z"),
+      ]);
+      expect(got).toEqual([
+        { kind: "receipt", contractId: "r1", gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: 125000000000n, createdAt: "2026-10-04T01:37:15.412Z" },
+        { kind: "payout", contractId: "p1", gatewayToken: TOKEN_CID, payoutId: ID2, amount: 30000000000n, createdAt: "2026-10-04T01:37:15.412Z" },
+        { kind: "offer", contractId: "o1", payoutId: ID2, executeBefore: "2026-11-24T10:00:00Z" },
+        { kind: "archived", contractId: "o1", at: "2026-11-24T09:00:00Z" },
+        { kind: "archived", contractId: "p1", at: "2026-11-24T09:00:00Z" },
+      ]);
+      const text = JSON.stringify(got, (_, v) => (typeof v === "bigint" ? v.toString() : v));
+      for (const secret of [FAKE_SELLER, "memo-1"]) expect(text).not.toContain(secret);
+    });
+
+    it("leaves out a receipt or a payout the gateway did not sign, an offer of another party's, and an offer that names no payout", async () => {
+      const got = await walk([
+        transaction(3, "u3", [
+          receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: "1" }, {}, [SOMEONE]),
+          payoutEvent(3, "p1", { gatewayToken: TOKEN_CID, payoutId: ID2, amount: "1" }, {}, [SOMEONE]),
+          offerEvent(3, "o1", SOMEONE, { [WITHDRAWAL_KEY]: ID2 }),
+          offerEvent(3, "o2", FAKE_GATEWAY, { other: ID2 }),
+          offerEvent(3, "o3", FAKE_GATEWAY, { [WITHDRAWAL_KEY]: "not-an-id" }),
+        ]),
+      ]);
+      expect(got).toEqual([]);
+    });
+
+    it("refuses a receipt or a payout that is not what its contract says, rather than a total that might be short", async () => {
+      const bad: Json[] = [
+        receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: "xyz", recipient: RECIPIENT, amount: "1" }),
+        receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: ID, recipient: "0x" + RECIPIENT, amount: "1" }),
+        receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: "1e3" }),
+        payoutEvent(3, "p1", { gatewayToken: TOKEN_CID, payoutId: "", amount: "1" }),
+        payoutEvent(3, "p1", { gatewayToken: "", payoutId: ID, amount: "1" }),
+      ];
+      for (const e of bad) {
+        await fake?.close();
+        await expect(walk([transaction(3, "u3", [e])])).rejects.toThrow(/custody/);
+      }
+    });
   });
 
   it("fails as a LedgerError when Canton does not answer, and says nothing of a token", async () => {

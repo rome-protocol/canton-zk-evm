@@ -13,7 +13,7 @@ import { createAccountRest, ERC20_TRANSFERS, NFT_TRANSFERS, transferCountSql } f
 import { CACHE_CONTROL } from "./cache.ts";
 import { PARTIAL_MATCH_NOTE } from "./account-rest.ts";
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
-import { NO_ADDRESS, NO_CONTRACT, NO_LEG, NO_TOKEN } from "./account-routes.ts";
+import { NO_ADDRESS, NO_CONTRACT, NO_LEG, NO_PAYOUT, NO_TOKEN } from "./account-routes.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const keys = (o: object) => Object.keys(o).sort();
@@ -460,6 +460,34 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       await sql("delete from canton_twins where token = $1", [who(0xb1)]);
       await sql("delete from canton_registry where address = $1", [who(0xc1)]);
       await sql("delete from meta where key = 'twin_totals_block'");
+    }
+  });
+
+  it("serves the open deposits of an address and a payout by its id from the kept rows, each naming its token and with no party", async () => {
+    const hash = (n: number) => Buffer.alloc(32, n), at = "2026-11-23T10:00:00Z";
+    await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 0, 0, 0, 7, 77, $2)", [who(0xb2), at]);
+    await sql("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at) values ($1, $2, $3, $4, 125000000000, $5)", [hash(1), who(0xb2), hash(2), who(0xe1), at]);
+    await sql("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at) values ($1, $2, $3, 30000000000, $4)", [hash(3), who(0xb2), hash(4), at]);
+    await sql("insert into gateway_offers (contract_hash, payout_id, execute_before) values ($1, $2, '2026-11-24T10:00:00Z')", [hash(5), hash(4)]);
+    try {
+      const d = body(await get(`/api/canton/deposits?recipient=${h(0xe1)}`));
+      same(d, F.deposits);
+      expect(d.items).toHaveLength(1);
+      same(d.items[0], F.deposit);
+      expect(d.items[0]).toEqual({ depositId: "0x" + "02".repeat(32), token: h(0xb2), symbol: null, instrumentId: "TKB", amount: "125000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z" });
+      expect((await get(`/api/canton/deposits?recipient=${h(0xe1)}`)).headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+      expect(body(await get(`/api/canton/deposits?recipient=${h(0xe2)}`)).items).toEqual([]);
+      for (const bad of ["", "?recipient=0x12", `?recipient=${h(0xe1).toUpperCase().replace("0X", "0x")}`]) expect((await get(`/api/canton/deposits${bad}`)).status, bad).toBe(400);
+      const p = body(await get(`/api/canton/payouts/0x${"04".repeat(32)}`));
+      same(p, F.payout);
+      expect(p).toEqual({ id: "0x" + "04".repeat(32), status: "offered", token: h(0xb2), symbol: null, instrumentId: "TKB", amount: "30000000000", amountDecimals: 10, createdAt: "2026-11-23T10:00:00.000Z", until: "2026-11-24T10:00:00.000Z", paidAt: null });
+      expect((await get(`/api/canton/payouts/0x${"04".repeat(32)}`)).headers?.["cache-control"]).toBe(CACHE_CONTROL.composite);
+      expect(body(await get(`/api/canton/payouts/0x${"09".repeat(32)}`))).toEqual({ error: NO_PAYOUT });
+      expect((await get(`/api/canton/payouts/0x${"09".repeat(32)}`)).status).toBe(404);
+      expect((await get("/api/canton/payouts/0x12")).status).toBe(400);
+    } finally {
+      for (const t of ["gateway_receipts", "gateway_payouts", "gateway_offers"]) await sql(`delete from ${t}`);
+      await sql("delete from gateway_tokens where evm_token = $1", [who(0xb2)]);
     }
   });
 

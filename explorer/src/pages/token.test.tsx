@@ -180,6 +180,15 @@ describe("the token page: the overview", () => {
       expect(kv("Check")).toHaveAttribute("data-state", "supply-higher");
     });
 
+    it("does not call the open receipts and payouts a difference: the custody less them is set against the supply", async () => {
+      // 1,000 held, 10 of it a deposit accepted and not yet claimed: 990 in issue is equal.
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openReceipts: "100000000000", supply: "990000000" }) }));
+      expect(kv("Check")).toHaveAttribute("data-state", "equal");
+      cleanup();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openPayouts: "100000000000", supply: "1000000000" }) }));
+      expect(kv("Check")).toHaveAttribute("data-state", "supply-higher");
+    });
+
     it("compares nothing when the supply or the decimals are not known, and still shows the custody", async () => {
       await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ supply: null }) }));
       expect(kv("Held on Canton")).toHaveTextContent("1,000 TKB");

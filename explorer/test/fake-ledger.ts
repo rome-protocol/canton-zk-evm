@@ -100,6 +100,18 @@ export const venueTradeEvent = (offset: number, contractId: string, f: { payId: 
 export const fundedClaimEvent = (offset: number, contractId: string, f: { claimId: string; recipient: string; amount: string; gatewayToken: string }, over: Json = {}): Json =>
   gatewayEvent(offset, "FundedClaim", contractId, { ...base, claimId: f.claimId, recipient: f.recipient, gatewayToken: f.gatewayToken, amount: f.amount, ...over }, [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]);
 
+/** A Receipt the gateway made (Daml 0.6.0): it names the token's contract and the claimant's EVM address; the sender is a plain field the explorer must not keep. */
+export const receiptEvent = (offset: number, contractId: string, f: { gatewayToken: string; depositId: string; recipient: string; amount: string }, over: Json = {}, signatories = [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]): Json =>
+  gatewayEvent(offset, "Receipt", contractId, { ...base, ...f, sender: FAKE_SELLER, label: "memo-1", ...over }, signatories);
+/** A Payout: a withdrawal the gateway owes (`party` is who is paid, never kept). */
+export const payoutEvent = (offset: number, contractId: string, f: { gatewayToken: string; payoutId: string; amount: string }, over: Json = {}, signatories = [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]): Json =>
+  gatewayEvent(offset, "Payout", contractId, { ...base, ...f, party: FAKE_SELLER, ...over }, signatories);
+/** A transfer instruction from `sender`, as the interface view shows it; `meta` is the transfer's meta. */
+export const offerEvent = (offset: number, contractId: string, sender: string, meta: Record<string, string>, executeBefore = "2026-11-24T10:00:00Z"): Json => ({
+  CreatedEvent: { ...(gatewayEvent(offset, "X", contractId, {}, [sender]).CreatedEvent as Json), templateId: "999999:Some.Token:Instruction",
+    interfaceViews: [{ interfaceId: "f00dbabe0002:Splice.Api.Token.TransferInstructionV1:TransferInstruction", viewStatus: { code: 0, message: "" }, viewValue: { transfer: { sender, receiver: FAKE_SELLER, amount: "1", executeBefore, meta: { values: meta } }, status: {} } }] },
+});
+
 export interface ActiveContract { contractId: string; templateId: string; createArgument?: Json; interfaceViews?: Json[]; signatories?: string[] }
 
 /** What the fake's active-contracts endpoint answers, as the JSON Ledger API shapes a JsActiveContract. */

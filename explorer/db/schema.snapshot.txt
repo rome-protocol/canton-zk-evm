@@ -481,6 +481,36 @@ table gateway_legs
   CREATE INDEX gateway_legs_token_block_number_idx ON public.gateway_legs USING btree (token, block_number DESC)
   CREATE UNIQUE INDEX gateway_legs_pkey ON public.gateway_legs USING btree (block_number, leg_index)
 
+table gateway_offers
+  column contract_hash bytea not null
+  column payout_id bytea not null
+  column execute_before timestamp with time zone not null
+  constraint gateway_offers_pkey PRIMARY KEY (contract_hash)
+  CREATE INDEX gateway_offers_payout_idx ON public.gateway_offers USING btree (payout_id)
+  CREATE UNIQUE INDEX gateway_offers_pkey ON public.gateway_offers USING btree (contract_hash)
+
+table gateway_payouts
+  column contract_hash bytea not null
+  column erc20 bytea not null
+  column payout_id bytea not null
+  column amount numeric not null
+  column created_at timestamp with time zone not null
+  column paid_at timestamp with time zone
+  constraint gateway_payouts_pkey PRIMARY KEY (contract_hash)
+  CREATE INDEX gateway_payouts_payout_idx ON public.gateway_payouts USING btree (payout_id)
+  CREATE UNIQUE INDEX gateway_payouts_pkey ON public.gateway_payouts USING btree (contract_hash)
+
+table gateway_receipts
+  column contract_hash bytea not null
+  column erc20 bytea not null
+  column deposit_id bytea not null
+  column recipient bytea not null
+  column amount numeric not null
+  column created_at timestamp with time zone not null
+  constraint gateway_receipts_pkey PRIMARY KEY (contract_hash)
+  CREATE INDEX gateway_receipts_recipient_idx ON public.gateway_receipts USING btree (recipient, created_at DESC)
+  CREATE UNIQUE INDEX gateway_receipts_pkey ON public.gateway_receipts USING btree (contract_hash)
+
 table gateway_tokens
   column evm_token bytea not null
   column instrument_admin text not null
@@ -491,6 +521,8 @@ table gateway_tokens
   column supply_block bigint not null
   column ledger_offset bigint not null
   column read_at timestamp with time zone not null
+  column open_receipts numeric(40,0) not null default 0
+  column open_payouts numeric(40,0) not null default 0
   constraint gateway_tokens_custody_check CHECK ((custody >= (0)::numeric))
   constraint gateway_tokens_evm_token_check CHECK ((length(evm_token) = 20))
   constraint gateway_tokens_holdings_check CHECK ((holdings >= 0))

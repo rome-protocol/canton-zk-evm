@@ -28,8 +28,10 @@ export interface TwinLine {
 export interface TwinCanton {
   token: string; symbol: string | null; name: string | null; decimals: number | null;
   instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number;
+  /** What the custody holds beyond the supply: the receipts (deposits accepted, not yet claimed) and the payouts (withdrawals burned, not yet sent), in the custody's decimals. */
+  openReceipts: string; openPayouts: string;
   supply: string | null; supplyBlock: number;
-  /** True when the wrapped supply equals the custody on Canton, both in the token's own decimals; null where the supply is not known. */
+  /** True when the custody equals the wrapped supply plus the open receipts and payouts, in the token's own decimals; null where the supply is not known. */
   matched: boolean | null;
   ledgerOffset: number; readAt: string;
 }
@@ -43,12 +45,12 @@ export const twinSupplyOf = (locked: string, released: string): string => (BigIn
 export const twinMatched = (supply: string, vaultBalance: string | null): boolean => vaultBalance !== null && BigInt(vaultBalance) === BigInt(supply);
 
 /**
- * A Canton token's custody is held in Canton's 10 decimals and its wrapped supply in the token's own: they match when the two are equal at the finer of the two scales (a custody finer than the token's decimals does not match).
- * Null when the supply or the decimals are not known.
+ * A Canton token's custody is held in Canton's 10 decimals and its wrapped supply in the token's own: they match when the custody less what is open (`open`: the receipts and the unpaid payouts, in the custody's
+ * decimals) equals the supply at the finer of the two scales (a custody finer than the token's decimals does not match). Null when the supply or the decimals are not known.
  */
-export function custodyMatched(custody: string, supply: string | null, decimals: number | null): boolean | null {
+export function custodyMatched(custody: string, supply: string | null, decimals: number | null, open = "0"): boolean | null {
   if (supply === null || decimals === null) return null;
-  const c = BigInt(custody);
+  const c = BigInt(custody) - BigInt(open);
   if (decimals >= CUSTODY_DECIMALS) return c * 10n ** BigInt(decimals - CUSTODY_DECIMALS) === BigInt(supply);
   const step = 10n ** BigInt(CUSTODY_DECIMALS - decimals);
   return c % step === 0n && c / step === BigInt(supply); // a custody finer than the token's decimals is not cut to match
@@ -81,14 +83,14 @@ export function createTwinsRest(query: Query) {
   /** The Canton tokens the gateway registered, each with its custody on Canton and its wrapped supply, both read at one block. */
   async function canton(): Promise<TwinCanton[]> {
     const rows = await query(
-      `select g.evm_token, g.instrument_admin, g.instrument_id, g.custody::text as custody, g.holdings, g.supply::text as supply, g.supply_block, g.ledger_offset, g.read_at, tk.symbol, tk.name, tk.decimals
+      `select g.evm_token, g.instrument_admin, g.instrument_id, g.custody::text as custody, g.holdings, g.open_receipts::text as open_receipts, g.open_payouts::text as open_payouts, g.supply::text as supply, g.supply_block, g.ledger_offset, g.read_at, tk.symbol, tk.name, tk.decimals
        from gateway_tokens g left join tokens tk on tk.address = g.evm_token order by g.instrument_id, g.evm_token`,
     );
     return rows.map((r): TwinCanton => {
       const decimals = r.decimals == null ? null : Number(r.decimals), supply: string | null = r.supply ?? null;
       return {
         token: hex(r.evm_token), symbol: r.symbol ?? null, name: r.name ?? null, decimals, instrumentAdmin: r.instrument_admin, instrumentId: r.instrument_id, custody: r.custody, custodyDecimals: CUSTODY_DECIMALS,
-        holdings: Number(r.holdings), supply, supplyBlock: Number(r.supply_block), matched: custodyMatched(r.custody, supply, decimals), ledgerOffset: Number(r.ledger_offset), readAt: new Date(r.read_at).toISOString(),
+        holdings: Number(r.holdings), openReceipts: r.open_receipts, openPayouts: r.open_payouts, supply, supplyBlock: Number(r.supply_block), matched: custodyMatched(r.custody, supply, decimals, (BigInt(r.open_receipts) + BigInt(r.open_payouts)).toString()), ledgerOffset: Number(r.ledger_offset), readAt: new Date(r.read_at).toISOString(),
       };
     });
   }
