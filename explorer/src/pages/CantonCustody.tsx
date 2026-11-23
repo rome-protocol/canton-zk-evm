@@ -2,7 +2,7 @@ import type { CantonCustody as Custody, TokenDetail } from "../api.ts";
 import { CardHead } from "../components/Cards.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
-import { instrumentName } from "../bridge/tokens.ts";
+import { instrumentName } from "../instrument.ts";
 import { count, exact, units } from "../format.ts";
 import { useNow } from "../useStatus.ts";
 

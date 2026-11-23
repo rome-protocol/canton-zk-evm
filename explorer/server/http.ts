@@ -76,23 +76,18 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
   return last || req.socket.remoteAddress || "unknown";
 }
 
-/** `ipHeader` names the header that carries the client's address for the faucet's and the REST limits (6.6), and is the public RPC's when none is given. `captchaScriptUrl` is the faucet's human-check script (its origin may run scripts on the pages, see `csp.ts`). `limits` holds the per-client limits of the REST routes, the Etherscan door and verification; `/rpc`, the live streams and the faucet keep their own. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. `bridgeOrigin` is the Bridge's own site (BRIDGE_ORIGIN): a request whose Host is its host gets `bridge.html` where the explorer's host gets `index.html`, `/bridge.html` is not served on any other host, and everything else answers the same on both. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub, limits: Limits = createLimits(), captchaScriptUrl: string | null = null, bridgeOrigin: string | null = null): Server {
+/** `ipHeader` names the header that carries the client's address for the faucet's and the REST limits (6.6), and is the public RPC's when none is given. `captchaScriptUrl` is the faucet's human-check script (its origin may run scripts on the pages, see `csp.ts`). `limits` holds the per-client limits of the REST routes, the Etherscan door and verification; `/rpc`, the live streams and the faucet keep their own. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub, limits: Limits = createLimits(), captchaScriptUrl: string | null = null): Server {
   const root = resolve(dist);
   const csp = contentSecurityPolicy(captchaScriptUrl);
-  const bridgeHost = bridgeOrigin === null ? null : new URL(bridgeOrigin).hostname;
-  /** The host the client asked for, in lower case and without its port; "" when the header is missing or is not a host. */
-  const hostOf = (req: IncomingMessage): string => { try { return new URL(`http://${req.headers.host ?? ""}`).hostname; } catch { return ""; } };
-  async function page(pathname: string, onBridge: boolean): Promise<{ file: string; bytes: Buffer } | null> {
+  async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
     try { name = decodeURIComponent(pathname); } catch { return null; }
-    // With the Bridge's site on, each host has one page: its own file is not served on the other host.
-    if (bridgeHost !== null && (onBridge ? name === "/index.html" : name === "/bridge.html")) return null;
     let file = resolve(root, "." + name);
     if (file !== root && !file.startsWith(root + sep)) return null;
     if (!(await stat(file).then((s) => s.isFile(), () => false))) {
       if (extname(name)) return null;
-      file = resolve(root, onBridge ? "bridge.html" : "index.html");
+      file = resolve(root, "index.html");
     }
     return readFile(file).then((bytes) => ({ file, bytes }), () => null);
   }
@@ -220,7 +215,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
       } else if (method !== "GET" && method !== "HEAD") {
         res.writeHead(405, { allow: "GET, HEAD" }).end();
       } else {
-        const found = await page(pathname, bridgeHost !== null && hostOf(req) === bridgeHost);
+        const found = await page(pathname);
         if (!found) return void res.writeHead(404, { "content-type": "text/plain" }).end("Not found");
         res.writeHead(200, { "content-type": TYPES[extname(found.file)] ?? "application/octet-stream", "content-length": found.bytes.length, "x-content-type-options": "nosniff", ...(extname(found.file) === ".html" ? { "content-security-policy": csp } : {}), ...(ICONS.has(pathname) ? { "cache-control": "public, max-age=86400" } : {}) }).end(method === "HEAD" ? undefined : found.bytes);
       }

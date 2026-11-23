@@ -21,29 +21,12 @@ FROM ${EXPLORER_NODE_IMAGE} AS pages
 WORKDIR /repo/explorer
 COPY explorer/package.json explorer/package-lock.json ./
 RUN npm ci --ignore-scripts
-# The Bridge page pins the gateway's address (PINS), the hash of the vault's code and, for this deployment, the wrapped coin's address (BRIDGE_WTROME_ADDRESS, none when empty:
-# the page then does not wrap) when it is built: explorer/bridge-pins.ts reads them from beside the explorer folder.
-COPY PINS /repo/PINS
-COPY gateway/Vault.bin-runtime /repo/gateway/Vault.bin-runtime
-ARG BRIDGE_WTROME_ADDRESS=
-# The rest of the Bridge page's build settings (explorer/README.md, "The Bridge page's settings"): none is a secret, and an empty one is not set.
-ARG VITE_CHAIN_OPERATOR=
-ARG VITE_CHAIN_CONFIRMER=
-ARG VITE_CHAIN_GATEWAY=
-ARG VITE_CHAIN_BUILDER=
-ARG VITE_CHAIN_ID=
-ARG VITE_BRIDGE_ACCOUNT=
-ARG VITE_CANTON_PARTICIPANT=
-ARG VITE_PARTY_HINT=
-ARG VITE_ACCOUNTS_URL=
+# The pages' build settings (explorer/site-meta.ts): none is a secret, and an empty one is not set.
 ARG VITE_SITE_ORIGIN=
 ARG VITE_NETWORK_NAME=
-ARG VITE_CANTON_WALLETS=
-ARG VITE_CANTON_GATEWAY_URL=
 ARG VITE_BRIDGE_ORIGIN=
-COPY explorer/index.html explorer/bridge.html explorer/tsconfig.json explorer/vite.config.ts explorer/bridge-pins.ts explorer/site-meta.ts ./
+COPY explorer/index.html explorer/tsconfig.json explorer/vite.config.ts explorer/site-meta.ts ./
 COPY explorer/src ./src
-COPY explorer/canton-proto ./canton-proto
 COPY explorer/public ./public
 COPY --from=wasm /repo/explorer/public/verify ./public/verify
 RUN npm run build

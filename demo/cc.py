@@ -30,11 +30,6 @@
   cc.py instructions                    the transfer instructions that have the gateway's party as the receiver, read as the gateway: each one's contract id, sender, amount, instrument, status,
                                         meta (as the gateway sees it) and the memo (the reason, or null)
   cc.py take-back <instruction>         U withdraws its own pending transfer instruction (the scan proxy's choice context for "withdraw"), so that the receiver can no longer accept it. Prints U's balance
-  cc.py route <network> <evm address> <max fee> <amount> [--router ADDRESS] [--nonce N]
-                                        `deposit` for the Canton router (router/): U deposits <amount> Canton Coin to the router (--router, or OSTIA_ROUTER; the router's proxy address) with the
-                                        label r1:<network>:<address>:<max fee in base units>:<nonce>, which the router's relayer reads from the ledger and sends on to <address> on that AggLayer network
-                                        (0 is Ethereum Sepolia). <max fee> is Canton Coin as an amount ("0.2", "0"): the most that the move may cost, taken from <amount>. The nonce is random unless
-                                        --nonce gives one: each label is used once. Prints what `deposit` prints, and the label's parts
   cc.py withdraw <amount>               U's EVM address burns <amount> wrapped Canton Coin through the gateway for U (as `evm.py withdraw` does), after checking that U has a WithdrawalAcceptance
                                         (`canton.py accept u` makes one) and the wrapped coin to burn. Then it waits, at most 10 minutes, until U's Canton Coin has grown by <amount> (the builder's
                                         Receive leg) and prints both sides: the burn on Ostia and U's Canton Coin before and after
@@ -44,7 +39,7 @@ that the validator API wants; also CZE_SCAN_TOKEN_FILE). Tokens are read from th
 The scan proxy is a server that this tool does not trust: each answer is size-capped and checked before it is used. All Ostia calls go through demo/evm.py (CZE_RPC_URL, CZE_STATE_DIR and the
 key U), all Canton ones through demo/canton.py's network (CZE_CANTON=external and the rest of its settings). Every command prints one JSON object; `FAIL: <why>` and exit status 1 when it cannot.
 """
-import json, os, re, secrets, sys
+import json, os, re, sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -57,9 +52,8 @@ AMULET = "Amulet"
 WRAPPED_NAME, WRAPPED_SYMBOL = "Canton Coin (Ostia)", "CC"   # the defaults of `register --name --symbol`
 SCAN_PROXY_URL = "CZE_SCAN_PROXY_URL"
 SCAN_TOKEN_FILE = "CZE_SCAN_TOKEN_FILE"
-ROUTER_ADDRESS = "OSTIA_ROUTER"
 FACTORY_TEMPLATE = re.compile(r"(?:[0-9a-f]{64}|#[A-Za-z0-9_.-]+):Splice\.ExternalPartyAmuletRules:ExternalPartyAmuletRules")
-COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "route": ("demo", "operator"), "withdraw": ("demo", "operator"),
+COMMAND_ROLES = {"register": ("operator", "confirmer"), "balances": ("demo", "operator"), "fund": ("demo", "sender"), "deposit": ("demo", "operator"), "withdraw": ("demo", "operator"),
                  "send-memo": ("demo",), "instructions": ("operator",), "take-back": ("demo",)}
 ALLOCATION_COMPLETED = "AllocationInstructionResult_Completed"
 WITHDRAW_WAIT_SECONDS = 600   # the longest that withdraw waits for the builder's Receive leg to reach U
@@ -319,17 +313,6 @@ def take_back(net: canton.Network, scan: Scan, instruction: str) -> dict:
 instructions = asset.instructions
 
 
-def route(net: canton.Network, scan: Scan, network: str, address: str, max_fee: str, amount: str, router: str, nonce: str = None) -> dict:
-    """`deposit` with the label of the Canton router and the router as recipient (the label's form is canton.route_label's). The most fee is a Canton Coin amount, in the label in base units."""
-    if not evm.WHOLE.fullmatch(network) or not canton.CANTON_AMOUNT.fullmatch(max_fee) or not (nonce is None or evm.WHOLE.fullmatch(nonce)):
-        raise SystemExit(f"the network and the nonce must be whole numbers and the most fee an amount with at most 10 decimals: {network!r} {max_fee!r} {nonce!r}")
-    if not router:
-        raise SystemExit(f"the router's address is needed: --router or {ROUTER_ADDRESS}")
-    nonce = secrets.randbelow(2**32) if nonce is None else int(nonce)
-    label = canton.route_label(int(network), address, twin.ledger_units(max_fee), nonce)
-    return {**deposit(net, scan, label, router, amount), "network": int(network), "destination": "0x" + canton.evm_address(address), "maxFee": max_fee, "nonce": nonce}
-
-
 def withdraw(net: canton.Network, scan: Scan, amount: str) -> dict:
     """U's EVM address burns `amount` wrapped Canton Coin through the gateway for U's party, which has to have a WithdrawalAcceptance: the builder's Receive leg then sends the coin from the
     gateway's custody to U through the scan proxy's factory. Waits (at most WITHDRAW_WAIT_SECONDS) until U's unlocked Canton Coin has grown by the amount."""
@@ -381,11 +364,11 @@ def main(argv: list) -> dict:
 def run(argv: list, options: dict) -> dict:
     cmd = argv[:1]
     if cmd and cmd[0] in COMMAND_ROLES:
-        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",), "register": ("--name", "--symbol"), "route": ("--router", "--nonce"), "send-memo": ("--label",)}.get(cmd[0], ())
+        names = ("--scan-proxy", "--scan-token-file") + {"balances": ("--token-file",), "fund": ("--sender-token-file",), "register": ("--name", "--symbol"), "send-memo": ("--label",)}.get(cmd[0], ())
         args, found = twin.split_options(argv[1:], names, __doc__)
         options.update(found)
         shape = {"register": not args, "balances": True, "fund": len(args) == 2 and "--sender-token-file" in options,
-                 "deposit": len(args) == 3, "route": len(args) == 4, "withdraw": len(args) == 1,
+                 "deposit": len(args) == 3, "withdraw": len(args) == 1,
                  "send-memo": len(args) == 2, "instructions": not args, "take-back": len(args) == 1}[cmd[0]]
         if not shape:
             raise SystemExit(__doc__)
@@ -411,8 +394,6 @@ def run(argv: list, options: dict) -> dict:
             net.check_roles(COMMAND_ROLES[cmd[0]])
         if cmd == ["deposit"]:
             return deposit(net, scan_of(options), *args)
-        if cmd == ["route"]:
-            return route(net, scan_of(options), *args, options.get("--router") or os.environ.get(ROUTER_ADDRESS), options.get("--nonce"))
         if cmd == ["withdraw"]:
             return withdraw(net, scan_of(options), args[0])
         if cmd == ["send-memo"]:

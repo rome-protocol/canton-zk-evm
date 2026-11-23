@@ -1,2 +1,0 @@
-# What router/run.sh needs besides PINS (solc) and tests/FOUNDRY (forge): the test library, by full commit hash.
-FORGE_STD_COMMIT=3e577a156f3ef021749e37be48a9804702a80b6e

@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { CardHead } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { instrumentName } from "../bridge/tokens.ts";
+import { instrumentName } from "../instrument.ts";
 import { plural, short, units } from "../format.ts";
 import { cantonMark, Mark, twinMark, Tok, useTwins } from "./TwinParts.tsx";
 

@@ -5,11 +5,11 @@ import { extname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * The header in a real browser: the built pages (BRIDGE_E2E_DIST) against a status answer and nothing else, so only the shell is drawn. At 1280, 1440 and 1920 px, on the home page and on a block page,
+ * The header in a real browser: the built pages (EXPLORER_E2E_DIST) against a status answer and nothing else, so only the shell is drawn. At 1280, 1440 and 1920 px, on the home page and on a block page,
  * the links sit on one row or are folded into the menu button, never on two; the header's search box is a compact field that opens on focus without moving a link, and Escape or leaving it closes it again;
- * and at 360 px the menu works as before. Runs when BRIDGE_E2E_DIST is set (the `bridge-page` job of .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
+ * and at 360 px the menu works as before. Runs when EXPLORER_E2E_DIST is set (the `browser` job of .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
  */
-const dist = process.env.BRIDGE_E2E_DIST;
+const dist = process.env.EXPLORER_E2E_DIST;
 const TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".json": "application/json", ".wasm": "application/wasm" };
 const STATUS = {
   chainId: 770101, chainName: "Ostia", networkName: "DevNet", coin: { symbol: "tROME", decimals: 18 }, pins: { programVK: "0x" + "cd".repeat(32), rootC: "0x" + "cd".repeat(32), file: "session.txt" },

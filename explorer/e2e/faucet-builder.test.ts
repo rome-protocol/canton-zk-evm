@@ -7,13 +7,13 @@ import type { Api } from "../server/api.ts";
 import type { Server } from "node:http";
 
 /**
- * The builder grant in a real browser, at the width of a phone: the built pages (BRIDGE_E2E_DIST) served by the explorer's own HTTP server over a real faucet, with GitHub faked
+ * The builder grant in a real browser, at the width of a phone: the built pages (EXPLORER_E2E_DIST) served by the explorer's own HTTP server over a real faucet, with GitHub faked
  * on both sides (the faucet's calls to GitHub are a fake `fetch`, and the browser's visit to GitHub's page is answered by the test, which sends it back with a code, as GitHub does).
  * A person types an address, presses "Sign in with GitHub", comes back to the Faucet page and sees the grant queued; a second account on the same address, and a young account, are
- * turned away in plain words. The token and the secret are never in anything the browser asked for or was shown. Runs when BRIDGE_E2E_DIST is set (the `bridge-page` job of
+ * turned away in plain words. The token and the secret are never in anything the browser asked for or was shown. Runs when EXPLORER_E2E_DIST is set (the `browser` job of
  * .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
  */
-const dist = process.env.BRIDGE_E2E_DIST;
+const dist = process.env.EXPLORER_E2E_DIST;
 const COIN = 10n ** 18n;
 const SECRET = "e2e-secret-" + Math.random().toString(36).slice(2);
 const ADDRESS = "0x" + "5a".repeat(20), OTHER = "0x" + "6b".repeat(20);

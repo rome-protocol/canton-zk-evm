@@ -4,7 +4,7 @@ export class RpcError extends Error {
   constructor(message: string, code: number) { super(message); this.code = code; }
 }
 
-/** One call to this explorer's public RPC (/rpc), which answers about final blocks only. `signal` is optional and none is set by default; the Bridge page passes a timeout. */
+/** One call to this explorer's public RPC (/rpc), which answers about final blocks only. `signal` is optional and none is set by default. */
 export async function rpc<T = unknown>(method: string, params: unknown[] = [], signal?: AbortSignal): Promise<T> {
   let res: Response;
   try {

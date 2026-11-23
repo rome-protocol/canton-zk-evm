@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
-import { bridgeOrigin } from "../bridge-app/where.ts";
+import { bridgeOrigin } from "../bridge-site.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useHealth, useNow, useStatus } from "../useStatus.ts";
 import { DOCS_URL, FOOTER_LINE, ISSUES_URL, SOURCE_URL } from "../copy.ts";
@@ -37,7 +37,7 @@ export function parentPath(pathname: string): string {
 
 /** Pages outside the header that still have a name of their own in the tab. */
 const OTHER_PAGES = ["about", "twins", "swaps", "swap", "legs", "leg", "search", "address", "addresses"];
-/** The tab's title: "Bridge · Ostia DevNet". On the signing page it also says which site is asking. A page of one item ("/block/12") is named in the singular. */
+/** The tab's title: "Bridge · Ostia DevNet". A page of one item ("/block/12") is named in the singular. */
 export function pageTitle(pathname: string, name: string, network: string | null): string {
   const site = network ? `${name} ${network}` : name;
   const [, first = "", ...rest] = pathname.split("/");

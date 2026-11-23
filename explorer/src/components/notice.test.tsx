@@ -95,12 +95,12 @@ describe("the banner on the pages", () => {
     expect(screen.getAllByRole("status").filter((x) => x.classList.contains("notice"))).toHaveLength(1);
   });
 
-  it("is on the Bridge page while the work is in progress, and the page itself is as before", async () => {
+  it("is on the /bridge page while the work is in progress, and the page itself is as before", async () => {
     at("2026-11-14T09:15:00Z");
     fakeApi(withNotice(NOTICE));
     renderApp("/bridge");
     expect(await screen.findByText(/Maintenance in progress:/)).toBeInTheDocument();
-    expect(await screen.findByText("The bridge is not set up on this site yet.")).toBeInTheDocument();
+    expect(await screen.findByText("The Bridge is its own site")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Bridge" })).toHaveClass("active");
   });
 
@@ -115,7 +115,7 @@ describe("the banner on the pages", () => {
     at("2026-11-14T08:00:00Z");
     fakeApi(withNotice(notice));
     renderApp("/bridge");
-    await screen.findByText("The bridge is not set up on this site yet.");
+    await screen.findByText("The Bridge is its own site");
     expect(document.querySelector(".notice")).toBeNull();
   });
 

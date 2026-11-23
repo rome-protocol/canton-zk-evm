@@ -160,52 +160,6 @@ export const REST_FIELDS = {
   deposit: ["depositId", "token", "symbol", "instrumentId", "amount", "amountDecimals", "createdAt"],
   payout: ["id", "status", "token", "symbol", "instrumentId", "amount", "amountDecimals", "createdAt", "until", "paidAt"],
   twinLeg: ["block", "txHash", "legId", "twin", "token", "symbol", "amount", "updateId"],
-  /** The AggLayer bridge page's setup: the chain, the bridge event to look for in a receipt, and the route rows. A row that is not open has only its name. Off, the answer is `{on: false}`. */
-  agglayerOff: ["on"],
-  agglayerSetup: ["on", "chain", "bridgeEvent", "routes", "messages"],
-  agglayerChain: ["chainId", "name", "networkId", "bridge"],
-  agglayerBridgeEvent: ["signature", "topic0"],
-  agglayerRouteClosed: ["id", "name", "open"],
-  agglayerRoute: ["id", "name", "open", "networkId", "chainId", "bridge", "available", "assets", "times", "claimedForYou"],
-  agglayerHandoffRoute: ["id", "name", "open", "via", "available", "solgate", "coin", "assets", "times"],
-  agglayerHandoffToken: ["symbol", "name", "decimals", "places", "ostia", "times"],
-  agglayerToken: ["symbol", "name", "decimals", "sepolia", "ostia"],
-  agglayerTimes: ["in", "out"],
-  agglayerRange: ["minSeconds", "maxSeconds"],
-  agglayerClaimedForYou: ["ostia", "remote"],
-  /** A deposit's stage (unknown, sent, confirmed, ready or claimed), and the deposit as the bridge service indexed it. */
-  agglayerDeposit: ["network", "count", "stage", "destinationNetwork", "sentAt", "confirmedAt", "readyAt", "leaf"],
-  agglayerLeaf: ["txHash", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount"],
-  /** A message deposit: its sender (the caller of `bridgeMessage`), the ETH it carries (`value`), its bytes and their hash (null, with `tooLarge`, when longer than the page takes). */
-  agglayerMessageLeaf: ["kind", "txHash", "originNetwork", "sender", "destinationNetwork", "destinationAddress", "value", "dataHash", "data", "tooLarge"],
-  /** The messages route (a wallet's messages, newest first), the note route (what a note board keeps for a sender) and the setup's `messages`. */
-  agglayerMessageList: ["wallet", "items"],
-  agglayerMessage: ["network", "count", "txHash", "destinationNetwork", "receiver", "sentAt", "dataHash", "data", "tooLarge"],
-  agglayerNote: ["network", "sender", "board", "found", "data", "tooLarge", "at", "number"],
-  agglayerMessages: ["on", "maxBytes", "noteBoards"],
-  agglayerNoteBoards: ["ostia", "sepolia"],
-  /** What a wallet needs to claim a deposit: where to send it (`to` on `chainId`), the calldata, and the arguments it is made of. */
-  agglayerClaim: ["network", "count", "claimed", "destinationNetwork", "chainId", "to", "l1InfoTreeIndex", "data", "args"],
-  agglayerClaimArgs: ["smtProofLocalExitRoot", "smtProofRollupExitRoot", "globalIndex", "mainnetExitRoot", "rollupExitRoot", "originNetwork", "originTokenAddress", "destinationNetwork", "destinationAddress", "amount", "metadata"],
-  /** The Canton route's setup (moves from Canton to Ethereum Sepolia through Ostia's router): off is `{on: false}`. `route` is closed (never opened), open, or stopped (was open). */
-  routeOff: ["on"],
-  routeSetup: ["on", "route", "available", "destination", "assets", "time", "notTakenSeconds", "ownClaimSeconds", "in"],
-  /** Flow C, back to Canton, in the setup (only with OSTIA_ROUTE_IN): its state, the way back's network, the waits, the router, and what Canton can pay out now (null while Canton cannot be read). */
-  routeIn: ["route", "refundNetwork", "refundWaitSeconds", "router", "book", "setupSeconds", "setupTime", "claimOstia", "payout"],
-  routeClaimOstia: ["afterSeconds", "leftOutSeconds"],
-  routePayout: ["paused", "pausedUntil", "assets"],
-  routePayoutAsset: ["erc20", "left", "renewsAt"],
-  routeDestination: ["network", "unit"],
-  routeAsset: ["erc20", "symbol", "name", "decimals", "open", "feeOut", "claimFee", "minAmount", "lockCap", "lockRoom", "feeIn", "feeRefund"],
-  /** One account's or one wallet's moves: the ones Ostia took (`taken`, from the router's event) and the open requests it has not (`requested`, from Canton). */
-  routeMoves: ["moves", "requestsRead", "back", "accepts"],
-  /** One event of flow C (`kind`: opened, held, forwarded or refunded) for an inbox, with the fields of its kind and null in the rest. */
-  routeBack: ["kind", "inbox", "erc20", "party", "refundNetwork", "refundAddress", "balance", "refundAt", "amount", "fee", "depositCount", "txHash", "block", "at"],
-  routeAccepts: ["party", "accepts"],
-  /** An account's Ostia address and where its opening stands. */
-  routeAddress: ["party", "refundNetwork", "refundAddress", "inbox", "accepts", "opened", "openedAt", "openTx"],
-  routeAsked: ["asked"],
-  routeMove: ["id", "state", "party", "destAddress", "erc20", "amount", "send", "fee", "depositCount", "txHash", "block", "at", "maxFee", "settleBefore"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
   legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "gateway", "twin", "legId", "token", "account", "amount", "party"],

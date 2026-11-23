@@ -116,67 +116,10 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     }
   });
 
-  it("gives the explorer the Bridge's own site's origin, from either setting, and not the indexer", () => {
+  it("gives the explorer container no setting of the Bridge site: the origin is built into the pages", () => {
     const site = "https://bridge.ostia.testnet.romeprotocol.xyz";
-    expect(start({ VITE_BRIDGE_ORIGIN: site })).toContain(` -e BRIDGE_ORIGIN=${site}`);
-    expect(start({ BRIDGE_ORIGIN: site })).toContain(` -e BRIDGE_ORIGIN=${site}`);
-    expect(indexerCommand({ VITE_BRIDGE_ORIGIN: site }).cmd).not.toContain("BRIDGE_ORIGIN");
-    expect(start()).not.toContain("BRIDGE_ORIGIN");
-  });
-
-  it("passes the AggLayer bridge's settings to the explorer only, and names the Sepolia endpoint without its value", () => {
-    const endpoint = "https://sepolia.example.invalid/hidden-part-1234";
-    const env = { AGGLAYER_BRIDGE: "1", AGGLAYER_SEPOLIA_RPC_URL: endpoint, AGGKIT_BRIDGE_URL: "http://127.0.0.1:5578", AGGLAYER_OSTIA_BRIDGE: "0x" + "11".repeat(20), AGGLAYER_SEPOLIA_BRIDGE: "0x" + "22".repeat(20), AGGLAYER_AGGKIT_MAX_LAG_BLOCKS: "12", AGGLAYER_SEPOLIA_MAX_PER_SECOND: "3" };
-    const cmd = start(env);
-    for (const flag of ["AGGLAYER_BRIDGE=1", "AGGKIT_BRIDGE_URL=http://127.0.0.1:5578", "AGGLAYER_AGGKIT_MAX_LAG_BLOCKS=12", "AGGLAYER_SEPOLIA_MAX_PER_SECOND=3", `AGGLAYER_OSTIA_BRIDGE=${env.AGGLAYER_OSTIA_BRIDGE}`]) expect(cmd).toContain(` -e ${flag}`);
-    expect(cmd).toMatch(/ -e AGGLAYER_SEPOLIA_RPC_URL( |$)/);
-    expect(cmd).not.toContain("hidden-part-1234");
-    expect(indexerCommand(env).cmd).not.toContain("AGGLAYER");
-    const off = start();
-    expect(off).not.toContain("AGGLAYER");
-    expect(off).not.toContain("AGGKIT");
-  });
-
-  it("passes the message routes' settings to the explorer only, and leaves them out when not set", () => {
-    const messages = { AGGLAYER_MESSAGES: "1", AGGLAYER_NOTE_BOARDS: '{"ostia":"0x' + "33".repeat(20) + '"}', AGGLAYER_MESSAGE_MAX_BYTES: "280", AGGLAYER_MESSAGE_READ_MAX_BYTES: "4096" };
-    const cmd = start(messages);
-    for (const [name, value] of Object.entries(messages)) expect(cmd).toContain(` -e ${name}=${value}`);
-    expect(indexerCommand(messages).cmd).not.toContain("AGGLAYER");
-    expect(start()).not.toContain("AGGLAYER_MESSAGE");
-    expect(start()).not.toContain("AGGLAYER_NOTE_BOARDS");
-  });
-
-  it("passes the Solgate route's settings to the explorer only, and leaves them out when not set", () => {
-    const solgate = { AGGLAYER_SOLGATE_URL: "https://solgate.example/", AGGLAYER_HADRIAN_RPC_URL: "https://hadrian.example/rpc", AGGLAYER_HADRIAN_CHAIN_ID: "200010", AGGLAYER_HADRIAN_NETWORK_ID: "74" };
-    const cmd = start(solgate);
-    for (const [name, value] of Object.entries(solgate)) expect(cmd).toContain(` -e ${name}=${value}`);
-    expect(indexerCommand(solgate).cmd).not.toContain("AGGLAYER");
-    expect(start()).not.toContain("AGGLAYER_SOLGATE");
-    expect(start()).not.toContain("AGGLAYER_HADRIAN");
-  });
-
-  it("passes the Canton route's settings to the explorer only, and gives it the gateway party's token only with the route on", () => {
-    const file = join(state, "gw-auth");
-    writeFileSync(file, "t\n", { mode: 0o600 });
-    const route = { OSTIA_ROUTE_OUT: "1", OSTIA_ROUTER: "0x" + "a1".repeat(20), OSTIA_BOOK: "0x" + "b2".repeat(20), OSTIA_ROUTE_NOT_TAKEN_SECONDS: "600", OSTIA_ROUTE_OWN_CLAIM_SECONDS: "300", OSTIA_ROUTE_TIME: '{"minSeconds":1,"maxSeconds":2}' };
-    const gateway = { GATEWAY_PARTY: "gw::1220ab", GATEWAY_LEDGER_TOKEN_FILE: file };
-    const cmd = start({ ...route, ...gateway });
-    for (const flag of ["OSTIA_ROUTE_OUT=1", `OSTIA_ROUTER=${route.OSTIA_ROUTER}`, "OSTIA_ROUTE_NOT_TAKEN_SECONDS=600", "OSTIA_ROUTE_OWN_CLAIM_SECONDS=300", "GATEWAY_PARTY=gw::1220ab", "GATEWAY_LEDGER_TOKEN_FILE=/run/explorer/gateway-ledger-token"]) expect(cmd).toContain(` -e ${flag}`);
-    expect(cmd).toContain(`${file}:/run/explorer/gateway-ledger-`);
-    expect(indexerCommand({ ...route, ...gateway }).cmd).not.toContain("OSTIA_ROUTE");
-    const without = start({ ...gateway });
-    expect(without).not.toContain("GATEWAY_PARTY");
-    expect(without).not.toContain("gateway-ledger-token");
-    expect(start()).not.toContain("OSTIA_ROUTE");
-  });
-
-  it("passes the way back to Canton's settings to the explorer only", () => {
-    const back = { OSTIA_ROUTE_IN: "1", OSTIA_INTAKE_URL: "http://127.0.0.1:7791/open", OSTIA_ROUTE_SETUP_SECONDS: "900", OSTIA_ROUTE_SETUP_TIME: '{"minSeconds":1,"maxSeconds":2}', OSTIA_CLAIM_OSTIA: "1", OSTIA_ROUTE_CLAIM_OSTIA_SECONDS: "600", OSTIA_ROUTE_LEFT_OUT_SECONDS: "1200" };
-    const cmd = start(back);
-    for (const [name, value] of Object.entries(back)) expect(cmd).toContain(` -e ${name}=${value}`);
-    expect(indexerCommand(back).cmd).not.toContain("OSTIA_");
-    expect(start()).not.toContain("OSTIA_ROUTE_IN");
-    expect(start()).not.toContain("OSTIA_INTAKE_URL");
+    const env = { VITE_BRIDGE_ORIGIN: site, BRIDGE_ORIGIN: site, ACCOUNTS_HEALTH_URL: "http://127.0.0.1:8081/healthz" };
+    for (const cmd of [start(env), indexerCommand(env).cmd]) for (const name of ["BRIDGE_ORIGIN", "ACCOUNTS_HEALTH_URL"]) expect(cmd).not.toContain(name);
   });
 
   it("keeps the filesystem read-only and gives the tracker one writable folder in the state, with TRACKER_FILE inside it", () => {
@@ -289,16 +232,17 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh build", () => {
     expect(build({ NETWORK_NAME: "TestNet", VITE_NETWORK_NAME: "Other" })).toContain("--build-arg VITE_NETWORK_NAME=Other");
   });
 
-  it("builds the pages with the Bridge's own site's origin when one is set, from either setting, and without it when not", () => {
+  it("builds the pages with the Bridge site's origin when one is set, from either setting, and without it when not", () => {
     const site = "https://bridge.ostia.testnet.romeprotocol.xyz";
     expect(build()).not.toContain("VITE_BRIDGE_ORIGIN");
     expect(build({ VITE_BRIDGE_ORIGIN: site })).toContain(`--build-arg VITE_BRIDGE_ORIGIN=${site}`);
     expect(build({ BRIDGE_ORIGIN: site })).toContain(`--build-arg VITE_BRIDGE_ORIGIN=${site}`);
   });
 
-  it("has an argument and a copy in the Dockerfile for the Bridge's own page", () => {
+  it("has an argument in the Dockerfile for the Bridge site's origin, and copies no Bridge page", () => {
     const dockerfile = readFileSync(resolve(import.meta.dirname, "../Dockerfile"), "utf8");
     expect(dockerfile).toContain("ARG VITE_BRIDGE_ORIGIN=");
-    expect(dockerfile).toMatch(/COPY explorer\/index\.html explorer\/bridge\.html /);
+    expect(dockerfile).toMatch(/COPY explorer\/index\.html explorer\/tsconfig\.json /);
+    expect(dockerfile).not.toContain("bridge.html");
   });
 });

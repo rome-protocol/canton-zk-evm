@@ -1,5 +1,4 @@
 import { useId } from "react";
-import { explorerHref, inApp } from "../bridge-app/where.ts";
 import { formatCoin, formatPeriod, formatWait } from "./format.ts";
 import type { FaucetInfo } from "./faucet-client.ts";
 
@@ -47,7 +46,7 @@ export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null 
     <div className="builder-grant">
       <p className="small builder-line">Building on Ostia? Get {amount}.</p>
       {ready ? (
-        <a className="gh-btn" href={explorerHref(builderStartPath(address!.trim()))} {...(inApp() ? { target: "_blank", rel: "noopener" } : {})}>
+        <a className="gh-btn" href={builderStartPath(address!.trim())}>
           <GitHubMark />
           <span>Sign in with GitHub</span>
         </a>

@@ -5,12 +5,12 @@ import { createHttpServer } from "../server/http.ts";
 import type { Api } from "../server/api.ts";
 
 /**
- * The security headers in a real browser: the built pages (BRIDGE_E2E_DIST) served by the explorer's own HTTP server, so the policy and the headers are the ones it sends. Every top-level page route and a 404
+ * The security headers in a real browser: the built pages (EXPLORER_E2E_DIST) served by the explorer's own HTTP server, so the policy and the headers are the ones it sends. Every top-level page route and a 404
  * open and draw under them with no refusal by the policy, the search form (the page's only form besides the faucet's) still takes the person to the result, and a page of another site that
- * frames the explorer gets no explorer in its frame. The faucet's GitHub sign-in, which is a link, is held by faucet-builder.test.ts on the same server. Runs when BRIDGE_E2E_DIST is set (the
- * `bridge-page` job of .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
+ * frames the explorer gets no explorer in its frame. The faucet's GitHub sign-in, which is a link, is held by faucet-builder.test.ts on the same server. Runs when EXPLORER_E2E_DIST is set (the
+ * `browser` job of .github/workflows/explorer.yml does), with PLAYWRIGHT_CORE naming the playwright-core of explorer/test/l4.
  */
-const dist = process.env.BRIDGE_E2E_DIST;
+const dist = process.env.EXPLORER_E2E_DIST;
 const STATUS = {
   chainId: 770101, chainName: "Ostia", networkName: "DevNet", coin: { symbol: "tROME", decimals: 18 }, pins: { programVK: "0x" + "cd".repeat(32), rootC: "0x" + "cd".repeat(32), file: "session.txt" },
   ok: true, starting: false, problems: [], evm: true, canton: true, final: null, proving: null, latest: [], signers: null, faucet: { on: true }, publicRpc: true, indexHead: 1, indexLag: 0, deriveCursor: 1,

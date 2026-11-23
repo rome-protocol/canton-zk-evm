@@ -155,7 +155,7 @@ export class ApiError extends Error {
 
 const UNREADABLE = "The explorer cannot read the chain right now.";
 
-/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. The Bridge page passes a timeout on its own reads. */
+/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. */
 async function call(path: string, accept: readonly number[], signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
   let res: Response;
   try {
@@ -589,16 +589,3 @@ export interface SwapItem {
 }
 export const getSwapPage = async (before: string | null, limit = PAGE) => (await call(`/api/swaps?limit=${limit}${cursor("before", before)}`, [200])).body as Page<SwapItem>;
 export const getSwap = async (payId: string) => (await call(`/api/swaps/${encodeURIComponent(payId)}`, [200])).body as SwapItem;
-
-/** The reads the Bridge page makes, each with a signal (its timeout). The reads above set none: some requests (exports, statistics) may take long. */
-export const bridgeReads = {
-  status: readStatus,
-  twins: async (signal: AbortSignal) => (await call("/api/twins", [200], signal)).body as TwinsOverview,
-  /** The least one deposit of an instrument may carry: `floor` is decimal text. The list is empty where the explorer has no minimum to give. */
-  minimums: async (signal: AbortSignal) => (await call("/api/bridge/minimums", [200], signal)).body as { minimums?: { instrumentAdmin: string; floor: string }[] },
-  tx: async (hash: string, signal: AbortSignal) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200], signal)).body as ApiTx,
-  leg: async (id: string, signal: AbortSignal) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200], signal)).body as LegListItem,
-  /** The newest transactions the address sent; `before` is the `next` of a page, for the page after it. */
-  sentTxs: async (a: string, limit: number, signal: AbortSignal, before?: string) =>
-    (await call(`${of(a, "/txs")}?limit=${limit}${directionQuery("sent")}${before === undefined ? "" : `&before=${encodeURIComponent(before)}`}`, [200], signal)).body as Page<TxListItem>,
-};

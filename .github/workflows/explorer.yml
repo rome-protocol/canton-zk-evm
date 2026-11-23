@@ -33,41 +33,27 @@ jobs:
               && VITE_NETWORK_NAME=TestNet VITE_SITE_ORIGIN=https://ostia.testnet.romeprotocol.xyz npm run build -- --outDir dist-testnet \
               && grep -c TestNet dist-testnet/index.html && grep -c https://ostia.testnet.romeprotocol.xyz/ostia-card.png dist-testnet/index.html && ! grep -i devnet dist-testnet/index.html"
 
-  # The Bridge page in a real browser. Three builds of the pages: with the Bridge account made from a wallet signature (VITE_BRIDGE_ACCOUNT=on; explorer/e2e/bridge-account.test.ts, then bridge-moves.test.ts, which move a token each way through the card,
-  # and bridge-send.test.ts: a wallet that signs with a fixed key opens an account on a fake account service, at the width of a phone); with Canton wallets switched on and no Bridge account (explorer/e2e/bridge-wallet.test.ts, which moves
-  # Canton Coin with a connected Canton wallet); and with neither, which is the default build and TestNet's (explorer/e2e/bridge-off.test.ts: no key code in the pages, no signature asked, no account service; then bridge-other-chains.test.ts on the same build: the AggLayer Bridge tab, with a fake bridge service and a fake Ethereum Sepolia; then bridge-canton-route.test.ts and bridge-canton-back.test.ts: its Canton route and its way back to Canton, with a fake route API). The two builds without the account are made
-  # with no participant and no party hint, which only the Bridge account needs. It runs in the pinned browser image, with the playwright-core of explorer/test/l4 (the same exact version the image's browsers belong to).
-  # The last step lists the size of each script, gzipped: the Bridge's own and the signing code's are separate from the first page's.
-  bridge-page:
+  # The explorer's pages in a real browser, at the width of a phone: the built pages (EXPLORER_E2E_DIST) served by the explorer's own HTTP server. It runs in the pinned browser image, with the playwright-core of
+  # explorer/test/l4 (the same exact version the image's browsers belong to). The last step lists the size of each script, gzipped.
+  browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
         with:
           images: EXPLORER_BROWSER_IMAGE
-      - name: Build the pages with the bridge's settings, and run the browser test
+      - name: Build the pages and run the browser tests
         run: |
           set -a; . ./PINS; set +a
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -e VITE_CHAIN_OPERATOR="operator::1220$(printf '01%.0s' $(seq 32))" -e VITE_CHAIN_CONFIRMER="confirmer::1220$(printf '02%.0s' $(seq 32))" \
-            -e VITE_CHAIN_GATEWAY="gateway::1220$(printf '03%.0s' $(seq 32))" -e VITE_CHAIN_BUILDER="builder::1220$(printf '04%.0s' $(seq 32))" \
-            -e BRIDGE_WTROME_ADDRESS="0x$(printf 'b1%.0s' $(seq 20))" -e VITE_CHAIN_ID=770101 -e VITE_CANTON_PARTICIPANT="PAR::operator::1220$(printf '05%.0s' $(seq 32))" -e VITE_SITE_ORIGIN=http://127.0.0.1:4173 \
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e VITE_SITE_ORIGIN=http://127.0.0.1:4173 \
             --network host -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_BROWSER_IMAGE" \
-            sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && VITE_BRIDGE_ACCOUNT=on npm run build \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-account.test.ts && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-moves.test.ts \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-send.test.ts \
-              && env -u VITE_CANTON_PARTICIPANT VITE_CANTON_WALLETS=extension npm run build -- --outDir dist-wallet && BRIDGE_E2E_DIST=dist-wallet PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-wallet.test.ts \
-              && env -u VITE_CANTON_PARTICIPANT npm run build -- --outDir dist-off && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-off.test.ts \
-              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-other-chains.test.ts \
-              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-app.test.ts \
-              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-route.test.ts \
-              && BRIDGE_E2E_DIST=dist-off PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/bridge-canton-back.test.ts \
+            sh -c "npm ci --ignore-scripts --no-audit --no-fund && (cd test/l4 && npm ci --ignore-scripts --no-audit --no-fund) && npm run build \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/canton-phone.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/warning-phone.test.ts \
               && PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/notice-phone.test.ts \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/header-row.test.ts \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/faucet-builder.test.ts \
-              && BRIDGE_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/security-headers.test.ts \
+              && EXPLORER_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/header-row.test.ts \
+              && EXPLORER_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/faucet-builder.test.ts \
+              && EXPLORER_E2E_DIST=dist PLAYWRIGHT_CORE=/repo/explorer/test/l4/node_modules/playwright-core npx vitest run e2e/security-headers.test.ts \
               && for f in dist/assets/*.js; do echo \"\$(gzip -9c \"\$f\" | wc -c) \$f\"; done | sort -n | tail -n 12"
 
   # The verifier's sandbox, for real: a compile runs in a container of the pinned image (SOLC_SANDBOX_IMAGE, Debian slim: the official compilers need glibc's shared libraries) with no network, a read-only filesystem,
@@ -272,23 +258,3 @@ jobs:
       - name: Remove the PostgreSQL and its volume
         if: always()
         run: docker rm -f -v explorer-l2-db
-
-  # The generated Canton topology code (explorer/canton-proto/gen) is what generate.sh makes from the pinned Canton release's .proto files (each checked against its SHA-256), with the
-  # protobuf-ts plugin of the lockfile. On the runner's own Node: protobuf-ts's protoc is a glibc build, which the alpine Node image cannot run.
-  canton-proto:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Generate the code again and compare it with what is committed
-        run: |
-          cd explorer
-          npm ci --ignore-scripts
-          canton-proto/generate.sh
-          [ -z "$(git status --porcelain -- canton-proto/gen)" ] || { git status --short -- canton-proto/gen; echo "the generated code is not what generate.sh makes" >&2; exit 1; }
-      - name: Keep what was generated
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: canton-proto-gen
-          path: explorer/canton-proto/gen
-          if-no-files-found: warn

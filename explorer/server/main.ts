@@ -12,7 +12,7 @@ import { clientHasher, loadClientKey } from "./faucet-store.ts";
 import { createVerifyApi } from "./verifier/api.ts";
 import { JobQueue } from "./verifier/jobs.ts";
 import { createHttpServer } from "./http.ts";
-import { gatewayLedgerFromConfig, ledgerFromConfig } from "./ledger-config.ts";
+import { ledgerFromConfig } from "./ledger-config.ts";
 import { createPublicRpc } from "./public-rpc.ts";
 import { createLegCheck } from "./leg-check.ts";
 import { createReth } from "./reth.ts";
@@ -21,11 +21,6 @@ import { createStreamSource } from "./rest/stream-source.ts";
 import { onShutdown } from "./shutdown.ts";
 import { openStorage } from "./storage.ts";
 import { createTracker } from "./tracker.ts";
-import { createAgglayerBridge } from "./agglayer/bridge.ts";
-import { createAggkitReader } from "./agglayer/aggkit.ts";
-import { createSepoliaReader } from "./agglayer/sepolia.ts";
-import { createCantonRoute } from "./route/route.ts";
-import { createCanton } from "./route/canton.ts";
 
 try {
   const config = loadConfig();
@@ -45,22 +40,15 @@ try {
   // Verification (design 6.3): the routes are always registered with a database, and answer 503 until a verifier role is running. A client's address is kept only as a keyed hash,
   // with the faucet's key when there is one and otherwise a key made for this run.
   const verify = storage.pool ? createVerifyApi({ pool: storage.pool, queue: new JobQueue(storage.pool), clientHash: clientHasher(config.faucet.clientKeyFile ? loadClientKey(config.faucet.clientKeyFile) : randomBytes(32)), probe: { storageAt: reth.storageAt, call: reth.callAt, code: reth.codeAt } }) : undefined;
-  // The AggLayer bridge routes: on only with AGGLAYER_BRIDGE=1. The service is read on this machine; Ethereum Sepolia is read through the endpoint kept in the settings.
-  const ag = config.agglayer;
-  const agglayer = ag ? createAgglayerBridge({ settings: ag, chainId: config.chainId, chainName: config.chainName, reth, aggkit: createAggkitReader({ baseUrl: ag.aggkitUrl, ...(ag.messages ? { maxMetadataBytes: ag.messages.readMaxBytes } : {}) }), sepolia: createSepoliaReader({ url: ag.sepoliaRpc, bridge: ag.sepoliaBridge, rollupManager: ag.rollupManager, maxPerSecond: ag.sepoliaMaxPerSecond }) }) : undefined;
-  // The Canton route (OSTIA_ROUTE_OUT=1): the book and the router are read on Ostia, the moves from the database, and the open requests from Canton as the gateway party when one is set.
-  const cr = config.cantonRoute;
-  const cantonRoute = cr && agglayer && storage.pool ? createCantonRoute({ settings: cr, agglayer: ag!, bridge: agglayer, reth, pool: storage.pool, canton: cr.gateway ? createCanton({ reader: ledger, chainId: config.chainId, gateway: Object.assign(gatewayLedgerFromConfig(config, cr.gateway), { party: cr.gateway.party }) }) : null }) : undefined;
-  if (cr && !cantonRoute) throw new ConfigError("OSTIA_ROUTE_OUT reads moves from the database: set EXPLORER_DATABASE_URL, or EXPLORER_DB_PASSWORD_FILE with its parts");
   // Each API instance writes its own health rows (design 6.5). The name is EXPLORER_INSTANCE, or the host's name.
-  const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker, ...(config.accountsHealthUrl ? { accounts: { url: config.accountsHealthUrl } } : {}), ...(agglayer ? { agglayer } : {}) }) : undefined;
-  const api = createApi({ config, ...(rpc ? { rpc: rpc.handler } : {}), ...(verify ? { verify } : {}), reth, ledger, chain, faucet, tracker, ...(agglayer ? { agglayer } : {}), ...(cantonRoute ? { cantonRoute } : {}), ...(health ? { health } : {}), ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), ...(storage.etherscanRest ? { etherscanRest: storage.etherscanRest } : {}), ...(storage.statsRest ? { stats: storage.statsRest } : {}), live: Boolean(storage.pool && config.database) });
+  const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker }) : undefined;
+  const api = createApi({ config, ...(rpc ? { rpc: rpc.handler } : {}), ...(verify ? { verify } : {}), reth, ledger, chain, faucet, tracker, ...(health ? { health } : {}), ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), ...(storage.etherscanRest ? { etherscanRest: storage.etherscanRest } : {}), ...(storage.statsRest ? { stats: storage.statsRest } : {}), live: Boolean(storage.pool && config.database) });
   // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
   const hub = createStreamHub();
   const source = storage.pool && config.database
     ? createStreamSource({ pool: storage.pool, connection: config.database, hub, inflight: async () => (await api("GET", "/api/in-flight")).body })
     : null;
-  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null, config.bridgeOrigin);
+  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined, undefined, config.captcha?.scriptUrl ?? null);
   await Promise.all([tracker.ready(), faucet.ready()]);
   server.listen(config.port, config.host, () => {
     console.log(`explorer for ${config.chainName} listening on http://${config.host}:${config.port}`);

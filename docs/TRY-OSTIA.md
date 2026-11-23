@@ -90,29 +90,9 @@ The public RPC only shows final blocks. A transaction you have just sent does no
 
 On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/block/<number>`). The block page shows the Canton update that holds the block's record, the time Canton recorded it, and the proof. Its Verify button checks the proof in your browser, with no server involved. The same data is in the API, for example `GET /api/blocks/<number>` and `GET /api/canton/updates/<update id>`.
 
-## Move tokens with the Bridge page
+## Move tokens with the Bridge
 
-Anyone with a browser wallet can move tokens between Ostia and Canton on their own, on `https://ostia.devnet.romeprotocol.xyz/bridge`. DevNet only. MetaMask, Rabby and OKX on a computer have been tested; no phone wallet has been tested, so use a computer. Moves are public on Ostia: a move back to Canton shows your Canton account next to your Ostia address.
-
-1. Open `/bridge` and press Connect wallet. The page adds Ostia DevNet to the wallet if it is not there.
-2. Press Open my Canton account. Your wallet asks you to sign one message, which costs no gas. The first time it asks twice for the same message, so the page can check that your wallet signs it the same way each time. The page makes the Canton key from that signature, keeps it in this browser and signs your Canton steps with it. Rome runs the node that hosts the account and the twin admin, so on DevNet you trust Rome with what the account holds. If your wallet gives the same signature again, the same account opens in another browser; not every wallet does. There is no recovery: use DevNet test tokens only. [Limits](https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature). Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
-3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's participant allows up to 1000 accounts.
-4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; your wallet asks only for the Ostia steps. A line under the button says about how long the move takes and how many wallet pop-ups it needs; open it to see each step.
-
-These steps are for a build of the explorer with the Bridge account, the Canton account made from a wallet signature (`VITE_BRIDGE_ACCOUNT=on`). A build without it, which is the default and the shape TestNet takes, has no sign-in, no key made from a signature and no Canton Coin faucet button: the card's button says Connect your Canton wallet, the Canton account is the one in the wallet a person already has, and until a build lists a wallet the button is disabled and says Coming soon. The tROME faucet and the builder grant are the explorer's own and work in both.
-
-The four moves:
-
-| Move | Wallet pop-ups | Measured |
-|---|---|---|
-| An Ostia token (TKA, tROME) to Canton: it arrives as the same token. tROME is wrapped first | 2 for TKA; 3 for tROME (wrap, approve, pay) | tROME: 2 min 13 s |
-| Back from Canton to Ostia: the page signs on Canton, you release on Ostia. tROME comes back as WtROME | 1 | tROME: 58 s |
-| Canton Coin to Ostia: it arrives as the CC token. The page signs twice on Canton, you claim on Ostia | 1 | 56 s |
-| CC back to Canton Coin | 1 | 46 s |
-
-The times were measured on the live site on 8 November 2026 with a fresh wallet. The chain itself was final in about 10 seconds; the rest is the wallet and the page waiting for the proven block. Expect about 1 minute for a move with one pop-up and about 2 minutes for a lock (two or three pop-ups).
-
-Each move shows three marks: Sent (the transaction has a hash, or the explorer has it), Proven (the zero-knowledge proof of its block has ended) and Final (the block is final on Canton and the transaction went through). In the Activity tab each row links to the move's block on Ostia and to its Canton update. The Activity tab lists your moves, the unfinished ones and the ones started in another browser, and an unfinished move carries on from its row. A lock for an account that has not opted in is refused before anything is paid.
+Tokens move between Ostia and Canton, and between Ostia and other chains, on the Bridge site, https://bridge.ostia.testnet.romeprotocol.xyz. It is not part of this repository. The explorer links to it, and `/bridge` on the explorer sends a visitor there.
 
 ## Deposit by memo
 
@@ -122,13 +102,13 @@ The worker accepts the transfer for a registered token whose amount is at least 
 
 ## Canton tokens on DevNet
 
-The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14d10a8b1b3af`, is the wrapped form of TKB, a Canton test token, and it is an ordinary ERC-20 with 10 decimals: read `balanceOf` and `totalSupply` like any other. The first deposits, payments and withdrawals (25 October 2026, blocks 780, 783 and 784, and again 1465, 1471 and 1473) were made by Rome with test parties it runs. Canton Coin and the Ostia tokens now move on the [Bridge page](#move-tokens-with-the-bridge-page). Open `https://ostia.devnet.romeprotocol.xyz/legs` to see every leg, or `GET /api/legs`. Rome cycles a deposit, a payment and a withdrawal every 10 minutes with its own test parties, so the block numbers above are only the first runs, and almost every leg on the page is that test loop, not outside use. On 27 October 2026 (15:55 UTC) an OTC app (`apps/otc`) swapped TKB for an ERC-20, TKA at `0xf4b69022b3e6501101600743f17fbe0659dd1af8`. The buyer's payment and the seller's TKB settled together in block 16816, in one Canton update, and the buyer claimed the wrapped TKB in block 16823.
+The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14d10a8b1b3af`, is the wrapped form of TKB, a Canton test token, and it is an ordinary ERC-20 with 10 decimals: read `balanceOf` and `totalSupply` like any other. The first deposits, payments and withdrawals (25 October 2026, blocks 780, 783 and 784, and again 1465, 1471 and 1473) were made by Rome with test parties it runs. Canton Coin and the Ostia tokens now move on the [Bridge page](#move-tokens-with-the-bridge). Open `https://ostia.devnet.romeprotocol.xyz/legs` to see every leg, or `GET /api/legs`. Rome cycles a deposit, a payment and a withdrawal every 10 minutes with its own test parties, so the block numbers above are only the first runs, and almost every leg on the page is that test loop, not outside use. On 27 October 2026 (15:55 UTC) an OTC app (`apps/otc`) swapped TKB for an ERC-20, TKA at `0xf4b69022b3e6501101600743f17fbe0659dd1af8`. The buyer's payment and the seller's TKB settled together in block 16816, in one Canton update, and the buyer claimed the wrapped TKB in block 16823.
 
 ## Canton twins and Canton Coin on DevNet
 
 Since 29 October 2026 an ERC-20 on Ostia can stand on Canton as a twin, and Canton Coin can move onto Ostia and back. The twins went live in commit 4b4f63c, deployed at 10:33 UTC that day, under Daml package 0.5.0. DevNet runs commit 734b316 since 16 November 2026 (c350f87 from 8 November), with the same twin flows, the twin acceptance below and the Bridge page.
 
-How these flows work on DevNet (the Bridge page above makes the Canton steps for you; `demo/twin.py` and `demo/cc.py` show them one by one):
+How these flows work on DevNet (the Bridge above makes the Canton steps for you; `demo/twin.py` and `demo/cc.py` show them one by one):
 
 - **Lock an ERC-20 for a Canton party.** You pay the ERC-20 into the vault, and the Canton party you named (today one on Rome's participants, see below) holds the same amount of its twin, a CIP-0056 token with the instrument id `erc20:<token address>`. The twin follows the CIP-0056 standard, but a party can hold it only where its participant has vetted the twin package: today that is Rome's two DevNet participants, so a Canton wallet on another validator cannot hold it yet. After each lock and redeem the twin's supply equals what the vault holds, and the explorer's token page compares the two.
 - **Redeem it.** The holder of the twin signs a redeem request on Canton, `Vault.release` pays the ERC-20 to the EVM address in the request, and the twin is burnt.
@@ -175,7 +155,7 @@ A lock is for a party on one of Rome's two DevNet participants, which have vette
 
 The acceptance keeps a lock from stranding a payer. It has been on DevNet since 8 November 2026. A party signs a `TwinAcceptance` once (a contract of the twin package 0.2.0, `apps/twin`), and the service refuses to announce a lock for a party without one (409). The builder reads the receiver's acceptance itself, and a lock for a party without one, even if it is paid, is left out of the block before it is proven, so the ERC-20 stays with the payer. A participant that hosts twin receivers vets twin 0.1.0 and 0.2.0, because the chain mints twin 0.1.0 and the acceptance is in 0.2.0. An account opened on the Bridge page signs its acceptance as part of opening.
 
-Redeeming, and every Canton Coin step, needs a signature of a Canton party as well; the Bridge page signs it with the account's own key. [DESIGN.md](DESIGN.md#ostia-on-devnet) lists the other known limits of the twins.
+Redeeming, and every Canton Coin step, needs a signature of a Canton party as well; the Bridge signs it with the account's own key. [DESIGN.md](DESIGN.md#ostia-on-devnet) lists the other known limits of the twins.
 
 `demo/twin.py` shows each step of the twins (`deploy-vault`, `rules`, `lock`, `send`, `redeem`, `balances`), and `demo/cc.py` shows each step of Canton Coin (`register`, `fund`, `deposit`, `withdraw`, `balances`). Both print one JSON object per command and are described in [demo/README.md](../demo/README.md).
 

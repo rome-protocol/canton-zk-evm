@@ -5,9 +5,6 @@
   "license": "Apache-2.0",
   "description": "A block explorer and faucet for Ostia, a Canton zkEVM.",
   "type": "module",
-  "config": {
-    "protocVersion": "36.2"
-  },
   "engines": {
     "node": ">=22.18"
   },
@@ -22,13 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@canton-network/core-ledger-proto": "1.14.0",
-    "@canton-network/core-tx-visualizer": "1.14.0",
-    "@canton-network/dapp-sdk": "1.9.0",
     "@ethereum-sourcify/lib-sourcify": "3.7.4",
-    "@fivenorth/loop-sdk": "0.16.0",
-    "@noble/ed25519": "3.2.0",
-    "@protobuf-ts/runtime": "2.11.1",
     "@tanstack/react-query": "5.104.1",
     "pg": "8.23.1",
     "react": "19.3.0",
@@ -37,8 +28,6 @@
     "viem": "2.57.2"
   },
   "devDependencies": {
-    "@protobuf-ts/plugin": "2.11.1",
-    "@protobuf-ts/protoc": "2.11.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
@@ -48,15 +37,9 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "ethers": "6.17.0",
-    "fake-indexeddb": "6.2.5",
     "jsdom": "30.1.2",
     "typescript": "7.0.2",
     "vite": "8.3.2",
     "vitest": "5.0.3"
-  },
-  "overrides": {
-    "@fivenorth/loop-sdk": {
-      "typescript": "$typescript"
-    }
   }
 }
