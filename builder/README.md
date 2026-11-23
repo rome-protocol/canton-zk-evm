@@ -317,7 +317,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
 | `blocksCommitted`, `blocksRefused`, `blocksUnknown` | counts since the loop started |
 | `consecutiveFailures` | failures since the last answered block |
-| `lastError` | `{time, error}`: the last refusal reason, unknown outcome or failure. If moving reth back after the failure or the refusal failed too, `error` is still the original and `rewindError` holds the second |
+| `lastError` | `{time, error, kind, number}`: the last refusal reason, unknown outcome or failure; `kind` is `input_tool`, `proof`, `head`, `canton_refused`, `canton_not_taken`, `canton_unresolved` or `other`, and `number` is the block's number when it has one. The explorer shows only the kind (one fixed sentence), never `error`. If moving reth back after the failure or the refusal failed too, `error` is still the original and `rewindError` holds the second |
 | `excluded` | the transactions left out now, each as `{transaction, until}`, and `reason` for one the prover could not finish |
 | `heldParties` | the parties whose legs are held back after a confirmation timeout, `{party: {"until", "strikes"}}`, or `{party: {"waiting": true}}` for one that waits while the others are tried; `{}` when none |
 | `searchingForUnprovable` | `{candidates}` while the loop looks for a transaction the prover cannot finish, else `null` |

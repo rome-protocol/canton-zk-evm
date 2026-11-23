@@ -12,6 +12,7 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { setHealth } from "./health.ts";
+import { attemptReason, publicText } from "../health.ts";
 import { isHexBytes } from "../hex.ts";
 import { ATTEMPT_SPAN_HOURS, REOPEN } from "./canton-view.ts";
 
@@ -212,7 +213,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         const outcome = text(ev.outcome, 40);
         counted.add(id);
         await set(id, {
-          answered_at: t, outcome, reason: text(ev.reason), update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset), traffic_bytes: whole(ev.traffic_bytes),
+          answered_at: t, outcome, reason: attemptReason(outcome, text(ev.reason)), update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset), traffic_bytes: whole(ev.traffic_bytes),
         });
         if (outcome !== null && OUT_BACK.has(outcome)) await putBack(id, t, `the block was ${outcome.replace("_", " ")}`);
         // The update may be joined to this attempt already: an indexed block settles an attempt whose answered line is not read yet, and the
@@ -263,7 +264,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         const id = await idOf(ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
         counted.add(id);
-        await set(id, { outcome: "cancelled", reason: text(ev.reason) ?? text(ev.depends_on) });
+        await set(id, { outcome: "cancelled", reason: publicText(text(ev.reason) ?? text(ev.depends_on)) });
         await putBack(id, t, "the block was cancelled");
         break;
       }

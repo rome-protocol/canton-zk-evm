@@ -635,7 +635,7 @@ export function createIndexer(o: IndexerOptions) {
         try {
           const lag0 = await registeredLegsHealth(o.pool);
           const lag = lag0 && { ...lag0, threshold: { ...lag0.threshold, intervalSeconds } };
-          if (lag) await setHealth(o.pool, [registeredError === null ? lag : { ...lag, status: "degraded", detail: `the legs of the registered gateways cannot be indexed: ${registeredError}` }]);
+          if (lag) await setHealth(o.pool, [registeredError === null ? lag : { ...lag, status: "degraded", detail: "the legs of the registered gateways cannot be indexed" }]);
         } catch (e) {
           log(`indexer (registered gateways health): ${(e as Error).message}`);
         }

@@ -139,6 +139,18 @@ export function publicText(text: string | null): string | null {
     .replace(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
 }
 
+/** The sentence a failed attempt carries in public: the output of the producer's own tools is never stored or served. */
+export const FAILED_ATTEMPT_REASON = "the block failed before Canton answered";
+
+/**
+ * The reason of a block attempt, as it may be stored and served. A failed attempt (reth, the ledger, the proof or an input tool failed it) has the fixed sentence, never the producer's text. Any other
+ * outcome keeps the producer's words (Canton's own reason for a refused or not taken block), with a path, a host or a URL taken out.
+ */
+export function attemptReason(outcome: string | null, reason: string | null): string | null {
+  if (outcome === "failed") return FAILED_ATTEMPT_REASON;
+  return publicText(reason);
+}
+
 const synthetic = (id: string, role: Role, status: Status, detail: string): HealthEntry => ({
   id, role, status, value: null, threshold: null, detail, sinceSeconds: 0, changedAt: null, refreshedAt: null, refreshedAgoSeconds: 0, intervalSeconds: null, stale: false, elsewhere: false,
 });

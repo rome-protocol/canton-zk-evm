@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
@@ -8,6 +8,7 @@ import { advisoryLeader, FAUCET_LOCK, TRACKER_LOCK } from "../leader.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { legHash } from "./legs.ts";
+import { checkLegs } from "./stage1.ts";
 import { REINDEX_KEY } from "./reindex.ts";
 
 const opened: Indexer[] = [];
@@ -84,6 +85,21 @@ describe.skipIf(!TEST_URL)("C10: the leg hash worked out again", () => {
       expect(await blocks(pool)).toBe(3);
       // A later block that agrees does not wipe the report of the old one.
       expect((await row(pool, "C10")).status).toBe("degraded");
+    });
+  });
+
+  it("says a fixed sentence when a Leg event cannot be read, never the reason (a path or a host)", async () => {
+    await inDb(async (pool) => {
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const c = await pool.connect();
+      try {
+        await checkLegs(c, 7, [], null, new Error("block 7: a Leg event cannot be read (/home/ops/x at 10.1.2.3:8545)"));
+        await checkLegs(c, 8, [], null, new Error("/Users/ops/y"), "0x" + "b1".repeat(20));
+      } finally { c.release(); quiet.mockRestore(); }
+      const r = await row(pool, "C10");
+      expect(r.status).toBe("degraded");
+      expect(r.detail).toBe(`block 8: a Leg event of the registered gateway ${"0x" + "b1".repeat(20)} cannot be read`);
+      expect(JSON.stringify(r)).not.toMatch(/\/home|\/Users|10\.1\.2\.3/);
     });
   });
 

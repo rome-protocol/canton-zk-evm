@@ -209,6 +209,30 @@ describe.skipIf(!TEST_URL)("the External calls view", () => {
     });
   });
 
+  it("never serves the text of a failed attempt: the update shows a fixed sentence, and a path in a reason never reaches the route", async () => {
+    await inDb(async (pool) => {
+      const { chain, dir, now } = await setup(pool);
+      const id = chain.blocks[1]!.record.updateId, t2 = Date.parse(chain.blocks[1]!.record.recordTime), at = t2 - 40_000;
+      // an earlier try of block 2 that the input tool failed: the producer's journal holds the tool's own output
+      const failed = new Run(RUN2);
+      failed.start(at - 1000);
+      failed.add(at, "cut", { attempt: 1, number: 2, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      failed.add(at + 20, "submitted", { attempt: 1, command_id: "ostia-770101-2-failed-1", argument_bytes: 10 });
+      failed.add(at + 900, "answered", { attempt: 1, outcome: "failed", reason: "input tool failed: cannot open /home/ops/work/blocks/2.json and /Users/ops/key at 10.1.2.3:8545", stage: "input", update_id: null, completion_offset: null });
+      appendLines(dir, "2026-10-21.jsonl", failed.lines);
+      await opened[0]!.loadJournal();
+      await refreshCantonView(pool, { now: () => now });
+      expect((await pool.query("select reason from block_attempts where outcome = 'failed'")).rows).toEqual([{ reason: "the block failed before Canton answered" }]);
+      // a row stored by an earlier version holds the raw text: the route does not serve it either
+      await pool.query("update block_attempts set reason = 'input tool failed: cannot open /home/ops/work/blocks/2.json and /Users/ops/key' where outcome = 'failed'");
+      const view = (await createChainRest(pool, () => now).update(id))!.view;
+      expect(view.attempts.map((a) => a.reason)).toContain("the block failed before Canton answered");
+      expect(JSON.stringify(view)).not.toMatch(/\/home|\/Users|10\.1\.2\.3/);
+      // Canton's own reason for a refused block is kept
+      expect(view.attempts.map((a) => a.reason)).toContain("rejected by Canton");
+    });
+  });
+
   it("works a row out again when an attempt of its block arrives after the join", async () => {
     await inDb(async (pool) => {
       const { chain, dir, now } = await setup(pool);

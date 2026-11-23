@@ -31,7 +31,7 @@ const pin = (token: string, decimals: number) => ({ twinToken: token.slice(2), t
 const pay = (id: string, token: string, account: string, amount: bigint) => ({ gateway: GW2, kind: 3, id, token, account, amount });
 /** The call that reads what a vault holds of a token, as reth is asked for it. */
 const balanceKey = (token: string, vault: string) => `${token}:0x70a08231${"0".repeat(24)}${vault.slice(2)}`;
-async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances: [string, string, bigint][] = []): Promise<SyntheticChain> {
+async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances: [string, string, bigint][] = [], tweak: (c: SyntheticChain) => void = () => undefined): Promise<SyntheticChain> {
   await migrate(pool);
   const chain = makeChain(shapes);
   for (const [t, v, n] of balances) chain.reads.callResults[balanceKey(t, v)] = "0x" + n.toString(16).padStart(64, "0");
@@ -50,6 +50,7 @@ async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances
     await pool.query("insert into tokens (address, standard, name, symbol, decimals, first_transfer_block, metadata_status) values ($1, 'ERC-20', 'T', 'T', $2, 1, 'read')", [Buffer.from(t.slice(2), "hex"), dec]);
   }
   for (const n of [1, 2, 3]) chain.reads.storage[`${GW2}:${legsSlot(n)}`] = "0x" + "00".repeat(32);
+  tweak(chain);
   if (viaLoop) {
     // the indexer's own custody loop reads the registry, indexes the registered gateway's legs and counts the twin sums, with no call of the steps here
     const halt = indexer.start();
@@ -257,6 +258,14 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect((await blockLegs(pool, 1))[1]).toMatchObject({ canton: { role: "lock" } });
       // the lag of the registered gateways' leg index is written by the same loop
       expect((await pool.query("select status from health_checks where check_id = 'registered_legs'")).rows).toEqual([{ status: "ok" }]);
+    });
+  }, 30_000);
+
+  it("says a fixed sentence in the lag row when the legs of the registered gateways cannot be indexed, never the reason", async () => {
+    await inDb(async (pool) => {
+      await setUp(pool, threeBlocks(), true, [], (c) => { (c.reads as any).storageAt = async () => { throw new Error("reth at 10.1.2.3:8545 refused /home/ops/reth.ipc"); }; });
+      const r = (await pool.query("select status, detail from health_checks where check_id = 'registered_legs'")).rows[0];
+      expect(r).toEqual({ status: "degraded", detail: "the legs of the registered gateways cannot be indexed" });
     });
   }, 30_000);
 
