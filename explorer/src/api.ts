@@ -155,7 +155,7 @@ export class ApiError extends Error {
 
 const UNREADABLE = "The explorer cannot read the chain right now.";
 
-/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. The Bridge page passes a timeout on its own reads. */
+/** `signal` is optional and none is set by default: some requests (CSV exports, statistics) may take long. */
 async function call(path: string, accept: readonly number[], signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
   let res: Response;
   try {
