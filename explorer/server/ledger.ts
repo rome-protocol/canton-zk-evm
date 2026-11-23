@@ -30,6 +30,15 @@ const FUNDED_CLAIM_SUFFIX = ":Zk.Chain:FundedClaim";
 /** The token standard's Holding interface: what a holding shows as its view, whatever template the registry made it with. */
 export const HOLDING_INTERFACE = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding";
 const HOLDING_SUFFIX = ":Splice.Api.Token.HoldingV1:Holding";
+/** The gateway's own records of a deposit it accepted and of a payout it owes (Daml 0.6.0), and the token standard's transfer instruction, which shows a payout that was offered. */
+export const RECEIPT_TEMPLATE = "#canton-zk-evm:Zk.Chain:Receipt";
+export const PAYOUT_TEMPLATE = "#canton-zk-evm:Zk.Chain:Payout";
+export const INSTRUCTION_INTERFACE = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction";
+const RECEIPT_SUFFIX = ":Zk.Chain:Receipt";
+const PAYOUT_SUFFIX = ":Zk.Chain:Payout";
+const INSTRUCTION_SUFFIX = ":Splice.Api.Token.TransferInstructionV1:TransferInstruction";
+/** The key of a payout's offer that names the payout it pays. */
+export const WITHDRAWAL_KEY = "romeprotocol.com/ostia-withdrawal";
 
 export class LedgerError extends Error {}
 
@@ -145,8 +154,8 @@ function recordsIn(item: unknown): { offset: number; records: BlockRecord[] } {
   return { offset: offset as number, records };
 }
 
-/** One registered token (a `GatewayToken` of the gateway): the EVM token and the Canton instrument it stands for. */
-export interface RegisteredToken { evmToken: string; instrumentAdmin: string; instrumentId: string }
+/** One registered token (a `GatewayToken` of the gateway): its contract, which the gateway's receipts and payouts name, the EVM token and the Canton instrument it stands for. */
+export interface RegisteredToken { contractId: string; evmToken: string; instrumentAdmin: string; instrumentId: string }
 /** One entry of the chain record's registry of EVM contracts (`ZkChain.contracts`): a gateway whose legs Canton reads, or a vault that holds the ERC-20s behind Canton twins. */
 export interface RegisteredEntry { address: string; codeHash: string; kind: "gateway" | "vault" }
 /** The registry as the chain record holds it, with the gateway party that administers the twins (their instrument's admin). */
@@ -184,7 +193,8 @@ export function registeredFrom(items: unknown[]): RegisteredToken[] {
     const evm = typeof a.evmToken === "string" ? a.evmToken.replace(/^0x/, "").toLowerCase() : "";
     if (!/^[0-9a-f]{40}$/.test(evm)) custodyFail("a registered token's evmToken is not an address");
     const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
-    out.push({ evmToken: "0x" + evm, instrumentAdmin: admin, instrumentId: id });
+    const contractId = typeof e.contractId === "string" && e.contractId !== "" ? e.contractId : custodyFail("a registered token has no contract id");
+    out.push({ contractId, evmToken: "0x" + evm, instrumentAdmin: admin, instrumentId: id });
   }
   const seen = new Set<string>(), instruments = new Set<string>();
   for (const r of out) {
@@ -197,13 +207,25 @@ export function registeredFrom(items: unknown[]): RegisteredToken[] {
   return out.sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
 }
 
-/** A change to the gateway's holdings that one Canton update made: a holding it owns (and the instrument's admin signed) was created, or a contract was archived (any archived contract of the filtered stream: one that was never kept is a no-op). */
-export type HoldingChange = { kind: "created"; contractId: string; instrumentAdmin: string; instrumentId: string; amount: bigint } | { kind: "archived"; contractId: string };
+/**
+ * A change to what the gateway keeps on Canton that one update made: a holding it owns (and the instrument's admin signed) was created; a `Receipt` (a deposit it accepted) or a `Payout` (a withdrawal it owes) was created, each naming its
+ * registered token's contract and with no party; an offer of a payout (a transfer instruction of the gateway's that names the payout) was created; or a contract was archived, at the record time `at` (any archived contract of the filtered
+ * stream: one that was never kept is a no-op).
+ */
+export type HoldingChange =
+  | { kind: "created"; contractId: string; instrumentAdmin: string; instrumentId: string; amount: bigint }
+  | { kind: "receipt"; contractId: string; gatewayToken: string; depositId: string; recipient: string; amount: bigint; createdAt: string }
+  | { kind: "payout"; contractId: string; gatewayToken: string; payoutId: string; amount: bigint; createdAt: string }
+  | { kind: "offer"; contractId: string; payoutId: string; executeBefore: string }
+  | { kind: "archived"; contractId: string; at: string };
+
+const need = (v: unknown, what: string): string => (typeof v === "string" && v !== "" ? v : custodyFail(`${what} is missing`));
+const hexOf = (v: unknown, digits: number, what: string): string => (typeof v === "string" && new RegExp(`^[0-9a-f]{${digits}}$`).test(v) ? v : custodyFail(`${what} is not ${digits} hex digits`));
 
 /**
- * What one item of the `/v2/updates` answer (ACS delta, the Holding interface's views) did to the gateway's holdings. A holding counts only where the gateway owns it (the view may show others it is a
- * stakeholder of; a locked holding counts, as a lock does not move the coin) and the instrument's admin signed it, so a template of someone else's cannot claim the registry. A holding with no readable
- * view or an amount that is not a decimal fails the walk: a total that might be short is worse than none. No owner is kept.
+ * What one item of the `/v2/updates` answer (ACS delta, the Holding interface's views, the gateway's receipts and payouts, and its transfer instructions) did to what the gateway keeps. A holding counts only where the gateway owns it (the view may show others it is a
+ * stakeholder of; a locked holding counts, as a lock does not move the coin) and the instrument's admin signed it, so a template of someone else's cannot claim the registry; a receipt or a payout counts only where the gateway signed it. A holding with no readable
+ * view, an amount that is not a decimal or a receipt or payout that is not what its contract says fails the walk: a total that might be short is worse than none. No owner, sender or paid party is kept.
  */
 export function holdingsIn(item: unknown, party: string): { offset: number; changes: HoldingChange[] } {
   const [kind, body] = Object.entries(obj(obj(item, "an update").update, "an update"))[0] ?? fail("an empty update");
@@ -216,11 +238,24 @@ export function holdingsIn(item: unknown, party: string): { offset: number; chan
     const o = obj(ev, "an event");
     if (o.ArchivedEvent !== undefined) {
       const contractId = obj(o.ArchivedEvent, "an event").contractId;
-      changes.push({ kind: "archived", contractId: typeof contractId === "string" && contractId !== "" ? contractId : fail("an event with no contract id") });
+      changes.push({ kind: "archived", contractId: typeof contractId === "string" && contractId !== "" ? contractId : fail("an event with no contract id"), at: need(value.recordTime, "a transaction's record time") });
     }
     if (o.CreatedEvent === undefined) continue;
     const e = obj(o.CreatedEvent, "an event");
+    const template = typeof e.templateId === "string" ? e.templateId : "";
+    if ((template.endsWith(RECEIPT_SUFFIX) || template.endsWith(PAYOUT_SUFFIX)) && (Array.isArray(e.signatories) ? e.signatories : []).includes(party)) {
+      const a = obj(e.createArgument, "a receipt or a payout"), common = { contractId: need(e.contractId, "an event's contract id"), gatewayToken: need(a.gatewayToken, "a receipt's token"), amount: baseUnits(a.amount), createdAt: need(e.createdAt, "an event's time") };
+      if (template.endsWith(RECEIPT_SUFFIX)) changes.push({ kind: "receipt", ...common, depositId: hexOf(a.depositId, 64, "a receipt's deposit id"), recipient: hexOf(a.recipient, 40, "a receipt's recipient") });
+      else changes.push({ kind: "payout", ...common, payoutId: hexOf(a.payoutId, 64, "a payout's id") });
+      continue;
+    }
     for (const v of Array.isArray(e.interfaceViews) ? (e.interfaceViews as Json[]) : []) {
+      if (typeof v.interfaceId === "string" && v.interfaceId.endsWith(INSTRUCTION_SUFFIX)) {
+        // An offer of a payout: a transfer of the gateway's whose meta names the payout. Any other instruction is not read.
+        const t = (v.viewValue as Json | undefined)?.transfer as Json | undefined, named = ((t?.meta as Json | undefined)?.values as Json | undefined)?.[WITHDRAWAL_KEY];
+        if (t?.sender === party && typeof named === "string" && /^[0-9a-f]{64}$/.test(named)) changes.push({ kind: "offer", contractId: need(e.contractId, "an event's contract id"), payoutId: named, executeBefore: need(t.executeBefore, "an offer's time limit") });
+        continue;
+      }
       if (typeof v.interfaceId !== "string" || !v.interfaceId.endsWith(HOLDING_SUFFIX)) continue;
       const status = (v.viewStatus as Json | undefined)?.code ?? 0;
       if (status !== 0 || typeof v.viewValue !== "object" || v.viewValue === null) custodyFail("a holding has no readable view");
@@ -442,8 +477,8 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
   }
 
   /**
-   * The changes to the gateway's holdings that Canton committed after offset `after`, up to and including `upTo`, oldest first, one page of the walk at a time (like `recordPages`): the Holding interface's
-   * views, as the gateway, in the ACS delta. The holdings are read by walking the updates and not as one list of the active contracts, so that no number of holdings (the gateway sees the twin holdings of every
+   * The changes to what the gateway keeps that Canton committed after offset `after`, up to and including `upTo`, oldest first, one page of the walk at a time (like `recordPages`): the Holding and TransferInstruction interfaces'
+   * views, and the Receipt and Payout templates, as the gateway, in the ACS delta. The holdings are read by walking the updates and not as one list of the active contracts, so that no number of holdings (the gateway sees the twin holdings of every
    * user too) can cut or fail the read. `offset` of a page is how far the walk has got.
    */
   async function* holdingPages(after: number, upTo: number): AsyncGenerator<{ changes: HoldingChange[]; offset: number }> {
@@ -452,7 +487,10 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
       const items = await call("POST", `/v2/updates?limit=${pageSize}`, {
         beginExclusive: begin, endInclusive: upTo,
         updateFormat: { includeTransactions: {
-          eventFormat: { filtersByParty: { [readerParty]: { cumulative: [{ identifierFilter: { InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } } }] } }, verbose: false },
+          eventFormat: { filtersByParty: { [readerParty]: { cumulative: [
+            ...[HOLDING_INTERFACE, INSTRUCTION_INTERFACE].map((interfaceId) => ({ identifierFilter: { InterfaceFilter: { value: { interfaceId, includeInterfaceView: true, includeCreatedEventBlob: false } } } })),
+            ...[RECEIPT_TEMPLATE, PAYOUT_TEMPLATE].map((templateId) => ({ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } })),
+          ] } }, verbose: false },
           transactionShape: "TRANSACTION_SHAPE_ACS_DELTA",
         } },
       });

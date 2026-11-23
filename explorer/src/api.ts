@@ -462,16 +462,16 @@ export interface TokenListItem extends TokenInfo {
 export type TokenSort = "holders" | "transfers" | "newest";
 /** One token: `balanceMode` says whether its balances are summed from the Transfer logs ("derived") or read with balanceOf. */
 /**
- * What the gateway holds on Canton of the instrument a token was registered for: `custody` is in base units of `custodyDecimals`, and `supply` the token's own
+ * What the gateway holds on Canton of the instrument a token was registered for (`openReceipts` and `openPayouts` are what of it is owed: deposits accepted and not yet claimed, withdrawals burned and not yet paid): `custody` is in base units of `custodyDecimals`, and `supply` the token's own
  * totalSupply (null when it did not answer); both are read at block `supplyBlock` (the custody at the ledger offset `ledgerOffset` of that block's record), at `readAt`.
  */
-export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
+export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; openReceipts: string; openPayouts: string; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 /** The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (locks less releases), `vaultBalance` what the vaults held at the same block, `through`, both in the token's base units (null where it was not read there); `through` is the block the sums are counted to (null before the first count). */
 export interface TwinSupply { supply: string; vaultBalance: string | null; locks: number; releases: number; through: number | null }
 /** A pinned twin on the twins page: the token, its decimals, what the twin has in issue next to what the registered vaults held at the block `through` (null where reth did not give it), and the legs. `matched` is true only when both numbers are known and equal. */
 export interface TwinLine { token: string; symbol: string | null; name: string | null; decimals: number; supply: string; vaultBalance: string | null; matched: boolean; locks: number; releases: number; through: number | null }
 /** A token the gateway wrapped from Canton, as the twins page lists it: the custody on Canton (in `custodyDecimals`) against the wrapped supply, both read at `supplyBlock`; `matched` is null where the supply or the decimals are not known. */
-export interface TwinCanton { token: string; symbol: string | null; name: string | null; decimals: number | null; instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; matched: boolean | null; ledgerOffset: number; readAt: string }
+export interface TwinCanton { token: string; symbol: string | null; name: string | null; decimals: number | null; instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; openReceipts: string; openPayouts: string; supply: string | null; supplyBlock: number; matched: boolean | null; ledgerOffset: number; readAt: string }
 /** A lock or release leg: its block, transaction (null where the explorer has not stored it), the leg id, the token and amount in base units, and the Canton update of the block (null until read). */
 export interface TwinLeg { block: number; txHash: string | null; legId: string; twin: "lock" | "release"; token: string; symbol: string | null; amount: string; updateId: string | null }
 /** The answer of `/api/twins`: the registry's vaults (with their code hash) and pinned twins, the Canton tokens with their custody, the newest lock and release legs, and the twin registry service's public address when the deployment names one. */

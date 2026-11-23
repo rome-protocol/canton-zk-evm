@@ -28,6 +28,17 @@ describe("the twin numbers", () => {
     expect(custodyMatched("10000000000", null, 6)).toBeNull();
     expect(custodyMatched("10000000000", "1000000", null)).toBeNull();
   });
+
+  it("counts the open receipts and payouts as part of the custody: custody = supply + receipts + payouts", () => {
+    // 12 held, 10 in issue, a deposit of 2 accepted and not yet claimed (10 decimals; the token has 6).
+    expect(custodyMatched("120000000000", "10000000", 6, "20000000000")).toBe(true);
+    // 8 held, 10 in issue, 2 burned and not yet paid would be 10 held: the payout is part of the custody until it is sent.
+    expect(custodyMatched("100000000000", "8000000", 6, "20000000000")).toBe(true);
+    expect(custodyMatched("120000000000", "10000000", 6)).toBe(false);
+    expect(custodyMatched("120000000000", "10000000", 6, "10000000000")).toBe(false);
+    expect(custodyMatched("10000000000", "10000000", 6, "20000000000")).toBe(false);
+    expect(custodyMatched("120000000000", null, 6, "20000000000")).toBeNull();
+  });
 });
 
 describe("the twins overview, from the rows the indexer keeps", () => {
@@ -41,7 +52,7 @@ describe("the twins overview, from the rows the indexer keeps", () => {
       ];
     }
     if (sql.includes("from gateway_tokens")) {
-      return [{ evm_token: b(0xd1), instrument_admin: "registry::1220ff", instrument_id: "TKB", custody: "1230000000000", holdings: 3, supply: "123000000", supply_block: "7", ledger_offset: "77", read_at: "2026-10-25T10:00:00Z", symbol: "wTKB", name: "Wrapped TKB", decimals: 6 }];
+      return [{ evm_token: b(0xd1), instrument_admin: "registry::1220ff", instrument_id: "TKB", custody: "1230000000000", holdings: 3, open_receipts: "10000000000", open_payouts: "20000000000", supply: "120000000", supply_block: "7", ledger_offset: "77", read_at: "2026-10-25T10:00:00Z", symbol: "wTKB", name: "Wrapped TKB", decimals: 6 }];
     }
     if (sql.includes("from (select * from twin_legs")) {
       expect(values).toEqual([TWIN_LEGS_MAX]);
@@ -64,7 +75,7 @@ describe("the twins overview, from the rows the indexer keeps", () => {
       ],
       canton: [{
         token: hexOf(0xd1), symbol: "wTKB", name: "Wrapped TKB", decimals: 6, instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3,
-        supply: "123000000", supplyBlock: 7, matched: true, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z",
+        openReceipts: "10000000000", openPayouts: "20000000000", supply: "120000000", supplyBlock: 7, matched: true, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z",
       }],
       legs: [
         { block: 9, txHash: hexOf(0xf1, 32), legId: hexOf(0xe1, 32), twin: "lock", token: hexOf(0xb1), symbol: "TKA", amount: "100", updateId: "1220aa" },

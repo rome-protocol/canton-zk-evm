@@ -8,6 +8,7 @@ import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { gatewayOf, legKindOf, twinOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
 import { LOOKALIKES } from "../lookalikes.ts";
+import { createReceiptsRest } from "../receipts.ts";
 import { createTwinsRest } from "./twins-rest.ts";
 import { addressOfKey, bytes, CUSTODY_DECIMALS, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
@@ -112,7 +113,7 @@ export interface TokenItem {
  * block, `supplyBlock`, as the custody (at the ledger offset of that block's record), so the two are set against each other with nothing between them. `supply` is
  * null when the token did not answer at that block. `readAt` is when the read was made.
  */
-export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
+export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; openReceipts: string; openPayouts: string; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 /**
  * The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (the locks into a registered vault less the releases out of one, in the token's base units), `vaultBalance` what the
  * registered vaults held of the token at the block `through`, the same block the sums are counted to (null where reth did not give it), `locks` and `releases` the legs counted. The sums are kept by the indexer, once per leg, and count the legs up to the block `through` (null before the first pass).
@@ -505,8 +506,8 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
   async function token(a: string): Promise<TokenDetail | undefined> {
     const [r] = await query(`select ${tokenSelect} ${tokenFrom} where tk.address = $1`, [bytes(a)]);
     if (!r) return undefined;
-    const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, supply::text as supply, supply_block, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
-    const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), supply: g.supply ?? null, supplyBlock: Number(g.supply_block), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
+    const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, open_receipts::text as open_receipts, open_payouts::text as open_payouts, supply::text as supply, supply_block, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
+    const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), openReceipts: g.open_receipts, openPayouts: g.open_payouts, supply: g.supply ?? null, supplyBlock: Number(g.supply_block), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
     return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton, twin: await twinSupply(a) };
   }
 
@@ -638,8 +639,9 @@ export function createAccountRest(pool: Pool, own: Readonly<Record<string, strin
   }
 
   const { overview: twins } = createTwinsRest(query);
+  const { deposits, payout } = createReceiptsRest(query);
 
   return {
-    twins, derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contractsMadeBy, contractCounts, eventCountOf, contract, source, tokens, token, holders, tokenTransfers, legs, leg, swaps, swap, byName, labels,
+    twins, deposits, payout, derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contractsMadeBy, contractCounts, eventCountOf, contract, source, tokens, token, holders, tokenTransfers, legs, leg, swaps, swap, byName, labels,
   };
 }

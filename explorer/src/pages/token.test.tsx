@@ -180,6 +180,34 @@ describe("the token page: the overview", () => {
       expect(kv("Check")).toHaveAttribute("data-state", "supply-higher");
     });
 
+    it("does not call the open receipts and payouts a difference: the custody less them is set against the supply", async () => {
+      // 1,000 held, 10 of it a deposit accepted and not yet claimed: 990 in issue is equal.
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openReceipts: "100000000000", supply: "990000000" }) }));
+      expect(kv("Check")).toHaveAttribute("data-state", "equal");
+      cleanup();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openPayouts: "100000000000", supply: "1000000000" }) }));
+      expect(kv("Check")).toHaveAttribute("data-state", "supply-higher");
+    });
+
+    it("shows what is owed and says the check is against the supply plus it", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openReceipts: "100000000000", supply: "990000000" }) }));
+      expect(kv("Owed")).toHaveTextContent("10 TKB");
+      expect(kv("Check")).toHaveTextContent("Canton holds the wrapped supply plus what is owed");
+      expect(kv("Check")).not.toHaveTextContent("exactly");
+      cleanup();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openReceipts: "100000000000", supply: "980000000" }) }));
+      expect(kv("Check")).toHaveTextContent("Canton holds 10 more than the wrapped supply plus what is owed");
+      cleanup();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ openPayouts: "100000000000", supply: "1000000000" }) }));
+      expect(kv("Check")).toHaveTextContent("the wrapped supply is 10 more than Canton holds less what is owed");
+    });
+
+    it("shows no Owed row, and the plain wording, when nothing is owed", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody() }));
+      expect(screen.queryByText("Owed")).toBeNull();
+      expect(kv("Check")).toHaveTextContent("Canton holds exactly the wrapped supply");
+    });
+
     it("compares nothing when the supply or the decimals are not known, and still shows the custody", async () => {
       await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ supply: null }) }));
       expect(kv("Held on Canton")).toHaveTextContent("1,000 TKB");

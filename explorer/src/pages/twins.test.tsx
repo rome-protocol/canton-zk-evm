@@ -47,6 +47,13 @@ describe("the Canton assets card on Stats", () => {
     expect(wrapped).toHaveTextContent("123"); expect(wrapped).toHaveTextContent("wrapped supply"); expect(wrapped).toHaveTextContent("123 TKB on Canton"); expect(wrapped).toHaveTextContent("matched"); expect(wrapped).toHaveTextContent("3 holdings");
   });
 
+  it("shows what is owed next to what Canton holds, only when something is", async () => {
+    await twins({ canton: [twinCanton({ openReceipts: "100000000000", supply: "113000000" }), twinCanton({ token: addr(0xd2), symbol: "wTKD", instrumentId: "TKD" })] });
+    const table = await screen.findByRole("table", { name: "Canton token custody" });
+    expect(rowOf(table, "wTKB")).toHaveTextContent("10 owed");
+    expect(rowOf(table, "wTKD")).not.toHaveTextContent("owed");
+  });
+
   it("names the Amulet instrument Canton Coin", async () => {
     await stat({ canton: [twinCanton({ token: addr(0xd4), symbol: "CC", instrumentId: "Amulet" })] });
     const row = rowOf(within(await screen.findByRole("region", { name: "Canton assets" })).getByRole("table", { name: "Canton assets" }), "CC");
@@ -123,6 +130,13 @@ describe("the twins page", () => {
     const off = rowOf(table, "wTKD");
     expect(off).toHaveTextContent("differs by 1"); expect(off).toHaveTextContent("124 TKD");
     expect(rowOf(table, "wTKE")).toHaveTextContent("not known"); expect(rowOf(table, "wTKE")).toHaveTextContent("not compared");
+  });
+
+  it("shows what is owed next to what Canton holds, only when something is", async () => {
+    await twins({ canton: [twinCanton({ openReceipts: "100000000000", supply: "113000000" }), twinCanton({ token: addr(0xd2), symbol: "wTKD", instrumentId: "TKD" })] });
+    const table = await screen.findByRole("table", { name: "Canton token custody" });
+    expect(rowOf(table, "wTKB")).toHaveTextContent("10 owed");
+    expect(rowOf(table, "wTKD")).not.toHaveTextContent("owed");
   });
 
   it("names the Amulet instrument Canton Coin", async () => {

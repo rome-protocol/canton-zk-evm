@@ -11,7 +11,7 @@ const CODE = ("0x" + "60".repeat(120)) as Hex;
 const pins: BridgePins = { gateway: GATEWAY.toLowerCase() as Address, vaultCodeHashes: [keccak256(CODE)], wrapper: WTROME.toLowerCase() as Address };
 const word = (v: string | number | bigint) => "0x" + BigInt(v).toString(16).padStart(64, "0");
 const line = (token: string, symbol: string) => ({ token, symbol, name: symbol, decimals: 18, supply: "0", vaultBalance: "0", matched: true, locks: 0, releases: 0, through: 5 });
-const wrappedLine = (token: string) => ({ token, symbol: "wCC", name: "wCC", decimals: 10, instrumentAdmin: "dso::1220ab", instrumentId: "Amulet", custody: "0", custodyDecimals: 10, holdings: 0, supply: "0", supplyBlock: 5, matched: true, ledgerOffset: 1, readAt: "" });
+const wrappedLine = (token: string) => ({ token, symbol: "wCC", name: "wCC", decimals: 10, instrumentAdmin: "dso::1220ab", instrumentId: "Amulet", custody: "0", custodyDecimals: 10, holdings: 0, openReceipts: "0", openPayouts: "0", supply: "0", supplyBlock: 5, matched: true, ledgerOffset: 1, readAt: "" });
 const overview = (o: Partial<TwinsOverview> = {}): TwinsOverview => ({
   through: 5, registryService: "https://x.example/twin-registry/", vaults: [{ address: VAULT, codeHash: "0x00" }],
   twins: [line(TKA, "TKA"), line(WTROME, "WtROME")],

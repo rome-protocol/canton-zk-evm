@@ -27,6 +27,7 @@ export const NO_CONTRACT = "No contract is held at that address.";
 export const NO_TOKEN = "No token is held at that address.";
 export const NO_LEG = "No gateway leg has that id.";
 export const NO_SWAP = "No swap has that payment id.";
+export const NO_PAYOUT = "No payout has that id.";
 /** Most addresses one request may ask the labels of. */
 export const MAX_LABELS = 100;
 /** What the first part of a name search may be: it is matched as text, never as a pattern, and a very short or very long one is not a name. */
@@ -332,6 +333,19 @@ export function accountRoutes({ accounts, reth, search, twinRegistryUrl = null }
     return s ? cached(ok(swapOf(s)), "composite") : fail(404, NO_SWAP);
   }
 
+  // The gateway's open receipts for one address, and one payout by its id: read from what the indexer keeps.
+  async function depositList(q: URLSearchParams): Promise<Answer> {
+    const recipient = q.get("recipient") ?? "";
+    if (!ADDRESS.test(recipient)) throw new BadRequest("recipient is an EVM address: lowercase 0x and 40 hex digits.");
+    return cached(ok(pick({ items: (await accounts.deposits(recipient)).map((d) => pick(d, F.deposit)) }, F.deposits)), "list");
+  }
+
+  async function onePayout(id: string): Promise<Answer> {
+    if (!LEG_ID.test(id)) throw new BadRequest("A payout is named by its id, 0x and 64 hex digits.");
+    const p = await accounts.payout(id);
+    return p ? cached(ok(pick(p, F.payout)), "composite") : fail(404, NO_PAYOUT);
+  }
+
   /** The names of up to MAX_LABELS addresses at once, for the pages that show a contract or a token by name. Each address is answered once, in the order it was first asked. */
   async function labelList(q: URLSearchParams): Promise<Answer> {
     const raw = q.get("addresses");
@@ -375,6 +389,8 @@ export function accountRoutes({ accounts, reth, search, twinRegistryUrl = null }
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
     ["/api/twins", () => twinsPage()],
+    ["/api/canton/deposits", (_, q) => depositList(q)],
+    ["/api/canton/payouts/{id}", (id) => onePayout(id)],
     ["/api/swaps", (_, q) => swapList(q)],
     ["/api/swaps/{payId}", (id) => oneSwap(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],
