@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
 import type { Hex } from "viem";
 import { dateTime } from "../format.ts";
+import { ExplorerLink } from "../components/ExplorerLink.tsx";
 import { LEAVE_MOVE } from "../bridge/route/words.ts";
 import { MoveMarks } from "./MoveMarks.tsx";
 import { useMarks } from "./moveWatch.ts";
@@ -35,7 +35,7 @@ function Row({ item, back, faucet }: { item: BackRow; back: Back; faucet: Faucet
       ))}
       {onOstia && faucet && <p className="small"><button type="button" className="link-b" disabled={faucet.busy || faucet.coming} onClick={faucet.onGet}>{faucet.busy ? "Asking the faucet…" : faucet.coming ? "Your test coin is on its way…" : faucet.label}</button></p>}
       {v.phase === "unsent" && <button type="button" className="link-b" onClick={() => back.giveUp(item)}>Give this up</button>}
-      {row.episode && <p className="act-links small"><Link to={`/tx/${row.episode.txHash}`}>The move on Ostia</Link></p>}
+      {row.episode && <p className="act-links small"><ExplorerLink to={`/tx/${row.episode.txHash}`}>The move on Ostia</ExplorerLink></p>}
       {v.open && v.actions.length === 0 && v.phase !== "lost" && <p className="small muted">{LEAVE_MOVE}</p>}
     </li>
   );
