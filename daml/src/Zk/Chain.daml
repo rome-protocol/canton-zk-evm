@@ -1046,7 +1046,7 @@ settle (PayoutLeg id tokenCid _ amount party) = do
   t <- fetch tokenCid
   _ <- create Payout with
     operator = t.operator; confirmer = t.confirmer; gateway = t.gateway; builder = t.builder; chainId = t.chainId
-    withdrawalId = id; gatewayToken = tokenCid; party; amount
+    payoutId = id; gatewayToken = tokenCid; party; amount
   pure ()
 
 -- One per block: everything a third party needs to replay the chain and re-check each proof.
@@ -1290,10 +1290,10 @@ template Receipt
       controller operator
       do create Payout with
            operator; confirmer; gateway; builder; chainId; gatewayToken
-           withdrawalId = depositId; party = sender; amount
+           payoutId = depositId; party = sender; amount
 
 -- "Pay this to `party`": what a withdrawal leaves for Rome to send after the block, as a standard transfer from the gateway's custody, or what a
--- returned receipt leaves (its `withdrawalId` is the deposit's id). The gateway marks it paid once the party has the token.
+-- returned receipt leaves (its `payoutId` is the deposit's id). The gateway marks it paid once the party has the token.
 template Payout
   with
     operator : Party
@@ -1302,13 +1302,13 @@ template Payout
     builder : Party
     chainId : Int
     gatewayToken : ContractId GatewayToken
-    withdrawalId : Text
+    payoutId : Text
     party : Party
     amount : Decimal
   where
     signatory operator, confirmer, gateway
     observer builder
-    ensure chainId > 0 && amount > 0.0 && withdrawalId /= ""
+    ensure chainId > 0 && amount > 0.0 && payoutId /= ""
 
     choice Payout_Paid : ()
       controller gateway

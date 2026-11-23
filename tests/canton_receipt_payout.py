@@ -48,7 +48,7 @@ elif mode == "receipt":
 elif mode == "payout":
     advance([{"tag": "PayoutLeg", "value": {"id": "c1" * 32, "gatewayToken": registered["contractId"], "from": "55" * 20, "amount": "4.0", "party": who}}])
     [payout] = as_gateway.wait_for("Payout")
-    assert (payout["withdrawalId"], payout["party"], float(payout["amount"])) == ("c1" * 32, who, 4.0), payout
+    assert (payout["payoutId"], payout["party"], float(payout["amount"])) == ("c1" * 32, who, 4.0), payout
     as_gateway.submit({"ExerciseCommand": {"templateId": propose.PKG + "Payout", "contractId": payout["contractId"], "choice": "Payout_Paid", "choiceArgument": {}}})
     time.sleep(1)
     assert as_gateway.active("Payout") == [], "the payout is still there after it was marked paid"

@@ -197,7 +197,7 @@ testAReturnedReceiptHasNoLegAndPaysTheSenderBack = do
   submitMustFail (actAs f.gateway) $ exerciseCmd r Receipt_Return
   p <- submit f.operator $ exerciseCmd r Receipt_Return
   Some payout <- queryContractId f.gateway p
-  (payout.party, payout.amount, payout.withdrawalId, payout.gatewayToken) === (f.d, 10.0, depositIdOf f.d "m1", f.token)
+  (payout.party, payout.amount, payout.payoutId, payout.gatewayToken) === (f.d, 10.0, depositIdOf f.d "m1", f.token)
   None <- queryContractId f.operator r
   submitMustFail (asBuilder f) $ advance f.chain "01" [depositLine (depositIdOf f.d "m1")] [receiptLeg r]
   submit f.gateway $ exerciseCmd p Payout_Paid
@@ -210,7 +210,7 @@ testAPayoutLegMakesAPayout = do
   f <- fixture
   (_, _) <- submit (asBuilder f) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [payoutLeg f withdrawalId 4.0]
   [(_, p)] <- query @Payout f.gateway
-  (p.withdrawalId, p.party, p.amount, p.gatewayToken) === (withdrawalId, f.u, 4.0, f.token)
+  (p.payoutId, p.party, p.amount, p.gatewayToken) === (withdrawalId, f.u, 4.0, f.token)
   holds f.u "TKB" >>= \xs -> xs === []
   -- the party is a plain field
   query @Payout f.u >>= \ps -> length ps === 0
