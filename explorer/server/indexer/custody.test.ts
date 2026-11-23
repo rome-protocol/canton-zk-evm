@@ -354,7 +354,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
         await custodyOnce(pool, ledgerOf([[10, [stray, strayPayout]]]), chain.reads, 500);
         expect(Number((await pool.query("select count(*) from gateway_receipts")).rows[0].count)).toBe(0);
         expect(Number((await pool.query("select count(*) from gateway_payouts")).rows[0].count)).toBe(0);
-        expect((await pool.query("select erc20 from gateway_tokens")).rows).toHaveLength(1);
+        expect((await pool.query("select evm_token from gateway_tokens")).rows).toHaveLength(1);
       });
     });
   });
