@@ -312,6 +312,12 @@ On DevNet, 0.4.0 (package id `4f57b2ae083bf65b23d90f90aca64bab42ba4269a16c77a023
 
 0.6.0 is additive: it adds the templates `IntakeProposal`, `Intake`, `Receipt` and `Payout` and two constructors at the end of `Leg` (`ReceiptLeg`, `PayoutLeg`), and changes the bodies of `Advance`'s helpers (`legLine`, `settle`, `withdrawalsOf`). No existing template, field or choice changes, so a chain made by 0.5.0 goes on under 0.6.0 and a block with no receipt or payout leg behaves as before. A choice can never be removed by a later upgrade, so `Intake` has `Intake_Accept` alone: a choice that recorded a `Receipt` without an accepted transfer is not in the package. The CI job `upgrade` rebuilds 0.1.0 to 0.5.0 (0.4.0 and 0.5.0 from their commits, as they have no tag), checks their package ids and runs `dpm upgrade-check --both` of each against this source. The chain's `Intake` is made once with `setup.py --intake-step propose|accept`.
 
+### Vetted packages on Rome's TestNet participant
+
+| Package | Version | Package id | Vetted |
+|---|---|---|---|
+| `splice-test-token-v1` | 1.0.1 | `da294b5651ed00af8565fd31351d0c1d8778f10393d250e32c9844311f681436` | 2026-11-23 |
+
 ### The gas cap
 
 `SetGasCap` only raises the cap: the new value must be above the current one, at most double it, and at most `maxGasCap` (300,000,000). It does not lower it, because `Advance` already holds every committed header to the cap and the chain contract does not keep the head's gas limit. `Advance`'s own check, that a block's gas limit and gas used are within the cap, is unchanged. The builder reads the chain contract before every block, so a new cap needs no change on its side. The accept consumes the contract that every `Advance` consumes, so the producer is stopped while the cap changes.
