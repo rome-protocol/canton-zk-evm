@@ -54,7 +54,7 @@ describe("help", () => {
 });
 
 describe("page titles", () => {
-  it("name the page and the site, so a signing page also shows which site is asking", () => {
+  it("name the page and the site", () => {
     expect(pageTitle("/bridge", "Ostia", "DevNet")).toBe("Bridge · Ostia DevNet");
     expect(pageTitle("/faucet", "Ostia", "DevNet")).toBe("Faucet · Ostia DevNet");
     expect(pageTitle("/block/12", "Ostia", null)).toBe("Block · Ostia");

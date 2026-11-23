@@ -37,7 +37,7 @@ export function parentPath(pathname: string): string {
 
 /** Pages outside the header that still have a name of their own in the tab. */
 const OTHER_PAGES = ["about", "twins", "swaps", "swap", "legs", "leg", "search", "address", "addresses"];
-/** The tab's title: "Bridge · Ostia DevNet". On the signing page it also says which site is asking. A page of one item ("/block/12") is named in the singular. */
+/** The tab's title: "Bridge · Ostia DevNet". A page of one item ("/block/12") is named in the singular. */
 export function pageTitle(pathname: string, name: string, network: string | null): string {
   const site = network ? `${name} ${network}` : name;
   const [, first = "", ...rest] = pathname.split("/");

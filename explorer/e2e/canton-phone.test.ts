@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 /**
  * The External calls tab row, and the External calls card of the Stats page, at the width of a phone, in a real browser: the page's own stylesheets (styles.css, canton.css)
  * around the markup (the same classes as Canton.tsx, Seg.tsx and Stats.tsx). The last tab must be reachable: the tab group stays inside the row, and scrolls sideways when its tabs need more than the row has,
- * so that no tab is cut where it cannot be scrolled to. The page itself must not scroll sideways. Runs when PLAYWRIGHT_CORE names a playwright-core (the `bridge-page`
+ * so that no tab is cut where it cannot be scrolled to. The page itself must not scroll sideways. Runs when PLAYWRIGHT_CORE names a playwright-core (the `browser`
  * job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
  */
 const core = process.env.PLAYWRIGHT_CORE;

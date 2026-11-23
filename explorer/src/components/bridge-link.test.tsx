@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); vi.unstubAllEnvs(); });
 const show = () => render(<MemoryRouter><BridgeLink className="navlink" search="?tab=other-chains">Bridge</BridgeLink></MemoryRouter>);
 
 describe("a link to the Bridge", () => {
-  it("is the router's link to /bridge while the Bridge is a page of the explorer", () => {
+  it("is the router's link to /bridge, which says there is no address, when no origin is set", () => {
     show();
     const link = screen.getByRole("link", { name: "Bridge" });
     expect(link).toHaveAttribute("href", "/bridge?tab=other-chains");
