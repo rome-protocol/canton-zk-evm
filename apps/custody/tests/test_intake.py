@@ -165,6 +165,13 @@ class Accepts(IntakeCase):
         arguments = self.command()["choiceArgument"]
         self.assertEqual((arguments["label"], arguments["recipient"]), (ROUTE, "7a" * 20))
 
+    def test_a_route_memo_is_accepted_with_the_router_as_settings_of_keeps_it(self):
+        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER])
+        self.settings.router = intake.settings_of(args).router
+        self.views = [instruction(3, TKB, "3.0", {memo.REASON_KEY: ROUTE})]
+        accepted, _ = self.poll()
+        self.assertEqual([x["accepted"] for x in accepted], [cid(3)])
+
     def test_the_minimum_is_per_token_and_an_amount_at_it_is_accepted(self):
         self.settings.minimums = {(ISSUER, "TKB"): Fraction(5)}
         self.views = [instruction(1, TKB, "5.0"), instruction(2, TKB, "4.9999999999"), instruction(3, CC, "0.0000000001")]
@@ -282,6 +289,10 @@ class Settings(unittest.TestCase):
         args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", "0x12"])
         with self.assertRaisesRegex(SystemExit, "--router must be an EVM address"):
             intake.settings_of(args)
+
+    def test_a_router_given_on_the_command_line_reads_a_route_memo(self):
+        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER])
+        self.assertEqual(memo.read({memo.REASON_KEY: ROUTE}, cid(3), intake.settings_of(args).router), (ROUTE, "7a" * 20))
 
     def test_the_rpc_and_the_gateway_address_go_together_and_the_address_must_be_one(self):
         base = ["--gateway-party", GATEWAY, "--ledger-user", "operator"]
