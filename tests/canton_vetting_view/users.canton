@@ -1,0 +1,15 @@
+// Each user participant hosts a user and the token's admin, so that one submission can create the user's holding (signed by both).
+val work = sys.env("WORK")
+val dars = sys.env("DARS")
+nodes.local.start()
+val lines = Seq((lacking, "lacking", false), (vetted, "vetted", true)).map { case (node, name, withProbe) =>
+  node.synchronizers.connect("da", "http://127.0.0.1:5001")
+  val user = node.parties.enable(s"user-$name")
+  val admin = node.parties.enable(s"admin-$name")
+  node.ledger_api.users.create(name, actAs = Set(user, admin), primaryParty = Some(user))
+  node.dars.upload(s"$dars/splice-test-token-v1-1.0.1.dar", vetAllPackages = true, synchronizeVetting = true)
+  if (withProbe) node.dars.upload(sys.env("DAR"), vetAllPackages = true, synchronizeVetting = true)
+  s"$name ${user.toProtoPrimitive} ${admin.toProtoPrimitive}"
+}
+java.nio.file.Files.writeString(java.nio.file.Path.of(work, "users.ids"), lines.mkString("\n") + "\n")
+println("USERS NODE DONE")

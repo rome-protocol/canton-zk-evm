@@ -1,0 +1,14 @@
+// $WORK is the test's folder, $DARS the token-standard DARs, $DAR the probe package.
+val work = sys.env("WORK")
+val dars = sys.env("DARS")
+nodes.local.start()
+bootstrap.synchronizer_local()
+val protocolVersion = sequencer1.synchronizer_parameters.static.get().protocolVersion.toProtoPrimitive
+if (protocolVersion != sys.env("CANTON_PROTOCOL_VERSION").toInt) sys.error(s"the synchronizer runs protocol version $protocolVersion")
+rome.synchronizers.connect_local(sequencer1, alias = "da")
+val party = rome.parties.enable("rome")
+rome.ledger_api.users.create("rom", actAs = Set(party), primaryParty = Some(party))
+rome.dars.upload(s"$dars/splice-test-token-v1-1.0.1.dar", vetAllPackages = true, synchronizeVetting = true)
+rome.dars.upload(sys.env("DAR"), vetAllPackages = true, synchronizeVetting = true)
+java.nio.file.Files.writeString(java.nio.file.Path.of(work, "rome.id"), party.toProtoPrimitive)
+println("ROME NODE DONE")
