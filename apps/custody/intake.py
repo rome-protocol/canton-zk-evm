@@ -231,7 +231,7 @@ def settings_of(args) -> Settings:
         raise SystemExit("set --gateway-party (a party id) and --ledger-user")
     registries = b.parse_registries(args.registry)
     try:
-        router = memos.address_of(args.router) if args.router else None
+        router = "0x" + memos.address_of(args.router) if args.router else None
     except memos.Unreadable:
         raise SystemExit("--router must be an EVM address (0x and 40 hex digits)") from None
     if bool(args.ostia_rpc) != bool(args.gateway_address):
