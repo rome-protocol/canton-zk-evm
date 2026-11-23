@@ -104,7 +104,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const a2 = await one(pool, "select * from block_attempts where run_id = $1 and attempt_seq = 2", [RUN1]);
       expect(a2).toMatchObject({ outcome: "skipped", cut_reason: "retry", tx_count: 0, left_out_count: 1, rebuilds: 1, block_hash: null });
       const a3 = await one(pool, "select * from block_attempts where run_id = $1 and attempt_seq = 3", [RUN1]);
-      expect(a3).toMatchObject({ outcome: "failed", proof_outcome: "failed", reason: "the prover failed", update_id: null, completion_offset: null });
+      expect(a3).toMatchObject({ outcome: "failed", proof_outcome: "failed", reason: "the block failed before Canton answered", update_id: null, completion_offset: null });
       // the transactions of attempt 1: in order, then the one left out
       const rows = (await pool.query("select position, tx_hash, left_out_reason from attempt_transactions where attempt_id = $1 order by position", [a1.attempt_id])).rows;
       expect(rows.map((x) => [x.position, x.tx_hash.toString("hex").slice(0, 8), x.left_out_reason])).toEqual([
