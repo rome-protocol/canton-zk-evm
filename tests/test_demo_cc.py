@@ -6,7 +6,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "demo"))
-import canton, cc, evm, twin
+import asset, canton, cc, evm, twin
 
 DSO = "DSO::1220" + "d5" * 32
 VALIDATOR = "validator::1220" + "a1" * 32
@@ -391,7 +391,7 @@ class ScanAnswerTests(RegisterCase):
         big["choiceContext"]["disclosedContracts"][0]["createdEventBlob"] = "x" * 5000
         with mock.patch.object(twin, "MAX_ANSWER", 4000):
             self.refuses("more than 4000 bytes", **{FACTORY_PATH: big})
-        with mock.patch.object(cc, "MAX_BLOB", 1000):   # a blob over the cap inside an answer that is small enough for the reader
+        with mock.patch.object(asset, "MAX_BLOB", 1000):   # a blob over the cap inside an answer that is small enough for the reader
             self.refuses("without templateId", **{FACTORY_PATH: big})
 
     def test_the_factory_must_be_a_contract_id_that_is_disclosed_and_an_external_party_amulet_rules(self):
