@@ -84,6 +84,30 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
     });
   });
 
+  it("stores and serves a time inside a reason unchanged, and no tool text of an over-budget pre-check row", async () => {
+    await inDb(async (pool) => {
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 60_000, { gather_ms: 0, heartbeat_seconds: 0, test: true });
+      const refused = "0x" + "f1".repeat(32), paused = "0x" + "f2".repeat(32), rawTool = "0x" + "f3".repeat(32);
+      const pausedReason = `the Canton legs are paused until ${iso(T0 + 900_000)}`;
+      r.add(T0 + 1_000, "excluded", { transaction: refused, until: iso(T0 + 601_000), reason: "it was alone in a block Canton refused" });
+      r.add(T0 + 1_500, "cut", { attempt: 1, number: 1, strategy: "on_demand", cut_reason: "retry", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+      r.add(T0 + 2_000, "skipped", { attempt: 1, left_out: [{ transaction: paused, reason: pausedReason }], rebuilds: 0 });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      await loader(pool, dir).load();
+      expect((await lifecycle(pool, refused)).last_left_out_reason).toBe(`held back until ${iso(T0 + 601_000)}: it was alone in a block Canton refused`);
+      expect((await lifecycle(pool, paused)).last_left_out_reason).toBe(pausedReason);
+      // a row stored by an earlier version holds the tool's words after the fixed part
+      const tool = "over the proving budget: the input tool cannot make an input of this block (make-input failed: cannot open /home/ops/x at 10.1.2.3:8545)";
+      await pool.query("insert into tx_lifecycle (tx_hash, state, last_left_out_reason, updated_at) values ($1, 'pending', $2, now())", [hb(rawTool), tool]);
+      const db = createChainDb(pool);
+      expect((await db.lifecycleOf(refused))?.leftOutReason).toBe(`held back until ${iso(T0 + 601_000)}: it was alone in a block Canton refused`);
+      expect((await db.lifecycleOf(paused))?.leftOutReason).toBe(pausedReason);
+      expect((await db.lifecycleOf(rawTool))?.leftOutReason).toBe("over the proving budget: the input tool cannot make an input of this block");
+    });
+  });
+
   it("keeps every event of a run: the run, the attempts, their transactions, the pool and the states of the transactions", async () => {
     await inDb(async (pool) => {
       const chain = makeChain([{ txs: 2 }, { txs: 1 }]);

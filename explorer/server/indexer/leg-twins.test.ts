@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
-import { createLedger, CUSTODY_ENDPOINTS } from "../ledger.ts";
+import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
 import { FAKE_GATEWAY, registered, startFakeLedger, zkChain, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce } from "./custody.ts";
@@ -284,6 +284,44 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       await twinTotalsOnce(pool, chain.reads);
       expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
       expect(await twinLegs(pool)).toHaveLength(4);
+    });
+  });
+});
+
+describe.skipIf(!TEST_URL)("the custody row", () => {
+  checkRequired();
+
+  it("says a fixed sentence when the registry read or the custody read fails, never the failure's own words", async () => {
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const chain = makeChain([{ txs: 1 }]);
+      chain.reads.rethHead = 1;
+      chain.ledger.ledgerHead = 1;
+      const raw = "cannot read /home/ops/state at 10.1.2.3:8545";
+      const mode = { registry: true };
+      const ledger = {
+        chainRegistry: async () => { if (mode.registry) throw new Error(raw); return null; },
+        gatewayTokens: async () => { if (!mode.registry) throw new Error(raw); return []; },
+        holdingPages: async function* () { /* none */ },
+      } as unknown as Ledger;
+      const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", custody: { ledger, ms: 50 } });
+      opened.push(indexer);
+      await indexer.open();
+      await indexer.runOnce();
+      const detail = async (want: string) => {
+        for (let i = 0; i < 200; i++) {
+          const d = (await pool.query("select detail from health_checks where check_id = 'custody'")).rows[0]?.detail as string | undefined;
+          if (d === want) return d;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return (await pool.query("select detail from health_checks where check_id = 'custody'")).rows[0]?.detail;
+      };
+      const halt = indexer.start();
+      try {
+        expect(await detail("the chain record's registry cannot be read")).toBe("the chain record's registry cannot be read");
+        mode.registry = false;
+        expect(await detail("the custody cannot be read")).toBe("the custody cannot be read");
+      } finally { await halt(); }
     });
   });
 });

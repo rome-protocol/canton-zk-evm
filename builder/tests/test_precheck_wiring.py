@@ -153,6 +153,7 @@ class Blocks(Checked, tb.Case):
         result = self.block(s)
         self.assertEqual(result["transactions"], [t["hash"] for t in ts[1:]])
         self.assertIn("cannot make an input", result["leftOut"][0]["reason"])
+        self.assertEqual(result["leftOut"][0]["reason"], "over the proving budget: the input tool cannot make an input of this block")
 
     def test_the_block_that_goes_on_is_the_block_that_was_checked(self):
         # the clock moves a second at every build: a block built again for the kept prefix must still be the one whose check passed
@@ -286,6 +287,17 @@ class Held(Checked, Loop):
         self.assertEqual(held["transaction"], ts[0]["hash"])
         self.assertIn("over the proving budget", held["reason"])
         self.assertEqual([x["event"] for x in self.lines(s, "excluded")], ["excluded"])
+
+    def test_a_transaction_the_input_tool_refuses_is_held_with_no_tool_text(self):
+        ts, plan = self.three()
+        s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan)
+        os.environ["FAKE_INPUT_FAILS_FOR"] = ts[0]["hash"]
+        self.addCleanup(os.environ.pop, "FAKE_INPUT_FAILS_FOR", None)
+        p = self.producer(s)
+        p.step()
+        why = "over the proving budget: the input tool cannot make an input of this block"
+        self.assertEqual([x["reason"] for x in self.status()["excluded"]], [why])
+        self.assertEqual([x["reason"] for x in self.lines(s, "excluded")], [why])
 
 
     def test_a_transaction_convicted_again_is_held_twice_as_long_up_to_a_day(self):

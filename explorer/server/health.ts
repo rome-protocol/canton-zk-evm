@@ -136,18 +136,26 @@ export function publicText(text: string | null): string | null {
     .replace(/(^|[^\w/.])~\/[\w.@+~=/-]*/g, "$1[hidden]")
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, "[hidden]")
     .replace(/\blocalhost(?::\d+)?\b/gi, "[hidden]")
-    .replace(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
+    .replace(/\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, "[hidden]");
 }
 
 /** The sentence a held-back transaction carries when the proof of it failed: the tool's own output is never stored or served. */
 export const UNPROVABLE_REASON = "it could not be proven";
 
-/** A transaction's reason (why it was held back, left out or lost) as it may be stored and served: the fixed sentence for an unprovable hold, any other with a path, host or URL taken out. */
+/** The tool's own words after the fixed part of a pre-check reason: kept out of the public text, for rows stored before the writer dropped them. */
+const TOOL_DETAIL = /(the input tool cannot make an input of this block|the guest program fails on this block) \(.*$/s;
+
+/**
+ * A transaction's reason (why it was held back, left out or lost) as it may be stored and served: the fixed sentence for an unprovable hold, any other with a path, host or URL taken out. The time of a
+ * "held back until <time>: " prefix is kept when it looks like one, else it says "later".
+ */
 export function lifecycleReason(reason: string | null): string | null {
   if (reason === null) return null;
-  const hold = /^held back until (.{0,40}?): it could not be proven/s.exec(reason);
-  // The time is kept as it is when it looks like one (an ISO time has colons that the host:port guard would take out), else it says "later".
-  return hold ? `held back until ${/^[0-9TZ:.+-]{4,40}$/.test(hold[1] ?? "") ? hold[1] : "later"}: ${UNPROVABLE_REASON}` : publicText(reason);
+  const hold = /^held back until (.{0,40}?): (.*)$/s.exec(reason);
+  if (!hold) return publicText(reason.replace(TOOL_DETAIL, "$1"));
+  const time = /^[0-9TZ:.+-]{4,40}$/.test(hold[1] ?? "") ? hold[1] : "later";
+  const rest = hold[2] ?? "";
+  return `held back until ${time}: ${rest.startsWith(UNPROVABLE_REASON) ? UNPROVABLE_REASON : publicText(rest.replace(TOOL_DETAIL, "$1"))}`;
 }
 
 /** The sentence a failed attempt carries in public: the output of the producer's own tools is never stored or served. */
