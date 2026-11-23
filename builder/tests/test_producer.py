@@ -492,7 +492,7 @@ class Failures(Loop):
         def down(cfg): raise OSError("connection refused")
         p = self.producer(s, pending=down)
         p.step()
-        self.assertEqual(self.reports, [{"committed": False, "error": "OSError: connection refused"}])
+        self.assertEqual(self.reports, [{"committed": False, "kind": "other", "error": "OSError: connection refused"}])
         self.assertEqual(self.waits, [1])
 
     def test_failed_blocks_do_not_count_toward_the_two_in_a_row(self):
