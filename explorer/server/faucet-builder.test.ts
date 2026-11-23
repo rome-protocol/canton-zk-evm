@@ -29,15 +29,18 @@ let logged: string[];
 let sent: Hex[];
 let db: TestDatabase | undefined;
 let dir: string;
+let faucets: Faucet[];
 
 beforeEach(async () => {
   clock = { now: T0 };
   logged = [];
   sent = [];
+  faucets = [];
   dir = mkdtempSync(join(tmpdir(), "builder-"));
   for (const m of ["log", "error", "warn", "info"] as const) vi.spyOn(console, m).mockImplementation((...a: unknown[]) => { logged.push(a.map(String).join(" ")); });
 });
-afterEach(async () => { vi.restoreAllMocks(); await db?.drop(); db = undefined; rmSync(dir, { recursive: true, force: true }); });
+// A request writes the state file in the background; it is written out before the folder goes, or the removal can race the write (ENOTEMPTY).
+afterEach(async () => { await Promise.all(faucets.map((f) => f.flush())); vi.restoreAllMocks(); await db?.drop(); db = undefined; rmSync(dir, { recursive: true, force: true }); });
 
 /** A GitHub that knows some accounts by the code they are signed in with. `mode` makes it fail in the ways GitHub can. */
 interface Account { id: number; created_at: string }
@@ -105,6 +108,7 @@ async function rig(over: Partial<FaucetOptions> = {}, builder: Partial<BuilderOp
     ...over,
   });
   await f.ready();
+  faucets.push(f);
   return { f, gh, stateFile };
 }
 

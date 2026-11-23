@@ -169,8 +169,9 @@ describe("the moves of the wallet", () => {
     expect(await screen.findByRole("listitem", { name: "Sending 5 CC to Ethereum Sepolia" })).toBeInTheDocument();
   });
   it("says Not taken yet, with the real end, for a request Ostia has not taken within the set time", async () => {
-    await shown([requested({ at: minutes(-20), settleBefore: "2026-11-22T23:40:00.000Z" })]);
-    expect(await screen.findByText("Not taken yet. If it is not taken by 23:40 UTC, your 5 CC is free again in your Canton account.")).toBeInTheDocument();
+    const end = minutes(40);   // the set time is still ahead, whatever time the test runs at
+    await shown([requested({ at: minutes(-20), settleBefore: end })]);
+    expect(await screen.findByText(`Not taken yet. If it is not taken by ${end.slice(11, 16)} UTC, your 5 CC is free again in your Canton account.`)).toBeInTheDocument();
   });
   it("says Not moved, with the coin free again, once the end has passed, and offers no button before the page can start a move", async () => {
     await shown([requested({ at: minutes(-300), settleBefore: minutes(-60) })]);

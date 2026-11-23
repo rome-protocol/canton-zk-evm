@@ -80,7 +80,9 @@ describe("the Bridge as its own site", () => {
   });
 
   it("shows a planned-work notice above the header", async () => {
-    const notice = { level: "major", text: "Work is planned.", startsAt: "2026-11-23T09:00:00Z", endsAt: "2026-11-23T10:00:00Z" };
+    // Times follow the clock, so the notice is still planned whatever day the test runs on.
+    const hour = 60 * 60 * 1000;
+    const notice = { level: "major", text: "Work is planned.", startsAt: new Date(Date.now() + hour).toISOString(), endsAt: new Date(Date.now() + 2 * hour).toISOString() };
     fakeApi(route({ status: () => ({ status: 200, body: status({ notices: [notice] as never }) }) }));
     show("/");
     const text = await screen.findByText(/Work is planned\./);
