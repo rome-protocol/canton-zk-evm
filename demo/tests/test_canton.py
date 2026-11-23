@@ -297,6 +297,17 @@ class SendToGatewayTests(LedgerTestCase):
         self.assertEqual(self.exercised("TransferInstruction_Accept"), [])
         self.assertEqual((out["amount"], out["from"], out["to"], out["offer"] is not None), ("10.0", "u", "gateway", True))
 
+    def test_the_memo_is_the_label_and_the_address_when_one_is_given(self):
+        for argv, meta in ((["in-1", "10"], {"romeprotocol.com/ostia-label": "in-1"}),
+                           (["in-1", "10", "0x" + "44" * 20], {"romeprotocol.com/ostia-label": "in-1", "splice.lfdecentralizedtrust.org/reason": "0x" + "44" * 20})):
+            FakeLedger.submitted.clear()
+            canton.main(["send-to-gateway", *argv])
+            [(_, body)] = self.exercised("TransferFactory_Transfer")
+            with self.subTest(argv=argv):
+                self.assertEqual(body["commands"][0]["ExerciseCommand"]["choiceArgument"]["transfer"]["meta"]["values"], meta)
+        with self.assertRaises(SystemExit):
+            canton.main(["send-to-gateway", "in-1", "10", "0x44"])
+
     def test_u_with_too_little_is_a_failure_and_nothing_is_sent(self):
         with self.assertRaisesRegex(canton.Fail, "less than 11"):
             canton.main(["send-to-gateway", "in-1", "11"])

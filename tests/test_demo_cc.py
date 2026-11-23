@@ -1146,6 +1146,12 @@ class SendMemoTests(MemoCase):
                 self.run_cc("send-memo", *argv)
             self.assertEqual(self.commands(), [])
 
+    def test_too_little_coin_names_canton_coin_and_how_to_fund(self):
+        with self.assertRaises(canton.Fail) as why:
+            self.run_cc("send-memo", "8", MEMO_ADDRESS)
+        self.assertIn("Canton Coin, less than 8", str(why.exception))
+        self.assertIn("`cc.py fund u <amount>`", str(why.exception))
+
     def test_a_bad_command_line_prints_the_usage_and_no_token_is_printed(self):
         for argv in (("send-memo", "1"), ("send-memo", "1", MEMO_ADDRESS, "--label"), ("send-memo", "1", MEMO_ADDRESS, "--other", "x")):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):

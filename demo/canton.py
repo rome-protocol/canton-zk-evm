@@ -21,9 +21,10 @@
   canton.py return-tkb <label> <amount>
                                        V sends U <amount> TKB by the token standard's plain transfer (the transfer factory is the token rules; U
                                        accepts the offer if the token makes one). It is how the live cycle gives U the TKB that a payment moved to V
-  canton.py send-to-gateway <label> <amount>
+  canton.py send-to-gateway <label> <amount> [<0x address>]
                                        U sends the gateway <amount> TKB by the token standard's plain transfer (the transfer factory is the token rules), with all of U's
-                                       holdings as the inputs, and waits until the gateway sees the offer. The gateway accepts it (the intake of package 0.6.0). Prints the offer
+                                       holdings as the inputs, and waits until the gateway sees the offer. The memo is the label (romeprotocol.com/ostia-label) and, if an address
+                                       is given, the standard reason (the EVM recipient). The gateway accepts it (the intake of package 0.6.0). Prints the offer
   canton.py resubmit <advance.json>    send a block the builder saved (its block-N/advance.json) to Canton again, with the legs taken out. Demo
                                        only: it shows that a proven block is no good without the legs it recorded. Exits 2 if Canton refuses it
   canton.py settled <block number> [u|v|gateway]
@@ -815,10 +816,13 @@ def balances(net: Network) -> dict:
     }
 
 
-def send_to_gateway(net: Network, label: str, amount: str) -> dict:
-    """U offers the gateway `amount` TKB through the transfer factory (the rules, disclosed to U), with all of U's holdings as the inputs, and waits until the
-    gateway sees the offer. Gives the offer's contract id. It does not accept: the gateway does, in the intake."""
+def send_to_gateway(net: Network, label: str, amount: str, address: str = None) -> dict:
+    """U offers the gateway `amount` TKB through the transfer factory (the rules, disclosed to U), with all of U's holdings as the inputs and the memo (the label, and the EVM
+    recipient as the standard reason if an address is given), and waits until the gateway sees the offer. Gives the offer's contract id. It does not accept: the gateway does, in the intake."""
     read_label(label)
+    memo = {"romeprotocol.com/ostia-label": label, **({"splice.lfdecentralizedtrust.org/reason": address} if address is not None else {})}
+    if address is not None:
+        evm_address(address)
     if not CANTON_AMOUNT.fullmatch(amount) or float(amount) == 0:
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
     amount = amount if "." in amount else amount + ".0"
@@ -829,7 +833,7 @@ def send_to_gateway(net: Network, label: str, amount: str) -> dict:
         raise Fail(f"U holds {total_of(net, 'u')} TKB, less than {amount}")
     before = {e["contractId"] for e in net.template("operator", "gateway", TRANSFER_OFFER)}
     transfer = {"sender": u, "receiver": gateway, "amount": amount, "instrumentId": {"admin": registry, "id": INSTRUMENT}, "requestedAt": utc(timedelta(minutes=-1)),
-                "executeBefore": utc(timedelta(hours=1)), "inputHoldingCids": inputs, "meta": {"values": {"label": label}}}
+                "executeBefore": utc(timedelta(hours=1)), "inputHoldingCids": inputs, "meta": {"values": memo}}
     net.submit("users", ["u"], {"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
                                                    "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": NO_EXTRA_ARGS}}}, disclosed)
     def arrived():
@@ -869,8 +873,8 @@ def main(argv: list) -> dict:
         return {"label": argv[1], "id": payment_id(net.party("u"), net.party("v"), read_label(argv[1]))}
     if cmd == ["return-tkb"] and n == 3:
         return return_tkb(net, argv[1], argv[2])
-    if cmd == ["send-to-gateway"] and n == 3:
-        return send_to_gateway(net, argv[1], argv[2])
+    if cmd == ["send-to-gateway"] and n in (3, 4):
+        return send_to_gateway(net, *argv[1:])
     if cmd == ["resubmit"] and n == 2:
         return resubmit(net, argv[1])
     if cmd == ["settled"] and n in (2, 3) and WHOLE.fullmatch(argv[1]):

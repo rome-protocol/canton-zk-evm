@@ -1,0 +1,28 @@
+name: custody
+
+on:
+  pull_request:
+    paths: ["apps/custody/**", "builder/builder.py", "builder/keccak.py", "builder/requirements.txt", ".github/workflows/custody.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/custody/**", "builder/builder.py", "builder/keccak.py", "builder/requirements.txt", ".github/workflows/custody.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fakes only: a fake Canton Ledger API and a fake token registry. The worker uses the builder's ledger client, so it needs the builder's dependency.
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Python 3.12
+        run: python3 --version | grep -q '^Python 3\.12\.'
+      - name: Install the one dependency, by hash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r builder/requirements.txt
+      - name: Run the tests
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest discover -s apps/custody/tests -v
