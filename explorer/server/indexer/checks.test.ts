@@ -424,7 +424,7 @@ describe.skipIf(!TEST_URL)("review fixes: a walk that cannot read, the checks wi
       chain.reads.finalized = async () => { throw new Error("reth did not answer"); };
       await ix.checkOnce();
       expect(await row(pool, "C4")).toMatchObject({ status: "degraded" });
-      expect((await row(pool, "C4")).detail).toContain("reth did not answer");
+      expect((await row(pool, "C4")).detail).toBe("reth's finalized block cannot be read");
       expect((await row(pool, "C5")).status).toBe("ok");
       expect((await row(pool, "derive_lag")).status).toBe("ok");
     });
@@ -447,7 +447,7 @@ describe.skipIf(!TEST_URL)("review fixes: a walk that cannot read, the checks wi
         typeof text === "string" && text.includes("pg_sequence_last_value") ? Promise.reject(new Error("permission denied")) : (query as (...a: unknown[]) => unknown)(text, ...rest);
       await ix.checkOnce();
       expect(await row(pool, "db_ids")).toMatchObject({ status: "degraded" });
-      expect((await row(pool, "db_ids")).detail).toContain("permission denied");
+      expect((await row(pool, "db_ids")).detail).toBe("the id columns cannot be read");
       expect((await row(pool, "C5")).status).toBe("ok");
       expect((await row(pool, "derive_lag")).status).toBe("ok");
     });
