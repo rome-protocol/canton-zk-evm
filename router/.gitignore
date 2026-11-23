@@ -1,7 +1,0 @@
-lib/
-cache/
-out/
-out-upgrade/
-cache-upgrade/
-router-deploy-state.json
-upgrade-check/node_modules/

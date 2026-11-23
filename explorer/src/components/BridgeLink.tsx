@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { bridgeHref, bridgeOrigin } from "../bridge-app/where.ts";
+import { bridgeHref, bridgeOrigin } from "../bridge-site.ts";
 import { Icon } from "./Icon.tsx";
 
 /**

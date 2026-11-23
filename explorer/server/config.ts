@@ -5,8 +5,6 @@ import { parseEther } from "viem";
 import type { PoolConfig } from "pg";
 import { connectionConfig } from "./db/connect.ts";
 import { MAX_HEAVY_PLACES } from "./rpc-heavy.ts";
-import { agglayerSettings, type AgglayerSettings } from "./agglayer/settings.ts";
-import { routeSettings, type RouteSettings } from "./route/settings.ts";
 
 /** OWN_ADDRESSES: pairs "0x<40 hex>=name" separated by commas. A pair that is not one stops the server at start, with a message that names the setting. */
 export function ownAddresses(env: Record<string, string | undefined>): Record<string, string> {
@@ -64,14 +62,6 @@ export interface Config {
   twinRegistryUrl: string | null;
   /** Rome's own test and load addresses, by lowercase address, each with the name the explorer shows for it (OWN_ADDRESSES: "0x…=Rome test loop,0x…=Rome load test"); empty when not set. */
   ownAddresses: Readonly<Record<string, string>>;
-  /** The account service's `/healthz` on this machine (ACCOUNTS_HEALTH_URL, such as http://127.0.0.1:8081/healthz), read into the health row `accounts`; null when not set, and then there is no such row. */
-  accountsHealthUrl: string | null;
-  /** The AggLayer bridge routes (AGGLAYER_BRIDGE=1), or null when they are off, which is the default. */
-  agglayer: AgglayerSettings | null;
-  /** The Canton route's routes (OSTIA_ROUTE_OUT=1, which needs the AggLayer bridge), or null when they are off, which is the default. */
-  cantonRoute: RouteSettings | null;
-  /** The Bridge's own site (BRIDGE_ORIGIN: the scheme and the host, no path), whose requests are answered with bridge.html; null when not set, and then no host is given the Bridge's page. */
-  bridgeOrigin: string | null;
   /** A file with a notice for the pages (OSTIA_NOTICE_FILE, see server/notice.ts); null when not set, and then there is never a notice. */
   noticeFile: string | null;
   /** The builder's status file (PRODUCER_STATUS_FILE, see server/minimums.ts), read for the least a deposit may be; null when not set, and then there is no minimum. */
@@ -187,16 +177,6 @@ function header(env: Env, name: string): string | null {
   if (!raw) return null;
   if (!/^[A-Za-z0-9-]+$/.test(raw)) throw new ConfigError(`${name} must be a header name such as X-Real-IP, not "${raw}"`);
   return raw.toLowerCase();
-}
-
-/** BRIDGE_ORIGIN: an origin (scheme and host, no path, no trailing slash) or nothing. Anything else stops the server at start. */
-function bridgeOrigin(env: Env): string | null {
-  const given = env.BRIDGE_ORIGIN?.trim() ?? "";
-  if (given === "") return null;
-  let parsed: URL | null = null;
-  try { parsed = new URL(given); } catch { /* not a URL */ }
-  if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== given) throw new ConfigError(`BRIDGE_ORIGIN must be an origin (the scheme and the host, no path), not "${given.slice(0, 80)}"`);
-  return given;
 }
 
 function url(env: Env, name: string, fallback: string): string {
@@ -350,7 +330,6 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     throw new ConfigError(`RPC_HEAVY_CONCURRENCY + RPC_HEAVY_QUEUE must be at most ${MAX_HEAVY_PLACES} (they are ${heavyConcurrency + heavyQueue}): heavy calls would take the places that light calls need`);
   }
   if (!env.READER_PARTY) throw new ConfigError("READER_PARTY must be set to the Canton party id of the reader: the explorer reads Canton as that party only");
-  const agglayer = agglayerSettings(env, (m) => new ConfigError(m));
   return {
     host: env.EXPLORER_HOST || "127.0.0.1",
     port: whole(env, "EXPLORER_PORT", 8088, 1),
@@ -359,10 +338,6 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     networkName: env.NETWORK_NAME?.trim() || null,
     ownAddresses: ownAddresses(env),
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
-    accountsHealthUrl: env.ACCOUNTS_HEALTH_URL?.trim() ? url(env, "ACCOUNTS_HEALTH_URL", "") : null,
-    agglayer,
-    cantonRoute: routeSettings(env, agglayer, (m) => new ConfigError(m)),
-    bridgeOrigin: bridgeOrigin(env),
     noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
     producerStatusFile: env.PRODUCER_STATUS_FILE?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },

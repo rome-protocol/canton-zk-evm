@@ -4,7 +4,6 @@ import { bridgeOrigin, siteMeta, withSiteMeta } from "../site-meta.ts";
 
 const page = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 // index.html as it was when it named DevNet itself: DevNet's build must still produce these bytes.
-const bridgePage = readFileSync(new URL("../bridge.html", import.meta.url), "utf8");
 const devnetPage = readFileSync(new URL("./fixtures/index.devnet.html", import.meta.url), "utf8");
 const TESTNET = { VITE_NETWORK_NAME: "TestNet", VITE_SITE_ORIGIN: "https://ostia.testnet.romeprotocol.xyz" };
 
@@ -43,23 +42,8 @@ describe("the network's name and the site's origin in index.html", () => {
   });
 });
 
-describe("the Bridge's own page, bridge.html", () => {
+describe("the Bridge site's origin", () => {
   const BRIDGE = "https://bridge.ostia.testnet.romeprotocol.xyz";
-
-  it("names the network and the Bridge's own origin in a TestNet build, and has no placeholder left", () => {
-    const html = withSiteMeta(bridgePage, { ...TESTNET, VITE_BRIDGE_ORIGIN: BRIDGE });
-    expect(html).toContain("<title>Ostia Bridge · TestNet</title>");
-    expect(html).toContain(`<meta property="og:image" content="${BRIDGE}/ostia-card.png" />`);
-    expect(html).toContain(`<meta name="twitter:image" content="${BRIDGE}/ostia-card.png" />`);
-    expect(html).toContain('data-app="bridge"');
-    expect(html).toContain('src="/src/bridge-main.tsx"');
-    expect(html).not.toContain("%");
-    expect(html).not.toMatch(/devnet/i);
-  });
-
-  it("falls back to the site's origin when the build has no Bridge origin", () => {
-    expect(withSiteMeta(bridgePage, TESTNET)).toContain('content="https://ostia.testnet.romeprotocol.xyz/ostia-card.png"');
-  });
 
   it("leaves index.html as it was whatever the Bridge origin is", () => {
     expect(withSiteMeta(page, { VITE_BRIDGE_ORIGIN: BRIDGE })).toBe(devnetPage);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
 import {
-  ApiError, bridgeReads, addressTransfersCsvPath, addressTxsCsvPath, getAddressTxs, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
+  ApiError, addressTransfersCsvPath, addressTxsCsvPath, getAddressTxs, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
   getTwins, getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
 } from "./api.ts";
 import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
@@ -39,33 +39,13 @@ describe("the API client", () => {
     same(tokenAddress().createdBy!, FIELDS.createdBy);
   });
 
-  it("asks for the page after a cursor of the account's sent transactions, and for the first page without one", async () => {
-    answer(200, { items: [], next: null });
-    const signal = AbortSignal.timeout(20_000);
-    await bridgeReads.sentTxs("0xab", 50, signal);
-    await bridgeReads.sentTxs("0xab", 50, signal, "12:3");
-    const [first, second] = vi.mocked(fetch).mock.calls.map((c) => String(c[0]));
-    expect(first).not.toContain("before=");
-    expect(second).toMatch(/limit=50.*&before=12%3A3/);
-  });
-
-  it("sets no timeout on a request unless the caller gives a signal (a CSV export or a statistic may take long), and passes the Bridge page's through", async () => {
+  it("sets no timeout on a request", async () => {
     answer(200, status());
     await getStatus();
     await getTwins();
     await getBlocks(10);
     await getTxs(10);
     for (const c of vi.mocked(fetch).mock.calls) expect((c[1] as RequestInit).signal).toBeUndefined();
-    const signal = AbortSignal.timeout(20_000);
-    answer(200, status());
-    await bridgeReads.status(signal);
-    await bridgeReads.twins(signal);
-    await bridgeReads.tx("0xab", signal);
-    await bridgeReads.leg("0xab", signal);
-    await bridgeReads.sentTxs("0xab", 5, signal);
-    const calls = vi.mocked(fetch).mock.calls;
-    expect(calls).toHaveLength(5);
-    for (const c of calls) expect((c[1] as RequestInit).signal).toBe(signal);
   });
 
   it("reads the status, asking for the one path and nothing else", async () => {

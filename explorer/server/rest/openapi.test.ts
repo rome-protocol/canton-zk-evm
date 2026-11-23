@@ -31,8 +31,7 @@ const body = async (api: RoutedApi, path: string) => (await api("GET", path)).bo
 describe("the API description", () => {
   it("describes every route the API registers, and only those", () => {
     const api = full();
-    // The public RPC and the AggLayer and Canton route routes are routes only where they are on (tested in server/agglayer/api.test.ts and server/route/api.test.ts).
-    const described = Object.keys(DOCS).filter((p) => !p.startsWith("/api/agglayer/") && !p.startsWith("/api/canton-route/"));
+    const described = Object.keys(DOCS);
     expect([...api.routes].sort()).toEqual(described.filter((p) => p !== "/rpc").sort());
     expect(new Set(api.routes).size).toBe(api.routes.length);
     expect([...full(withRpc).routes].sort()).toEqual(described.sort());

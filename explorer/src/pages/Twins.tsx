@@ -7,7 +7,7 @@ import { Info } from "../components/Info.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { count, exact, plural, short, units } from "../format.ts";
 import { ago } from "../block-times.ts";
-import { instrumentName } from "../bridge/tokens.ts";
+import { instrumentName } from "../instrument.ts";
 import { useNow } from "../useStatus.ts";
 import { compareCustody, owedOf } from "./CantonCustody.tsx";
 import { cantonMark, Mark, Tok, useTwins } from "./TwinParts.tsx";

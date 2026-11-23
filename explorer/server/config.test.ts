@@ -52,13 +52,6 @@ describe("settings", () => {
     expect(load({ NETWORK_NAME: "  " }).networkName).toBeNull();
   });
 
-  it("reads the account service's limits only when ACCOUNTS_HEALTH_URL gives its address", () => {
-    expect(load().accountsHealthUrl).toBeNull();
-    expect(load({ ACCOUNTS_HEALTH_URL: "  " }).accountsHealthUrl).toBeNull();
-    expect(load({ ACCOUNTS_HEALTH_URL: "http://127.0.0.1:8081/healthz" }).accountsHealthUrl).toBe("http://127.0.0.1:8081/healthz");
-    expect(() => load({ ACCOUNTS_HEALTH_URL: "127.0.0.1:8081" })).toThrow(/ACCOUNTS_HEALTH_URL must be an http or https address/);
-  });
-
   it("names no twin registry service until TWIN_REGISTRY_URL gives its address", () => {
     expect(load().twinRegistryUrl).toBeNull();
     expect(load({ TWIN_REGISTRY_URL: "  " }).twinRegistryUrl).toBeNull();
@@ -335,14 +328,5 @@ describe("the producer status file", () => {
     expect(load().producerStatusFile).toBeNull();
     expect(load({ PRODUCER_STATUS_FILE: "  " }).producerStatusFile).toBeNull();
     expect(load({ PRODUCER_STATUS_FILE: "/run/explorer/producer/status.json" }).producerStatusFile).toBe("/run/explorer/producer/status.json");
-  });
-});
-
-describe("the Bridge's own site", () => {
-  it("serves the Bridge's own site only when BRIDGE_ORIGIN names its origin, and stops, naming the setting, for anything else", () => {
-    expect(load().bridgeOrigin).toBeNull();
-    expect(load({ BRIDGE_ORIGIN: "  " }).bridgeOrigin).toBeNull();
-    expect(load({ BRIDGE_ORIGIN: "https://bridge.ostia.testnet.romeprotocol.xyz" }).bridgeOrigin).toBe("https://bridge.ostia.testnet.romeprotocol.xyz");
-    for (const bad of ["bridge.example", "https://bridge.example/", "https://bridge.example/path", "ftp://bridge.example"]) expect(() => load({ BRIDGE_ORIGIN: bad }), bad).toThrow(/BRIDGE_ORIGIN/);
   });
 });

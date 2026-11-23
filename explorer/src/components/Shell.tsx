@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
-import { bridgeOrigin } from "../bridge-app/where.ts";
+import { bridgeOrigin } from "../bridge-site.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useHealth, useNow, useStatus } from "../useStatus.ts";
 import { DOCS_URL, FOOTER_LINE, ISSUES_URL, SOURCE_URL } from "../copy.ts";

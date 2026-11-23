@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * The notice of planned work, in a real browser: the page's own stylesheet (styles.css) around the markup of NoticeBanner (components/Notice.tsx) and the top bar below it, in both states, with the longest text
  * a notice may have and a range over two days, at the width of a phone (360 and 390 px) and of a desktop, in the light and the dark theme. The banner must stay inside the width (the page never scrolls sideways), keep its
  * text readable (every text colour at least 4.5:1 against what is behind it, the dark theme's translucent tint laid over the page colour), and in progress look different from planned.
- * Runs when PLAYWRIGHT_CORE names a playwright-core (the `bridge-page` job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
+ * Runs when PLAYWRIGHT_CORE names a playwright-core (the `browser` job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
  */
 const core = process.env.PLAYWRIGHT_CORE;
 const src = join(import.meta.dirname, "..", "src"), pub = join(import.meta.dirname, "..", "public");

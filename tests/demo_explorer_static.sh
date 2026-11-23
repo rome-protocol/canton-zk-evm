@@ -51,13 +51,12 @@ has "$rpc" " -e RPC_RATE_PER_MINUTE=120" "the rate limit is passed on"
 has "$rpc" " -e RPC_HEAVY_CONCURRENCY=6" "the heavy-call cap is passed on"
 has "$rpc" " -e RPC_HEAVY_QUEUE=10" "the heavy-call queue is passed on"
 has "$rpc" " -e TRACKER_MAX=500" "the tracker's size is passed on"
-# The Bridge page's build settings reach the build when they are set, and only then.
-bridge=$(VITE_CHAIN_ID=770101 VITE_ACCOUNTS_URL=/accounts VITE_BRIDGE_ACCOUNT=on dry start)
-has "$bridge" "--build-arg VITE_CHAIN_ID=770101" "a Bridge build setting is passed on"
-has "$bridge" "--build-arg VITE_ACCOUNTS_URL=/accounts" "the account service's address is passed on"
-has "$bridge" "--build-arg VITE_BRIDGE_ACCOUNT=on" "the switch of the Bridge account is passed on"
-lacks "$bridge" "VITE_CHAIN_GATEWAY" "a Bridge build setting that is not set"
-lacks "$(dry start)" "VITE_BRIDGE_ACCOUNT" "the Bridge account is off unless the build says on"
+# The pages' build settings reach the build when they are set, and only then.
+site=$(VITE_SITE_ORIGIN=https://ostia.testnet.romeprotocol.xyz VITE_BRIDGE_ORIGIN=https://bridge.ostia.testnet.romeprotocol.xyz dry start)
+has "$site" "--build-arg VITE_SITE_ORIGIN=https://ostia.testnet.romeprotocol.xyz" "the site's origin is passed on"
+has "$site" "--build-arg VITE_BRIDGE_ORIGIN=https://bridge.ostia.testnet.romeprotocol.xyz" "the Bridge site's origin is passed on"
+lacks "$(dry start)" "VITE_BRIDGE_ORIGIN" "no Bridge origin is passed when none is set"
+lacks "$site" "VITE_CHAIN_GATEWAY" "a build setting that the pages no longer read"
 # The pages take their network name from the server's NETWORK_NAME unless the build names its own.
 has "$(NETWORK_NAME=TestNet VITE_SITE_ORIGIN=https://ostia.testnet.romeprotocol.xyz dry build)" "--build-arg VITE_NETWORK_NAME=TestNet" "the server's network names the pages"
 has "$(NETWORK_NAME=TestNet VITE_NETWORK_NAME=Other dry build)" "--build-arg VITE_NETWORK_NAME=Other" "the build's own name wins"

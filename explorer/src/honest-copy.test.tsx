@@ -4,19 +4,9 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { HelpLine, reportTime, StillStuck } from "./components/Help.tsx";
 import { pageTitle } from "./components/Shell.tsx";
-import { ACCOUNT_KEY_WORDS, SIGN_IN_NO_RECOVERY, SIGN_IN_SAME_ACCOUNT, TWINS_HOLDERS } from "./copy.ts";
 import { noWalletWords, NO_WALLET, NO_WALLET_PHONE, onPhone } from "./wallet.ts";
-import { plainWords } from "./bridge/words.ts";
 
-describe("copy that must match the trust model", () => {
-  it("does not say that only the wallet can move what the account holds, or that any device opens it", () => {
-    for (const text of [ACCOUNT_KEY_WORDS, SIGN_IN_SAME_ACCOUNT, SIGN_IN_NO_RECOVERY, TWINS_HOLDERS]) expect(text).not.toMatch(/only your (MetaMask|key|wallet)|any device|cannot sign/i);
-    expect(ACCOUNT_KEY_WORDS).toMatch(/Rome runs the node that hosts this account/);
-    expect(ACCOUNT_KEY_WORDS).toMatch(/you trust Rome/);
-    for (const text of [ACCOUNT_KEY_WORDS, SIGN_IN_NO_RECOVERY]) expect(text).not.toMatch(/DevNet/);   // Ostia runs on TestNet now
-    expect(TWINS_HOLDERS).toMatch(/Rome's participants/);
-    expect(TWINS_HOLDERS).not.toMatch(/Bridge account/);   // the account made from a wallet signature is not offered in every build
-  });
+describe("wallet words", () => {
   it("names no one wallet where any wallet works", () => {
     expect(NO_WALLET).toMatch(/wallet extension/);
     expect(NO_WALLET_PHONE).toMatch(/wallet app's own browser/);
@@ -30,9 +20,6 @@ describe("copy that must match the trust model", () => {
     expect(onPhone(desktop)).toBe(false);
     expect(noWalletWords(phone)).toBe(NO_WALLET_PHONE);
     expect(noWalletWords(desktop)).toBe(NO_WALLET);
-  });
-  it("has a words for a wallet that now signs differently from before", () => {
-    expect(plainWords({ name: "PageError", code: "second_account" })).toMatch(/signs differently/);
   });
 });
 

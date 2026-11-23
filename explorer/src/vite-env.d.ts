@@ -1,10 +1,1 @@
 /// <reference types="vite/client" />
-
-/** The Bridge page's build-time pins (explorer/bridge-pins.ts). */
-declare const __BRIDGE_GATEWAY__: string;
-declare const __VAULT_CODE_HASHES__: string[];
-declare const __WTROME_ADDRESS__: string;
-/** True only in a build whose VITE_CANTON_WALLETS lists "loop" (vite.config.ts): Loop's library is in a build only then. */
-declare const __WALLET_LOOP__: boolean;
-/** True only in a build whose VITE_BRIDGE_ACCOUNT is `on` (vite.config.ts): the Bridge account made from a wallet signature, with its key, its kept-key store and its service client, is in a build only then. */
-declare const __BRIDGE_ACCOUNT__: boolean;

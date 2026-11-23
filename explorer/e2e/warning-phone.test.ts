@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * The look-alike warning, in a real browser, at the width of a phone and of a desktop: the page's own stylesheets (styles.css, token.css) around the markup of the token list's row
  * (Tokens.tsx), of an address cell (AddressCell.tsx) in the latest-transfers table, and of the contract page's Token tracker row (Contract.tsx). At 360 and 390 px the warning must stay inside its table cell
  * (it wraps under the name and never paints over the next column), and an address cell with no warning must stay on one line, as it was before the warning existed, at every width.
- * Runs when PLAYWRIGHT_CORE names a playwright-core (the `bridge-page` job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
+ * Runs when PLAYWRIGHT_CORE names a playwright-core (the `browser` job of .github/workflows/explorer.yml sets it), and with a Chromium it can drive.
  */
 const core = process.env.PLAYWRIGHT_CORE;
 const src = join(import.meta.dirname, "..", "src"), pub = join(import.meta.dirname, "..", "public");

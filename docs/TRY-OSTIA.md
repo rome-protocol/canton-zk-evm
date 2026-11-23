@@ -90,29 +90,9 @@ The public RPC only shows final blocks. A transaction you have just sent does no
 
 On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/block/<number>`). The block page shows the Canton update that holds the block's record, the time Canton recorded it, and the proof. Its Verify button checks the proof in your browser, with no server involved. The same data is in the API, for example `GET /api/blocks/<number>` and `GET /api/canton/updates/<update id>`.
 
-## Move tokens with the Bridge page
+## Move tokens with the Bridge
 
-Anyone with a browser wallet can move tokens between Ostia and Canton on their own, on `https://ostia.devnet.romeprotocol.xyz/bridge`. DevNet only. MetaMask, Rabby and OKX on a computer have been tested; no phone wallet has been tested, so use a computer. Moves are public on Ostia: a move back to Canton shows your Canton account next to your Ostia address.
-
-1. Open `/bridge` and press Connect wallet. The page adds Ostia DevNet to the wallet if it is not there.
-2. Press Open my Canton account. Your wallet asks you to sign one message, which costs no gas. The first time it asks twice for the same message, so the page can check that your wallet signs it the same way each time. The page makes the Canton key from that signature, keeps it in this browser and signs your Canton steps with it. Rome runs the node that hosts the account and the twin admin, so on DevNet you trust Rome with what the account holds. If your wallet gives the same signature again, the same account opens in another browser; not every wallet does. There is no recovery: use DevNet test tokens only. [Limits](https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature). Anyone who gets you to sign the same message gets the same Canton key, so sign it only on this site, which shows its own address. Opening the account also signs two opt-ins with the new key: one to receive Ostia tokens, and one to accept withdrawals.
-3. Get test coins on the same page: 1 tROME a day from the explorer's faucet, and 20 test Canton Coin a day. A visitor can open 3 new accounts a day, and DevNet's participant allows up to 1000 accounts.
-4. Pick a token and an amount and press Move. The page signs the Canton steps itself, after it has checked each transaction; your wallet asks only for the Ostia steps. A line under the button says about how long the move takes and how many wallet pop-ups it needs; open it to see each step.
-
-These steps are for a build of the explorer with the Bridge account, the Canton account made from a wallet signature (`VITE_BRIDGE_ACCOUNT=on`). A build without it, which is the default and the shape TestNet takes, has no sign-in, no key made from a signature and no Canton Coin faucet button: the card's button says Connect your Canton wallet, the Canton account is the one in the wallet a person already has, and until a build lists a wallet the button is disabled and says Coming soon. The tROME faucet and the builder grant are the explorer's own and work in both.
-
-The four moves:
-
-| Move | Wallet pop-ups | Measured |
-|---|---|---|
-| An Ostia token (TKA, tROME) to Canton: it arrives as the same token. tROME is wrapped first | 2 for TKA; 3 for tROME (wrap, approve, pay) | tROME: 2 min 13 s |
-| Back from Canton to Ostia: the page signs on Canton, you release on Ostia. tROME comes back as WtROME | 1 | tROME: 58 s |
-| Canton Coin to Ostia: it arrives as the CC token. The page signs twice on Canton, you claim on Ostia | 1 | 56 s |
-| CC back to Canton Coin | 1 | 46 s |
-
-The times were measured on the live site on 8 November 2026 with a fresh wallet. The chain itself was final in about 10 seconds; the rest is the wallet and the page waiting for the proven block. Expect about 1 minute for a move with one pop-up and about 2 minutes for a lock (two or three pop-ups).
-
-Each move shows three marks: Sent (the transaction has a hash, or the explorer has it), Proven (the zero-knowledge proof of its block has ended) and Final (the block is final on Canton and the transaction went through). In the Activity tab each row links to the move's block on Ostia and to its Canton update. The Activity tab lists your moves, the unfinished ones and the ones started in another browser, and an unfinished move carries on from its row. A lock for an account that has not opted in is refused before anything is paid.
+Tokens move between Ostia and Canton, and between Ostia and other chains, on the Bridge site, https://bridge.ostia.testnet.romeprotocol.xyz. It is not part of this repository. The explorer links to it, and `/bridge` on the explorer sends a visitor there.
 
 ## Deposit by memo
 

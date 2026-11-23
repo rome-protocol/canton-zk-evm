@@ -6,7 +6,7 @@
 const DEFAULT_NETWORK = "DevNet";
 const DEFAULT_ORIGIN = "https://ostia.devnet.romeprotocol.xyz";
 
-export function siteMeta(env: Record<string, string | undefined>): { networkName: string; origin: string; bridge: string | null } {
+export function siteMeta(env: Record<string, string | undefined>): { networkName: string; origin: string } {
   const networkName = env.VITE_NETWORK_NAME?.trim() || DEFAULT_NETWORK;
   if (!/^[A-Za-z0-9][A-Za-z0-9 -]{0,31}$/.test(networkName)) throw new Error("VITE_NETWORK_NAME is not a name (letters, digits, spaces and hyphens)");
   const given = env.VITE_SITE_ORIGIN?.trim() ?? "";
@@ -15,10 +15,11 @@ export function siteMeta(env: Record<string, string | undefined>): { networkName
   let parsed: URL | null = null;
   try { parsed = new URL(origin); } catch { /* not a URL */ }
   if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== origin) throw new Error("VITE_SITE_ORIGIN is not set to an origin (the scheme and the host)");
-  return { networkName, origin, bridge: bridgeOrigin(env) };
+  bridgeOrigin(env);   // a wrong setting stops the build here, though the page carries no tag of it
+  return { networkName, origin };
 }
 
-/** VITE_BRIDGE_ORIGIN, optional: the Bridge's own site (the scheme and the host, no path), checked as VITE_SITE_ORIGIN is. Null when it is not set, and then the Bridge stays a page of the explorer. */
+/** VITE_BRIDGE_ORIGIN, optional: the Bridge site (the scheme and the host, no path), checked as VITE_SITE_ORIGIN is: the explorer's link and its /bridge redirect go there. Null when it is not set. */
 export function bridgeOrigin(env: Record<string, string | undefined>): string | null {
   const given = env.VITE_BRIDGE_ORIGIN?.trim() ?? "";
   if (given === "") return null;
@@ -28,8 +29,8 @@ export function bridgeOrigin(env: Record<string, string | undefined>): string | 
   return given;
 }
 
-/** index.html and bridge.html with their placeholders, %NETWORK_NAME%, %SITE_ORIGIN% and %BRIDGE_ORIGIN%, filled in. Without a Bridge origin the last is the site's own, so a page opened from a local run still has valid tags. */
+/** index.html with its placeholders, %NETWORK_NAME% and %SITE_ORIGIN%, filled in. */
 export function withSiteMeta(html: string, env: Record<string, string | undefined>): string {
-  const { networkName, origin, bridge } = siteMeta(env);
-  return html.replaceAll("%NETWORK_NAME%", networkName).replaceAll("%SITE_ORIGIN%", origin).replaceAll("%BRIDGE_ORIGIN%", bridge ?? origin);
+  const { networkName, origin } = siteMeta(env);
+  return html.replaceAll("%NETWORK_NAME%", networkName).replaceAll("%SITE_ORIGIN%", origin);
 }

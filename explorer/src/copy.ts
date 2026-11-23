@@ -18,23 +18,7 @@ export const ABOUT_NOT_SHOWN = "Anything else on Canton. Daml legs settled with 
 export const ABOUT_READER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton.";
 /** Where the explorer's code is. It is a link a person may follow. */
 export const SOURCE_URL = "https://github.com/rome-protocol/canton-zk-evm";
-/** Where a person who is stuck or curious goes next: the docs, the repository's issues (the one place to ask for help) and the page that says what the Bridge account does and does not promise. All are links a person may follow; nothing is loaded from them. */
+/** Where a person who is stuck or curious goes next: the docs and the repository's issues (the one place to ask for help). Both are links a person may follow; nothing is loaded from them. */
 export const DOCS_URL = "https://docs.rome.builders/canton-zk-evm/";
 export const DEPLOY_URL = "https://docs.rome.builders/canton-zk-evm/build-on-ostia";
 export const ISSUES_URL = `${SOURCE_URL}/issues`;
-/** Where a transaction on Ethereum Sepolia is shown (a link a person may follow, on the Bridge's AggLayer Bridge tab); the transaction hash follows. */
-export const SEPOLIA_TX_URL = "https://sepolia.etherscan.io/tx/";
-export const TRUST_MODEL_URL = "https://docs.rome.builders/canton-zk-evm/trust-model#the-bridge-account-made-from-a-wallet-signature";
-
-/** The same page without its section: where the "Limits" link of the AggLayer Bridge tab goes. */
-export const TRUST_MODEL_PAGE = TRUST_MODEL_URL.split("#")[0]!;
-
-/** What the sign-in sheet says of the account: it depends on the wallet, and nothing can bring it back. */
-export const SIGN_IN_SAME_ACCOUNT = "If your wallet gives the same signature again, the same account opens on another device. Not every wallet does: MetaMask, Rabby and OKX on a computer have been tested.";
-export const SIGN_IN_NO_RECOVERY = "No recovery: test tokens only.";
-/** What the page says of the account on Canton once it is open: whose key it is, and who else can act. */
-export const ACCOUNT_KEY_WORDS = "This is your address on Canton. Canton Coin can be sent to it from any Canton address. Its key is made from your wallet's signature, and this browser keeps it and signs your Canton steps. Rome runs the node that hosts this account and issues the twins it holds, so you trust Rome with what the account holds.";
-/** The tokens that cross are public on Ostia, and who sees what. */
-export const MOVES_ARE_PUBLIC = "Moves are public on Ostia. A move back to Canton shows your Canton account next to your Ostia address.";
-/** Twins: who can hold them today. */
-export const TWINS_HOLDERS = "A twin can be held only by an account on Rome's participants today. Canton Coin goes to any Canton address.";
