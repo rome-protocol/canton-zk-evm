@@ -196,7 +196,7 @@ class Intake:
         return accepted
 
 
-def parse_minimums(items: list) -> dict:
+def parse_minimums(items: list, flag: str = "--min-deposit") -> dict:
     """{(admin, id): amount} of `ADMIN/ID=AMOUNT` items: split on the first "/" (a party id has none) and the last "=" (an instrument id is free text)."""
     found = {}
     for item in items:
@@ -207,9 +207,9 @@ def parse_minimums(items: list) -> dict:
         except ValueError:
             least = None
         if least is None or least < 0 or not slash or not name or not b.canton_party_text(admin):
-            raise SystemExit(f"--min-deposit is ADMIN/ID=AMOUNT (the admin party, the instrument id, the least amount), not {item[:80]!r}")
+            raise SystemExit(f"{flag} is ADMIN/ID=AMOUNT (the admin party, the instrument id, the least amount), not {item[:80]!r}")
         if (admin, name) in found:
-            raise SystemExit(f"two --min-deposit for {admin}/{name}")
+            raise SystemExit(f"two {flag} for {admin}/{name}")
         found[(admin, name)] = least
     return found
 
@@ -236,6 +236,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--payout-offers", action="store_true", default=env.get("CZE_PAYOUT_OFFERS") == "1",
                     help="pay each open Payout as one transfer offer from the gateway (also CZE_PAYOUT_OFFERS=1); needs --work-dir. Default: off")
     ap.add_argument("--offer-hours", type=float, default=float(env.get("CZE_OFFER_HOURS", 24)), metavar="HOURS", help="how long a payout's offer stays open before it is withdrawn and offered again; a rejected offer is offered again after the same time (default 24; also CZE_OFFER_HOURS)")
+    ap.add_argument("--min-payout", action="append", default=[], metavar="ADMIN/ID=AMOUNT", help="the least amount of an instrument that is offered as a payout (repeatable); a smaller payout gets no offer and no Canton transaction, and waits. Default: no minimum")
+    ap.add_argument("--max-offers", type=int, default=int(env.get("CZE_MAX_OFFERS", 0)), metavar="N", help="how many offers a payout gets: one that was offered (or refused) N times and not accepted is not offered again (also CZE_MAX_OFFERS). Default 0: no limit")
     ap.add_argument("--work-dir", default=env.get("CZE_WORK_DIR", ""), metavar="DIR", help="the builder's work folder (also CZE_WORK_DIR): the worker keeps payouts.json there and reads custody-stop.json from it")
     ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN", help="as the builder's: an instrument whose holdings run out (Canton Coin), paid with the builder's input choice, floor and custody check; needs its --registry and --registry-token-file")
     ap.add_argument("--custody-floor-days", type=float, default=30, metavar="DAYS", help="as the builder's (default 30)")
@@ -318,7 +320,9 @@ def main(argv: list) -> int:
             preapproval_warning(ledger, settings.gateway)
         if args.payout_offers:
             import payout
-            workers.append(payout.Payouts.from_args(args, ledger, settings))
+            payouts = payout.Payouts.from_args(args, ledger, settings)
+            workers.append(payouts)
+            say({"payouts": payouts.describe()})
     except b.BuilderError as e:
         raise SystemExit(str(e)) from None
     while True:

@@ -68,7 +68,7 @@ class Net:
         self.payouts, self.registered, self.holdings, self.holdings_at = [], [], [], {}
         self.instructions, self.archived, self.updates = {}, {}, {}   # cid -> (transfer, status tag); cid -> {offset, choice, tag}; update id -> transaction
         self.mode, self.next_offset, self.completions = "pending", 200, []
-        self.submitted, self.transfers, self.refuse = [], [], None
+        self.submitted, self.transfers, self.refuse, self.refuse_transfer = [], [], None, False
         self.kinds = {}
 
     def archive(self, instruction, choice, tag, successor=None):
@@ -107,6 +107,9 @@ class Net:
             return 200, {"update": {"Transaction": {"value": self.updates[body["updateId"]]}}}
         if path == "/v2/commands/submit-and-wait-for-transaction":
             self.transfers.append(body)
+            if self.refuse_transfer:   # the participant refuses the command: a failed completion, and an HTTP error to the caller
+                self.completions.append({"completionResponse": {"Completion": {"value": {"commandId": body["commands"]["commandId"], "offset": 9, "status": {"code": 3, "message": "UNKNOWN_INFORMEES"}}}}})
+                return 400, {"cause": "UNKNOWN_INFORMEES"}
             command = body["commands"]["commands"][0]["ExerciseCommand"]
             self.next_offset += 1
             update_id, instruction = f"update-{self.next_offset}", cid(0x60 + len(self.transfers))
@@ -150,13 +153,13 @@ class PayoutCase(unittest.TestCase):
         self.settings = intake.Settings(GATEWAY, {DSO: self.scan.url})
         self.worker = self.make()
 
-    def make(self, hours=HOURS):
+    def make(self, hours=HOURS, **kwargs):
         fields = {"ws_url": "", "engine_url": "", "jwt_secret": b"", "ledger_url": self.ledger_server.url, "ledger_user": "operator", "ledger_token": "", "party": GATEWAY,
                   "fee_recipient": "", "genesis": "", "work_dir": str(self.work), "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": str(self.bearer_file)}
         cfg = b.Config(**fields)
         cfg.disclosed, cfg.registries = list(DISCLOSED), self.settings.registries
         cfg.expiring, cfg.custody_floor_days, cfg.max_transfer_inputs = (DSO,), 30, 50
-        return payout.Payouts(b.Ledger(cfg), self.settings, str(self.work), hours, clock=lambda: self.now)
+        return payout.Payouts(b.Ledger(cfg), self.settings, str(self.work), hours, clock=lambda: self.now, **kwargs)
 
     def payout(self, which=TOKEN_TKB, amount="4.0", pid=PID, n=30):
         self.net.payouts.append(template(cid(n), gatewayToken=which, payoutId=pid, party=ALICE, amount=amount, **FIELDS))
@@ -567,6 +570,112 @@ class Switch(unittest.TestCase):
                 with self.subTest(more=more), self.assertRaises((SystemExit, b.BuilderError)):
                     bad = intake.parser().parse_args(base + more)
                     payout.Payouts.from_args(bad, intake.ledger_of(bad), intake.settings_of(bad))
+
+
+class Limits(PayoutCase):
+    def least(self, instrument=TKB, amount="5"):
+        return {(instrument["admin"], instrument["id"]): intake.b.decimal(amount)}
+
+    def test_a_payout_below_its_tokens_least_amount_gets_no_offer_and_no_ledger_call(self):
+        self.worker = self.make(min_payout=self.least())
+        self.payout(amount="4.9999999999")
+        said, lines = self.poll()
+        self.assertEqual((said, self.net.transfers, self.net.submitted), ([], [], []))
+        self.assertEqual(lines, [{"waiting": PID, "why": "below the least payout"}])
+        self.assertEqual((self.entry()["state"], self.entry()["why"], self.entry()["n"]), ("waiting", "below the least payout", 0))
+        self.assertEqual(self.poll(), ([], []))   # said once
+        self.assertEqual(self.net.transfers, [])
+
+    def test_a_payout_at_or_above_the_least_amount_is_offered_as_before(self):
+        self.worker = self.make(min_payout=self.least())
+        self.payout(amount="5.0")
+        self.payout(amount="7.5", pid="cd" * 32, n=31)
+        said, _ = self.poll()
+        self.assertEqual(sorted(line["offered"] for line in said), sorted([PID, "cd" * 32]))
+        self.assertEqual(len(self.net.transfers), 2)
+        self.assertIsNone(self.entry().get("why"))
+
+    def test_the_least_amount_is_per_token(self):
+        self.worker = self.make(min_payout=self.least(CC, "100"))
+        self.payout(which=TOKEN_TKB, amount="2.0")   # the minimum is of the other token
+        said, _ = self.poll()
+        self.assertEqual([list(line)[0] for line in said], ["offered"])
+
+    def test_a_held_back_payout_is_offered_once_the_least_amount_is_lowered(self):
+        self.worker = self.make(min_payout=self.least())
+        self.payout(amount="4.0")
+        self.poll()
+        self.worker = self.make(min_payout=self.least(amount="1"))
+        said, _ = self.poll()
+        self.assertEqual([list(line)[0] for line in said], ["offered"])
+        self.assertEqual((self.entry()["state"], self.entry()["n"], self.entry()["why"]), ("offered", 1, None))
+
+    def test_the_offers_are_capped_and_the_last_is_said_once(self):
+        self.worker = self.make(max_offers=2)
+        self.payout()
+        self.poll()
+        self.now += HOURS * 3600
+        self.poll()   # the lapsed offer is withdrawn
+        self.poll()   # and the second is made
+        self.assertEqual((len(self.net.transfers), self.entry()["n"]), (2, 2))
+        self.now += HOURS * 3600
+        self.poll()   # withdrawn
+        said, lines = self.poll()
+        self.assertEqual((said, self.net.submitted[-1]["commands"][0]["ExerciseCommand"]["choice"]), ([], "TransferInstruction_Withdraw"))
+        self.assertEqual(lines, [{"waiting": PID, "why": "offers used up", "offers": 2}])
+        self.assertEqual((len(self.net.transfers), self.entry()["why"]), (2, "offers used up"))
+        self.now += 10 * HOURS * 3600
+        self.assertEqual(self.poll(), ([], []))
+        self.assertEqual(len(self.net.transfers), 2)
+
+    def test_a_rejected_offer_counts_and_is_not_offered_again_when_used_up(self):
+        self.worker = self.make(max_offers=1)
+        self.payout()
+        self.poll()
+        self.net.archive(cid(0x61), "TransferInstruction_Reject", FAILED)
+        self.now += HOURS * 3600
+        _, lines = self.poll()
+        self.assertEqual(lines, [{"waiting": PID, "why": "offers used up", "offers": 1}])
+        self.assertEqual(len(self.net.transfers), 1)
+
+    def test_failed_submits_count_as_offers_and_the_retries_stop(self):
+        self.worker = self.make(max_offers=3)
+        self.net.refuse_transfer = True
+        self.payout()
+        for _ in range(12):
+            self.poll()
+            self.now += 1
+        self.assertEqual((len(self.net.transfers), self.entry()["n"], self.entry()["why"]), (3, 3, "offers used up"))
+        self.now += 10 * HOURS * 3600
+        self.poll()
+        self.assertEqual(len(self.net.transfers), 3)
+
+    def test_the_defaults_change_nothing(self):
+        self.assertEqual((self.worker.min_payout, self.worker.max_offers), ({}, 0))
+        self.net.refuse_transfer = True
+        self.payout(amount="0.0000000001")
+        for _ in range(12):
+            self.poll()
+            self.now += 1
+        self.assertGreater(len(self.net.transfers), 3)   # no cap: it is tried again and again
+
+    def test_the_settings_are_read_from_the_arguments_and_said_at_the_start(self):
+        with tempfile.TemporaryDirectory() as work:
+            base = ["--gateway-party", GATEWAY, "--ledger-user", "operator", "--payout-offers", "--work-dir", work]
+            args = intake.parser().parse_args(base + ["--min-payout", f"{ISSUER}/TKB=10", "--min-payout", f"{DSO}/Amulet=0.5", "--max-offers", "4"])
+            worker = payout.Payouts.from_args(args, intake.ledger_of(args), intake.settings_of(args))
+            self.assertEqual(worker.describe(), {"offerHours": 24.0, "minPayout": {f"{DSO}/Amulet": "0.5", f"{ISSUER}/TKB": "10"}, "maxOffers": 4})
+            default = intake.parser().parse_args(base)
+            self.assertEqual(payout.Payouts.from_args(default, intake.ledger_of(default), intake.settings_of(default)).describe(), {"offerHours": 24.0, "minPayout": {}, "maxOffers": 0})
+            for more in (["--max-offers", "-1"], ["--min-payout", f"{ISSUER}/TKB"], ["--min-payout", f"{ISSUER}/TKB=1", "--min-payout", f"{ISSUER}/TKB=2"]):
+                bad = intake.parser().parse_args(base + more)
+                with self.subTest(more=more), self.assertRaises(SystemExit):
+                    payout.Payouts.from_args(bad, intake.ledger_of(bad), intake.settings_of(bad))
+
+    def test_the_cap_can_come_from_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {"CZE_MAX_OFFERS": "5"}):
+            self.assertEqual(intake.parser().parse_args([]).max_offers, 5)
+        self.assertEqual(intake.parser().parse_args([]).max_offers, 0)
 
 
 import unittest.mock
