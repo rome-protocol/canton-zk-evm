@@ -49,6 +49,23 @@ At the start the worker says one `payouts` line with its settings (`offerHours`,
 
 The journal, `payouts.json` in `--work-dir` (the builder's work folder; also `CZE_WORK_DIR`), keeps for each open payout the number of offers, the time of the last, its command id (the same payout and offer number always give the same one, so the participant never runs it twice), the ledger end before it and its state (and `why` while an offer is held back). A send whose answer was lost is found by its completion, and a transfer that completed is marked without another transfer. A send with no completion is sent again only when Canton's own time (from the completions stream, not this machine's clock) is past `resolve_seconds` after it and not more than 30 s ahead of this clock; a failed completion is sent again at once; a committed completion without an update id waits. A journal that cannot be read stops the worker. One line of JSON on stdout for each offer, withdrawal, failure and payment, and, once, for each payout that waits with its reason.
 
+## The limits file
+
+With `--work-dir`, the worker writes `custody-limits.json` there at the start of every poll round (all or nothing: a reader never sees half of it), so that a reader sees the least amounts the running worker enforces and how old they are. Nothing is copied into a second setting.
+
+```json
+{
+  "version": 1,
+  "updatedAt": "2026-11-24T10:30:05Z",
+  "pollSeconds": 10,
+  "minDeposits": [{ "instrumentAdmin": "ADMIN", "instrumentId": "ID", "least": "10" }],
+  "minPayouts": [{ "instrumentAdmin": "ADMIN", "instrumentId": "ID", "least": "10" }],
+  "maxOffers": 3
+}
+```
+
+`minDeposits` is the intake's `--min-deposit` (a transfer below it is not accepted and stays as the sender made it); `minPayouts` is `--min-payout` and `maxOffers` is `--max-offers` (0: no limit). A part that is not switched on has `null` for its fields, and a part that is on with no setting has an empty list. `least` is plain decimal text in the instrument's own units. `updatedAt` is UTC. A write that fails is said once on stdout and never stops the worker.
+
 The protections of the intake and of Canton Coin payouts take effect only with their settings: the used-id check needs `--ostia-rpc` and `--gateway-address` (else only open ids are checked), and the floor, stop file and fee check need `--expiring-instrument` with `--registry` and `--registry-token-file` (else Canton Coin is paid largest first).
 
 Settings can also come from the environment: `CZE_INTAKE=1`, `CZE_PAYOUT_OFFERS=1`, `CZE_GATEWAY_PARTY`, `CZE_LEDGER_URL`, `CZE_LEDGER_USER`, `CZE_LEDGER_TOKEN_FILE`, `CZE_TOKEN_REGISTRIES`, `CZE_TOKEN_REGISTRY_TOKEN_FILES`, `CZE_ROUTER_ADDRESS`, `CZE_BOOK_ADDRESS`, `CZE_OSTIA_RPC_URL`, `CZE_GATEWAY_ADDRESS`, `CZE_POLL_SECONDS`, `CZE_OFFER_HOURS`, `CZE_MAX_OFFERS`, `CZE_WORK_DIR`.
