@@ -81,7 +81,7 @@ describe("settings", () => {
 
   it("takes the public RPC's settings and the tracker's from the environment, and names a wrong one", () => {
     const c = load({ PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "60", TRUSTED_IP_HEADER: "X-Real-IP", TRACKER_FILE: "/data/tracker.json", TRACKER_MAX: "50", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "3", TRACKER_MAX_PENDING_MINUTES: "15" });
-    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
+    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, minTipWei: 0n, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
     expect(c.tracker).toEqual({ file: "/data/tracker.json", max: 50, maxBytes: 4096, perSender: 3, maxPendingMinutes: 15 });
     expect(() => load({ PUBLIC_RPC: "yes" })).toThrow(/PUBLIC_RPC/);
     expect(() => load({ RPC_RATE_PER_MINUTE: "0" })).toThrow(/RPC_RATE_PER_MINUTE/);

@@ -355,9 +355,9 @@ describe("the tip floor (minTipWei)", () => {
 
   it("counts the tip as the lesser of the priority fee and what the max fee leaves above the base fee", async () => {
     const { call } = await on();
-    // a high priority fee on a max fee that leaves too little above the base fee
-    expect((await call("eth_sendRawTransaction", await signed({ maxFeePerGas: BASE + FLOOR - 1n, maxPriorityFeePerGas: 10n ** 15n }))).error?.message).toContain(`a tip of ${FLOOR - 1n} wei per gas`);
-    const raw = await signed({ maxFeePerGas: BASE + FLOOR, maxPriorityFeePerGas: 10n ** 15n });
+    // a priority fee as high as the max fee, which leaves too little above the base fee
+    expect((await call("eth_sendRawTransaction", await signed({ maxFeePerGas: BASE + FLOOR - 1n, maxPriorityFeePerGas: BASE + FLOOR - 1n }))).error?.message).toContain(`a tip of ${FLOOR - 1n} wei per gas`);
+    const raw = await signed({ maxFeePerGas: BASE + FLOOR, maxPriorityFeePerGas: BASE + FLOOR });
     expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
   });
 
