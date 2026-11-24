@@ -102,6 +102,30 @@ describe.skipIf(!dist)("the header's links, in a browser", () => {
     });
   }
 
+  for (const scheme of ["light", "dark"]) for (const width of [390, 1280]) {
+    it(`draws the Ostia tile at the header's mark height, lime with the purple mark, at ${width} px in the ${scheme} theme`, async () => {
+      const page = await browser.newPage({ viewport: { width, height: 700 }, colorScheme: scheme });
+      await page.goto(base + "/block/5", { waitUntil: "load" });
+      await page.waitForSelector(".top .name");
+      const m = await page.evaluate(() => {
+        const svg = document.querySelector<SVGSVGElement>(".top .brand svg.mark")!;
+        const box = svg.getBoundingClientRect(), name = document.querySelector<HTMLElement>(".top .name")!.getBoundingClientRect();
+        return {
+          label: svg.getAttribute("aria-label"), role: svg.getAttribute("role"), w: box.width, h: box.height, sameRow: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 3,
+          tile: getComputedStyle(svg.querySelector("rect")!).fill, ink: getComputedStyle(svg.querySelector("g")!).fill, masked: getComputedStyle(svg).maskImage,
+        };
+      });
+      await page.close();
+      expect(m.label).toBe("Rome");
+      expect(m.role).toBe("img");
+      expect([m.w, m.h]).toEqual([17, 17]);
+      expect(m.sameRow).toBe(true);
+      expect(m.tile).toBe("rgb(243, 255, 151)");   // #F3FF97 in both themes
+      expect(m.ink).toBe("rgb(94, 10, 96)");        // #5E0A60 in both themes
+      expect(m.masked).toBe("none");
+    });
+  }
+
   it("folds the links into the menu button where the search box and the links do not both fit (1000 px), still in one row, and the menu shows them", async () => {
     const page = await open("/block/5", 1000);
     const r = await read(page);

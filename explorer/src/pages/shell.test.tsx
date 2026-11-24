@@ -12,7 +12,13 @@ describe("the shell", () => {
     fakeApi(() => ({ status: 200, body: status() }));
     renderApp("/faucet");
     const header = screen.getByRole("banner");
-    expect(within(header).getByRole("img", { name: "Rome" })).toBeInTheDocument();
+    const mark = within(header).getByRole("img", { name: "Rome" });
+    expect(mark).toBeInTheDocument();
+    // the Ostia tile drawn as an SVG in its own colours (Rome purple on Canton lime), not a one-colour mask
+    expect(mark.tagName.toLowerCase()).toBe("svg");
+    expect(mark.querySelector("rect")).toHaveAttribute("fill", "#F3FF97");
+    expect(mark.querySelector("g")).toHaveAttribute("fill", "#5E0A60");
+    expect(mark.querySelectorAll("path")).toHaveLength(2);
     const home = within(header).getByRole("link", { name: /Ostia/ });
     expect(home).toHaveAttribute("href", "/");
     expect(await within(header).findByText("DevNet")).toBeInTheDocument();
