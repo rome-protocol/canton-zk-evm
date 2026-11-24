@@ -1,4 +1,4 @@
-"""Rebuilds the explorer's icons in public/ from the header mark (src/assets/rome-mark.png).
+"""Rebuilds the explorer's icons in public/ from Rome's mark (src/assets/rome-mark.png; the header draws the same tile as an SVG, components/OstiaMark.tsx).
 
     python3 explorer/scripts/favicon.py
 

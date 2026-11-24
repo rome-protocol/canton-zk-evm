@@ -9,6 +9,7 @@ import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
 import { BridgeLink } from "./BridgeLink.tsx";
 import { Icon } from "./Icon.tsx";
+import { OstiaMark } from "./OstiaMark.tsx";
 import { NoticeBanners } from "./Notice.tsx";
 import { SearchBox } from "./SearchBox.tsx";
 
@@ -163,7 +164,7 @@ function ShellBody({ children }: { children: ReactNode }) {
       {status && <TopBar status={status} />}
       <header ref={header} className={`top${home ? " home" : ""}${folded ? " folded" : ""}`}>
         <Link className="brand" to="/">
-          <span className="mark" role="img" aria-label="Rome" />
+          <OstiaMark className="mark" />
           <span className="name">{name}</span>
           {status?.networkName && <span className="pill">{status.networkName}</span>}
         </Link>
