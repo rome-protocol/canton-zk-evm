@@ -118,7 +118,7 @@ describe.skipIf(!dist)("the header's links, in a browser", () => {
       await page.close();
       expect(m.label).toBe("Rome");
       expect(m.role).toBe("img");
-      expect([m.w, m.h]).toEqual([17, 17]);
+      expect([m.w, m.h]).toEqual([28, 28]);
       expect(m.sameRow).toBe(true);
       expect(m.tile).toBe("rgb(243, 255, 151)");   // #F3FF97 in both themes
       expect(m.ink).toBe("rgb(94, 10, 96)");        // #5E0A60 in both themes
