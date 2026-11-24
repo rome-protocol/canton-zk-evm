@@ -40,6 +40,7 @@ export type CoinResult =
   | { kind: "queued"; ticket: string; position: number; to: string; amount: string }
   | { kind: "limit"; which: "address" | "ip" | "hour" | "checks"; waitSeconds: number | null; message: string }
   | { kind: "full"; waitSeconds: number | null; message: string }
+  | { kind: "empty"; message: string }
   | { kind: "captcha"; message: string }
   | { kind: "problem"; message: string };
 
@@ -117,6 +118,7 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
         return { kind: "limit", which, waitSeconds: wait, message: message(body, "Try again later.") };
       }
       if (status === 503 && body.reason === "queue") return { kind: "full", waitSeconds: wait, message: message(body, "The line is full. Try again in a little while.") };
+      if (status === 503 && body.reason === "empty") return { kind: "empty", message: message(body, "The faucet is empty.") };
       if (status === 403 && body.reason === "captcha") return { kind: "captcha", message: message(body, "Complete the human check first.") };
       return { kind: "problem", message: message(body, UNREADABLE) };
     },

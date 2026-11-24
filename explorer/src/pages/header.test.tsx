@@ -29,6 +29,61 @@ describe("the header", () => {
     vi.unstubAllEnvs();
   });
 
+  it("shows no Swap link and keeps the Bridge entry as the explorer's own route while the deployment names neither site", async () => {
+    fakeApi(route({}));
+    renderApp("/faucet");
+    await screen.findByRole("region", { name: "Chain at a glance" });
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    expect(nav.queryByRole("link", { name: "Swap" })).toBeNull();
+    expect(nav.getByRole("link", { name: "Bridge" })).toHaveAttribute("href", "/bridge");
+    expect(nav.getByRole("link", { name: "Bridge" })).not.toHaveAttribute("target");
+  });
+
+  it("links the Swap and Bridge sites the deployment names, each in a new tab with the outside-link mark, Swap just before Bridge, and the other links stay as they are", async () => {
+    fakeApi(route({ status: () => reply(status({ swapUrl: "https://swap.ostia.testnet.romeprotocol.xyz/", bridgeUrl: "https://bridge.ostia.testnet.romeprotocol.xyz/" })) }));
+    renderApp("/faucet");
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    const swap = await nav.findByRole("link", { name: "Swap" });
+    expect(swap).toHaveAttribute("href", "https://swap.ostia.testnet.romeprotocol.xyz/");
+    expect(swap).toHaveAttribute("target", "_blank");
+    expect(swap).toHaveAttribute("rel", "noopener");
+    expect(swap).toHaveClass("navlink", "out");
+    const bridge = nav.getByRole("link", { name: "Bridge" });
+    expect(bridge).toHaveAttribute("href", "https://bridge.ostia.testnet.romeprotocol.xyz/");
+    expect(bridge).toHaveAttribute("target", "_blank");
+    expect(bridge).toHaveClass("navlink", "out");
+    expect(nav.getAllByRole("link").map((l) => l.textContent)).toEqual(["Home", "Blocks", "Transactions", "Contracts", "Tokens", "External calls", "Stats", "Swap", "Bridge", "Faucet", "API"]);
+    expect(nav.getByRole("link", { name: "Faucet" })).not.toHaveAttribute("target");
+    expect(nav.getByRole("link", { name: "Faucet" })).toHaveClass("active");
+  });
+
+  it("shows the Swap link alone when only Swap is named, and the Bridge entry stays the explorer's own route", async () => {
+    fakeApi(route({ status: () => reply(status({ swapUrl: "https://swap.ostia.testnet.romeprotocol.xyz/" })) }));
+    renderApp("/faucet");
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    expect(await nav.findByRole("link", { name: "Swap" })).toHaveAttribute("target", "_blank");
+    expect(nav.getByRole("link", { name: "Bridge" })).toHaveAttribute("href", "/bridge");
+  });
+
+  it("shows the Bridge link alone when only the Bridge is named: no Swap link", async () => {
+    fakeApi(route({ status: () => reply(status({ bridgeUrl: "https://bridge.ostia.testnet.romeprotocol.xyz/" })) }));
+    renderApp("/faucet");
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    await waitFor(() => expect(nav.getByRole("link", { name: "Bridge" })).toHaveAttribute("target", "_blank"));
+    expect(nav.queryByRole("link", { name: "Swap" })).toBeNull();
+  });
+
+  it("keeps the build's own Bridge address when the build has one, even when the deployment names another", async () => {
+    vi.stubEnv("VITE_BRIDGE_ORIGIN", "https://bridge.ostia.testnet.romeprotocol.xyz");
+    fakeApi(route({ status: () => reply(status({ bridgeUrl: "https://other.example/" })) }));
+    renderApp("/faucet");
+    const nav = within(screen.getByRole("navigation", { name: "Pages" }));
+    await screen.findByRole("region", { name: "Chain at a glance" });
+    expect(nav.getAllByRole("link", { name: "Bridge" })).toHaveLength(1);
+    expect(nav.getByRole("link", { name: "Bridge" })).toHaveAttribute("href", "https://bridge.ostia.testnet.romeprotocol.xyz/");
+    vi.unstubAllEnvs();
+  });
+
   it("opens a page at its top when the link has no hash: following a footer link does not land at the bottom of the next page", async () => {
     fakeApi(route({}));
     const scroll = vi.spyOn(window, "scrollTo").mockImplementation(() => {});

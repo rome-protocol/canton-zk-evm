@@ -81,6 +81,11 @@ function TopBar({ status: s }: { status: ApiStatus }) {
   );
 }
 
+/** A header link to a related app's own site (Swap, Bridge): it opens in a new tab, with the outside-link mark, and takes the header's link look. */
+function AppLink({ href, children }: { href: string; children: ReactNode }) {
+  return <a href={href} target="_blank" rel="noopener" className="navlink out">{children}<Icon name="out" size={12} /></a>;
+}
+
 /** Room left over, in px, that the header keeps beyond what its parts need before the links are drawn inline: sub-pixel rounding must never put the last link on a second row. */
 const FIT_SLACK = 1;
 
@@ -130,7 +135,9 @@ function ShellBody({ children }: { children: ReactNode }) {
   useEffect(() => setMenu(false), [pathname]);
   // Above a phone the links share the header's row with the name and the search box; when they do not fit there, they fold into the same menu button (useFolded).
   const header = useRef<HTMLElement>(null);
-  const folded = useFolded(header, [home, status?.chainName, status?.networkName]);
+  // The Swap and Bridge links are the deployment's own settings, shown only when the server names them.
+  const swapUrl = status?.swapUrl ?? null, bridgeUrl = status?.bridgeUrl ?? null;
+  const folded = useFolded(header, [home, status?.chainName, status?.networkName, swapUrl, bridgeUrl]);
   useEffect(() => { if (!folded) setMenu(false); }, [folded]);
   // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it, and again as the sections above it fill in
   // during the next two seconds, unless the reader has started to scroll.
@@ -162,9 +169,12 @@ function ShellBody({ children }: { children: ReactNode }) {
         </Link>
         <button type="button" className="menu" aria-label="Menu" aria-expanded={menu} aria-controls="pages" onClick={() => setMenu((m) => !m)}><Icon name={menu ? "cross" : "menu"} size={18} /></button>
         <nav id="pages" className={`nav${menu ? " open" : ""}`} aria-label="Pages">
-          {NAV.filter(([, , built]) => built).map(([to, label]) => to === "/bridge" && bridgeOrigin() !== null
-            ? <BridgeLink key={to} className="navlink">{label}</BridgeLink>
-            : <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>)}
+          {NAV.filter(([, , built]) => built).map(([to, label]) => {
+            // The Bridge entry is the explorer's own address for the Bridge unless the build or the deployment names the site; Swap has no entry of its own and shows only when the deployment names it.
+            const bridge = to === "/bridge" ? bridgeOrigin() !== null ? <BridgeLink key={to} className="navlink">{label}</BridgeLink> : bridgeUrl ? <AppLink key={to} href={bridgeUrl}>{label}</AppLink> : null : null;
+            const entry = bridge ?? <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>;
+            return to === "/bridge" && swapUrl ? [<AppLink key="swap" href={swapUrl}>Swap</AppLink>, entry] : entry;
+          })}
         </nav>
         {!home && <SearchBox />}
       </header>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, keyFor, loadConfig, parsePins } from "./config.ts";
+import { ConfigError, keyFor, loadConfig, parsePins, relatedAppUrl } from "./config.ts";
 
 const VK = "0x" + "ab".repeat(32);
 const ROOT = "0x" + "cd".repeat(32);
@@ -31,6 +31,33 @@ describe("OWN_ADDRESSES", () => {
   });
   it("stops the server, naming the setting, for a pair that is not an address and a name", () => {
     for (const bad of ["0x12=Rome", `${A}`, `${A}=`, `${A}=${"x".repeat(61)}`]) expect(() => load({ OWN_ADDRESSES: bad })).toThrow(/OWN_ADDRESSES/);
+  });
+});
+
+/** An https address with a user name in it, made at run time. */
+function withLogin(): string {
+  const u = new URL("https://swap.example/");
+  u.username = "someone";
+  return u.href;
+}
+
+describe("SWAP_URL and BRIDGE_URL", () => {
+  it("are null when not set or blank", () => {
+    const c = load();
+    expect([c.swapUrl, c.bridgeUrl]).toEqual([null, null]);
+    const blank = load({ SWAP_URL: "  ", BRIDGE_URL: "" });
+    expect([blank.swapUrl, blank.bridgeUrl]).toEqual([null, null]);
+  });
+  it("name the two sites when they are https addresses", () => {
+    const c = load({ SWAP_URL: " https://swap.ostia.testnet.romeprotocol.xyz ", BRIDGE_URL: "https://bridge.ostia.testnet.romeprotocol.xyz/" });
+    expect(c.swapUrl).toBe("https://swap.ostia.testnet.romeprotocol.xyz/");
+    expect(c.bridgeUrl).toBe("https://bridge.ostia.testnet.romeprotocol.xyz/");
+  });
+  it("ignore anything else, without stopping the server", () => {
+    for (const bad of ["http://swap.example", "swap.example", "ftp://swap.example", "javascript:alert(1)", "https://", withLogin(), "not a url", "//swap.example"]) {
+      expect(relatedAppUrl({ SWAP_URL: bad }, "SWAP_URL"), bad).toBeNull();
+      expect(load({ SWAP_URL: bad, BRIDGE_URL: bad }).swapUrl, bad).toBeNull();
+    }
   });
 });
 

@@ -60,6 +60,10 @@ export interface Config {
   networkName: string | null;
   /** The public address of the twin registry service, when this deployment has one (TWIN_REGISTRY_URL); null when not set, and then the twins page names no such service. */
   twinRegistryUrl: string | null;
+  /** The address of the Ostia Swap site (SWAP_URL), when this deployment has one: the header links to it, and a faucet that cannot give points to it. Null when not set or not an https address. */
+  swapUrl: string | null;
+  /** The address of the Ostia Bridge site (BRIDGE_URL), when this deployment has one: the header links to it. Null when not set or not an https address. */
+  bridgeUrl: string | null;
   /** Rome's own test and load addresses, by lowercase address, each with the name the explorer shows for it (OWN_ADDRESSES: "0x…=Rome test loop,0x…=Rome load test"); empty when not set. */
   ownAddresses: Readonly<Record<string, string>>;
   /** A file with a notice for the pages (OSTIA_NOTICE_FILE, see server/notice.ts); null when not set, and then there is never a notice. */
@@ -204,6 +208,18 @@ function url(env: Env, name: string, fallback: string): string {
     throw new ConfigError(`${name} must be an http or https address, not "${raw}"`);
   }
   return raw.replace(/\/+$/, "");
+}
+
+/** The address of a related app (SWAP_URL, BRIDGE_URL): an https address with no login in it, as the pages link to it; null when the setting is not set or is anything else (it is ignored, not an error). */
+export function relatedAppUrl(env: Env, name: string): string | null {
+  const raw = env[name]?.trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && u.hostname !== "" && u.username === "" && u.password === "" ? u.href : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The human check is on when CAPTCHA_SECRET is set, and then its other four settings must be too. */
@@ -354,6 +370,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     networkName: env.NETWORK_NAME?.trim() || null,
     ownAddresses: ownAddresses(env),
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
+    swapUrl: relatedAppUrl(env, "SWAP_URL"),
+    bridgeUrl: relatedAppUrl(env, "BRIDGE_URL"),
     noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
     producerStatusFile: env.PRODUCER_STATUS_FILE?.trim() || null,
     custodyLimitsFile: env.CUSTODY_LIMITS_FILE?.trim() || null,

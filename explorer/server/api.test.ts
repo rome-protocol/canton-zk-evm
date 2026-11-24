@@ -129,6 +129,7 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
     expect(typeof b.publicRpc).toBe("boolean");
     expect(typeof b.rpcMinTipWei).toBe("string");
     expect(typeof b.ownTraffic).toBe("boolean");
+    expect([b.swapUrl, b.bridgeUrl]).toEqual([null, null]);   // no related app is named in this setup
     if (b.final) same(b.final, FIELDS.final);
     if (b.proving) same(b.proving, FIELDS.proving);
     if (b.signers) same(b.signers, FIELDS.signers);

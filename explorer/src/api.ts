@@ -32,6 +32,9 @@ export interface ApiStatus {
   rpcMinTipWei?: string;
   /** True when this deployment names its own test and load addresses (OWN_ADDRESSES). Absent from a server older than this page: read as false. */
   ownTraffic?: boolean;
+  /** The Ostia Swap site and the Ostia Bridge site, when this deployment names them (https addresses); null when it does not. Absent from a server older than this: read as null. */
+  swapUrl?: string | null;
+  bridgeUrl?: string | null;
   /** A message about planned work, set by the operators: its plain text and the ISO times it starts and ends. Null when there is none (or it has ended); absent from a server older than this. */
   notice?: StatusNotice | null;
   /** Every notice that has not ended, major first; a server from before this field has only `notice`. */

@@ -7,5 +7,5 @@ export function Faucet() {
   const st = useStatus();
   const wait = unready(st, "Looking up the faucet…");
   if (wait) return wait;
-  return <FaucetPage coin={st.data!.coin} chain={{ name: [st.data!.chainName, st.data!.networkName].filter(Boolean).join(" "), id: st.data!.chainId }} />;
+  return <FaucetPage coin={st.data!.coin} chain={{ name: [st.data!.chainName, st.data!.networkName].filter(Boolean).join(" "), id: st.data!.chainId }} swapUrl={st.data!.swapUrl ?? null} />;
 }
