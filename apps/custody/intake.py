@@ -346,18 +346,23 @@ def run_buy(args) -> int:
         settings = buy.settings_of(args)
         ledger = ledger_of(args, args.validator_party)
         worker = buy.Buy.from_args(args, ledger, settings)
-        preapproval_warning(ledger, settings.gateway, "validator party")
-        say({"buy": worker.describe()})
     except b.BuilderError as e:
         raise SystemExit(str(e)) from None
-    while True:
-        try:
-            worker.poll()
-        except Exception as e:   # the ledger or reth cannot be read now: try again at the next poll
-            say({"error": b.bounded_text(f"{type(e).__name__}: {e}")})
-        if args.once:
-            return 0
-        time.sleep(args.poll_seconds)
+    try:
+        preapproval_warning(ledger, settings.gateway, "validator party")
+        say({"buy": worker.describe()})
+        while True:
+            try:
+                worker.poll()
+            except Exception as e:   # the ledger or reth cannot be read now: try again at the next poll
+                say({"error": b.bounded_text(f"{type(e).__name__}: {e}")})
+            if args.once:
+                return 0
+            time.sleep(args.poll_seconds)
+    except b.BuilderError as e:
+        raise SystemExit(str(e)) from None
+    finally:
+        worker.close()
 
 
 def main(argv: list) -> int:

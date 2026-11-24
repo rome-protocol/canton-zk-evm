@@ -1,5 +1,6 @@
 """Tests for buy.py: the buy mode against a fake Ledger API, a fake token registry and a fake reth (local HTTP servers). Run: python3 -m unittest discover -s apps/custody/tests"""
 import base64, contextlib, io, json, os, secrets, sys, tempfile, unittest
+from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
@@ -33,6 +34,7 @@ class FakeReth:
     """reth as the buy worker uses it: the key's balance and count, a pool, and the blocks (mine / forget are the tests' to call)."""
     def __init__(self):
         self.balance, self.count, self.down, self.reverts = 1000 * WEI, 0, False, False
+        self.gas_of = {}   # recipient (40 hex digits) -> the gas reth estimates for a transfer to it (21000 when not named); None: the transfer would fail
         self.pool, self.mined, self.sent = {}, {}, []
 
     def handle(self, method, path, body, headers):
@@ -45,6 +47,11 @@ class FakeReth:
             "eth_getTransactionReceipt": lambda: {"blockNumber": "0x5", "status": "0x0" if self.reverts else "0x1"} if p[0] in self.mined else None,
             "eth_getTransactionByHash": lambda: {"hash": p[0]} if p[0] in self.pool or p[0] in self.mined else None,
         }
+        if m == "eth_estimateGas":
+            need = self.gas_of.get(p[0]["to"][2:], 21000)
+            if need is None:
+                return 200, {"jsonrpc": "2.0", "id": body["id"], "error": {"code": 3, "message": "execution reverted"}}
+            return 200, {"jsonrpc": "2.0", "id": body["id"], "result": hex(need)}
         if m == "eth_sendRawTransaction":
             raw = bytes.fromhex(p[0][2:])
             self.sent.append(raw)
@@ -76,7 +83,7 @@ class BuyCase(unittest.TestCase):
         self.work = str(Path(self.dir.name) / "work")
         Path(self.work).mkdir()
         self.views, self.templates, self.submitted, self.asked, self.completions = [], {}, [], [], []
-        self.refuse = None
+        self.refuse, self.lose_answer = None, False
         self.reth = FakeReth()
         servers = [Server(self.ledger_handler), Server(self.registry_handler), Server(self.reth.handle)]
         self.ledger_server, self.registry_server, self.reth_server = servers
@@ -105,6 +112,8 @@ class BuyCase(unittest.TestCase):
             if self.refuse:
                 return 400, {"cause": self.refuse}
             self.views = [v for v in self.views if v["contractId"] != body["commands"][0]["ExerciseCommand"]["contractId"]]   # the accepted transfer is gone
+            if self.lose_answer:
+                return 500, {}
             return 200, {"updateId": f"update-{len(self.submitted)}", "completionOffset": 6}
         return 404, {}
 
@@ -129,8 +138,12 @@ class BuyCase(unittest.TestCase):
     def journal(self):
         return json.loads((Path(self.work) / buy.JOURNAL).read_text())
 
-    def expected_send(self, nonce, wei):
-        return evm.transfer(KEY, CHAIN, nonce, "12" * 20, wei, 2 * GAS_PRICE, TIP)
+    def expected_send(self, nonce, wei, gas=21000):
+        return evm.transfer(KEY, CHAIN, nonce, "12" * 20, wei, 2 * GAS_PRICE, TIP, gas)
+
+    def completion(self, command, ok=True, update="u-x"):
+        value = {"commandId": command, "offset": 7, "status": {}} if ok else {"commandId": command, "offset": 7, "status": {"code": 14, "message": "UNAVAILABLE"}}
+        return {"completionResponse": {"Completion": {"value": {**value, **({"updateId": update} if ok else {})}}}}
 
 
 class LeftPending(BuyCase):
@@ -380,16 +393,65 @@ class Takes(BuyCase):
         self.assertEqual((self.poll(self.make_worker()), self.reth.sent), ([], []))   # no completion, and Canton's own time has not passed the window
         self.assertEqual(self.journal()[cid(1)]["state"], "accepting")
 
-    def test_an_accept_that_is_refused_stays_pending_and_is_tried_again_with_the_same_command(self):
+    def test_an_accept_that_is_refused_is_tried_again_only_when_that_try_has_failed_and_with_its_own_command(self):
         self.buy_of(1)
         self.refuse = "INVALID"
         lines = self.poll()
         self.assertEqual((self.reth.sent, [x["pending"] for x in lines if "pending" in x]), ([], [cid(1)]))
         self.refuse = None
+        self.poll()   # no completion of the first try, and Canton's time has not passed its window: it may still commit, so nothing is submitted
+        self.assertEqual(len(self.submitted), 1)
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]
         self.poll()
         self.assertEqual(len(self.submitted), 2)
-        self.assertEqual(self.submitted[0]["commandId"], self.submitted[1]["commandId"])
+        self.assertNotEqual(self.submitted[0]["commandId"], self.submitted[1]["commandId"])
         self.assertEqual(len(self.reth.sent), 1)
+
+    def test_a_failed_try_then_a_committed_one_whose_answer_was_lost_ends_accepted_with_one_send(self):
+        self.buy_of(1)
+        self.refuse = "UNAVAILABLE"
+        self.poll()
+        first = self.submitted[0]["commandId"]
+        self.refuse, self.lose_answer = None, True
+        self.completions = [self.completion(first, ok=False)]
+        self.poll()   # the second try commits and its answer is lost
+        second = self.submitted[1]["commandId"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.reth.sent, [])
+        self.assertEqual(self.journal()[cid(1)]["state"], "accepting")
+        self.lose_answer = False
+        self.completions = [self.completion(first, ok=False), self.completion(second, update="u-2")]
+        lines = self.poll(self.make_worker())
+        self.assertEqual(kinds(lines), ["accepted", "sent"])
+        self.assertEqual((len(self.submitted), self.reth.sent), (2, [self.expected_send(0, 5 * WEI)]))
+        self.assertEqual(self.journal()[cid(1)]["state"], "sent")
+
+    def test_a_try_that_failed_and_a_transfer_that_is_gone_is_dropped(self):
+        self.buy_of(1)
+        self.refuse = "UNAVAILABLE"
+        self.poll()
+        self.refuse = None
+        self.views.clear()   # the sender took it back
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]
+        lines = self.poll()
+        self.assertEqual((kinds(lines), self.reth.sent, self.journal()), (["dropped"], [], {}))
+
+    def test_a_try_with_no_completion_is_failed_once_cantons_time_is_past_its_window(self):
+        now = {"t": 1000.0}
+        worker = self.make_worker(clock=lambda: now["t"])
+        self.buy_of(1)
+        self.refuse = "UNAVAILABLE"
+        self.poll(worker)
+        self.refuse = None
+        stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self.completions = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9, "synchronizerTimes": [{"recordTime": stamp(1200)}]}}}}]
+        now["t"] = 1250.0
+        self.poll(worker)   # Canton's time is inside the window: the try may still commit
+        self.assertEqual(len(self.submitted), 1)
+        self.completions = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9, "synchronizerTimes": [{"recordTime": stamp(1301)}]}}}}]
+        now["t"] = 1400.0
+        self.poll(worker)
+        self.assertEqual(len(self.submitted), 2)
 
     def test_a_settled_buy_is_kept_for_a_while_then_forgotten(self):
         now = {"t": 1000.0}
@@ -552,6 +614,116 @@ class Start(BuyCase):
 
     def test_the_cap_is_not_negative(self):
         self.assertIn("--max-meta-bytes", str(self.run_main(["--max-meta-bytes", "-1"])[0]))
+
+
+class Disk(BuyCase):
+    def break_writes(self, when):
+        original = b.write_json_file
+
+        def broken(path, value):
+            if when(value):
+                raise OSError(28, "No space left on device")
+            return original(path, value)
+        b.write_json_file = broken
+        self.addCleanup(setattr, b, "write_json_file", original)
+        return lambda: setattr(b, "write_json_file", original)
+
+    def test_a_sent_record_that_cannot_be_written_sends_nothing_and_a_restart_sends_one_transfer(self):
+        self.buy_of(1)
+        heal = self.break_writes(lambda doc: any(isinstance(e, dict) and e.get("state") == "sent" for e in doc.values()))
+        lines = self.poll()
+        self.assertEqual((kinds(lines), self.reth.sent), (["accepted", "pending"], []))   # nothing is sent from a state the disk does not hold
+        self.assertEqual((self.worker.journal.entries[cid(1)]["state"], self.journal()[cid(1)]["state"]), ("accepted", "accepted"))
+        self.poll()   # the disk is still full: still nothing sent
+        self.assertEqual(self.reth.sent, [])
+        heal()
+        restarted = self.make_worker()
+        self.poll(restarted)
+        self.reth.mine()
+        self.poll(restarted)
+        self.assertEqual((len(self.reth.sent), len(self.reth.mined), len(self.submitted)), (1, 1, 1))
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI)])
+
+    def test_the_same_worker_signs_once_when_the_disk_is_back(self):
+        self.buy_of(1)
+        heal = self.break_writes(lambda doc: any(isinstance(e, dict) and e.get("state") == "sent" for e in doc.values()))
+        self.poll()
+        heal()
+        self.poll()
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI)])
+
+    def test_an_accepted_record_that_cannot_be_written_is_not_in_memory_either(self):
+        self.buy_of(1)
+        self.break_writes(lambda doc: any(isinstance(e, dict) and e.get("state") == "accepted" for e in doc.values()))
+        self.poll()
+        self.assertEqual(self.worker.journal.entries[cid(1)]["state"], "accepting")
+        self.assertEqual(self.reth.sent, [])
+
+
+class GasOfTheSend(BuyCase):
+    def test_a_recipient_whose_code_runs_is_sent_with_the_estimate_and_room(self):
+        self.reth.gas_of["12" * 20] = 50000
+        self.buy_of(1, amount="100.0")
+        self.poll()
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI, gas=60000)])
+        self.assertEqual(self.journal()[cid(1)]["gas"], 60000)
+
+    def test_a_plain_transfer_is_sent_with_exactly_21000(self):
+        self.buy_of(1)
+        self.poll()
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI, gas=21000)])
+
+    def test_a_transfer_reth_says_would_fail_is_left_pending_before_the_accept(self):
+        self.reth.gas_of["12" * 20] = None
+        self.buy_of(1)
+        lines = self.poll()
+        self.assertEqual((self.submitted, self.reth.sent, [x["why"] for x in lines if "pending" in x]), ([], [], ["the transfer to this address would fail"]))
+
+    def test_a_transfer_that_needs_more_gas_than_the_cap_is_left_pending(self):
+        self.reth.gas_of["12" * 20] = buy.MAX_SEND_GAS
+        self.buy_of(1)
+        lines = self.poll()
+        self.assertEqual((self.submitted, self.reth.sent), ([], []))
+        self.assertIn("more gas", lines[0]["why"])
+
+    def test_the_gas_of_the_estimate_is_part_of_the_stock_check(self):
+        self.reth.gas_of["12" * 20] = 70000   # a limit of 84000 with room
+        self.reth.balance = 5 * WEI + 84000 * 2 * GAS_PRICE - 1   # covers a plain transfer's gas, not the estimate's
+        self.buy_of(1, amount="100.0")
+        lines = self.poll()
+        self.assertEqual((self.submitted, [x["why"] for x in lines if "pending" in x]), ([], ["the buy key holds too little tROME for this amount"]))
+
+    def test_what_a_send_may_cost_is_owed_with_its_own_gas(self):
+        self.reth.gas_of["12" * 20] = 50000
+        self.buy_of(1, amount="100.0")
+        self.poll()
+        chain = self.worker.read_chain()
+        self.assertEqual(self.worker.owed(chain, {}), 5 * WEI + 60000 * chain.max_fee)
+
+
+class OneWorker(BuyCase):
+    def test_a_second_worker_on_the_same_work_folder_refuses_to_start(self):
+        lock = buy.take_lock(self.work)
+        self.addCleanup(lock.close)
+        with self.assertRaises(SystemExit) as refused:
+            buy.take_lock(self.work)
+        self.assertIn("another buy worker", str(refused.exception))
+
+    def test_the_lock_is_let_go_with_the_worker(self):
+        lock = buy.take_lock(self.work)
+        lock.close()
+        buy.take_lock(self.work).close()
+
+    def test_the_command_line_worker_refuses_when_another_holds_the_folder(self):
+        lock = buy.take_lock(self.work)
+        self.addCleanup(lock.close)
+        code, out, _ = Start.run_main(self)
+        self.assertIn("another buy worker", str(code))
+        self.assertEqual(out, "")
+
+    def test_the_command_line_worker_lets_go_when_it_ends(self):
+        self.assertEqual(Start.run_main(self)[0], 0)
+        self.assertEqual(Start.run_main(self)[0], 0)
 
 
 class OffByDefault(unittest.TestCase):

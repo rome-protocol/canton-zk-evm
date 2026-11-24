@@ -167,6 +167,10 @@ class Reth:
     def tip(self) -> int:
         return self.number("eth_maxPriorityFeePerGas", [])
 
+    def estimate_gas(self, sender: str, to: str, value: int) -> int:
+        """The gas of a value transfer from `sender` to `to` (40 hex digits each). An RpcError when reth says it fails."""
+        return self.number("eth_estimateGas", [{"from": "0x" + sender, "to": "0x" + to, "value": hex(value)}])
+
     def send(self, raw: bytes) -> str:
         return self.call("eth_sendRawTransaction", ["0x" + raw.hex()])
 

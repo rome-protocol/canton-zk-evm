@@ -5,7 +5,7 @@ registry's choice context, as the intake accepts) and the buyer is sent floor(am
 pending, never rejected: it goes back to its sender at its own deadline. The journal (buy.json in the work folder) keeps each accepted transfer with its signed send, so a restart
 sends nothing twice and a send that reth does not hold is sent again, the same bytes. The status file (buy-status.json) says the price, the least buy, the party and whether the stock is open or sold out.
 """
-import hashlib, os, stat, sys, time
+import fcntl, hashlib, os, stat, sys, time
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -15,11 +15,49 @@ import intake as it
 import evm, limits, memo as memos, payout
 b = it.b
 
-JOURNAL, STATUS = "buy.json", "buy-status.json"
+JOURNAL, STATUS, LOCK = "buy.json", "buy-status.json", "buy.lock"
 COIN = "Amulet"   # the instrument id of Canton Coin; the admin is the one whose registry is given with --registry
 WEI = 10**18
 ACCEPT = "TransferInstruction_Accept"
 KEEP_DONE_SECONDS = 30 * 86400   # a settled buy stays in the journal this long
+MAX_SEND_GAS = 100_000   # a send that needs more gas than this (a recipient whose code does real work) is left pending
+GAS_HEADROOM = Fraction(6, 5)   # the gas limit is the estimate with this much room
+
+
+class Journal(payout.Journal):
+    """The payouts' journal, but a change reaches memory only once it is on disk: a write that fails leaves the entry as the disk has it, so nothing is ever sent from a state a restart cannot see."""
+
+    def keep(self, key: str, **fields) -> dict:
+        entry = self.entries.get(key, {})
+        if key in self.entries and all(entry.get(k) == v for k, v in fields.items()):
+            return entry
+        new = {**entry, **fields}
+        b.write_json_file(self.path, {**self.entries, key: new})
+        self.entries[key] = new
+        return new
+
+    def drop(self, key: str) -> None:
+        b.write_json_file(self.path, {k: v for k, v in self.entries.items() if k != key})
+        del self.entries[key]
+
+    def forget(self, kept: set) -> None:
+        left = {k: v for k, v in self.entries.items() if k in kept}
+        if len(left) != len(self.entries):
+            b.write_json_file(self.path, left)
+            self.entries = left
+
+
+def take_lock(work_dir: str):
+    """The one buy worker of a work folder: an exclusive lock on buy.lock there, held while the process lives. Two workers would each sign their own nonce for one accepted transfer."""
+    path = Path(work_dir) / LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise SystemExit("another buy worker already runs on this work folder") from None
+    return handle
 
 
 class Chain:
@@ -28,10 +66,9 @@ class Chain:
     def __init__(self, chain_id: int, nonce: int, max_fee: int, tip: int):
         self.chain_id, self.nonce, self.max_fee, self.tip = chain_id, nonce, max_fee, tip
 
-    @property
-    def gas(self) -> int:
-        """The most one send can cost in gas, in wei."""
-        return evm.TRANSFER_GAS * self.max_fee
+    def cost(self, gas: int = evm.TRANSFER_GAS) -> int:
+        """The most a send of this gas limit can cost in gas, in wei."""
+        return gas * self.max_fee
 
 
 def read_key(path: str) -> bytes:
@@ -63,14 +100,28 @@ class Buy:
         self.price, self.min_buy, self.max_meta = price, min_buy, max_meta
         self.address = evm.address_of(key)
         self.dir = Path(work_dir)
-        self.journal = payout.Journal(self.dir / JOURNAL)
+        self.journal = Journal(self.dir / JOURNAL)
         self.intake = it.Intake(ledger, settings)
         self.told: set = set()   # (instruction, why) of what was already reported
         self.chain_id = None
+        self.lock = None
 
     @classmethod
     def from_args(cls, args, ledger: "b.Ledger", settings: it.Settings) -> "Buy":
-        return cls(ledger, settings, evm.Reth(args.reth_rpc), read_key(args.buy_key_file), buy_price(args), buy_least(args), args.work_dir, args.max_meta_bytes)
+        lock = take_lock(args.work_dir)   # before the journal is read
+        try:
+            worker = cls(ledger, settings, evm.Reth(args.reth_rpc), read_key(args.buy_key_file), buy_price(args), buy_least(args), args.work_dir, args.max_meta_bytes)
+        except BaseException:
+            lock.close()
+            raise
+        worker.lock = lock
+        return worker
+
+    def close(self) -> None:
+        """Lets go of the work folder's lock."""
+        if self.lock is not None:
+            self.lock.close()
+            self.lock = None
 
     def describe(self) -> dict:
         """The settings, said once at the start (never the key)."""
@@ -105,6 +156,17 @@ class Buy:
             raise memos.Unreadable("the amount buys no tROME")
         return recipient, wei
 
+    def estimate(self, recipient: str, wei: int) -> int:
+        """The gas limit of the send to this recipient: reth's estimate for the transfer (a recipient whose code runs needs more than a plain transfer's), with room. A memos.Unreadable when reth says the transfer fails or it needs more than MAX_SEND_GAS."""
+        try:
+            need = self.reth.estimate_gas(self.address, recipient, wei)
+        except evm.RpcError:
+            raise memos.Unreadable("the transfer to this address would fail") from None
+        gas = evm.TRANSFER_GAS if need <= evm.TRANSFER_GAS else int(need * GAS_HEADROOM)   # a plain transfer needs exactly 21000
+        if gas > MAX_SEND_GAS:
+            raise memos.Unreadable("the transfer to this address needs more gas than the worker sends")
+        return gas
+
     # ---- reth
 
     def read_chain(self) -> Chain:
@@ -116,7 +178,7 @@ class Buy:
 
     def owed(self, chain: Chain, waiting: dict) -> int:
         """The wei, gas included, that the buys not yet settled still take from the buy key (a buy whose accept is still to be made is counted when it is taken)."""
-        return sum(int(e["wei"]) + chain.gas for c, e in self.journal.entries.items() if e["state"] in ("accepted", "sent") or (e["state"] == "accepting" and c not in waiting))
+        return sum(int(e["wei"]) + chain.cost(int(e.get("gas", evm.TRANSFER_GAS))) for c, e in self.journal.entries.items() if e["state"] in ("accepted", "sent") or (e["state"] == "accepting" and c not in waiting))
 
     def say_once(self, cid: str, why: str) -> None:
         why = b.bounded_text(why)
@@ -144,14 +206,17 @@ class Buy:
                 continue
             try:
                 recipient, wei = self.check(cid, transfer)
-                if available < wei + chain.gas:
+                if available < wei + chain.cost():
                     raise memos.Unreadable("the buy key holds too little tROME for this amount")
-                line = self.accept(cid, transfer, recipient, wei, contexts)
+                gas = self.estimate(recipient, wei)
+                if available < wei + chain.cost(gas):
+                    raise memos.Unreadable("the buy key holds too little tROME for this amount")
+                line = self.accept(cid, transfer, recipient, wei, gas, contexts)
             except Exception as e:   # a bad memo, a registry that does not answer, an accept that did not complete: left pending, tried again at the next poll
                 self.say_once(cid, str(e) if isinstance(e, (memos.Unreadable, RuntimeError)) else f"{type(e).__name__}: {e}")
                 continue
             accepted.append(line)
-            available -= wei + chain.gas
+            available -= wei + chain.cost(gas)
             try:
                 self.finish(cid, self.journal.entries[cid], waiting, chain)
             except Exception as e:   # the send is in the journal when it was signed: the next poll sends it again
@@ -160,20 +225,44 @@ class Buy:
         self.publish(available, chain)
         return accepted
 
-    def accept(self, cid: str, transfer: dict, recipient: str, wei: int, contexts) -> dict:
-        """The validator party accepts the transfer, with the registry's accept context. The journal says "accepting" first, with the command id and the ledger end, so a stop between the accept and its record is settled by the command's completion."""
+    def command_of(self, cid: str, n: int) -> str:
+        """The command id of the n-th try to accept this transfer: each try its own, so the completion of one never stands for another."""
+        return "buy-" + hashlib.sha256(f"{cid}:{n}".encode()).hexdigest()[:32]
+
+    def settle(self, entry: dict) -> tuple:
+        """What became of the last try of an accept: ("committed", its completion), ("failed", None) (Canton failed it, or no completion came and Canton's own time is past the last moment it could commit), or ("open", None)."""
+        found, reached = self.ledger.completion_and_time(entry["command"], entry["begin"])
+        if found and found["committed"]:
+            return "committed", found
+        if found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= self.clock() + b.SKEW_SECONDS):
+            return "failed", None
+        return "open", None
+
+    def accepted(self, cid: str, entry: dict, update) -> dict:
+        self.journal.keep(cid, state="accepted", update=update)
+        line = {"accepted": cid, "amount": entry["amount"], "sender": entry["sender"], "recipient": entry["to"], "wei": entry["wei"], "updateId": update}
+        it.say(line)
+        return line
+
+    def accept(self, cid: str, transfer: dict, recipient: str, wei: int, gas: int, contexts) -> dict:
+        """The validator party accepts the transfer, with the registry's accept context. The journal says "accepting" first, with the command id and the ledger end, so a stop between the accept and its record is settled by the command's completion.
+        A transfer that is still pending with a try on record is tried again only once that try is settled as failed: a try that may still commit is waited for, never raced."""
         admin = transfer["instrumentId"]["admin"]
         context, disclosed = contexts.accept(admin, cid)
         entry = self.journal.entries.get(cid)
-        command = "buy-" + hashlib.sha256(cid.encode()).hexdigest()[:32]
         if entry is None:
-            entry = self.journal.keep(cid, state="accepting", command=command, begin=self.ledger.end(), at=self.clock(), to=recipient, amount=transfer["amount"], sender=transfer["sender"], wei=str(wei))
+            entry = self.journal.keep(cid, state="accepting", n=1, command=self.command_of(cid, 1), begin=self.ledger.end(), at=self.clock(), to=recipient, amount=transfer["amount"], sender=transfer["sender"], wei=str(wei), gas=gas)
+        else:
+            outcome, found = self.settle(entry)
+            if outcome == "committed":
+                return self.accepted(cid, entry, found["updateId"])
+            if outcome == "open":
+                raise memos.Unreadable("the last try to accept it is not settled yet")
+            n = entry["n"] + 1
+            entry = self.journal.keep(cid, n=n, command=self.command_of(cid, n), begin=self.ledger.end(), at=self.clock(), to=recipient, wei=str(wei), gas=gas)
         answer = it.submit(self.ledger, self.settings.gateway, {"ExerciseCommand": {"templateId": it.TRANSFER_INSTRUCTION, "contractId": cid, "choice": ACCEPT,
                            "choiceArgument": {"extraArgs": {"context": context or it.EMPTY_CONTEXT, "meta": {"values": {}}}}}}, disclosed, entry["command"])
-        self.journal.keep(cid, state="accepted", update=answer.get("updateId"))
-        line = {"accepted": cid, "amount": transfer["amount"], "sender": transfer["sender"], "recipient": recipient, "wei": str(wei), "updateId": answer.get("updateId")}
-        it.say(line)
-        return line
+        return self.accepted(cid, entry, answer.get("updateId"))
 
     def finish(self, cid: str, entry: dict, waiting: dict, chain: Chain) -> None:
         """What a journal entry needs next: its accept settled, its send signed, its send seen on Ostia."""
@@ -181,13 +270,11 @@ class Buy:
         if state == "accepting":
             if cid in waiting:   # not accepted yet: the new transfers' pass takes it again
                 return
-            found, reached = self.ledger.completion_and_time(entry["command"], entry["begin"])
-            if found and found["committed"]:
-                self.journal.keep(cid, state="accepted", update=found["updateId"])
-                it.say({"accepted": cid, "amount": entry["amount"], "sender": entry["sender"], "recipient": entry["to"], "wei": entry["wei"], "updateId": found["updateId"]})
-            elif found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= self.clock() + b.SKEW_SECONDS):
-                del self.journal.entries[cid]   # it did not commit, and the transfer is gone (its sender took it back): nothing is owed
-                b.write_json_file(self.journal.path, self.journal.entries)
+            outcome, found = self.settle(entry)
+            if outcome == "committed":
+                self.accepted(cid, entry, found["updateId"])
+            elif outcome == "failed":
+                self.journal.drop(cid)   # the last try did not commit, and the transfer is gone (its sender took it back): nothing is owed
                 it.say({"dropped": cid, "why": "the accept did not commit and the transfer is gone"})
                 return
             else:
@@ -196,7 +283,8 @@ class Buy:
             state = entry["state"]
         if state == "accepted":   # accepted, not signed yet: the nonce, then the bytes on disk, then the send
             nonce = max(chain.nonce, 1 + max((e["nonce"] for e in self.journal.entries.values() if "nonce" in e), default=-1))
-            raw = evm.transfer(self.key, chain.chain_id, nonce, entry["to"], int(entry["wei"]), chain.max_fee, chain.tip)
+            gas = int(entry.get("gas", evm.TRANSFER_GAS))
+            raw = evm.transfer(self.key, chain.chain_id, nonce, entry["to"], int(entry["wei"]), chain.max_fee, chain.tip, gas)
             self.journal.keep(cid, state="sent", nonce=nonce, raw=raw.hex(), hash="0x" + evm.keccak256(raw).hex())
             chain.nonce = nonce + 1
             entry = self.journal.entries[cid]
@@ -220,7 +308,7 @@ class Buy:
 
     def publish(self, available: int, chain: Chain) -> None:
         """buy-status.json: the price, the least buy, the party, and whether the stock still covers the least buy (open) or not (sold out). A write that fails is said and never stops the worker."""
-        least = max(self.wei_for(self.min_buy), 1) + chain.gas
+        least = max(self.wei_for(self.min_buy), 1) + chain.cost()
         doc = {"version": 1, "updatedAt": datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "price": limits.amount_text(self.price),
                "minBuy": limits.amount_text(self.min_buy), "party": self.settings.gateway, "state": "open" if available >= least else "sold out"}
         try:
