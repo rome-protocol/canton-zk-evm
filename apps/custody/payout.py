@@ -4,6 +4,7 @@ For each open Payout the gateway makes one standard transfer offer to the party,
 receiver accepted it (or the transfer completed at once). Rome's state is a small journal (payouts.json in the work folder); everything else is read from the ledger.
 """
 import hashlib, json, sys, time
+from fractions import Fraction
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +33,8 @@ def exercise_output(tx: dict, contract: str, choice: str):
 class Journal:
     """{payout id: what was done for it}: n (the offers made), at (when the last was made), command, begin (the ledger end before it), factory, state, instruction, update, offset.
     state: "sending" (the command may or may not have committed), "offered" (the instruction is pending), "completed" (the transfer completed, the Payout is not marked yet),
-    "ended" (the offer lapsed, was rejected or failed: offered again once its time has passed). One that cannot be read stops the worker: it does not guess."""
+    "ended" (the offer lapsed, was rejected or failed: offered again once its time has passed), "waiting" (no offer made yet: below the token's --min-payout). `why` is set while an
+    offer is held back: "below the least payout" or "offers used up" (--max-offers). One that cannot be read stops the worker: it does not guess."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -59,8 +61,10 @@ class Journal:
 
 
 class Payouts:
-    def __init__(self, ledger: "b.Ledger", settings: it.Settings, work_dir: str, offer_hours: float = 24.0, clock=time.time, contexts=it.Contexts):
+    def __init__(self, ledger: "b.Ledger", settings: it.Settings, work_dir: str, offer_hours: float = 24.0, clock=time.time, contexts=it.Contexts, min_payout: dict = None, max_offers: int = 0):
+        """`min_payout` is {(instrument admin, instrument id): the least amount, a Fraction}; `max_offers` the offers a payout gets (0: no limit)."""
         self.ledger, self.settings, self.contexts, self.clock = ledger, settings, contexts, clock
+        self.min_payout, self.max_offers = min_payout or {}, max_offers
         self.lifetime = timedelta(hours=offer_hours)
         self.journal = Journal(Path(work_dir) / JOURNAL)
         self.told: set = set()   # (payout, why) of what was already reported
@@ -71,13 +75,40 @@ class Payouts:
             raise SystemExit("--payout-offers needs --work-dir (the builder's work folder)")
         if not args.offer_hours > 0:
             raise SystemExit("--offer-hours must be more than zero")
+        if args.max_offers < 0:
+            raise SystemExit("--max-offers must be zero (no limit) or more")
+        minimums = it.parse_minimums(args.min_payout, "--min-payout")
         cfg = ledger.cfg
         for name in ("registries", "registry_tokens"):   # the builder's check_expiring reads them from its config
             setattr(cfg, name, getattr(settings, name))
         b.check_expiring(args, cfg)
         if args.disclosed:
             cfg.disclosed = b.read_disclosed(args.disclosed)
-        return cls(ledger, settings, args.work_dir, args.offer_hours)
+        return cls(ledger, settings, args.work_dir, args.offer_hours, min_payout=minimums, max_offers=args.max_offers)
+
+    def describe(self) -> dict:
+        """The payout settings, as said once at the start."""
+        least = {f"{admin}/{name}": str(amount.numerator) if amount.denominator == 1 else str(float(amount)) for (admin, name), amount in sorted(self.min_payout.items())}
+        return {"offerHours": self.lifetime.total_seconds() / 3600, "minPayout": least, "maxOffers": self.max_offers}
+
+    def held_back(self, p: dict, registered: dict, made: int):
+        """Why this payout gets no offer now: "below the least payout" (its token's --min-payout) or "offers used up" (--max-offers); None when it may be offered. Nothing is sent to Canton for it.
+        Said once as a `waiting` line, and kept in the journal."""
+        units = b.base_units(p["amount"])
+        instrument = registered["instrumentId"]
+        least = self.min_payout.get((instrument["admin"], instrument["id"]))
+        if least is not None and units is not None and Fraction(units, b.UNIT) < least:
+            why = "below the least payout"
+        elif self.max_offers and made >= self.max_offers:
+            why = "offers used up"
+        else:
+            return None
+        pid = p["payoutId"]
+        self.journal.keep(pid, why=why, **({} if pid in self.journal.entries else {"n": 0, "at": 0, "command": "", "state": "waiting"}))
+        if (pid, why) not in self.told:
+            self.told.add((pid, why))
+            it.say({"waiting": pid, "why": why, **({"offers": made} if made else {})})
+        return why
 
     # ---- reading the ledger
 
@@ -166,8 +197,8 @@ class Payouts:
                                                                                   "choiceArgument": {"extraArgs": {"context": context or EMPTY_CONTEXT, "meta": {"values": {}}}}}}, disclosed)
                 return {"withdrawn": pid, "instruction": cid, "why": "the offer lapsed"}
             return None
-        if entry is None:
-            return self.offer(p, registered, contexts, 0)
+        if entry is None or entry["state"] == "waiting":   # no offer yet (or held back below the least payout)
+            return None if self.held_back(p, registered, 0) else self.offer(p, registered, contexts, 0)
         if entry["state"] == "sending":   # the worker stopped, or the answer was lost, between the send and its record: the command's own completion says what happened
             found, reached = self.ledger.completion_and_time(entry["command"], entry["begin"])
             if found and found["committed"]:
@@ -188,7 +219,7 @@ class Payouts:
         if entry["state"] == "completed":
             return self.finish(p, registered, entry)
         if now >= entry["at"] + self.lifetime.total_seconds():   # ended: a lapse or a reject is offered again once the offer's time has passed
-            return self.offer(p, registered, contexts, entry["n"])
+            return None if self.held_back(p, registered, entry["n"]) else self.offer(p, registered, contexts, entry["n"])
         return None
 
     # ---- sending, and paying
@@ -216,7 +247,7 @@ class Payouts:
         else:   # a token with no registry: the factory it was registered with, and the contracts given with --disclosed
             factory, context, disclosed = registered["factory"], None, list(self.ledger.cfg.disclosed)
         command_id = "payout-" + hashlib.sha256(f"{pid}:{made + 1}".encode()).hexdigest()[:32]
-        self.journal.keep(pid, n=made + 1, at=self.clock(), command=command_id, begin=self.ledger.end(), factory=factory, state="sending", instruction=None, update=None, offset=None)
+        self.journal.keep(pid, n=made + 1, at=self.clock(), command=command_id, begin=self.ledger.end(), factory=factory, state="sending", why=None, instruction=None, update=None, offset=None)
         arguments = {"expectedAdmin": instrument["admin"], "transfer": transfer, "extraArgs": {"context": context or EMPTY_CONTEXT, "meta": {"values": {}}}}
         body = {"commands": {"commands": [{"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": factory, "choice": "TransferFactory_Transfer", "choiceArgument": arguments}}],
                              "commandId": command_id, "userId": self.ledger.cfg.ledger_user, "actAs": [gateway], "readAs": [gateway], **({"disclosedContracts": disclosed} if disclosed else {})},
