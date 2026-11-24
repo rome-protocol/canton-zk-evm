@@ -60,10 +60,17 @@ describe("settings", () => {
   });
 
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
-    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
+    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, minTipWei: 0n, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
     expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });
     for (const off of ["", "0"]) expect(load({ PUBLIC_RPC: off }).publicRpc.on).toBe(false);
     expect(load({ PUBLIC_RPC: "1" }).publicRpc.on).toBe(true);
+  });
+
+  it("takes the public RPC's tip floor from RPC_MIN_TIP_WEI as a whole number of wei of any size, off when empty or 0, and names a wrong one", () => {
+    expect(load({ RPC_MIN_TIP_WEI: "10000000000000" }).publicRpc.minTipWei).toBe(10n ** 13n);
+    expect(load({ RPC_MIN_TIP_WEI: "100000000000000000000000" }).publicRpc.minTipWei).toBe(10n ** 23n);
+    for (const off of ["", "0"]) expect(load({ RPC_MIN_TIP_WEI: off }).publicRpc.minTipWei).toBe(0n);
+    for (const bad of ["-1", "1.5", "10 gwei", "1e13"]) expect(() => load({ RPC_MIN_TIP_WEI: bad })).toThrow(/RPC_MIN_TIP_WEI/);
   });
 
   it("takes the address of the block builder's leg check from LEG_CHECK_URL, and names a wrong one", () => {

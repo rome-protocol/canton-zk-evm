@@ -26,7 +26,7 @@ type Seen = Record<string, unknown[][]>;
 
 interface Setup { rpc: PublicRpc; seen: Seen; tracked: unknown[][]; clock: { now: number }; call: (method: string, ...params: unknown[]) => Promise<{ result?: unknown; error?: { code: number; message: string } }> }
 
-async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; pub?: { maxNonceAhead?: number; maxQueued?: number; maxQueuedBytes?: number; maxQueuedPerClient?: number; sweepSendersPerTick?: number; queueTtlMs?: number; legCheck?: LegCheck }; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
+async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; pub?: { minTipWei?: bigint; maxNonceAhead?: number; maxQueued?: number; maxQueuedBytes?: number; maxQueuedPerClient?: number; sweepSendersPerTick?: number; queueTtlMs?: number; legCheck?: LegCheck }; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
   const seen: Seen = {};
   const rec = (m: string, f: unknown) => (p: unknown[]) => { (seen[m] ??= []).push(p); opts.order?.push(m); return typeof f === "function" ? (f as (p: unknown[]) => unknown)(p) : f; };
   const handlers: Record<string, unknown> = {
@@ -326,6 +326,98 @@ describe("a send that pays less than the base fee", () => {
     clock.now += 600;
     await call("eth_sendRawTransaction", await signed());
     expect(seen.eth_getBlockByNumber!.filter((p) => p[0] === "latest")).toHaveLength(2);
+  });
+});
+
+describe("the tip floor (minTipWei)", () => {
+  const FLOOR = 10n ** 13n, BASE = 7n;
+  const withBase = (extra: Record<string, unknown> = {}) => ({ eth_getBlockByNumber: (p: unknown[]) => (p[0] === "finalized" ? block(FINAL) : p[0] === "latest" ? { ...block(HEAD), baseFeePerGas: "0x7" } : Number(p[0]) <= HEAD ? block(Number(p[0])) : null), ...extra });
+  const legacy = (gasPrice: bigint) => ACCOUNT.signTransaction({ type: "legacy", chainId: CHAIN, nonce: 3, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, gasPrice } as never);
+  const on = () => boot(withBase(), { pub: { minTipWei: FLOOR } });
+
+  it("refuses a send whose priority fee is under the floor, naming the floor, before reth or the tracker see it", async () => {
+    const { call, seen, tracked } = await on();
+    const answer = await call("eth_sendRawTransaction", await signed({ maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: FLOOR - 1n }));
+    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringContaining(`at least ${FLOOR} wei per gas`) });
+    expect(answer.error?.message).toContain(`a tip of ${FLOOR - 1n} wei per gas`);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    expect(tracked).toEqual([]);
+  });
+
+  it("takes a send whose priority fee is exactly the floor, or more", async () => {
+    const { call, tracked } = await on();
+    for (const tip of [FLOOR, FLOOR + 1n]) {
+      const raw = await signed({ maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: tip });
+      expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+    }
+    expect(tracked).toHaveLength(2);
+  });
+
+  it("counts the tip as the lesser of the priority fee and what the max fee leaves above the base fee", async () => {
+    const { call } = await on();
+    // a high priority fee on a max fee that leaves too little above the base fee
+    expect((await call("eth_sendRawTransaction", await signed({ maxFeePerGas: BASE + FLOOR - 1n, maxPriorityFeePerGas: 10n ** 15n }))).error?.message).toContain(`a tip of ${FLOOR - 1n} wei per gas`);
+    const raw = await signed({ maxFeePerGas: BASE + FLOOR, maxPriorityFeePerGas: 10n ** 15n });
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+  });
+
+  it("counts a legacy transaction's gas price above the base fee as its tip", async () => {
+    const { call, seen } = await on();
+    expect((await call("eth_sendRawTransaction", await legacy(BASE + FLOOR - 1n))).error?.message).toMatch(/transaction underpriced/);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    const ok = await legacy(BASE + FLOOR);
+    expect((await call("eth_sendRawTransaction", ok)).result).toBe(keccak256(ok));
+  });
+
+  it("refuses a send ahead of the next nonce too, so a held transaction cannot go round the floor", async () => {
+    const { call } = await on();
+    expect((await call("eth_sendRawTransaction", await signed({ nonce: 5, maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: 1n }))).error?.message).toMatch(/transaction underpriced/);
+  });
+
+  it("holds the floor when reth gives no base fee: the priority fee alone is counted", async () => {
+    const { call } = await boot({}, { pub: { minTipWei: FLOOR } });
+    expect((await call("eth_sendRawTransaction", await signed({ maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: 1n }))).error?.message).toMatch(/transaction underpriced/);
+    const raw = await signed({ maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: FLOOR });
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+  });
+
+  it("answers eth_gasPrice with the base fee plus the floor, and eth_maxPriorityFeePerGas with the floor", async () => {
+    const { call } = await boot(withBase({ eth_maxPriorityFeePerGas: "0x3b9aca00" }), { pub: { minTipWei: FLOOR } });
+    expect((await call("eth_gasPrice")).result).toBe("0x" + (BASE + FLOOR).toString(16));
+    expect((await call("eth_maxPriorityFeePerGas")).result).toBe("0x" + FLOOR.toString(16));
+  });
+
+  it("never lowers what reth suggests when that is already above the floor", async () => {
+    const { call } = await boot(withBase({ eth_gasPrice: "0xffffffffffffffff", eth_maxPriorityFeePerGas: "0xffffffffffffffff" }), { pub: { minTipWei: FLOOR } });
+    expect((await call("eth_gasPrice")).result).toBe("0xffffffffffffffff");
+    expect((await call("eth_maxPriorityFeePerGas")).result).toBe("0xffffffffffffffff");
+  });
+
+  it("raises every reward of eth_feeHistory to the floor and leaves the rest, so a wallet's tip from the history is the floor", async () => {
+    const history = { oldestBlock: "0x1", baseFeePerGas: ["0x7", "0x7", "0x7"], gasUsedRatio: [0.1, 0.2], reward: [["0x1", "0x2"], ["0x" + (FLOOR * 2n).toString(16), "0x0"]] };
+    const { call } = await boot(withBase({ eth_feeHistory: history }), { pub: { minTipWei: FLOOR } });
+    const floor = "0x" + FLOOR.toString(16);
+    expect((await call("eth_feeHistory", "0x2", "latest", [25, 75])).result).toEqual({ ...history, reward: [[floor, floor], ["0x" + (FLOOR * 2n).toString(16), floor]] });
+  });
+
+  it("passes a fee history that has no rewards as it is", async () => {
+    const history = { oldestBlock: "0x1", baseFeePerGas: ["0x7"], gasUsedRatio: [] };
+    const { call } = await boot(withBase({ eth_feeHistory: history }), { pub: { minTipWei: FLOOR } });
+    expect((await call("eth_feeHistory", "0x1", "latest")).result).toEqual(history);
+  });
+
+  it("is off by default and at 0: a send with no tip goes through and reth's answers are passed as they are", async () => {
+    const history = { oldestBlock: "0x1", reward: [["0x1"]] };
+    for (const pub of [undefined, { minTipWei: 0n }]) {
+      const { call, tracked } = await boot(withBase({ eth_feeHistory: history, eth_maxPriorityFeePerGas: "0x5" }), pub && { pub });
+      const raw = await signed({ maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 0n });
+      expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+      expect(tracked).toHaveLength(1);
+      expect((await call("eth_gasPrice")).result).toBe("0x1");
+      expect((await call("eth_maxPriorityFeePerGas")).result).toBe("0x5");
+      expect((await call("eth_feeHistory", "0x1", "latest", [50])).result).toEqual(history);
+      await reth!.close();
+    }
   });
 });
 

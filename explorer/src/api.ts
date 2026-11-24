@@ -28,6 +28,8 @@ export interface ApiStatus {
   faucet: { on: boolean };
   /** True when this explorer serves the public RPC at /rpc. */
   publicRpc: boolean;
+  /** The least priority fee (tip) in wei per gas that the public RPC takes, as a decimal string; "0" is no floor. Absent from a server older than this. */
+  rpcMinTipWei?: string;
   /** True when this deployment names its own test and load addresses (OWN_ADDRESSES). Absent from a server older than this page: read as false. */
   ownTraffic?: boolean;
   /** A message about planned work, set by the operators: its plain text and the ISO times it starts and ends. Null when there is none (or it has ended); absent from a server older than this. */
