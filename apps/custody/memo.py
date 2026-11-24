@@ -35,6 +35,12 @@ def address_of(text: str) -> str:
     return digits.lower()
 
 
+def route_parts(label: str):
+    """(network, most fee) of a route text that `read` returned as a label, or None when the label is not a route text."""
+    found = ROUTE.fullmatch(label)
+    return (int(found.group(1)), int(found.group(3))) if found else None
+
+
 def read(meta: dict, instruction: str, router: str = None) -> tuple:
     """(label, recipient) of a transfer's meta: the memo, which holds one EVM address, or, when `router` (an address) is given, one route text r1:... for it.
     The label is the memo's own label if it has one, else the instruction's contract id; a route text is its own label. The recipient is 40 lowercase hex digits."""

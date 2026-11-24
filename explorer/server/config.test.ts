@@ -60,7 +60,7 @@ describe("settings", () => {
   });
 
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
-    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, minTipWei: 0n, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
+    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, minTipWei: 0n, sendsPerHour: 20, sendBurst: 20, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
     expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });
     for (const off of ["", "0"]) expect(load({ PUBLIC_RPC: off }).publicRpc.on).toBe(false);
     expect(load({ PUBLIC_RPC: "1" }).publicRpc.on).toBe(true);
@@ -80,11 +80,13 @@ describe("settings", () => {
   });
 
   it("takes the public RPC's settings and the tracker's from the environment, and names a wrong one", () => {
-    const c = load({ PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "60", TRUSTED_IP_HEADER: "X-Real-IP", TRACKER_FILE: "/data/tracker.json", TRACKER_MAX: "50", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "3", TRACKER_MAX_PENDING_MINUTES: "15" });
-    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, minTipWei: 0n, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
+    const c = load({ PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "60", RPC_SEND_PER_HOUR: "15", RPC_SEND_BURST: "8", TRUSTED_IP_HEADER: "X-Real-IP", TRACKER_FILE: "/data/tracker.json", TRACKER_MAX: "50", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "3", TRACKER_MAX_PENDING_MINUTES: "15" });
+    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, minTipWei: 0n, sendsPerHour: 15, sendBurst: 8, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
     expect(c.tracker).toEqual({ file: "/data/tracker.json", max: 50, maxBytes: 4096, perSender: 3, maxPendingMinutes: 15 });
     expect(() => load({ PUBLIC_RPC: "yes" })).toThrow(/PUBLIC_RPC/);
     expect(() => load({ RPC_RATE_PER_MINUTE: "0" })).toThrow(/RPC_RATE_PER_MINUTE/);
+    expect(() => load({ RPC_SEND_PER_HOUR: "0" })).toThrow(/RPC_SEND_PER_HOUR/);
+    expect(() => load({ RPC_SEND_BURST: "0" })).toThrow(/RPC_SEND_BURST/);
     expect(load({ RPC_HEAVY_CONCURRENCY: "4", RPC_HEAVY_QUEUE: "0" }).publicRpc).toMatchObject({ heavyConcurrency: 4, heavyQueue: 0 });
     expect(() => load({ RPC_HEAVY_CONCURRENCY: "0" })).toThrow(/RPC_HEAVY_CONCURRENCY/);
     // Heavy calls hold request places (64 at once); concurrency + queue past half of them would starve light calls.

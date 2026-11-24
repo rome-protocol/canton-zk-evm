@@ -35,6 +35,9 @@ export const QUEUE_TTL_MS = 10 * 60 * 1000;
 
 /** The most calls in one batch. */
 export const MAX_BATCH = 20;
+/** The default send limit of one client (see `sendsPerHour`, `sendBurst`): a steady 20 an hour, 20 at once. */
+export const SEND_PER_HOUR = 20;
+export const SEND_BURST = 20;
 /** The biggest body, in bytes. */
 export const MAX_BODY = 256 * 1024;
 
@@ -49,6 +52,10 @@ export interface PublicRpcOptions {
   ratePerMinute: number;
   /** The least priority fee (tip), in wei per gas, a send must pay on this RPC. Zero (the default) is no floor. */
   minTipWei?: bigint;
+  /** The transactions (eth_sendRawTransaction calls, each call of a batch counted) one client may send an hour, once its burst is used. */
+  sendsPerHour?: number;
+  /** The transactions one client may send at once: its send bucket holds this many and refills at `sendsPerHour`. */
+  sendBurst?: number;
   tracker: Pick<Tracker, "track" | "admit">;
   /** The most requests being answered at one time, from all clients together. */
   maxInFlight?: number;
@@ -119,28 +126,37 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   const { minTipWei: minTip = 0n } = o;
   const heavy = createHeavyLimiter(heavyConcurrency, heavyQueue);
   let inFlight = 0;
-  const perMs = o.ratePerMinute / 60000;
-  const buckets = new Map<string, { tokens: number; at: number }>();
+  const { sendsPerHour = SEND_PER_HOUR, sendBurst = SEND_BURST } = o;
   let cached: { at: number; value: Promise<number> } | undefined;
   let fee: { at: number; value: Promise<bigint | null> } | undefined;
   let id = 0;
 
-  /** Takes `cost` tokens from the client's bucket: it holds a minute's worth and refills steadily. Returns the wait in seconds when it is short. */
-  function take(address: string, cost: number): number | null {
-    const ip = clientKey(address), t = now(), cap = o.ratePerMinute;
-    const b = buckets.get(ip) ?? { tokens: cap, at: t };
-    b.tokens = Math.min(cap, b.tokens + (t - b.at) * perMs);
-    b.at = t;
-    buckets.delete(ip);
-    buckets.set(ip, b); // the newest at the end
-    if (buckets.size > 10000) {
-      // Never the client in hand: its bucket is deducted from below, and a deleted one would give it a free request and a fresh bucket.
-      for (const [k, v] of buckets) if (k !== ip && (v.tokens + (t - v.at) * perMs >= cap || buckets.size > 10000)) buckets.delete(k);
-    }
-    if (b.tokens < cost) return Math.max(1, Math.ceil((Math.min(cost, cap) - b.tokens) / perMs / 1000));
-    b.tokens -= cost;
-    return null;
+  /**
+   * A token bucket for each client: it holds `cap` tokens and refills `perMs` a millisecond. `take` takes `cost` tokens from the client's bucket
+   * and returns the wait in seconds when it is short.
+   */
+  function bucketsOf(cap: number, perMs: number): (address: string, cost: number) => number | null {
+    const buckets = new Map<string, { room: number; at: number }>();
+    return (address, cost) => {
+      const ip = clientKey(address), t = now();
+      const b = buckets.get(ip) ?? { room: cap, at: t };
+      b.room = Math.min(cap, b.room + (t - b.at) * perMs);
+      b.at = t;
+      buckets.delete(ip);
+      buckets.set(ip, b); // the newest at the end
+      if (buckets.size > 10000) {
+        // Never the client in hand: its bucket is deducted from below, and a deleted one would give it a free request and a fresh bucket.
+        for (const [k, v] of buckets) if (k !== ip && (v.room + (t - v.at) * perMs >= cap || buckets.size > 10000)) buckets.delete(k);
+      }
+      if (b.room < cost) return Math.max(1, Math.ceil((Math.min(cost, cap) - b.room) / perMs / 1000));
+      b.room -= cost;
+      return null;
+    };
   }
+  /** Every call: a minute's worth, refilled steadily. */
+  const take = bucketsOf(o.ratePerMinute, o.ratePerMinute / 60000);
+  /** Every transaction a client sends, on top of `take`: reads stay generous, sends are what the chain pays for (each one is a block). */
+  const takeSend = bucketsOf(sendBurst, sendsPerHour / 3600000);
 
   async function up(method: string, params: unknown[]): Promise<Up> {
     let body: { result?: unknown; error?: RpcError };
@@ -353,10 +369,12 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     if (offered !== undefined) {
       const base = await baseFee();
       if (base !== null && offered < base) return err(-32000, `max fee per gas is below the current base fee: this transaction pays at most ${offered} wei per gas, and the base fee is ${base} wei. Sign it again with a higher max fee per gas.`);
-      // The floor is on the tip, which is what the builder is paid: the priority fee an EIP-1559 transaction offers (never more than its max fee leaves above the base fee), or a legacy gas price above the base fee.
+      // The floor is on the tip, which is what the builder is paid: the priority fee a fee-market transaction offers (never more than its max fee leaves above the base fee; a priority fee of 0 is
+      // left out of the encoding, so it reads as missing and counts as 0), or a legacy or access-list transaction's gas price above the base fee. The kind is chosen by the type, not by the field.
       if (minTip > 0n) {
         const room = offered - (base ?? 0n);
-        const tip = tx.maxPriorityFeePerGas !== undefined ? (tx.maxPriorityFeePerGas < room ? tx.maxPriorityFeePerGas : room) : room;
+        const offeredTip = tx.type === "legacy" || tx.type === "eip2930" ? room : (tx.maxPriorityFeePerGas ?? 0n);
+        const tip = offeredTip < room ? offeredTip : room;
         if (tip < minTip) return err(-32000, `transaction underpriced: this transaction pays a tip of ${tip} wei per gas, and this RPC takes at least ${minTip} wei per gas. Sign it again with a max priority fee per gas of at least ${minTip} wei, and a max fee per gas of at least the base fee plus that (for a legacy transaction, a gas price of at least that).`);
       }
     }
@@ -478,8 +496,12 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     if (!PUBLIC_METHODS.has(method)) return err(-32601, `The method ${method} does not exist or is not available.`);
     const bad = err(-32602, "Invalid params.");
     switch (method) {
-      case "eth_sendRawTransaction":
+      case "eth_sendRawTransaction": {
+        // Before the signature is read: a refused send costs the explorer next to nothing, and every send counts, malformed or not.
+        const wait = takeSend(client, 1);
+        if (wait !== null) return err(-32005, `Rate limited: this RPC takes at most ${sendBurst} transactions at once and ${sendsPerHour} an hour from one network address. Try again in ${wait} s.`);
         return sendRaw(params, client);
+      }
       case "eth_blockNumber":
         return { result: hex(await fin()) };
       case "eth_getBlockByNumber": {
@@ -499,8 +521,8 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       case "eth_maxPriorityFeePerGas": {
         const r = await up(method, params);
         if (minTip === 0n || !("result" in r) || typeof r.result !== "string" || !QUANTITY.test(r.result)) return r;
-        // A price that clears the floor: the base fee and the floor for a gas price, the floor for a tip.
-        const floor = method === "eth_gasPrice" ? ((await baseFee()) ?? 0n) + minTip : minTip;
+        // A price that clears the floor: twice the base fee and the floor for a gas price (the headroom wallets put into a max fee, so a send priced from it stays above the floor when the base fee rises), the floor for a tip.
+        const floor = method === "eth_gasPrice" ? 2n * ((await baseFee()) ?? 0n) + minTip : minTip;
         return { result: BigInt(r.result) >= floor ? r.result : "0x" + floor.toString(16) };
       }
       case "eth_getBlockByHash": {

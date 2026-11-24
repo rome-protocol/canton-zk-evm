@@ -84,6 +84,10 @@ export interface Config {
     ratePerMinute: number;
     /** The least priority fee (tip), in wei per gas, that a send on /rpc must pay (RPC_MIN_TIP_WEI). Zero is no floor. */
     minTipWei: bigint;
+    /** Transactions (eth_sendRawTransaction calls) per client address per hour on /rpc, once its burst is used. */
+    sendsPerHour: number;
+    /** The most transactions one client address may send at once on /rpc. */
+    sendBurst: number;
     /** The most heavy calls (eth_call, eth_estimateGas, eth_getLogs) running at one time, all clients together. */
     heavyConcurrency: number;
     /** The most heavy calls waiting for a slot; one past that is refused at once. */
@@ -362,6 +366,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       on: flag(env, "PUBLIC_RPC"),
       ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
       minTipWei: wei(env, "RPC_MIN_TIP_WEI"),
+      sendsPerHour: whole(env, "RPC_SEND_PER_HOUR", 20, 1),
+      sendBurst: whole(env, "RPC_SEND_BURST", 20, 1),
       heavyConcurrency,
       heavyQueue,
       trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),

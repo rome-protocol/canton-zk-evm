@@ -26,7 +26,7 @@ type Seen = Record<string, unknown[][]>;
 
 interface Setup { rpc: PublicRpc; seen: Seen; tracked: unknown[][]; clock: { now: number }; call: (method: string, ...params: unknown[]) => Promise<{ result?: unknown; error?: { code: number; message: string } }> }
 
-async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; pub?: { minTipWei?: bigint; maxNonceAhead?: number; maxQueued?: number; maxQueuedBytes?: number; maxQueuedPerClient?: number; sweepSendersPerTick?: number; queueTtlMs?: number; legCheck?: LegCheck }; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
+async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; sends?: { sendsPerHour?: number; sendBurst?: number }; ttl?: number; timeoutMs?: number; maxInFlight?: number; admit?: () => string | null; trackThrows?: boolean; order?: string[]; pub?: { minTipWei?: bigint; maxNonceAhead?: number; maxQueued?: number; maxQueuedBytes?: number; maxQueuedPerClient?: number; sweepSendersPerTick?: number; queueTtlMs?: number; legCheck?: LegCheck }; tracker?: { admit: (raw: string, hash: string, from: string) => string | null; track: (...a: never[]) => unknown } } = {}): Promise<Setup> {
   const seen: Seen = {};
   const rec = (m: string, f: unknown) => (p: unknown[]) => { (seen[m] ??= []).push(p); opts.order?.push(m); return typeof f === "function" ? (f as (p: unknown[]) => unknown)(p) : f; };
   const handlers: Record<string, unknown> = {
@@ -53,7 +53,7 @@ async function boot(over: Record<string, unknown> = {}, opts: { rate?: number; t
   reth = await startFakeReth(Object.fromEntries(Object.entries(handlers).map(([m, f]) => [m, rec(m, f)])));
   const tracked: unknown[][] = [];
   const clock = { now: 1_000_000 };
-  const rpc = createPublicRpc({ rethUrl: reth.url, timeoutMs: opts.timeoutMs ?? 1000, chainId: CHAIN, ratePerMinute: opts.rate ?? 100000, maxInFlight: opts.maxInFlight,
+  const rpc = createPublicRpc({ rethUrl: reth.url, timeoutMs: opts.timeoutMs ?? 1000, chainId: CHAIN, ratePerMinute: opts.rate ?? 100000, sendsPerHour: opts.sends?.sendsPerHour ?? 100000, sendBurst: opts.sends?.sendBurst ?? 100000, maxInFlight: opts.maxInFlight,
     tracker: opts.tracker ?? { admit: () => opts.admit?.() ?? null, track: (...a) => { if (opts.trackThrows) throw new Error("disk"); tracked.push(a); } }, now: () => clock.now, finalizedTtlMs: opts.ttl ?? 0, ...(opts.pub ?? {}) });
   let n = 0;
   const call = async (method: string, ...params: unknown[]) => {
@@ -344,6 +344,14 @@ describe("the tip floor (minTipWei)", () => {
     expect(tracked).toEqual([]);
   });
 
+  it("refuses a send whose priority fee is 0, which the encoding leaves out, however high its max fee is", async () => {
+    const { call, seen, tracked } = await on();
+    const answer = await call("eth_sendRawTransaction", await signed({ maxFeePerGas: 10n ** 15n, maxPriorityFeePerGas: 0n }));
+    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringContaining("a tip of 0 wei per gas") });
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    expect(tracked).toEqual([]);
+  });
+
   it("takes a send whose priority fee is exactly the floor, or more", async () => {
     const { call, tracked } = await on();
     for (const tip of [FLOOR, FLOOR + 1n]) {
@@ -381,9 +389,9 @@ describe("the tip floor (minTipWei)", () => {
     expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
   });
 
-  it("answers eth_gasPrice with the base fee plus the floor, and eth_maxPriorityFeePerGas with the floor", async () => {
+  it("answers eth_gasPrice with twice the base fee plus the floor, and eth_maxPriorityFeePerGas with the floor", async () => {
     const { call } = await boot(withBase({ eth_maxPriorityFeePerGas: "0x3b9aca00" }), { pub: { minTipWei: FLOOR } });
-    expect((await call("eth_gasPrice")).result).toBe("0x" + (BASE + FLOOR).toString(16));
+    expect((await call("eth_gasPrice")).result).toBe("0x" + (2n * BASE + FLOOR).toString(16));
     expect((await call("eth_maxPriorityFeePerGas")).result).toBe("0x" + FLOOR.toString(16));
   });
 
@@ -709,6 +717,50 @@ describe("the limits", () => {
     expect((await rpc("x", "a")).status).toBe(200);
     expect((await rpc("x", "a")).status).toBe(200);
     expect((await rpc("x", "a")).status).toBe(429);
+  });
+});
+
+describe("the send limit", () => {
+  const send = (rpc: (b: string, ip: string) => Promise<{ status: number; body: unknown }>, raw: string, ip: string) =>
+    rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [raw] }), ip);
+  const errOf = (a: { body: unknown }) => (a.body as { error?: { code: number; message: string } }).error;
+
+  it("takes a burst of sends from one client, then refuses with -32005 'Rate limited' and refills by the hour", async () => {
+    const { rpc, seen, clock } = await boot({}, { sends: { sendsPerHour: 6, sendBurst: 2 } });
+    const raw = await signed();
+    expect(errOf(await send(rpc, raw, "9.9.9.9"))).toBeUndefined();
+    expect(errOf(await send(rpc, raw, "9.9.9.9"))).toBeUndefined();
+    const refused = errOf(await send(rpc, raw, "9.9.9.9"));
+    expect(refused?.code).toBe(-32005);
+    expect(refused?.message).toMatch(/^Rate limited:/);
+    expect(seen.eth_sendRawTransaction).toHaveLength(2); // the third never reached reth
+    clock.now += 10 * 60_000; // ten minutes at 6 an hour: one token back
+    expect(errOf(await send(rpc, raw, "9.9.9.9"))).toBeUndefined();
+    expect(errOf(await send(rpc, raw, "9.9.9.9"))?.code).toBe(-32005);
+  });
+
+  it("counts a send that is malformed too, and every send of a batch", async () => {
+    const { rpc } = await boot({}, { sends: { sendsPerHour: 1, sendBurst: 3 } });
+    expect(errOf(await send(rpc, "0x1234", "9.9.9.9"))?.code).toBe(-32602);
+    const batch = JSON.stringify([1, 2].map((id) => ({ jsonrpc: "2.0", id, method: "eth_sendRawTransaction", params: ["0x1234"] })));
+    const answer = (await rpc(batch, "9.9.9.9")).body as { error?: { code: number } }[];
+    expect(answer.map((a) => a.error?.code)).toEqual([-32602, -32602]);
+    expect(errOf(await send(rpc, "0x1234", "9.9.9.9"))?.code).toBe(-32005);
+  });
+
+  it("gives each client its own bucket, one /64 one bucket, and leaves reads alone", async () => {
+    const { rpc } = await boot({}, { sends: { sendsPerHour: 1, sendBurst: 1 } });
+    const raw = await signed();
+    expect(errOf(await send(rpc, raw, "2001:db8:1:2::1"))).toBeUndefined();
+    expect(errOf(await send(rpc, raw, "2001:db8:1:2::2"))?.code).toBe(-32005); // the same /64
+    expect(errOf(await send(rpc, raw, "2001:db8:1:3::1"))).toBeUndefined(); // another /64
+    const read = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId" });
+    for (let i = 0; i < 50; i++) {
+      const a = await rpc(read, "2001:db8:1:2::1");
+      expect(a.status).toBe(200);
+      expect(errOf(a)).toBeUndefined();
+      expect((a.body as { result?: string }).result).toBe(hx(CHAIN));
+    }
   });
 });
 

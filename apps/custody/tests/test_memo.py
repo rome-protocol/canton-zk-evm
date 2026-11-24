@@ -71,6 +71,11 @@ class RouteMemo(unittest.TestCase):
         biggest = f"r1:{2**32 - 1}:{address}:{2**256 - 1}:{2**64 - 1}"
         self.assertEqual(read(biggest, ROUTER), (biggest, "7a" * 20))
 
+    def test_the_network_and_most_fee_of_a_route_label_are_read_and_a_plain_label_has_none(self):
+        self.assertEqual(memo.route_parts(ROUTE), (0, 2000000000))
+        self.assertEqual(memo.route_parts(f"r1:{2**32 - 1}:0x{'e3' * 20}:{2**256 - 1}:1"), (2**32 - 1, 2**256 - 1))
+        self.assertIsNone(memo.route_parts("page-7"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """The custody worker, part 1: the intake (part 2, the payouts, is payout.py and runs in the same process with --payout-offers). See README.md.
 
-  intake.py --intake [--once] --gateway-party PARTY [--poll-seconds 10] [--min-deposit ADMIN/ID=AMOUNT]... [--router 0xADDRESS] [--ostia-rpc URL --gateway-address 0xADDRESS]
+  intake.py --intake [--once] --gateway-party PARTY [--poll-seconds 10] [--min-deposit ADMIN/ID=AMOUNT]... [--router 0xADDRESS --book 0xADDRESS] [--ostia-rpc URL] [--gateway-address 0xADDRESS]
             [--registry ADMIN=URL]... [--registry-token-file ADMIN=FILE]...
 
 Every poll it reads the transfers to the gateway that wait for their receiver, and for each one whose instrument is a registered GatewayToken, whose memo it can read and whose amount
-is at least that token's minimum, it makes the gateway accept the transfer (Intake_Accept, with the choice context of that token's registry), which makes a Receipt in the same
-transaction. Everything else stays pending, for its sender to take back. It does nothing unless --intake is given. One JSON line on stdout for each accept and for each transfer left pending.
+is at least that token's minimum and that can be claimed now (for a route memo, read live from the router's book on Ostia: the fee, the minimum and the memo's most fee), it makes the gateway accept the transfer (Intake_Accept, with the choice context of that token's registry), which makes a Receipt in the same
+transaction. A transfer that cannot be claimed is rejected, so the coin goes back to its sender at once. Everything else stays pending, for its sender to take back. It does nothing unless --intake is given.
+One JSON line on stdout for each accept, each reject and each transfer left pending.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, uuid
 from pathlib import Path
@@ -16,11 +17,15 @@ sys.path.insert(0, str(HERE.parent.parent / "builder"))
 sys.path.insert(0, str(HERE))
 import builder as b
 import memo as memos
+import claimable
 
 PKG = "#canton-zk-evm:Zk.Chain:"
 INTAKE, GATEWAY_TOKEN, RECEIPT, DEPOSIT_REQUEST = PKG + "Intake", PKG + "GatewayToken", PKG + "Receipt", PKG + "DepositRequest"
 TRANSFER_INSTRUCTION = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
 WAITING = "TransferPendingReceiverAcceptance"   # the only status in which the receiver may accept
+PREAPPROVAL = "#splice-amulet:Splice.AmuletRules:TransferPreapproval"   # a Canton Coin receiver's standing consent: a transfer to it completes at once, with no offer to refuse
+REJECT_KEY = "romeprotocol.com/ostia-reject-reason"   # in the reject's meta: why
+EMPTY_CONTEXT = {"values": {}}
 
 
 class Contexts(b.ChoiceContexts):
@@ -35,6 +40,9 @@ class Contexts(b.ChoiceContexts):
     def withdraw(self, admin: str, instruction: str):
         return self.accept(admin, instruction, "withdraw")
 
+    def reject(self, admin: str, instruction: str):
+        return self.accept(admin, instruction, "reject")
+
     @b.registry_guard("token registry")
     def transfer_factory(self, admin: str, transfer: dict):
         """(factory id, context, disclosed contracts) of the factory the registry names for this transfer. The standard's own `expectedAdmin` check, made by the factory, is what ties it to the token."""
@@ -48,10 +56,11 @@ class Contexts(b.ChoiceContexts):
 
 class Settings:
     """`minimums` is {(instrument admin, instrument id): the least amount, a Fraction}; `router` the address that a route memo's receipt is for, or None; `used` a function from a
-    deposit id to whether the gateway has used it already, or None (then only the ids that a Receipt or DepositRequest holds are known to be taken)."""
+    deposit id to whether the gateway has used it already, or None (then only the ids that a Receipt or DepositRequest holds are known to be taken); `ostia` the router's book and
+    router as `claimable.Ostia` reads them, or None (then a route memo is never accepted: its fee and minimum are unknown)."""
 
-    def __init__(self, gateway: str, registries: dict = None, registry_tokens: dict = None, minimums: dict = None, router: str = None, used=None):
-        self.gateway, self.registries, self.registry_tokens, self.minimums, self.router, self.used = gateway, registries or {}, registry_tokens or {}, minimums or {}, router, used
+    def __init__(self, gateway: str, registries: dict = None, registry_tokens: dict = None, minimums: dict = None, router: str = None, used=None, ostia: "claimable.Ostia" = None):
+        self.gateway, self.registries, self.registry_tokens, self.minimums, self.router, self.used, self.ostia = gateway, registries or {}, registry_tokens or {}, minimums or {}, router, used, ostia
 
 
 def say(line: dict) -> None:
@@ -112,8 +121,35 @@ class Intake:
         """The deposit ids that a receipt or a deposit request holds open now."""
         return {r["depositId"] for template in (RECEIPT, DEPOSIT_REQUEST) for r in self.ledger.active(template) if "depositId" in r}
 
+    def claimable(self, entry: dict, transfer: dict, label: str) -> None:
+        """Nothing when the transfer can be claimed now, else a `claimable.Refused` (the transfer is rejected) or a RuntimeError (the live numbers cannot be read: it stays pending and is tried again)."""
+        amount = b.base_units(transfer["amount"])
+        if amount is None:
+            raise memos.Unreadable("the amount is not a Canton amount")
+        route = memos.route_parts(label)
+        if route is None:
+            return claimable.check_plain(amount)
+        if self.settings.ostia is None:
+            raise RuntimeError("the router's book is not set: a route's fee and minimum are unknown")
+        try:
+            erc20 = memos.address_of("0x" + entry["evmToken"])
+        except memos.Unreadable:
+            raise RuntimeError("the token's address on Ostia is not an address") from None
+        claimable.check_route(self.settings.ostia, erc20, route[0], amount, route[1])
+
+    def reject(self, cid: str, transfer: dict, why: str, contexts) -> dict:
+        """The gateway rejects the offer (the standard's `TransferInstruction_Reject`, with the registry's reject context), so the coin goes back to its sender at once. The line `say` printed."""
+        admin = transfer["instrumentId"]["admin"]
+        context, disclosed = contexts.reject(admin, cid) if contexts.wants(admin) else (None, [])
+        answer = self.send({"ExerciseCommand": {"templateId": TRANSFER_INSTRUCTION, "contractId": cid, "choice": "TransferInstruction_Reject",
+                                                "choiceArgument": {"extraArgs": {"context": context or EMPTY_CONTEXT, "meta": {"values": {REJECT_KEY: why}}}}}}, disclosed)
+        line = {"rejected": cid, "reason": why, "amount": transfer["amount"], "instrument": transfer["instrumentId"], "sender": transfer["sender"], "updateId": answer.get("updateId")}
+        say(line)
+        return line
+
     def poll(self) -> list:
-        """One poll: the transfers that were accepted, each as what `say` printed. A transfer that cannot be taken stays as it is and is tried again at the next poll."""
+        """One poll: the transfers that were accepted, each as what `say` printed. A transfer that cannot be claimed as it stands (its amount cannot pay the live fee and minimum) is rejected, and
+        its line is `rejected`; any other that cannot be taken stays as it is and is tried again at the next poll."""
         candidates = self.waiting()
         accepted, now = [], {c for c, _ in candidates}
         self.told = {k for k in self.told if k[0] in now}
@@ -132,6 +168,11 @@ class Intake:
                 if least is not None and b.decimal(transfer["amount"]) < least:
                     raise memos.Unreadable("the amount is below the token's minimum")
                 label, recipient = memos.read(((transfer.get("meta") or {}).get("values")) or {}, cid, self.settings.router)
+                try:
+                    self.claimable(entry, transfer, label)
+                except claimable.Refused as e:
+                    self.reject(cid, transfer, b.bounded_text(str(e)), contexts)
+                    continue
                 deposit_id = b.deposit_id_of(transfer["sender"], label)
                 taken = self.open_ids() if taken is None else taken
                 if deposit_id in taken:
@@ -188,8 +229,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--registry-token-file", action="append", default=[x for x in env.get("CZE_TOKEN_REGISTRY_TOKEN_FILES", "").split(",") if x.strip()], metavar="ADMIN=FILE",
                     help="a file with the bearer token that the registry of ADMIN wants (repeatable; also CZE_TOKEN_REGISTRY_TOKEN_FILES, comma separated)")
     ap.add_argument("--min-deposit", action="append", default=[], metavar="ADMIN/ID=AMOUNT", help="the least amount of an instrument that is accepted (repeatable); a transfer below it stays pending. Default: no minimum")
-    ap.add_argument("--router", default=env.get("CZE_ROUTER_ADDRESS", ""), metavar="0xADDRESS", help="the router: a memo that is a route text (r1:...) is accepted, with the router as the receipt's recipient (also CZE_ROUTER_ADDRESS). Default: route memos stay pending")
-    ap.add_argument("--ostia-rpc", default=env.get("CZE_OSTIA_RPC_URL", ""), metavar="URL", help="Ostia's JSON-RPC, with --gateway-address: a transfer whose deposit id the gateway has used already stays pending (also CZE_OSTIA_RPC_URL). Never printed. Default: only the open ids are checked")
+    ap.add_argument("--router", default=env.get("CZE_ROUTER_ADDRESS", ""), metavar="0xADDRESS", help="the router: a memo that is a route text (r1:...) is accepted when the router would claim it now, with the router as the receipt's recipient (also CZE_ROUTER_ADDRESS); needs --book and --ostia-rpc. Default: route memos stay pending")
+    ap.add_argument("--book", default=env.get("CZE_BOOK_ADDRESS", ""), metavar="0xADDRESS", help="the router's book on Ostia (also CZE_BOOK_ADDRESS): its live fees, minimum and unit decide whether a route memo can be claimed; with --router")
+    ap.add_argument("--ostia-rpc", default=env.get("CZE_OSTIA_RPC_URL", ""), metavar="URL", help="Ostia's JSON-RPC: with --gateway-address, a transfer whose deposit id the gateway has used already stays pending; with --router and --book, the book is read for each route memo (also CZE_OSTIA_RPC_URL). Never printed. Default: only the open ids are checked")
     ap.add_argument("--gateway-address", default=env.get("CZE_GATEWAY_ADDRESS", ""), metavar="0xADDRESS", help="the chain's gateway contract on Ostia (also CZE_GATEWAY_ADDRESS)")
     ap.add_argument("--payout-offers", action="store_true", default=env.get("CZE_PAYOUT_OFFERS") == "1",
                     help="pay each open Payout as one transfer offer from the gateway (also CZE_PAYOUT_OFFERS=1); needs --work-dir. Default: off")
@@ -234,13 +276,34 @@ def settings_of(args) -> Settings:
         router = "0x" + memos.address_of(args.router) if args.router else None
     except memos.Unreadable:
         raise SystemExit("--router must be an EVM address (0x and 40 hex digits)") from None
-    if bool(args.ostia_rpc) != bool(args.gateway_address):
+    if bool(args.book) != bool(args.router):
+        raise SystemExit("--router and --book go together: a route memo is accepted only on the book's live fees and minimum")
+    if args.router and not args.ostia_rpc:
+        raise SystemExit("--router needs --ostia-rpc, to read the book")
+    try:
+        ostia = claimable.Ostia(claimable.eth_call(args.ostia_rpc), memos.address_of(args.book), memos.address_of(args.router)) if args.router else None
+    except memos.Unreadable:
+        raise SystemExit("--book must be an EVM address (0x and 40 hex digits)") from None
+    if args.gateway_address and not args.ostia_rpc:
+        raise SystemExit("--ostia-rpc and --gateway-address go together")
+    if args.ostia_rpc and not args.gateway_address and not args.router:
         raise SystemExit("--ostia-rpc and --gateway-address go together")
     try:
-        used = gateway_used(args.ostia_rpc, memos.address_of(args.gateway_address)) if args.ostia_rpc else None
+        used = gateway_used(args.ostia_rpc, memos.address_of(args.gateway_address)) if args.gateway_address else None
     except memos.Unreadable:
         raise SystemExit("--gateway-address must be an EVM address (0x and 40 hex digits)") from None
-    return Settings(args.gateway_party, registries, b.read_registry_tokens(args.registry_token_file, registries), parse_minimums(args.min_deposit), router, used)
+    return Settings(args.gateway_party, registries, b.read_registry_tokens(args.registry_token_file, registries), parse_minimums(args.min_deposit), router, used, ostia)
+
+
+def preapproval_warning(ledger: "b.Ledger", gateway: str) -> None:
+    """The gateway must hold no Canton Coin transfer preapproval: with one, a transfer completes at once and there is no offer for the intake to refuse. One `warning` line when it holds one, or when that cannot be read."""
+    try:
+        held = [p for p in ledger.active(PREAPPROVAL) if p.get("receiver") == gateway]
+    except Exception as e:   # the check never stops the worker
+        say({"warning": b.bounded_text(f"the gateway's Canton Coin transfer preapproval could not be checked ({type(e).__name__})")})
+        return
+    if held:
+        say({"warning": "the gateway holds a Canton Coin transfer preapproval: coins reach it with no offer, so the intake cannot refuse what cannot be claimed; archive it", "preapprovals": [p["contractId"] for p in held]})
 
 
 def main(argv: list) -> int:
@@ -251,6 +314,8 @@ def main(argv: list) -> int:
     try:
         ledger, settings = ledger_of(args), settings_of(args)
         workers = [Intake(ledger, settings)] if args.intake else []
+        if args.intake:
+            preapproval_warning(ledger, settings.gateway)
         if args.payout_offers:
             import payout
             workers.append(payout.Payouts.from_args(args, ledger, settings))
