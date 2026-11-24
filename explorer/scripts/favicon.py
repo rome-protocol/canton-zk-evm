@@ -2,40 +2,47 @@
 
     python3 explorer/scripts/favicon.py
 
-The mark is drawn in the header's colour (--canton in src/styles.css) on a transparent background; the apple-touch icon sits on the page
-colour (--bg) as a solid square, since iOS does not keep transparency. Needs Pillow. Only the mark's shape (its alpha) is used, so the
-edges are resampled without a halo.
+The Ostia mark: Rome's mark in Rome purple (--canton in src/styles.css) centred on a Canton-lime rounded square (corner radius 22% of the
+side, transparent outside the corners). The mark spans 0.7362 of the tile's width: the drawing's 0.76 width, with the 1.5% of padding
+its crop leaves on each side. The apple-touch icon is the same square with square corners and no transparency, since iOS rounds the corners
+itself and fills transparency with black. Needs Pillow. Only the mark's shape (its alpha) is used, so the edges are resampled without a halo.
 """
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 
 HERE = Path(__file__).resolve().parent.parent
 MARK = HERE / "src" / "assets" / "rome-mark.png"
 OUT = HERE / "public"
-CANTON = (0x5E, 0x0A, 0x60)  # --canton, light theme
-BG = (0xFB, 0xF8, 0xF4)      # --bg, light theme
+PURPLE = (0x5E, 0x0A, 0x60)  # --canton, light theme
+LIME = (0xF3, 0xFF, 0x97)    # Canton lime
+RADIUS = 0.22                # corner radius, share of the side
+MARK_WIDTH = 0.7362          # share of the side
+SUPER = 4                    # supersampling for the rounded corners
 
 
-def drawn(shape: Image.Image, size: int, width: float, background) -> Image.Image:
-    """The mark, `width` of the square wide and centred, in CANTON, on `background` (None: transparent)."""
-    w = max(1, round(size * width))
-    h = max(1, round(w * shape.height / shape.width))
-    alpha = shape.resize((w, h), Image.LANCZOS)
-    canvas = Image.new("RGBA", (size, size), (*background, 255) if background else (*CANTON, 0))
-    ink = Image.new("RGBA", (w, h), (*CANTON, 255))
-    ink.putalpha(alpha)
-    canvas.alpha_composite(ink, ((size - w) // 2, (size - h) // 2))
-    return canvas
+def tile(shape: Image.Image, size: int, rounded: bool) -> Image.Image:
+    """The mark on the lime tile, `size` px square; transparent outside the rounded corners when `rounded`."""
+    big = size * SUPER
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, big - 1, big - 1), radius=round(big * RADIUS) if rounded else 0, fill=255)
+    canvas = Image.new("RGBA", (big, big), (*LIME, 255))
+    canvas.putalpha(mask)
+    w = round(big * MARK_WIDTH)
+    h = round(w * shape.height / shape.width)
+    ink = Image.new("RGBA", (w, h), (*PURPLE, 255))
+    ink.putalpha(shape.resize((w, h), Image.LANCZOS))
+    canvas.alpha_composite(ink, ((big - w) // 2, (big - h) // 2))
+    return canvas.resize((size, size), Image.LANCZOS)
 
 
 def main() -> None:
     shape = Image.open(MARK).convert("RGBA").getchannel("A")
     OUT.mkdir(exist_ok=True)
     sizes = [16, 32, 48]
-    frames = [drawn(shape, s, 0.94, None) for s in sizes]
+    frames = [tile(shape, s, True) for s in sizes]
     frames[-1].save(OUT / "favicon.ico", format="ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
-    drawn(shape, 32, 0.94, None).save(OUT / "favicon-32.png", optimize=True)
-    drawn(shape, 180, 0.66, BG).convert("RGB").save(OUT / "apple-touch-icon.png", optimize=True)
+    tile(shape, 32, True).save(OUT / "favicon-32.png", optimize=True)
+    tile(shape, 180, False).convert("RGB").save(OUT / "apple-touch-icon.png", optimize=True)
 
 
 if __name__ == "__main__":
