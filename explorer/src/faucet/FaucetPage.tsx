@@ -16,8 +16,6 @@ export interface FaucetPageProps {
   coin: { symbol: string; decimals: number };
   /** The chain's name and id, for the line under the title. */
   chain?: { name: string | null; id: number };
-  /** The address of the Ostia Swap site, when this deployment has one. A faucet that cannot give then points to it. */
-  swapUrl?: string | null;
   /** How often a request's progress is read, in milliseconds. A test gives its own. */
   pollMs?: number;
 }
@@ -74,7 +72,7 @@ function CopyButton({ value, what }: { value: string; what: string }) {
  * The faucet's page: a form that asks for the chain's test coin, and every way a request can end. It is the page's content only. The
  * explorer's header, footer and the route around it come from the shell. It must be rendered inside a router, for the links.
  */
-export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, swapUrl = null, pollMs = 2000 }: FaucetPageProps) {
+export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000 }: FaucetPageProps) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   const [address, setAddress] = useState("");
   const [sending, setSending] = useState(false);
@@ -467,19 +465,11 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, swapUrl = nul
     );
   }
 
-  /** Under a refusal, when the site has a Swap: where to get more of the coin without the faucet. Nothing when it has none. */
-  function swapLine() {
-    return swapUrl ? <p className="small muted fnote">Have some {coin.symbol} already? Swap CC, WETH or SOL for more on the <OutLink href={swapUrl}>Ostia Swap</OutLink>.</p> : null;
-  }
-
   function outcome(r: CoinResult | { kind: "invalid" }, id: string) {
     switch (r.kind) {
       case "limit":
-        return <><Alert tone="wait" icon="note" role="alert" id={id}><b>{r.message}</b> {retry(r.waitSeconds)}</Alert>{r.which !== "checks" && swapLine()}</>;
       case "full":
         return <Alert tone="wait" icon="note" role="alert" id={id}><b>{r.message}</b> {retry(r.waitSeconds)}</Alert>;
-      case "empty":
-        return <><Alert tone="bad" icon="bad" role="alert" id={id}>{r.message}</Alert>{swapLine()}<StillStuck error={r.message} /></>;
       case "captcha":
       case "problem":
         return <><Alert tone="bad" icon="bad" role="alert" id={id}>{r.message}</Alert><StillStuck error={r.message} /></>;

@@ -60,7 +60,7 @@ describe("request", () => {
   it("tells a full line from other 503s, and a failed human check from other 403s", async () => {
     expect(await client(() => json(503, { error: "full", reason: "queue" }, { "Retry-After": "30" })).faucet.request(ADDRESS)).toEqual({ kind: "full", waitSeconds: 30, message: "full" });
     expect(await client(() => json(403, { error: "check", reason: "captcha" })).faucet.request(ADDRESS)).toEqual({ kind: "captcha", message: "check" });
-    expect(await client(() => json(503, { error: "The faucet is empty.", reason: "empty" })).faucet.request(ADDRESS)).toEqual({ kind: "empty", message: "The faucet is empty." });
+    expect(await client(() => json(503, { error: "The faucet is empty.", reason: "empty" })).faucet.request(ADDRESS)).toEqual({ kind: "problem", message: "The faucet is empty." });
   });
   it("hands the server's message on for a bad address, an off faucet, and anything else", async () => {
     for (const status of [400, 503, 502, 413]) {

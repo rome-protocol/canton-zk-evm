@@ -60,7 +60,7 @@ export interface Config {
   networkName: string | null;
   /** The public address of the twin registry service, when this deployment has one (TWIN_REGISTRY_URL); null when not set, and then the twins page names no such service. */
   twinRegistryUrl: string | null;
-  /** The address of the Ostia Swap site (SWAP_URL), when this deployment has one: the header links to it, and a faucet that cannot give points to it. Null when not set or not an https address. */
+  /** The address of the Ostia Swap site (SWAP_URL), when this deployment has one: the header links to it. Null when not set or not an https address. */
   swapUrl: string | null;
   /** The address of the Ostia Bridge site (BRIDGE_URL), when this deployment has one: the header links to it. Null when not set or not an https address. */
   bridgeUrl: string | null;

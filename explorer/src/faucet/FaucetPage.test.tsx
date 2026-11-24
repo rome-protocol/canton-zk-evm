@@ -29,9 +29,9 @@ function fake(over: { info?: FaucetInfo | Error; request?: CoinResult | Promise<
   return client;
 }
 
-async function open(client: FaucetClient, coin: { symbol: string; decimals: number } = { symbol: "tROME", decimals: 18 }, swapUrl?: string | null) {
+async function open(client: FaucetClient, coin: { symbol: string; decimals: number } = { symbol: "tROME", decimals: 18 }) {
   const user = userEvent.setup();
-  render(<MemoryRouter><FaucetPage client={client} coin={coin} swapUrl={swapUrl} pollMs={FAST} /></MemoryRouter>);
+  render(<MemoryRouter><FaucetPage client={client} coin={coin} pollMs={FAST} /></MemoryRouter>);
   return user;
 }
 const ask = async (user: ReturnType<typeof userEvent.setup>, address = ADDRESS) => {
@@ -330,68 +330,6 @@ describe("the faucet turns a request away", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("The faucet's line is full, so this request was turned away, not lost. Try again in 1 s.");
     expect(screen.getByRole("button", { name: /Request/ })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole("button", { name: /Request/ })).toBeEnabled(), { timeout: 2500 });
-  });
-});
-
-describe("the line about the Ostia Swap", () => {
-  const SWAP = "https://swap.ostia.testnet.romeprotocol.xyz/";
-  const LINE = "Have some tROME already? Swap CC, WETH or SOL for more on the Ostia Swap.";
-  const refusals: [string, CoinResult][] = [
-    ["the address's limit", { kind: "limit", which: "address", waitSeconds: 3600, message: "This address was given coins in the last 24 hours. Try again later." }],
-    ["the network's limit (a /64)", { kind: "limit", which: "ip", waitSeconds: 600, message: "This network has used the faucet 10 times in the last 10 minutes. Try again later, or from another network." }],
-    ["the hour's limit", { kind: "limit", which: "hour", waitSeconds: 600, message: "The faucet has given out all it gives in an hour (5000 requests). Try again later." }],
-    ["an empty faucet", { kind: "empty", message: "The faucet is empty." }],
-  ];
-
-  for (const [name, request] of refusals) {
-    it(`is shown under the faucet's own words when ${name} was reached and the site has a Swap, with Ostia Swap linking to it in a new tab`, async () => {
-      const user = await open(fake({ request }), undefined, SWAP);
-      await ask(user);
-      const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent(request.kind === "limit" || request.kind === "empty" ? request.message : "");
-      expect(alert).not.toHaveTextContent("Have some");
-      const line = screen.getByText((_, el) => el?.tagName === "P" && el.textContent === LINE);
-      expect(line.previousElementSibling).toBe(alert);
-      const link = within(line).getByRole("link", { name: "Ostia Swap" });
-      expect(link).toHaveAttribute("href", SWAP);
-      expect(link).toHaveAttribute("target", "_blank");
-      expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
-    });
-
-    it(`is not shown when ${name} was reached and the site has no Swap`, async () => {
-      const user = await open(fake({ request }), undefined, null);
-      await ask(user);
-      await screen.findByRole("alert");
-      expect(screen.queryByText(/Have some tROME already/)).toBeNull();
-      expect(screen.queryByRole("link", { name: "Ostia Swap" })).toBeNull();
-    });
-  }
-
-  it("is not shown for a request that was taken, even when the site has a Swap", async () => {
-    const user = await open(fake(), undefined, SWAP);
-    await ask(user);
-    await screen.findByRole("heading", { name: "Your request" });
-    expect(screen.queryByText(/Have some tROME already/)).toBeNull();
-  });
-
-  it("is not shown before anything was asked, nor for a refusal that is not about what the faucet can give (a bad address, a failed human check, a full line)", async () => {
-    const user = await open(fake({ request: { kind: "captcha", message: "Complete the human check first." } }), undefined, SWAP);
-    await screen.findByLabelText("Your address");
-    expect(screen.queryByText(/Have some tROME already/)).toBeNull();
-    await ask(user);
-    await screen.findByRole("alert");
-    expect(screen.queryByText(/Have some tROME already/)).toBeNull();
-    await user.clear(screen.getByLabelText("Your address"));
-    await ask(user, "0x5b2e91c");
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("That is not an address"));
-    expect(screen.queryByText(/Have some tROME already/)).toBeNull();
-  });
-
-  it("names the page's own coin", async () => {
-    const user = await open(fake({ request: refusals[0]![1] }), { symbol: "xROME", decimals: 18 }, SWAP);
-    await ask(user);
-    await screen.findByRole("alert");
-    expect(screen.getByText("Have some xROME already?", { exact: false })).toBeInTheDocument();
   });
 });
 
