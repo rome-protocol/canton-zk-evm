@@ -30,6 +30,36 @@ function open(c: FaucetClient, at = "/faucet") {
   render(<MemoryRouter initialEntries={[at]}><FaucetPage client={c} coin={coin} pollMs={15} /></MemoryRouter>);
 }
 
+describe("with the plain request off", () => {
+  const off = (over: Partial<FaucetInfo> = {}) => info({ plain: false, builder: { ...builder, amount: (10n * 10n ** 18n).toString(), leftToday: 10 }, ...over });
+
+  it("shows only the GitHub path: the address box and the sign-in, no request button, no plain limits", async () => {
+    const user = userEvent.setup();
+    open(client(off()));
+    expect(await screen.findByText(/Sign in with GitHub to get/)).toHaveTextContent("10 tROME");
+    expect(screen.queryByRole("button", { name: /^Request/ })).toBeNull();
+    expect(screen.queryByText(/Each request sends/)).toBeNull();
+    expect(screen.queryByText(/requests an hour/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Your address"), ADDRESS);
+    expect(screen.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", builderStartPath(ADDRESS));
+  });
+
+  it("says that today's grants are all given out, and offers no button, when the daily cap is reached", async () => {
+    open(client(off({ builder: { ...builder, amount: HUNDRED, leftToday: 0 } })));
+    expect(await screen.findByText("Today's builder grants are all given out. Try again tomorrow.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sign in with GitHub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull();
+  });
+
+  it("does not point a young account to a plain faucet that is not there", () => {
+    const w = builderWords({ code: "young", ticket: null, wait: null, days: 30 }, off(), coin);
+    expect(w.text).toContain("less than 30 days old");
+    expect(w.text).not.toContain("plain faucet");
+    expect(builderWords({ code: "young", ticket: null, wait: null, days: 30 }, info(), coin).text).toContain("plain faucet");
+  });
+});
+
 describe("the offer", () => {
   it("is 'Building on Ostia? Get 100 tROME.' and a Sign in with GitHub button with GitHub's mark, linking to the start path for the address", () => {
     render(<BuilderGrant info={info()} address={ADDRESS} coin={coin} />);

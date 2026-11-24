@@ -41,6 +41,8 @@ export function BuilderGrant({ info, address, coin }: { info: FaucetInfo | null 
   const b = builderOf(info);
   if (!b) return null;
   const amount = `${formatCoin(b.amount, coin.decimals)} ${coin.symbol}`;
+  // The day's cap is reached: the page says so and offers no button that could only be turned away.
+  if (b.leftToday === 0) return <p className="small builder-line" role="status">Today's builder grants are all given out. Try again tomorrow.</p>;
   const ready = address !== null && ADDRESS.test(address.trim());
   return (
     <div className="builder-grant">
@@ -86,13 +88,14 @@ export function readBuilderResult(search: string): BuilderResult | null {
 /** The result in plain words, and whether it is good news, a wait, or a problem. Nothing is claimed that the faucet did not say. */
 export function builderWords(r: BuilderResult, info: FaucetInfo | null, coin: { symbol: string; decimals: number }): { tone: "ok" | "wait" | "bad"; text: string } {
   const b = info?.builder;
+  const plain = info?.plain !== false;
   const period = b?.perAccountSeconds ? formatDays(b.perAccountSeconds) : "few days";
   // A wait of days is said in days, rounded up so that nobody is told to try before the faucet will answer.
   const again = r.wait !== null ? ` Try again in ${r.wait >= 2 * 86400 ? `${Math.ceil(r.wait / 86400)} days` : formatWait(r.wait)}.` : " Try again later.";
   const amount = b?.amount ? `${formatCoin(b.amount, coin.decimals)} ${coin.symbol}` : `${coin.symbol}`;
   switch (r.code) {
     case "queued": return { tone: "ok", text: `Signed in. Your builder grant of ${amount} is queued.` };
-    case "young": return { tone: "bad", text: `That GitHub account is less than ${r.days ?? b?.minAccountAgeDays ?? 30} days old, so it does not get a builder grant. The plain faucet above is open to anyone.` };
+    case "young": return { tone: "bad", text: `That GitHub account is less than ${r.days ?? b?.minAccountAgeDays ?? 30} days old, so it does not get a builder grant.${plain ? " The plain faucet above is open to anyone." : ""}` };
     case "account": return { tone: "wait", text: `This GitHub account was given a builder grant in the last ${period}.${again}` };
     case "address": return { tone: "wait", text: `This address was given a builder grant in the last ${period}.${again}` };
     case "day": return { tone: "wait", text: `Today's builder grants are all given out.${r.wait !== null ? again : " Try again tomorrow."}` };

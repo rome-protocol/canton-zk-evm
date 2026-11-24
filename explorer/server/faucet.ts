@@ -19,6 +19,8 @@ export interface FaucetOptions {
   key: Hex | null;
   chainId: number;
   amountWei: bigint;
+  /** False turns the plain request off: a request without a GitHub sign-in is refused, and coins come only from the builder grant. Default true. */
+  plain?: boolean;
   perAddressSeconds: number;
   /** One request per client address in this many seconds. */
   perIpSeconds: number;
@@ -63,6 +65,8 @@ export interface FaucetInfo {
   /** The final head the balance was read at; null when reth cannot name one, and then the balance is the newest block's, which may not be final. */
   balanceBlock: number | null;
   amount: string; perAddressSeconds: number; perIpSeconds: number; maxPerHour: number;
+  /** False when the plain request is off and coins come only after a GitHub sign-in. */
+  plain: boolean;
   /** How many requests are waiting for a batch. */
   queue: number;
   /** The most payouts that go in one block (the faucet's batch size). */
@@ -192,7 +196,7 @@ const NO_SENDER = "0x0000000000000000000000000000000000000000";
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 
 /** A refusal also says which limit was hit, so a page can word it without reading the message. */
-type Reason = "address" | "ip" | "net" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
+type Reason = "address" | "ip" | "net" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day" | "github";
 const answer = (status: number, error: string, headers?: Record<string, string>, reason?: Reason): FaucetAnswer => ({
   status, body: { error, ...(reason ? { reason } : {}) }, ...(headers ? { headers } : {}),
 });
@@ -813,6 +817,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
   async function submit(raw: unknown, caller: FaucetCaller, grantee?: string): Promise<FaucetAnswer> {
     if (!address) return answer(503, "The faucet is off.");
     if (grantee !== undefined && !builder) return answer(503, "The builder grant is off.");
+    if (grantee === undefined && o.plain === false) return answer(403, "The faucet gives coins only to builders who sign in with GitHub. Use Sign in with GitHub on the Faucet page.", undefined, "github");
     const to = typeof raw === "string" ? raw.toLowerCase() : "";
     if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
     const ip = hashed(clientKey(caller.ip)), net = hashed(clientNet(caller.ip));
@@ -921,13 +926,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
         if (balance === null) balance = await o.reth.balance(address).then((b) => b.toString(), () => null);
       }
       const p = await payouts;
+      forget(t);
       return {
         on: account !== null, address, balance, balanceBlock, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
-        maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
+        maxPerHour: o.maxPerHour, plain: o.plain !== false, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
         captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
         builder: builder
-          ? { on: account !== null, amount: builder.amountWei.toString(), perAccountSeconds: builder.perAccountSeconds, minAccountAgeDays: builder.minAccountAgeDays, maxPerDay: builder.maxPerDay }
-          : { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null },
+          ? { on: account !== null, amount: builder.amountWei.toString(), perAccountSeconds: builder.perAccountSeconds, minAccountAgeDays: builder.minAccountAgeDays, maxPerDay: builder.maxPerDay, leftToday: Math.max(0, builder.maxPerDay - builderDaily.length) }
+          : { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null, leftToday: null },
       };
     },
 

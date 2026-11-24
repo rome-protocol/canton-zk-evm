@@ -5,6 +5,8 @@ import { usualProof } from "../stats.ts";
 export interface FaucetInfo {
   on: boolean; address: string | null; balance: string | null; amount: string; perAddressSeconds: number;
   perIpSeconds?: number; maxPerHour?: number;
+  /** False when the plain request is off and coins come only after a GitHub sign-in. Absent from a server that does not say it, which has the plain request. */
+  plain?: boolean;
   /** How many requests are waiting for a batch. */
   queue?: number;
   /** The final head the balance was read at; null when none could be named (the balance is then the newest block's, which may not be final). Absent from a server that does not say it. */
@@ -16,7 +18,7 @@ export interface FaucetInfo {
   finalToday?: number | null;
   beingProven?: number | null;
   /** The builder grant (sign in with GitHub for a larger amount): on or off, and its amount (smallest unit), period, minimum account age and daily cap. Absent from a server that does not say it. */
-  builder?: { on: boolean; amount: string | null; perAccountSeconds: number | null; minAccountAgeDays: number | null; maxPerDay: number | null };
+  builder?: { on: boolean; amount: string | null; perAccountSeconds: number | null; minAccountAgeDays: number | null; maxPerDay: number | null; leftToday?: number | null };
   /** The human check, when the faucet asks for one: the script to load and the key to give it. */
   captcha?: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }

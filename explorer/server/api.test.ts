@@ -616,7 +616,7 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
       expect(ticket).toMatchObject({ status: "queued", to: BOB, amount: (100n * 10n ** 18n).toString() });
       expect(JSON.stringify([start, back, ticket])).not.toContain(builder.clientSecret);
       const info = (await get("/api/faucet")).body as Obj;
-      expect(info.builder).toEqual({ on: true, amount: (100n * 10n ** 18n).toString(), perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200 });
+      expect(info.builder).toEqual({ on: true, amount: (100n * 10n ** 18n).toString(), perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200, leftToday: 199 });
     });
 
     it("starts only from this site's own page: Sec-Fetch-Site must be same-origin or none, or absent, and any other value goes back to the page with a code", async () => {
@@ -694,10 +694,10 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
     expect(on.status).toBe(200);
     same(on.body, FIELDS.faucetInfo);
     // The balance is named by the block it was read at: the final head (reth's finalized block, 2 here), not the newest block. With no database store (the file's way) no count of today's payouts is possible: null, not 0.
-    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null } });
+    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, plain: true, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null, leftToday: null } });
     await reth?.close(); await ledger?.close();
     const off = await (await boot(chain())).get("/api/faucet");
-    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null } });
+    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, plain: true, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null, builder: { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null, leftToday: null } });
   });
 
   it("says no block, and the newest block's balance, when reth cannot name the final block", async () => {
