@@ -3,12 +3,13 @@
 Every poll it reads the pending Canton Coin transfers to Rome's validator party. A transfer that passes every check is accepted (`TransferInstruction_Accept`, with the
 registry's choice context, as the intake accepts) and the buyer is sent floor(amount / price) tROME from the buy key, straight to reth. A transfer that fails a check is left
 pending, never rejected: it goes back to its sender at its own deadline. The journal (buy.json in the work folder) keeps each accepted transfer with its signed send, so a restart
-sends nothing twice and a send that reth does not hold is sent again, the same bytes. The status file (buy-status.json) says the price, the least buy, the party and whether the stock is open or sold out.
+sends nothing twice and a send that reth does not hold is sent again, the same bytes; a send that is not mined in time is replaced, with the same nonce and higher fees, and the buy is paid when any of its sends is mined. The status file (buy-status.json) says the price, the least buy, the party and whether the stock is open or sold out.
 """
 import fcntl, hashlib, os, stat, sys, time
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import intake as it
@@ -20,8 +21,16 @@ COIN = "Amulet"   # the instrument id of Canton Coin; the admin is the one whose
 WEI = 10**18
 ACCEPT = "TransferInstruction_Accept"
 KEEP_DONE_SECONDS = 30 * 86400   # a settled buy stays in the journal this long
-MAX_SEND_GAS = 100_000   # a send that needs more gas than this (a recipient whose code does real work) is left pending
-GAS_HEADROOM = Fraction(6, 5)   # the gas limit is the estimate with this much room
+MIN_BUMP_PERCENT = 10   # what reth's pool (EIP-1559) takes at least, in max fee and in tip, to replace a transaction of the same nonce
+
+
+class Sending(NamedTuple):
+    """How the worker sends: the worker's settings (--send-gas-cap, --send-gas-headroom, --send-stuck-seconds, --send-fee-bump-percent, --send-fee-cap), these are their defaults."""
+    gas_cap: int = 100_000   # a send whose gas limit is over this (a recipient whose code does real work) is left pending
+    gas_headroom: Fraction = Fraction(6, 5)   # the gas limit is the estimate times this (21000 for a plain transfer)
+    stuck_seconds: int = 60   # a send not mined after this long is replaced
+    bump_percent: int = 12   # a replacement's max fee and tip are this much more than the send's (at least MIN_BUMP_PERCENT)
+    fee_cap: int = 10**18   # the most a send's gas limit times its max fee may be, in wei (reth's own per-transaction cap, 1 tROME)
 
 
 class Journal(payout.Journal):
@@ -94,17 +103,18 @@ def meta_bytes(values: dict) -> int:
 
 
 class Buy:
-    def __init__(self, ledger: "b.Ledger", settings: it.Settings, reth, key: bytes, price: Fraction, min_buy: Fraction, work_dir: str, max_meta: int = 0, clock=time.time, contexts=it.Contexts):
-        """`price` is the Canton Coin that one tROME costs, `min_buy` the least amount accepted (Canton Coin), `max_meta` the most bytes of a transfer's meta (0: no cap); `reth` is an `evm.Reth`."""
+    def __init__(self, ledger: "b.Ledger", settings: it.Settings, reth, key: bytes, price: Fraction, min_buy: Fraction, work_dir: str, max_meta: int = 0, clock=time.time, contexts=it.Contexts, sending: Sending = Sending()):
+        """`price` is the Canton Coin that one tROME costs, `min_buy` the least amount accepted (Canton Coin), `max_meta` the most bytes of a transfer's meta (0: no cap), `sending` how the sends are made; `reth` is an `evm.Reth`."""
         if len(settings.registries) != 1:
             raise SystemExit("--buy takes exactly one --registry: Canton Coin's own admin")
         self.ledger, self.settings, self.reth, self.key, self.clock, self.contexts = ledger, settings, reth, key, clock, contexts
-        self.price, self.min_buy, self.max_meta = price, min_buy, max_meta
+        self.price, self.min_buy, self.max_meta, self.sending = price, min_buy, max_meta, sending
         self.address = evm.address_of(key)
         self.dir = Path(work_dir)
         self.journal = Journal(self.dir / JOURNAL)
         self.intake = it.Intake(ledger, settings)
         self.told: set = set()   # (instruction, why) of what was already reported
+        self.capped: set = set()   # the instructions whose stuck send was said to be at the fee cap
         self.chain_id = None
         self.lock = None
 
@@ -112,7 +122,7 @@ class Buy:
     def from_args(cls, args, ledger: "b.Ledger", settings: it.Settings) -> "Buy":
         lock = take_lock(args.work_dir)   # before the journal is read
         try:
-            worker = cls(ledger, settings, evm.Reth(args.reth_rpc), read_key(args.buy_key_file), buy_price(args), buy_least(args), args.work_dir, args.max_meta_bytes)
+            worker = cls(ledger, settings, evm.Reth(args.reth_rpc), read_key(args.buy_key_file), buy_price(args), buy_least(args), args.work_dir, args.max_meta_bytes, sending=sending_of(args))
         except BaseException:
             lock.close()
             raise
@@ -127,7 +137,9 @@ class Buy:
 
     def describe(self) -> dict:
         """The settings, said once at the start (never the key)."""
-        return {"price": limits.amount_text(self.price), "minBuy": limits.amount_text(self.min_buy), "party": self.settings.gateway, "maxMetaBytes": self.max_meta, "sendFrom": "0x" + self.address}
+        s = self.sending
+        return {"price": limits.amount_text(self.price), "minBuy": limits.amount_text(self.min_buy), "party": self.settings.gateway, "maxMetaBytes": self.max_meta, "sendFrom": "0x" + self.address,
+                "sendGasCap": s.gas_cap, "sendGasHeadroom": limits.amount_text(s.gas_headroom), "sendStuckSeconds": s.stuck_seconds, "sendFeeBumpPercent": s.bump_percent, "sendFeeCap": limits.amount_text(Fraction(s.fee_cap, WEI))}
 
     def wei_for(self, amount: Fraction) -> int:
         """The tROME, in wei, that this much Canton Coin buys, rounded down."""
@@ -148,6 +160,12 @@ class Buy:
         if not isinstance(text, str) or not text.strip():
             raise memos.Unreadable("the transfer has no memo")
         recipient = memos.address_of(text.strip())
+        try:
+            lapsed = datetime.fromtimestamp(self.clock(), timezone.utc) >= b.ledger_time(transfer.get("executeBefore"), "executeBefore")
+        except b.BuilderError:
+            raise memos.Unreadable("the transfer's deadline is not a time") from None
+        if lapsed:   # only its sender can take it back now: no try is made, and an earlier try's stock is freed once that try has failed
+            raise memos.Unreadable("the transfer's deadline has passed")
         if self.max_meta and meta_bytes(values) > self.max_meta:
             raise memos.Unreadable("the transfer's meta is larger than the cap")
         coins = Fraction(amount, b.UNIT)
@@ -159,13 +177,13 @@ class Buy:
         return recipient, wei
 
     def estimate(self, recipient: str, wei: int) -> int:
-        """The gas limit of the send to this recipient: reth's estimate for the transfer (a recipient whose code runs needs more than a plain transfer's), with room. A memos.Unreadable when reth says the transfer fails or it needs more than MAX_SEND_GAS."""
+        """The gas limit of the send to this recipient: reth's estimate for the transfer (a recipient whose code runs needs more than a plain transfer's) times the headroom setting. A memos.Unreadable when reth says the transfer fails or the limit is over the gas cap setting."""
         try:
             need = self.reth.estimate_gas(self.address, recipient, wei)
         except evm.RpcError:
             raise memos.Unreadable("the transfer to this address would fail") from None
-        gas = evm.TRANSFER_GAS if need <= evm.TRANSFER_GAS else int(need * GAS_HEADROOM)   # a plain transfer needs exactly 21000
-        if gas > MAX_SEND_GAS:
+        gas = evm.TRANSFER_GAS if need <= evm.TRANSFER_GAS else int(need * self.sending.gas_headroom)   # a plain transfer needs exactly 21000
+        if gas > self.sending.gas_cap:
             raise memos.Unreadable("the transfer to this address needs more gas than the worker sends")
         return gas
 
@@ -180,7 +198,7 @@ class Buy:
 
     def reserved(self, chain: Chain, entry: dict) -> int:
         """The wei, gas included, that one journal entry takes from the buy key."""
-        return int(entry["wei"]) + chain.cost(int(entry.get("gas", evm.TRANSFER_GAS)))
+        return int(entry["wei"]) + int(entry.get("gas", evm.TRANSFER_GAS)) * int(entry.get("maxFee", chain.max_fee))
 
     def owed(self, chain: Chain) -> int:
         """The wei, gas included, that the buys not yet settled still take from the buy key: an accept in doubt counts too, since its try may still commit."""
@@ -206,7 +224,7 @@ class Buy:
                 self.say_once(cid, str(e) if isinstance(e, (RuntimeError, memos.Unreadable)) else f"{type(e).__name__}: {e}")
         available = self.reth.balance(self.address) - self.owed(chain)
         contexts = self.contexts(self.settings.registries, self.settings.registry_tokens)
-        for cid, transfer in sorted(waiting.items()):
+        for cid, transfer in sorted(waiting.items(), key=lambda t: (t[0] not in self.journal.entries, t[0])):   # a transfer with a try on record first: its stock is freed before the others look for theirs
             entry = self.journal.entries.get(cid)
             if entry is not None and entry["state"] != "accepting":
                 continue
@@ -216,12 +234,14 @@ class Buy:
                 if room < wei + chain.cost():
                     raise memos.Unreadable("the buy key holds too little tROME for this amount")
                 gas = self.estimate(recipient, wei)
+                if chain.cost(gas) > self.sending.fee_cap:
+                    raise memos.Unreadable("the fee of the send would be over the fee cap")
                 if room < wei + chain.cost(gas):
                     raise memos.Unreadable("the buy key holds too little tROME for this amount")
                 line = self.accept(cid, transfer, recipient, wei, gas, contexts)
             except Exception as e:   # a bad memo, a registry that does not answer, an accept that did not complete: left pending, tried again at the next poll
-                held = self.journal.entries.get(cid)   # a try that was submitted may still commit: its stock stays held
-                available = room - (self.reserved(chain, held) if held is not None else 0)
+                held = self.journal.entries.get(cid)   # a try that was submitted may still commit: its stock stays held until that try has failed
+                available = room - (self.reserved(chain, held) if held is not None and self.may_commit(held) else 0)
                 self.say_once(cid, str(e) if isinstance(e, (memos.Unreadable, RuntimeError)) else f"{type(e).__name__}: {e}")
                 continue
             accepted.append(line)
@@ -246,6 +266,13 @@ class Buy:
         if found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= self.clock() + b.SKEW_SECONDS):
             return "failed", None
         return "open", None
+
+    def may_commit(self, entry: dict) -> bool:
+        """Whether the last try of an accept may still commit. True too when the ledger cannot say."""
+        try:
+            return self.settle(entry)[0] != "failed"
+        except Exception:
+            return True
 
     def accepted(self, cid: str, entry: dict, update) -> dict:
         self.journal.keep(cid, state="accepted", update=update)
@@ -293,27 +320,63 @@ class Buy:
         if state == "accepted":   # accepted, not signed yet: the nonce, then the bytes on disk, then the send
             nonce = max(chain.nonce, 1 + max((e["nonce"] for e in self.journal.entries.values() if "nonce" in e), default=-1))
             gas = int(entry.get("gas", evm.TRANSFER_GAS))
-            raw = evm.transfer(self.key, chain.chain_id, nonce, entry["to"], int(entry["wei"]), chain.max_fee, chain.tip, gas)
-            self.journal.keep(cid, state="sent", nonce=nonce, raw=raw.hex(), hash="0x" + evm.keccak256(raw).hex())
+            max_fee = min(chain.max_fee, self.sending.fee_cap // gas)   # never above the fee cap
+            tip = min(chain.tip, max_fee)
+            raw = evm.transfer(self.key, chain.chain_id, nonce, entry["to"], int(entry["wei"]), max_fee, tip, gas)
+            sent = "0x" + evm.keccak256(raw).hex()
+            self.journal.keep(cid, state="sent", nonce=nonce, raw=raw.hex(), hash=sent, hashes=[sent], maxFee=str(max_fee), tip=str(tip), sentAt=self.clock())
             chain.nonce = nonce + 1
             entry = self.journal.entries[cid]
-            self.send(cid, entry, first=True)
+            self.send(cid, entry, "sent")
         elif state == "sent":
-            receipt = self.reth.receipt(entry["hash"])
-            if receipt is not None:
-                self.journal.keep(cid, state="done", at=self.clock())
-                it.say({"settled": cid, "hash": entry["hash"], "block": receipt.get("blockNumber"), "success": receipt.get("status") == "0x1"})
-            elif not self.reth.known(entry["hash"]):
-                self.send(cid, entry, first=False)
+            self.follow(cid, entry, chain)
 
-    def send(self, cid: str, entry: dict, first: bool) -> None:
+    def follow(self, cid: str, entry: dict, chain: Chain) -> None:
+        """A sent buy: paid when any of the hashes of its nonce is mined; else sent again when reth holds none of them, and replaced (same nonce, higher fees) when it is not mined in time."""
+        hashes = entry.get("hashes") or [entry["hash"]]
+        for h in hashes:
+            receipt = self.reth.receipt(h)
+            if receipt is not None:
+                self.journal.keep(cid, state="done", at=self.clock(), hash=h)
+                it.say({"settled": cid, "hash": h, "block": receipt.get("blockNumber"), "success": receipt.get("status") == "0x1"})
+                return
+        held, now = [self.reth.known(h) for h in hashes], self.clock()
+        if not any(held):   # reth lost them (a restart, a full pool): the latest bytes again, and the time starts again
+            self.send(cid, entry, "sentAgain")
+            self.journal.keep(cid, sentAt=now)
+        elif entry.get("sentAt") is None:
+            self.journal.keep(cid, sentAt=now)
+        elif now - entry["sentAt"] >= self.sending.stuck_seconds:
+            self.replace(cid, entry, chain, now)
+        elif not held[-1]:   # a replacement that was journaled and not taken by reth
+            self.send(cid, entry, "sentAgain")
+
+    def replace(self, cid: str, entry: dict, chain: Chain, now: float) -> None:
+        """The send as a new transaction of the same nonce, with the max fee and the tip each raised by the bump setting (and no lower than reth's price now), within the fee cap. Its bytes are on disk before they are sent; the hashes of the earlier ones stay."""
+        gas, pct = int(entry.get("gas", evm.TRANSFER_GAS)), self.sending.bump_percent
+        old_fee, old_tip = int(entry.get("maxFee", chain.max_fee)), int(entry.get("tip", chain.tip))
+        up = lambda value, percent: -(-value * (100 + percent) // 100)   # rounded up
+        fee = min(max(up(old_fee, pct), chain.max_fee), self.sending.fee_cap // gas)
+        tip = min(max(up(old_tip, pct), old_tip + 1, min(chain.tip, fee)), fee)
+        if fee < up(old_fee, MIN_BUMP_PERCENT) or tip < up(old_tip, MIN_BUMP_PERCENT):   # reth would not take it as a replacement
+            if cid not in self.capped:
+                self.capped.add(cid)
+                it.say({"stuck": cid, "hash": entry["hash"], "why": "the send is not mined and its fees cannot be raised within the fee cap: it keeps waiting"})
+            return
+        raw = evm.transfer(self.key, chain.chain_id, entry["nonce"], entry["to"], int(entry["wei"]), fee, tip, gas)
+        replacement = "0x" + evm.keccak256(raw).hex()
+        hashes = list(entry.get("hashes") or [entry["hash"]])
+        entry = self.journal.keep(cid, raw=raw.hex(), hash=replacement, hashes=hashes + [replacement], maxFee=str(fee), tip=str(tip), sentAt=now)
+        self.send(cid, entry, "replaced")
+
+    def send(self, cid: str, entry: dict, kind: str) -> None:
         """The journaled bytes to reth. The same bytes each time, so reth holds the send once whatever happens in between."""
         try:
             self.reth.send(bytes.fromhex(entry["raw"]))
         except evm.RpcError as e:
             if "already known" not in e.message.lower():
                 raise
-        it.say({"sent" if first else "sentAgain": cid, "hash": entry["hash"], "nonce": entry["nonce"], "recipient": entry["to"], "wei": entry["wei"]})
+        it.say({kind: cid, "hash": entry["hash"], "nonce": entry["nonce"], "recipient": entry["to"], "wei": entry["wei"]})
 
     def publish(self, available: int, chain: Chain) -> None:
         """buy-status.json: the price, the least buy, the party, and whether the stock still covers the least buy (open) or not (sold out). A write that fails is said and never stops the worker."""
@@ -326,14 +389,34 @@ class Buy:
             it.say({"error": b.bounded_text(f"the status file cannot be written ({type(e).__name__})")})
 
 
-def positive_decimal(text: str, flag: str, zero: bool = False) -> Fraction:
+def positive_decimal(text: str, flag: str, zero: bool = False, of: str = " of Canton Coin") -> Fraction:
     try:
         value = b.decimal(text)
     except ValueError:
         value = None
     if value is None or value < 0 or (value == 0 and not zero):
-        raise SystemExit(f"{flag} must be a {'number' if zero else 'positive number'} of Canton Coin as plain decimal text, not {str(text)[:40]!r}")
+        raise SystemExit(f"{flag} must be a {'number' if zero else 'positive number'}{of} as plain decimal text, not {str(text)[:40]!r}")
     return value
+
+
+def whole_number(text, flag: str, least: int) -> int:
+    try:
+        value = b.decimal(text)
+    except ValueError:
+        value = None
+    if value is None or value.denominator != 1 or value < least:
+        raise SystemExit(f"{flag} must be a whole number, {least} or more, not {str(text)[:40]!r}")
+    return int(value)
+
+
+def sending_of(args) -> Sending:
+    """The sending settings (the defaults of Sending where a flag is not given), checked."""
+    headroom = positive_decimal(args.send_gas_headroom, "--send-gas-headroom", of="")
+    if headroom < 1:
+        raise SystemExit("--send-gas-headroom must be 1 or more")
+    fee_cap = positive_decimal(args.send_fee_cap, "--send-fee-cap", of=" of tROME")
+    return Sending(whole_number(args.send_gas_cap, "--send-gas-cap", evm.TRANSFER_GAS), headroom, whole_number(args.send_stuck_seconds, "--send-stuck-seconds", 1),
+                   whole_number(args.send_fee_bump_percent, "--send-fee-bump-percent", MIN_BUMP_PERCENT), int(fee_cap * WEI))
 
 
 def buy_price(args) -> Fraction:
@@ -356,7 +439,7 @@ def check_args(args) -> None:
         raise SystemExit("--validator-party must be a party id")
     if args.max_meta_bytes < 0:
         raise SystemExit("--max-meta-bytes must be zero (no cap) or more")
-    buy_price(args), buy_least(args)
+    buy_price(args), buy_least(args), sending_of(args)
 
 
 def settings_of(args) -> it.Settings:

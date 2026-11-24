@@ -1,5 +1,5 @@
 """Tests for buy.py: the buy mode against a fake Ledger API, a fake token registry and a fake reth (local HTTP servers). Run: python3 -m unittest discover -s apps/custody/tests"""
-import base64, contextlib, io, json, os, secrets, sys, tempfile, unittest
+import base64, contextlib, io, json, os, secrets, sys, tempfile, time, unittest
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -20,9 +20,10 @@ PRICE, LEAST = "20", "20"   # test values only: the worker has no number of its 
 GAS_PRICE, TIP = 10**9, 10**8
 CHAIN = 770101
 WEI = 10**18
+FAR = "2999-01-01T00:00:00Z"   # a deadline that never comes in a test
 
 
-KINDS = ("accepted", "sent", "sentAgain", "settled", "dropped", "pending", "warning", "error", "buy")
+KINDS = ("accepted", "sent", "sentAgain", "replaced", "settled", "dropped", "pending", "stuck", "warning", "error", "buy")
 
 
 def kinds(lines):
@@ -30,12 +31,44 @@ def kinds(lines):
     return [next(k for k in KINDS if k in x) for x in lines]
 
 
+def fields_of(raw: bytes) -> dict:
+    """The fields of a signed EIP-1559 transaction (what the fake reth reads of the bytes it is sent)."""
+    def item(data, at):
+        head = data[at]
+        if head < 0x80:
+            return data[at:at + 1], at + 1
+        if head < 0xB8:
+            return data[at + 1:at + 1 + head - 0x80], at + 1 + head - 0x80
+        if head < 0xC0:
+            n = head - 0xB7
+            size = int.from_bytes(data[at + 1:at + 1 + n], "big")
+            return data[at + 1 + n:at + 1 + n + size], at + 1 + n + size
+        n = head - 0xF7 if head >= 0xF8 else 0
+        size = int.from_bytes(data[at + 1:at + 1 + n], "big") if n else head - 0xC0
+        out, pos, end = [], at + 1 + n, at + 1 + n + size
+        while pos < end:
+            value, pos = item(data, pos)
+            out.append(value)
+        return out, end
+    values, _ = item(raw, 1)
+    number = lambda x: int.from_bytes(x, "big")
+    return {"nonce": number(values[1]), "tip": number(values[2]), "max_fee": number(values[3]), "gas": number(values[4]), "value": number(values[6])}
+
+
 class FakeReth:
     """reth as the buy worker uses it: the key's balance and count, a pool, and the blocks (mine / forget are the tests' to call)."""
     def __init__(self):
-        self.balance, self.count, self.down, self.reverts = 1000 * WEI, 0, False, False
+        self.balance, self.down, self.reverts, self.fee_cap = 1000 * WEI, False, False, WEI
         self.gas_of = {}   # recipient (40 hex digits) -> the gas reth estimates for a transfer to it (21000 when not named); None: the transfer would fail
-        self.pool, self.mined, self.sent = {}, {}, []
+        self.pool, self.mined, self.sent, self.gas_price = {}, {}, [], GAS_PRICE
+
+    @property
+    def count(self):
+        """The account's transaction count with the pool (one per nonce: a replacement is not a new nonce)."""
+        return len(self.mined) + len(self.pool)
+
+    def nonce_of(self, raw):
+        return fields_of(raw)["nonce"]
 
     def handle(self, method, path, body, headers):
         if self.down:
@@ -43,7 +76,7 @@ class FakeReth:
         m, p = body["method"], body["params"]
         result = {
             "eth_chainId": lambda: hex(CHAIN), "eth_getBalance": lambda: hex(self.balance), "eth_getTransactionCount": lambda: hex(self.count),
-            "eth_gasPrice": lambda: hex(GAS_PRICE), "eth_maxPriorityFeePerGas": lambda: hex(TIP),
+            "eth_gasPrice": lambda: hex(self.gas_price), "eth_maxPriorityFeePerGas": lambda: hex(TIP),
             "eth_getTransactionReceipt": lambda: {"blockNumber": "0x5", "status": "0x0" if self.reverts else "0x1"} if p[0] in self.mined else None,
             "eth_getTransactionByHash": lambda: {"hash": p[0]} if p[0] in self.pool or p[0] in self.mined else None,
         }
@@ -56,21 +89,35 @@ class FakeReth:
             raw = bytes.fromhex(p[0][2:])
             self.sent.append(raw)
             h = "0x" + keccak256(raw).hex()
+            refuse = lambda message: (200, {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32000, "message": message}})
             if h in self.pool or h in self.mined:
-                return 200, {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32000, "message": "already known"}}
+                return refuse("already known")
+            tx = fields_of(raw)
+            if tx["gas"] * tx["max_fee"] > self.fee_cap:
+                return refuse("tx fee exceeds the configured cap")
+            if tx["nonce"] < len(self.mined):
+                return refuse("nonce too low")
+            same = [(k, fields_of(v)) for k, v in self.pool.items() if fields_of(v)["nonce"] == tx["nonce"]]
+            for k, old in same:   # a replacement takes at least 10% more max fee and tip
+                if tx["max_fee"] * 100 < old["max_fee"] * 110 or tx["tip"] * 100 < old["tip"] * 110:
+                    return refuse("replacement transaction underpriced")
+                del self.pool[k]
             self.pool[h] = raw
-            self.count += 1
             return 200, {"jsonrpc": "2.0", "id": body["id"], "result": h}
         return 200, {"jsonrpc": "2.0", "id": body["id"], "result": result[m]()}
 
-    def mine(self):
-        self.mined.update(self.pool)
-        self.pool.clear()
+    def mine(self, only=None):
+        """The pool is mined; or only the transaction with this hash (a replaced one that was mined first takes its nonce: the others of that nonce are dropped)."""
+        for h in [only] if only else list(self.pool):
+            raw = self.pool.pop(h)
+            self.mined[h] = raw
+            self.pool = {k: v for k, v in self.pool.items() if self.nonce_of(v) != self.nonce_of(raw)}
+        if not only:
+            self.pool.clear()
 
     def forget(self):
         """reth restarts with an empty pool: the count falls back to what was mined."""
         self.pool.clear()
-        self.count = len(self.mined)
 
 
 class BuyCase(unittest.TestCase):
@@ -92,10 +139,10 @@ class BuyCase(unittest.TestCase):
         self.settings = intake.Settings(VALIDATOR, {DSO: self.registry_server.url + "/scan-proxy"})
         self.worker = self.make_worker()
 
-    def make_worker(self, price=PRICE, least=LEAST, max_meta=0, clock=None):
+    def make_worker(self, price=PRICE, least=LEAST, max_meta=0, clock=None, sending=None):
         fields = {"ws_url": "", "engine_url": "", "jwt_secret": b"", "ledger_url": self.ledger_server.url, "ledger_user": "validator-buy", "ledger_token": "", "party": VALIDATOR,
                   "fee_recipient": "", "genesis": "", "work_dir": self.work, "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": str(self.bearer_file)}
-        extra = {"clock": clock} if clock else {}
+        extra = {**({"clock": clock} if clock else {}), **({"sending": sending} if sending else {})}
         return buy.Buy(b.Ledger(b.Config(**fields)), self.settings, evm.Reth(self.reth_server.url), KEY, Fraction(price), Fraction(least), self.work, max_meta, **extra)
 
     def ledger_handler(self, method, path, body, headers):
@@ -127,8 +174,9 @@ class BuyCase(unittest.TestCase):
             (worker or self.worker).poll()
         return [json.loads(line) for line in out.getvalue().splitlines()]
 
-    def buy_of(self, n, amount="100.0", meta=None, instrument=CC, sender=ALICE):
+    def buy_of(self, n, amount="100.0", meta=None, instrument=CC, sender=ALICE, execute_before=FAR):
         view = instruction(n, instrument, amount, meta if meta is not None else {memo.REASON_KEY: ADDRESS}, receiver=VALIDATOR, sender=sender)
+        view["interfaceViews"][0]["viewValue"]["transfer"]["executeBefore"] = execute_before
         self.views.append(view)
         return view
 
@@ -500,6 +548,92 @@ class Takes(BuyCase):
         self.assertEqual([(x["success"], x["settled"]) for x in lines], [(False, cid(1))])
 
 
+class PastItsDeadline(BuyCase):
+    """A transfer past its executeBefore can only be taken back by its sender: it is left pending without a try, and what an earlier try held is freed once that try has failed."""
+    def stamp(self, t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_a_transfer_past_its_deadline_is_left_pending_without_a_try(self):
+        self.buy_of(1, execute_before=self.stamp(time.time() - 5))
+        lines = self.poll()
+        self.assertEqual((self.submitted, self.reth.sent, self.asked), ([], [], []))
+        self.assertEqual([x["why"] for x in lines if "pending" in x], ["the transfer's deadline has passed"])
+        self.assertFalse((Path(self.work) / buy.JOURNAL).exists())
+
+    def test_a_deadline_that_is_missing_or_not_a_time_is_left_pending(self):
+        for n, value in enumerate([None, "tomorrow"], 1):
+            self.buy_of(n, execute_before=value)
+        lines = self.poll()
+        self.assertEqual((self.submitted, self.reth.sent), ([], []))
+        self.assertEqual(len([x for x in lines if "pending" in x]), 2)
+
+    def test_a_buy_past_its_deadline_whose_tries_all_fail_stops_being_tried_and_frees_its_stock(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE   # the stock of one buy of 100 coin, with the gas of its send
+        now = {"t": time.time()}
+        worker = self.make_worker(clock=lambda: now["t"])
+        self.buy_of(1, execute_before=self.stamp(now["t"] + 600))
+        self.buy_of(2)
+        self.refuse = "UNAVAILABLE"
+        self.poll(worker)   # the first buy's try is refused; its stock is held while the try may still commit, so the second has none
+        self.assertEqual(len(self.submitted), 1)
+        now["t"] += 1000   # the first buy's deadline has passed
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]   # and its last try failed
+        self.refuse = None
+        lines = self.poll(worker)
+        self.assertEqual(len(self.submitted), 2)   # the first is not tried again, the second is
+        self.assertEqual(self.submitted[1]["commands"][0]["ExerciseCommand"]["contractId"], cid(2))
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI)])
+        self.assertIn((cid(1), "the transfer's deadline has passed"), [(x["pending"], x["why"]) for x in lines if "pending" in x])
+        self.poll(worker)
+        self.poll(worker)
+        self.assertEqual(len(self.submitted), 2)   # still not tried
+
+    def test_the_stock_of_an_expired_buy_is_free_whatever_the_order_of_the_transfers(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE
+        now = {"t": time.time()}
+        worker = self.make_worker(clock=lambda: now["t"])
+        self.buy_of(2, execute_before=self.stamp(now["t"] + 600))   # the transfer that is tried first has the larger id
+        self.refuse = "UNAVAILABLE"
+        self.poll(worker)
+        self.buy_of(1)
+        now["t"] += 1000
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]
+        self.refuse = None
+        self.poll(worker)
+        self.assertEqual([s["commands"][0]["ExerciseCommand"]["contractId"] for s in self.submitted], [cid(2), cid(1)])   # the second buy was accepted, though its id sorts before the expired one's
+
+    def test_the_status_is_open_once_the_expired_buy_no_longer_holds_stock(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE   # the stock of one buy of 100 coin, with the gas of its send
+        now = {"t": time.time()}
+        worker = self.make_worker(clock=lambda: now["t"])
+        self.buy_of(1, execute_before=self.stamp(now["t"] + 600))
+        self.refuse = "UNAVAILABLE"
+        self.poll(worker)
+        self.assertEqual(self.status()["state"], "sold out")   # the try may still commit: its stock is held
+        now["t"] += 1000
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]
+        self.poll(worker)
+        self.assertEqual((self.status()["state"], len(self.submitted)), ("open", 1))
+
+    def test_a_try_that_may_still_commit_keeps_its_stock_even_when_the_ledger_cannot_be_asked(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE
+        now = {"t": time.time()}
+        worker = self.make_worker(clock=lambda: now["t"])
+        self.buy_of(1, execute_before=self.stamp(now["t"] + 600))
+        self.buy_of(2)
+        self.refuse = "UNAVAILABLE"
+        self.poll(worker)
+        now["t"] += 1000
+        original = worker.settle
+
+        def broken(entry):
+            raise RuntimeError("the ledger cannot be read")
+        worker.settle = broken
+        self.poll(worker)
+        self.assertEqual(len(self.submitted), 1)   # the hold stays: nothing for the second buy
+        worker.settle = original
+
+
 class StatusFile(BuyCase):
     def test_it_says_the_price_the_least_buy_the_party_and_open(self):
         self.poll()
@@ -587,7 +721,8 @@ class Start(BuyCase):
         self.assertEqual(code, 0)
         lines = [json.loads(x) for x in out.splitlines()]
         self.assertEqual(lines[0]["warning"].split(" holds")[0], "the validator party")
-        self.assertEqual(lines[1]["buy"], {"price": PRICE, "minBuy": LEAST, "party": VALIDATOR, "maxMetaBytes": 0, "sendFrom": "0x" + KEY_ADDRESS})
+        self.assertEqual(lines[1]["buy"], {"price": PRICE, "minBuy": LEAST, "party": VALIDATOR, "maxMetaBytes": 0, "sendFrom": "0x" + KEY_ADDRESS,
+                                           "sendGasCap": 100000, "sendGasHeadroom": "1.2", "sendStuckSeconds": 60, "sendFeeBumpPercent": 12, "sendFeeCap": "1"})
         self.assertEqual(kinds(lines[2:]), ["accepted", "sent"])
         for text in (out, err):
             self.assertNotIn(KEY.hex(), text)
@@ -645,6 +780,36 @@ class Start(BuyCase):
         key.write_text("0x" + KEY.hex())
         key.chmod(0o600)
         self.assertEqual(buy.read_key(str(key)), KEY)
+
+    def test_the_sending_settings_reach_the_worker(self):
+        code, out, _ = self.run_main(["--send-gas-cap", "30000", "--send-gas-headroom", "1.5", "--send-stuck-seconds", "90", "--send-fee-bump-percent", "25", "--send-fee-cap", "0.5"])
+        self.assertEqual(code, 0)
+        said = json.loads(out.splitlines()[0])["buy"]
+        self.assertEqual({k: v for k, v in said.items() if k.startswith("send") and k != "sendFrom"},
+                         {"sendGasCap": 30000, "sendGasHeadroom": "1.5", "sendStuckSeconds": 90, "sendFeeBumpPercent": 25, "sendFeeCap": "0.5"})
+
+    def test_the_sending_settings_come_from_the_environment_too(self):
+        env = {"CZE_SEND_GAS_CAP": "30000", "CZE_SEND_GAS_HEADROOM": "1.5", "CZE_SEND_STUCK_SECONDS": "90", "CZE_SEND_FEE_BUMP_PERCENT": "25", "CZE_SEND_FEE_CAP": "0.5"}
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            args = intake.parser().parse_args([])
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(buy.sending_of(args), buy.Sending(30000, Fraction(3, 2), 90, 25, WEI // 2))
+
+    def test_the_sending_settings_are_checked(self):
+        for flag, value in (("--send-gas-cap", "20999"), ("--send-gas-cap", "x"), ("--send-gas-cap", "50000.5"), ("--send-gas-headroom", "0.9"), ("--send-gas-headroom", "0"), ("--send-gas-headroom", "1e1"),
+                            ("--send-stuck-seconds", "0"), ("--send-fee-bump-percent", "9"), ("--send-fee-bump-percent", "1.5"), ("--send-fee-cap", "0"), ("--send-fee-cap", "-1"), ("--send-fee-cap", "one")):
+            code, out, _ = self.run_main([flag, value])
+            self.assertIn(flag, str(code), (flag, value))
+            self.assertEqual(out, "")
+        for flag, value in (("--send-gas-cap", "21000"), ("--send-gas-headroom", "1"), ("--send-stuck-seconds", "1"), ("--send-fee-bump-percent", "10")):   # the least each takes
+            self.assertEqual(self.run_main([flag, value])[0], 0, (flag, value))
 
     def test_the_cap_is_not_negative(self):
         self.assertIn("--max-meta-bytes", str(self.run_main(["--max-meta-bytes", "-1"])[0]))
@@ -714,11 +879,29 @@ class GasOfTheSend(BuyCase):
         self.assertEqual((self.submitted, self.reth.sent, [x["why"] for x in lines if "pending" in x]), ([], [], ["the transfer to this address would fail"]))
 
     def test_a_transfer_that_needs_more_gas_than_the_cap_is_left_pending(self):
-        self.reth.gas_of["12" * 20] = buy.MAX_SEND_GAS
+        worker = self.make_worker(sending=buy.Sending(gas_cap=70000, gas_headroom=Fraction(3, 2)))   # the settings, not the defaults
+        self.reth.gas_of["12" * 20] = 46667   # a limit of 70000: the cap itself is allowed
         self.buy_of(1)
-        lines = self.poll()
-        self.assertEqual((self.submitted, self.reth.sent), ([], []))
-        self.assertIn("more gas", lines[0]["why"])
+        self.poll(worker)
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI, gas=70000)])
+        self.views.clear()
+        self.reth.gas_of["12" * 20] = 46668   # a limit of 70002
+        self.buy_of(2)
+        lines = self.poll(worker)
+        self.assertEqual((len(self.submitted), len(self.reth.sent)), (1, 1))
+        self.assertIn("more gas", [x["why"] for x in lines if "pending" in x][0])
+
+    def test_the_default_settings_are_a_cap_of_100000_and_a_fifth_of_room(self):
+        self.assertEqual((self.worker.sending.gas_cap, self.worker.sending.gas_headroom), (100000, Fraction(6, 5)))
+        self.reth.gas_of["12" * 20] = 83333   # a limit of 99999
+        self.buy_of(1)
+        self.poll()
+        self.assertEqual(self.reth.sent, [self.expected_send(0, 5 * WEI, gas=99999)])
+        self.views.clear()
+        self.reth.gas_of["12" * 20] = 83335   # a limit of 100002
+        self.buy_of(2)
+        self.poll()
+        self.assertEqual(len(self.submitted), 1)
 
     def test_the_gas_of_the_estimate_is_part_of_the_stock_check(self):
         self.reth.gas_of["12" * 20] = 70000   # a limit of 84000 with room
@@ -733,6 +916,210 @@ class GasOfTheSend(BuyCase):
         self.poll()
         chain = self.worker.read_chain()
         self.assertEqual(self.worker.owed(chain), 5 * WEI + 60000 * chain.max_fee)
+
+
+class StuckSends(BuyCase):
+    """A send that is not mined in time is replaced with the same nonce and higher fees; the buy is paid when any of its hashes is mined, and one instruction never has a second nonce."""
+    STUCK = buy.Sending().stuck_seconds
+
+    def setUp(self):
+        super().setUp()
+        self.now = {"t": 1_000_000.0}
+        self.clock = lambda: self.now["t"]
+        self.worker = self.make_worker(clock=self.clock)
+
+    def hashes(self):
+        return self.journal()[cid(1)]["hashes"]
+
+    def sent_fields(self):
+        return [fields_of(raw) for raw in self.reth.sent]
+
+    def test_stuck_then_replaced_then_mined_once(self):
+        self.buy_of(1)
+        self.poll()
+        first = self.journal()[cid(1)]["hash"]
+        self.now["t"] += self.STUCK - 1
+        self.assertEqual(self.poll(), [])   # not stuck yet
+        self.assertEqual(len(self.reth.sent), 1)
+        self.now["t"] += 1
+        lines = self.poll()
+        self.assertEqual(kinds(lines), ["replaced"])
+        old, new = self.sent_fields()
+        self.assertEqual((new["nonce"], new["value"], new["gas"]), (old["nonce"], old["value"], old["gas"]))   # the same payment
+        self.assertGreaterEqual(new["max_fee"] * 100, old["max_fee"] * 110)
+        self.assertGreaterEqual(new["tip"] * 100, old["tip"] * 110)
+        self.assertGreater(new["max_fee"], old["max_fee"])
+        self.assertGreater(new["tip"], old["tip"])
+        self.assertEqual(self.hashes(), [first, lines[0]["hash"]])
+        self.assertEqual(self.journal()[cid(1)]["hash"], lines[0]["hash"])
+        self.assertEqual(list(self.reth.pool), [lines[0]["hash"]])   # the pool holds the replacement only
+        self.assertEqual(self.poll(), [])   # nothing more while the replacement waits
+        self.reth.mine()
+        lines = self.poll()
+        self.assertEqual((kinds(lines), lines[0]["hash"], lines[0]["success"]), (["settled"], self.hashes()[1], True))
+        self.assertEqual((len(self.reth.mined), len(self.submitted), self.journal()[cid(1)]["state"]), (1, 1, "done"))
+        self.assertEqual(self.poll(), [])
+        self.assertEqual(len(self.reth.sent), 2)
+
+    def test_the_setting_says_when_a_send_is_stuck_and_by_how_much_it_is_raised(self):
+        worker = self.make_worker(clock=self.clock, sending=buy.Sending(stuck_seconds=5, bump_percent=50))
+        self.buy_of(1)
+        self.poll(worker)
+        self.now["t"] += 4
+        self.poll(worker)
+        self.assertEqual(len(self.reth.sent), 1)
+        self.now["t"] += 1
+        self.poll(worker)
+        old, new = self.sent_fields()
+        self.assertEqual((new["max_fee"], new["tip"]), (old["max_fee"] * 3 // 2, old["tip"] * 3 // 2))
+
+    def test_each_replacement_raises_the_fees_again(self):
+        self.buy_of(1)
+        self.poll()
+        for _ in range(3):
+            self.now["t"] += self.STUCK
+            self.poll()
+        fields = self.sent_fields()
+        self.assertEqual(len(fields), 4)
+        self.assertEqual({f["nonce"] for f in fields}, {0})
+        for before, after in zip(fields, fields[1:]):
+            self.assertGreaterEqual(after["max_fee"] * 100, before["max_fee"] * 110)
+            self.assertGreaterEqual(after["tip"] * 100, before["tip"] * 110)
+        self.assertEqual(len(self.hashes()), 4)
+
+    def test_an_earlier_hash_mined_after_the_replacement_pays_the_buy_too(self):
+        self.buy_of(1)
+        self.poll()
+        first = self.journal()[cid(1)]["hash"]
+        self.now["t"] += self.STUCK
+        self.poll()
+        raw_first = self.reth.sent[0]
+        self.reth.pool[first] = raw_first   # the first send was in a block that reth now reports
+        self.reth.mine(only=first)
+        lines = self.poll()
+        self.assertEqual((kinds(lines), lines[0]["hash"]), (["settled"], first))
+        self.assertEqual((self.journal()[cid(1)]["state"], self.journal()[cid(1)]["hash"], len(self.reth.sent)), ("done", first, 2))
+        self.assertEqual(self.poll(), [])
+        self.assertEqual(len(self.reth.sent), 2)   # no third send
+
+    def test_a_restart_between_the_replacement_and_its_mining_pays_once(self):
+        self.buy_of(1)
+        self.poll()
+        self.now["t"] += self.STUCK
+        self.poll()
+        restarted = self.make_worker(clock=self.clock)
+        self.assertEqual(self.poll(restarted), [])   # the journal has both hashes and the replacement is in reth's pool: nothing is signed or sent
+        self.assertEqual((len(self.submitted), len(self.reth.sent)), (1, 2))
+        self.reth.mine()
+        lines = self.poll(restarted)
+        self.assertEqual((kinds(lines), lines[0]["hash"]), (["settled"], self.hashes()[1]))
+        self.assertEqual((len(self.reth.mined), {f["nonce"] for f in self.sent_fields()}), (1, {0}))
+
+    def test_a_replacement_that_was_journaled_and_never_reached_reth_is_sent_after_a_restart_as_the_same_bytes(self):
+        self.buy_of(1)
+        self.poll()
+        original, calls = evm.Reth.send, []
+
+        def broken(reth, raw):
+            calls.append(raw)
+            if len(calls) == 1:
+                raise RuntimeError("reth cannot be reached for eth_sendRawTransaction")
+            return original(reth, raw)
+        evm.Reth.send = broken
+        self.addCleanup(setattr, evm.Reth, "send", original)
+        self.now["t"] += self.STUCK
+        self.poll()   # the replacement is signed and on disk; reth does not get it
+        self.assertEqual(len(self.hashes()), 2)
+        self.assertEqual(len(self.reth.sent), 1)
+        restarted = self.make_worker(clock=self.clock)
+        lines = self.poll(restarted)
+        self.assertEqual(kinds(lines), ["sentAgain"])
+        self.assertEqual(calls[0], calls[1])   # the same bytes as the journaled replacement
+        self.assertEqual(fields_of(self.reth.sent[1])["nonce"], 0)
+        self.assertEqual(list(self.reth.pool), [self.hashes()[1]])
+        self.reth.mine()
+        self.poll(restarted)
+        self.assertEqual((len(self.reth.mined), self.journal()[cid(1)]["state"], len(self.submitted)), (1, "done", 1))
+
+    def test_a_pool_that_lost_the_send_gets_the_same_bytes_and_the_time_starts_again(self):
+        self.buy_of(1)
+        self.poll()
+        self.now["t"] += self.STUCK - 1
+        self.reth.forget()
+        lines = self.poll()
+        self.assertEqual(kinds(lines), ["sentAgain"])
+        self.assertEqual(self.reth.sent[0], self.reth.sent[1])
+        self.now["t"] += self.STUCK - 1
+        self.assertEqual(self.poll(), [])   # the time counts from the send that was made again
+        self.assertEqual(len(self.reth.sent), 2)
+        self.now["t"] += 1
+        self.assertEqual(kinds(self.poll()), ["replaced"])
+
+    def test_a_second_buy_takes_the_next_nonce_whatever_happens_to_the_first(self):
+        self.buy_of(1, amount="40.0")
+        self.poll()
+        self.now["t"] += self.STUCK
+        self.poll()   # the first is replaced
+        self.buy_of(2, amount="40.0")
+        self.poll()
+        self.assertEqual(sorted((e["nonce"], len(e["hashes"])) for e in self.journal().values()), [(0, 2), (1, 1)])
+        self.assertEqual([f["nonce"] for f in self.sent_fields()], [0, 0, 1])
+        self.reth.mine()
+        self.assertEqual(kinds(self.poll()), ["settled", "settled"])
+        self.assertEqual(len(self.reth.mined), 2)
+
+    def test_the_fee_cap_is_a_ceiling_for_every_replacement(self):
+        base = 21000 * 2 * GAS_PRICE
+        cap = base * 27 // 20   # room for a raise of a fifth and then a raise up to the ceiling (a tenth more is what reth takes), and no more
+        worker = self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=cap, bump_percent=20))
+        self.buy_of(1)
+        self.poll(worker)
+        for _ in range(4):
+            self.now["t"] += self.STUCK
+            lines = self.poll(worker)
+        fields = self.sent_fields()
+        self.assertTrue(all(f["gas"] * f["max_fee"] <= cap for f in fields), [f["gas"] * f["max_fee"] for f in fields])
+        self.assertEqual([f["gas"] * f["max_fee"] for f in fields], [base, base * 6 // 5, cap])   # raised, then to the ceiling, then no more
+        self.assertEqual(len(self.hashes()), 3)
+        self.assertEqual(lines, [])   # said once, not at every poll
+        self.reth.mine()
+        self.assertEqual(kinds(self.poll(worker)), ["settled"])   # and the last one still lands
+
+    def test_a_send_at_the_fee_cap_says_so_once_and_keeps_waiting(self):
+        base = 21000 * 2 * GAS_PRICE
+        worker = self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=base))   # the first send is at the cap already
+        self.buy_of(1)
+        self.poll(worker)
+        self.now["t"] += self.STUCK
+        lines = self.poll(worker)
+        self.assertEqual(kinds(lines), ["stuck"])
+        self.now["t"] += self.STUCK
+        self.assertEqual(self.poll(worker), [])
+        self.assertEqual((len(self.reth.sent), len(self.hashes())), (1, 1))
+
+    def test_a_buy_whose_send_would_be_over_the_fee_cap_is_left_pending_before_the_accept(self):
+        worker = self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=21000 * 2 * GAS_PRICE - 1))
+        self.buy_of(1)
+        lines = self.poll(worker)
+        self.assertEqual((self.submitted, self.reth.sent), ([], []))
+        self.assertEqual([x["why"] for x in lines if "pending" in x], ["the fee of the send would be over the fee cap"])
+
+    def test_a_send_is_never_signed_above_the_cap_when_reths_price_has_risen_since_the_accept(self):
+        Path(self.work, buy.JOURNAL).write_text(json.dumps({cid(1): {"state": "accepted", "command": "c", "begin": 1, "at": 1, "to": "12" * 20, "amount": "100.0", "sender": ALICE, "wei": str(5 * WEI), "gas": 21000}}))
+        self.reth.gas_price = 10 * GAS_PRICE   # a max fee of twenty times the usual
+        self.poll(self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=21000 * 3 * GAS_PRICE)))
+        self.assertEqual(self.sent_fields()[0]["max_fee"], 3 * GAS_PRICE)
+
+    def test_what_is_owed_follows_the_fees_of_the_replacement(self):
+        self.reth.gas_of["12" * 20] = 50000
+        self.buy_of(1, amount="100.0")
+        self.poll()
+        self.now["t"] += self.STUCK
+        self.poll()
+        chain = self.worker.read_chain()
+        fees = self.sent_fields()[1]["max_fee"]
+        self.assertGreater(fees, chain.max_fee)
+        self.assertEqual(self.worker.owed(chain), 5 * WEI + 60000 * fees)
 
 
 class OneWorker(BuyCase):
@@ -765,6 +1152,17 @@ class OffByDefault(unittest.TestCase):
         args = intake.parser().parse_args([])
         self.assertFalse(args.buy)
         self.assertEqual((args.price, args.min_buy, args.buy_key_file, args.reth_rpc, args.validator_party, args.max_meta_bytes), ("", "", "", "", "", 0))
+
+    def test_the_sending_settings_default_to_what_the_worker_always_did_and_are_in_the_help(self):
+        parser = intake.parser()
+        args = parser.parse_args([])
+        self.assertEqual(buy.sending_of(args), buy.Sending())
+        self.assertEqual(buy.Sending(), (100000, Fraction(6, 5), 60, 12, WEI))
+        help_text = " ".join(parser.format_help().split())
+        for flag in ("--send-gas-cap", "--send-gas-headroom", "--send-stuck-seconds", "--send-fee-bump-percent", "--send-fee-cap"):
+            self.assertIn(flag, help_text)
+        for default in ("Default 100000", "Default 1.2", "Default 60", "Default 12", "Default 1"):
+            self.assertIn(default, help_text)
 
     def test_with_nothing_on_the_worker_is_off_and_says_what_it_said_before(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:

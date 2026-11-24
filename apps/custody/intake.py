@@ -256,6 +256,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--buy-key-file", default=env.get("CZE_BUY_KEY_FILE", ""), metavar="FILE", help="a file with the private key the tROME is sent from, 64 hex digits, mode 0600 (also CZE_BUY_KEY_FILE). Never printed")
     ap.add_argument("--max-meta-bytes", type=int, default=int(env.get("CZE_MAX_META_BYTES", 0)), metavar="N", help="the buy mode's cap on the bytes of a transfer's meta (the UTF-8 bytes of its keys and values); a larger transfer stays pending (also CZE_MAX_META_BYTES). Default 0: no cap")
     ap.add_argument("--reth-rpc", default=env.get("CZE_RETH_RPC_URL", ""), metavar="URL", help="reth's JSON-RPC, where the buy mode sends from (also CZE_RETH_RPC_URL). Never printed")
+    ap.add_argument("--send-gas-cap", default=env.get("CZE_SEND_GAS_CAP", "100000"), metavar="GAS", help="the buy mode's most gas for one send: a send whose gas limit (reth's estimate times --send-gas-headroom; 21000 for a plain transfer) is over it stays pending (also CZE_SEND_GAS_CAP). Default 100000")
+    ap.add_argument("--send-gas-headroom", default=env.get("CZE_SEND_GAS_HEADROOM", "1.2"), metavar="TIMES", help="the buy mode's gas limit is reth's estimate times this, plain decimal text, 1 or more; a plain transfer is sent with exactly 21000 (also CZE_SEND_GAS_HEADROOM). Default 1.2")
+    ap.add_argument("--send-stuck-seconds", default=env.get("CZE_SEND_STUCK_SECONDS", "60"), metavar="SECONDS", help="the buy mode: a send not mined after this long is replaced by one of the same nonce with higher fees (also CZE_SEND_STUCK_SECONDS). Default 60")
+    ap.add_argument("--send-fee-bump-percent", default=env.get("CZE_SEND_FEE_BUMP_PERCENT", "12"), metavar="PERCENT", help="the buy mode: a replacement's max fee and tip are this many percent more than the send's; at least 10, which reth's pool takes at least (also CZE_SEND_FEE_BUMP_PERCENT). Default 12")
+    ap.add_argument("--send-fee-cap", default=env.get("CZE_SEND_FEE_CAP", "1"), metavar="TROME", help="the buy mode: the most a send's gas limit times its max fee may be, in tROME, plain decimal text; reth's own per-transaction cap is 1 (also CZE_SEND_FEE_CAP). Default 1")
     return ap
 
 
