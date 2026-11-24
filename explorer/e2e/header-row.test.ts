@@ -16,13 +16,16 @@ const STATUS = {
   ok: true, starting: false, problems: [], evm: true, canton: true, final: null, proving: null, latest: [], signers: null, faucet: { on: true }, publicRpc: true, indexHead: 1, indexLag: 0, deriveCursor: 1, chainInstance: "i1",
 };
 const PAGES = ["/", "/block/5"];
+const APPS = { swapUrl: "https://swap.ostia.testnet.romeprotocol.xyz/", bridgeUrl: "https://bridge.ostia.testnet.romeprotocol.xyz/" };
 
 describe.skipIf(!dist)("the header's links, in a browser", () => {
   let server: Server, browser: any, base = "";
+  // The status answer names the Swap and Bridge sites only while a test sets this.
+  let apps = false;
   beforeAll(async () => {
     server = createServer((req, res) => {
       const path = new URL(req.url!, "http://127.0.0.1").pathname;
-      if (path === "/api/status") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(STATUS)); return; }
+      if (path === "/api/status") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(apps ? { ...STATUS, ...APPS } : STATUS)); return; }
       if (path.startsWith("/api/")) { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "Not found." })); return; }
       let file = join(resolve(dist!), path);
       if (!existsSync(file) || !statSync(file).isFile()) file = join(resolve(dist!), "index.html");
@@ -149,4 +152,37 @@ describe.skipIf(!dist)("the header's links, in a browser", () => {
       await page.close();
     });
   }
+
+  describe("with the Swap and Bridge sites named", () => {
+    beforeAll(() => { apps = true; });
+    afterAll(() => { apps = false; });
+    const links = (page: any) => page.evaluate(() => [...document.querySelectorAll<HTMLAnchorElement>(".nav .navlink")].map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]));
+    const external = [["Swap", APPS.swapUrl, "_blank"], ["Bridge", APPS.bridgeUrl, "_blank"]];
+
+    for (const width of [1280, 1440, 1920]) for (const path of PAGES) {
+      it(`keeps every link on one row at ${width} px on ${path}, or folds them into the menu button, with the page not scrolling sideways`, async () => {
+        const page = await open(path, width);
+        await page.waitForSelector('.nav a[target="_blank"]', { state: "attached" });
+        const r = await read(page);
+        const all = await links(page);
+        await page.close();
+        for (const e of external) expect(all).toContainEqual(e);
+        if (r.drawn) expect(r.tops, "the links are drawn: one row").toHaveLength(1); else expect(r.menuShown, "the links are folded: the menu button shows").toBe(true);
+        expect(r.pageScrolls).toBe(false);
+      });
+    }
+
+    it("shows both links in the opened menu at 360 px, and the page does not scroll sideways", async () => {
+      const page = await open("/block/5", 360);
+      await page.waitForSelector('.nav a[target="_blank"]', { state: "attached" });
+      await page.click(".menu");
+      const o = await read(page);
+      const all = await links(page);
+      await page.close();
+      expect(o.drawn).toBe(true);
+      expect(o.tops.length).toBe(11);   // a column in the open menu
+      for (const e of external) expect(all).toContainEqual(e);
+      expect(o.pageScrolls).toBe(false);
+    });
+  });
 });

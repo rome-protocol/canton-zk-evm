@@ -118,6 +118,15 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     }
   });
 
+  it("passes the addresses of the Swap and Bridge sites to the explorer when they are set, and leaves them out when they are not", () => {
+    const swap = "https://swap.ostia.testnet.romeprotocol.xyz", bridge = "https://bridge.ostia.testnet.romeprotocol.xyz";
+    const cmd = start({ SWAP_URL: swap, BRIDGE_URL: bridge });
+    expect(cmd).toContain(` -e SWAP_URL=${swap}`);
+    expect(cmd).toContain(` -e BRIDGE_URL=${bridge}`);
+    expect(start()).not.toContain("SWAP_URL");
+    expect(start()).not.toContain("BRIDGE_URL");
+  });
+
   it("gives the explorer container no setting of the Bridge site: the origin is built into the pages", () => {
     const site = "https://bridge.ostia.testnet.romeprotocol.xyz";
     const env = { VITE_BRIDGE_ORIGIN: site, BRIDGE_ORIGIN: site, ACCOUNTS_HEALTH_URL: "http://127.0.0.1:8081/healthz" };

@@ -145,7 +145,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
-        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, rpcMinTipWei: config.publicRpc.minTipWei.toString(), ownTraffic: Object.keys(config.ownAddresses).length > 0, notices: shown, notice: shown[0] ?? null,
+        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, rpcMinTipWei: config.publicRpc.minTipWei.toString(), ownTraffic: Object.keys(config.ownAddresses).length > 0, swapUrl: config.swapUrl, bridgeUrl: config.bridgeUrl, notices: shown, notice: shown[0] ?? null,
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };
