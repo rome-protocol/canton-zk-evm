@@ -251,6 +251,31 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     const disabled = sending || cooling || (sentTo !== null && address.trim() === sentTo && !failed);
     const again = askedAt !== null && sentTo !== null && address.trim() === sentTo && result?.kind === "queued" && !failed;
 
+    // Coins only after a GitHub sign-in: no plain request, no human check, no request button. The address box stays, because the sign-in sends the coins there.
+    const b = builderOf(info);
+    if (info.on && info.plain === false) {
+      return (
+        <>
+          <p className="lead">
+            {b
+              ? <>Sign in with GitHub to get <b>{formatCoin(b.amount, coin.decimals)} {coin.symbol}</b>. The account must be at least {b.minAccountAgeDays ?? 0} days old, and each account and each address gets one grant every {formatDays(b.perAccountSeconds ?? 0)}.</>
+              : <>The faucet gives coins only to builders who sign in with GitHub, and that sign-in is not open right now.</>}
+          </p>
+          <div className="ff">
+            <label className="small muted" htmlFor={field}>Your address</label>
+            <input
+              id={field} name="address" className="input mono" type="text" placeholder="0x…" value={address}
+              autoComplete="off" autoCapitalize="off" spellCheck={false}
+              onChange={(e) => setAddress(e.target.value)}
+            />
+          </div>
+          <BuilderGrant info={info} address={address} coin={coin} />
+          {builderResult && (() => { const w = builderWords(builderResult, info, coin); return <Alert tone={w.tone} icon={w.tone === "ok" ? "ok" : w.tone === "wait" ? "note" : "bad"} role={w.tone === "ok" ? "status" : "alert"}>{w.text}</Alert>; })()}
+          <p className="small muted fnote">Blocks are made only while the chain's builder runs.</p>
+        </>
+      );
+    }
+
     return (
       <>
         <p className="lead">
@@ -289,10 +314,10 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       <section className="card limits">
         <header className="chead"><h2>The limits, in plain words</h2></header>
         <ul className="cbody lim">
-          <li><Icon name="drop" /><span>Each request sends <b>{amount}</b>.</span></li>
-          <li><Icon name="clock" /><span>One request per <b>address</b> every {formatPeriod(info.perAddressSeconds)}.</span></li>
+          {info.plain !== false && <li><Icon name="drop" /><span>Each request sends <b>{amount}</b>.</span></li>}
+          {info.plain !== false && <li><Icon name="clock" /><span>One request per <b>address</b> every {formatPeriod(info.perAddressSeconds)}.</span></li>}
           {info.perIpSeconds ? <li><Icon name="globe" /><span>One request per <b>network address</b> every {formatPeriod(info.perIpSeconds)}.</span></li> : null}
-          {info.maxPerHour ? <li><Icon name="people" /><span>At most <b>{formatCount(info.maxPerHour)} requests an hour</b> for everyone together. When that is reached, the page says when to try again.</span></li> : null}
+          {info.plain !== false && info.maxPerHour ? <li><Icon name="people" /><span>At most <b>{formatCount(info.maxPerHour)} requests an hour</b> for everyone together. When that is reached, the page says when to try again.</span></li> : null}
           <li><Icon name="cube" /><span>Requests are sent in order{info.batch ? <>, up to {formatCount(info.batch)} in one block</> : ""}. A burst waits for the blocks after. The coins count only when the block holding them is final on Canton, and this page says when.</span></li>
           {(() => { const b = builderOf(info); return b ? <li><Icon name="people" /><span>With a GitHub sign-in, an account at least <b>{b.minAccountAgeDays ?? 0} days old</b> gets <b>{formatCoin(b.amount, coin.decimals)} {coin.symbol}</b> once every {formatDays(b.perAccountSeconds ?? 0)}, for each account and for each address{b.maxPerDay ? <>, and at most {formatCount(b.maxPerDay)} a day for everyone together</> : null}. Only the account's age is checked, and the account is kept as a hash, never by name.</span></li> : null; })()}
           {info.captcha && <li><Icon name="shield" /><span>The human check keeps scripts from emptying the faucet. It is the only thing the faucet asks of you.</span></li>}

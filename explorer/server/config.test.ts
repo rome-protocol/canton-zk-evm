@@ -42,7 +42,7 @@ describe("settings", () => {
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", ledgerTokenFile: null, pollMs: 2000,
     });
     expect(c.database).toBeNull();
-    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, perNetMax: 10, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
+    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, plain: true, perAddressSeconds: 86400, perIpSeconds: 600, perNetMax: 10, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
     expect(c.captcha).toBeNull();
   });
 
@@ -294,6 +294,15 @@ describe("the builder grant's settings", () => {
       clientId: "Iv1.abc123", clientSecretFile: "/run/gh-secret", redirectUrl: "https://explorer.example.org/api/faucet/github/callback", amountWei: 100n * 10n ** 18n,
       perAccountSeconds: 604800, minAccountAgeDays: 30, maxPerDay: 200,
     });
+  });
+
+  it("turns the plain request off with FAUCET_PLAIN=0, only while the builder grant is on", () => {
+    expect(load(on).faucet.plain).toBe(true);
+    expect(load({ ...on, FAUCET_PLAIN: "" }).faucet.plain).toBe(true);
+    expect(load({ ...on, FAUCET_PLAIN: "1" }).faucet.plain).toBe(true);
+    expect(load({ ...on, FAUCET_PLAIN: "0" }).faucet.plain).toBe(false);
+    expect(() => load({ ...on, FAUCET_PLAIN: "off" })).toThrow(/FAUCET_PLAIN/);
+    expect(() => load({ FAUCET_PLAIN: "0" })).toThrow(/FAUCET_PLAIN=0 needs the builder grant/);
   });
 
   it("takes its own amount, period, age and daily cap", () => {

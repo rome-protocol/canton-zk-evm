@@ -110,6 +110,8 @@ export interface Config {
     /** The key that client addresses are hashed with before they are stored. Required with a database and a faucet: a file that only its owner can read. */
     clientKeyFile: string | null;
     amountWei: bigint;
+    /** False (FAUCET_PLAIN=0) turns the plain request off: coins then come only from the builder grant, after a GitHub sign-in. Needs the builder grant. */
+    plain: boolean;
     perAddressSeconds: number;
     /** One request per client address in this many seconds. */
     perIpSeconds: number;
@@ -325,6 +327,9 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     throw new ConfigError(`FAUCET_AMOUNT must be a number of coins such as 1 or 0.5, not "${env.FAUCET_AMOUNT}"`);
   }
   const github = githubSettings(env);
+  // The plain request is on unless FAUCET_PLAIN=0. Off with no builder grant would leave no way to get a coin, so that stops the server at start.
+  const plain = env.FAUCET_PLAIN === undefined || env.FAUCET_PLAIN === "" ? true : flag(env, "FAUCET_PLAIN");
+  if (!plain && !github) throw new ConfigError("FAUCET_PLAIN=0 needs the builder grant (FAUCET_GITHUB_CLIENT_ID): with both off, nobody could get a coin");
   const heavyConcurrency = whole(env, "RPC_HEAVY_CONCURRENCY", 8, 1), heavyQueue = whole(env, "RPC_HEAVY_QUEUE", 16, 0);
   if (heavyConcurrency + heavyQueue > MAX_HEAVY_PLACES) {
     throw new ConfigError(`RPC_HEAVY_CONCURRENCY + RPC_HEAVY_QUEUE must be at most ${MAX_HEAVY_PLACES} (they are ${heavyConcurrency + heavyQueue}): heavy calls would take the places that light calls need`);
@@ -368,6 +373,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       keyFile: env.FAUCET_KEY_FILE || null,
       clientKeyFile: env.FAUCET_CLIENT_KEY_FILE || null,
       amountWei,
+      plain,
       perAddressSeconds: whole(env, "FAUCET_PER_ADDRESS_SECONDS", 86400, 1),
       perIpSeconds: whole(env, "FAUCET_PER_IP_SECONDS", 600, 1),
       perNetMax: whole(env, "FAUCET_PER_NET_MAX", 10, 1),

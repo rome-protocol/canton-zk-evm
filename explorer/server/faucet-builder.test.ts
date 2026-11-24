@@ -164,7 +164,7 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       const { f } = await make({}, null);
       expect(startLoc(f, addr(1))).toBeNull();
       expect(await f.builderCallback(new URLSearchParams({ code: "c", state: "s" }), "1.1.1.1")).toBeNull();
-      expect((await f.info()).builder).toEqual({ on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null });
+      expect((await f.info()).builder).toEqual({ on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null, leftToday: null });
     });
 
     it("says at once, without GitHub, that an address already has its grant", async () => {
@@ -321,7 +321,7 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
     it("shows its settings on the faucet's own answer, with no secret in them", async () => {
       const { f } = await make();
       const info = await f.info();
-      expect(info.builder).toEqual({ on: true, amount: (100n * COIN).toString(), perAccountSeconds: 7 * DAY, minAccountAgeDays: 30, maxPerDay: 200 });
+      expect(info.builder).toEqual({ on: true, amount: (100n * COIN).toString(), perAccountSeconds: 7 * DAY, minAccountAgeDays: 30, maxPerDay: 200, leftToday: 200 });
       expect(JSON.stringify(info)).not.toContain(SECRET);
       expect(JSON.stringify(info)).not.toContain("Iv1.testclient");
     });
@@ -461,6 +461,31 @@ describe.each(modes)("the builder grant, %s", (_name, useDatabase) => {
       expect(r.f.queued()).toBe(2);
       clock.now += DAY_MS - 6000;
       expect(await grant(r, addr(3), "c4", 3, 90, "1.1.1.3")).toMatchObject({ builder: "queued" });
+    });
+
+    it("says how many grants are left today, and none once the cap is reached, until a day after", async () => {
+      const r = await make({ perIpSeconds: 1 }, { maxPerDay: 2 });
+      expect((await r.f.info()).builder.leftToday).toBe(2);
+      expect(await grant(r, addr(1), "c1", 1, 90, "1.1.1.1")).toMatchObject({ builder: "queued" });
+      expect((await r.f.info()).builder.leftToday).toBe(1);
+      clock.now += 3000;
+      expect(await grant(r, addr(2), "c2", 2, 90, "1.1.1.2")).toMatchObject({ builder: "queued" });
+      expect((await r.f.info()).builder.leftToday).toBe(0);
+      clock.now += DAY_MS;
+      expect((await r.f.info()).builder.leftToday).toBe(2);
+    });
+
+    it("with the plain request off, refuses it without counting it, and still gives the builder grant", async () => {
+      const r = await make({ plain: false });
+      const info = await r.f.info();
+      expect(info.plain).toBe(false);
+      const refused = await r.f.request(addr(1), { ip: "1.1.1.1" });
+      expect(refused.status).toBe(403);
+      expect(refused.body).toMatchObject({ reason: "github" });
+      expect(r.f.queued()).toBe(0);
+      expect(r.f.served()).toBe(0);
+      expect(await grant(r, addr(1), "c1", 1, 90, "1.1.1.1")).toMatchObject({ builder: "queued" });
+      expect(r.f.queued()).toBe(1);
     });
 
     it("keeps the per-network limit and the hourly cap of the plain faucet for plain requests", async () => {

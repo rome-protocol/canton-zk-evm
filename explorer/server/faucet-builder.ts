@@ -60,6 +60,8 @@ export interface BuilderInfo {
   perAccountSeconds: number | null;
   minAccountAgeDays: number | null;
   maxPerDay: number | null;
+  /** How many more grants today's cap allows (0 when it is reached); null when the grant is off. */
+  leftToday: number | null;
 }
 
 /** The places the sign-in sends a person back to the Faucet page, and what each one means. */
