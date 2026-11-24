@@ -25,6 +25,7 @@ import { FIELDS, pick } from "./rest/fields.ts";
 import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
+import { createCustodyLimits } from "./custody-limits.ts";
 import { createMinimums } from "./minimums.ts";
 import { createNotices, type Notice } from "./notice.ts";
 
@@ -112,6 +113,11 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   const noticeOut = (n: Notice) => ({ ...pick(n, FIELDS.notice), ...(n.level ? { level: n.level } : {}), ...(n.link ? { link: pick(n.link, FIELDS.noticeLink) } : {}) });
   const noticesNow = () => notices().map(noticeOut);
   const minimums = createMinimums({ file: config.producerStatusFile, now });
+  const custodyLimits = createCustodyLimits({ file: config.custodyLimitsFile, now });
+  const limitsOut = () => {
+    const l = custodyLimits();
+    return l && { ...pick(l, FIELDS.custodyLimitsNow), minDeposits: l.minDeposits && l.minDeposits.map((m) => pick(m, FIELDS.custodyLeast)), minPayouts: l.minPayouts && l.minPayouts.map((m) => pick(m, FIELDS.custodyLeast)) };
+  };
 
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
@@ -331,6 +337,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/address/{address}", (a) => address(a)],
     ["/api/in-flight", () => inFlight()],
     ["/api/bridge/minimums", async () => ok(pick({ minimums: minimums().map((m) => pick(m, FIELDS.minimum)) }, FIELDS.minimums))],
+    ["/api/bridge/custody-limits", async () => ok({ limits: limitsOut() })],
     ["/api/search", (_, q) => search((q.get("q") ?? "").trim().toLowerCase())],
     ["/api/faucet/ticket/{ticket}", (t) => ticket(t)],
     ...(verify ? ([["/api/verify/{guid}", (guid: string) => verification(guid)]] as const) : []),

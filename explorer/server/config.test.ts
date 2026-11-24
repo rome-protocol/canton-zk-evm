@@ -339,3 +339,11 @@ describe("the producer status file", () => {
     expect(load({ PRODUCER_STATUS_FILE: "/run/explorer/producer/status.json" }).producerStatusFile).toBe("/run/explorer/producer/status.json");
   });
 });
+
+describe("the custody worker's limits file", () => {
+  it("is off until CUSTODY_LIMITS_FILE names a file", () => {
+    expect(load().custodyLimitsFile).toBeNull();
+    expect(load({ CUSTODY_LIMITS_FILE: "  " }).custodyLimitsFile).toBeNull();
+    expect(load({ CUSTODY_LIMITS_FILE: "/run/explorer/producer/custody-limits.json" }).custodyLimitsFile).toBe("/run/explorer/producer/custody-limits.json");
+  });
+});

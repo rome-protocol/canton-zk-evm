@@ -66,6 +66,8 @@ export interface Config {
   noticeFile: string | null;
   /** The builder's status file (PRODUCER_STATUS_FILE, see server/minimums.ts), read for the least a deposit may be; null when not set, and then there is no minimum. */
   producerStatusFile: string | null;
+  /** The custody worker's limits file (CUSTODY_LIMITS_FILE, see server/custody-limits.ts), read for the least amounts it enforces; null when not set, and then there is no limit to show. */
+  custodyLimitsFile: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -354,6 +356,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     twinRegistryUrl: env.TWIN_REGISTRY_URL?.trim() ? url(env, "TWIN_REGISTRY_URL", "") : null,
     noticeFile: env.OSTIA_NOTICE_FILE?.trim() || null,
     producerStatusFile: env.PRODUCER_STATUS_FILE?.trim() || null,
+    custodyLimitsFile: env.CUSTODY_LIMITS_FILE?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),
