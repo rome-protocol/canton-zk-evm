@@ -82,6 +82,10 @@ export interface Config {
     on: boolean;
     /** Calls per client address per minute. A batch counts each of its calls. */
     ratePerMinute: number;
+    /** Transactions (eth_sendRawTransaction calls) per client address per hour on /rpc, once its burst is used. */
+    sendsPerHour: number;
+    /** The most transactions one client address may send at once on /rpc. */
+    sendBurst: number;
     /** The most heavy calls (eth_call, eth_estimateGas, eth_getLogs) running at one time, all clients together. */
     heavyConcurrency: number;
     /** The most heavy calls waiting for a slot; one past that is refused at once. */
@@ -351,6 +355,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     publicRpc: {
       on: flag(env, "PUBLIC_RPC"),
       ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
+      sendsPerHour: whole(env, "RPC_SEND_PER_HOUR", 20, 1),
+      sendBurst: whole(env, "RPC_SEND_BURST", 20, 1),
       heavyConcurrency,
       heavyQueue,
       trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),
