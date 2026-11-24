@@ -6,7 +6,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-import intake, memo
+import claimable, intake, memo
 b = intake.b
 
 GATEWAY = "gateway::1220" + "11" * 32
@@ -20,6 +20,7 @@ ADDRESS = "0x" + "12" * 20
 ROUTER = "0x" + "7a" * 20
 ROUTE = "r1:0:0x" + "e3" * 20 + ":2000000000:17"
 FIELDS = {"chainId": "770101", "operator": OPERATOR, "confirmer": CONFIRMER, "gateway": GATEWAY}
+BOOK = "9a" * 20
 INTAKE_CID, TOKEN_CC, TOKEN_TKB = "00" + "a1" * 34, "00" + "a2" * 34, "00" + "a3" * 34
 
 
@@ -35,6 +36,25 @@ def instruction(n, instrument=TKB, amount="10.0", meta=None, receiver=GATEWAY, s
 
 def template(contract_id, **arguments):
     return {"contractId": contract_id, "createArgument": arguments}
+
+
+class FakeOstia:
+    """The router's book and the router, as `claimable.Ostia` reads them through `call`: the live numbers in base units (10 decimals: 0.05 is 5 * 10**8)."""
+    def __init__(self):
+        self.fee_out, self.claim, self.minimum, self.unit, self.room = 5 * 10**8, 15 * 10**8, 10**9, 10**9, 10**15
+        self.open, self.down, self.calls = True, False, []
+
+    def call(self, to, data):
+        self.calls.append((to, data[:4], data[4:]))
+        if self.down:
+            raise RuntimeError("the router's book cannot be read on Ostia")
+        word = lambda n: n.to_bytes(32, "big")
+        if data[:4] == claimable.CHECK_OUT:
+            if not self.open:
+                raise claimable.Reverted()
+            return b"".join(word(n) for n in (1, 0, self.fee_out, 0, 0, self.minimum, 2**256 - 1, self.unit, self.claim))
+        assert data[:4] == claimable.LOCK_ROOM
+        return word(self.room)
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -88,12 +108,13 @@ class IntakeCase(unittest.TestCase):
         self.registry_server = Server(self.registry_handler)
         for server in (self.ledger_server, self.registry_server):
             self.addCleanup(server.stop)
-        self.settings = intake.Settings(GATEWAY, {DSO: self.registry_server.url + "/scan-proxy"})
+        self.book = FakeOstia()
+        self.settings = intake.Settings(GATEWAY, {DSO: self.registry_server.url + "/scan-proxy"}, ostia=claimable.Ostia(self.book.call, BOOK, ROUTER[2:]))
         self.worker = self.make_worker()
 
     def reset_templates(self):
         self.templates = {intake.INTAKE: [template(INTAKE_CID, builder="b::1220", **FIELDS)],
-                          intake.GATEWAY_TOKEN: [template(TOKEN_CC, instrumentId=CC, evmToken="cc", **FIELDS), template(TOKEN_TKB, instrumentId=TKB, evmToken="tk", **FIELDS)],
+                          intake.GATEWAY_TOKEN: [template(TOKEN_CC, instrumentId=CC, evmToken="c1" * 20, **FIELDS), template(TOKEN_TKB, instrumentId=TKB, evmToken="d1" * 20, **FIELDS)],
                           intake.RECEIPT: [], intake.DEPOSIT_REQUEST: []}
 
     def make_worker(self):
@@ -166,7 +187,7 @@ class Accepts(IntakeCase):
         self.assertEqual((arguments["label"], arguments["recipient"]), (ROUTE, "7a" * 20))
 
     def test_a_route_memo_is_accepted_with_the_router_as_settings_of_keeps_it(self):
-        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER])
+        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER, "--book", "0x" + BOOK, "--ostia-rpc", "http://127.0.0.1:1"])
         self.settings.router = intake.settings_of(args).router
         self.views = [instruction(3, TKB, "3.0", {memo.REASON_KEY: ROUTE})]
         accepted, _ = self.poll()
@@ -184,6 +205,127 @@ class Accepts(IntakeCase):
         _, lines = self.poll()
         self.assertEqual(set(self.seen_auth), {"Bearer " + self.bearer})
         self.assertNotIn(self.bearer, json.dumps(lines))
+
+
+class Rejects(IntakeCase):
+    """A transfer that cannot be claimed as it stands is rejected, from the live book, so the coin goes back to its sender at once."""
+    def setUp(self):
+        super().setUp()
+        self.settings.router = ROUTER
+
+    def route(self, max_fee, nonce=17):
+        return f"r1:0:0x{'e3' * 20}:{max_fee}:{nonce}"
+
+    def rejected(self, view, why, registry=False):
+        self.views = [view]
+        accepted, lines = self.poll()
+        self.assertEqual((accepted, len(self.submitted)), ([], 1))
+        command = self.command()
+        self.assertEqual((command["templateId"], command["contractId"], command["choice"]), (intake.TRANSFER_INSTRUCTION, view["contractId"], "TransferInstruction_Reject"))
+        extra = command["choiceArgument"]["extraArgs"]
+        self.assertEqual(extra["meta"], {"values": {intake.REJECT_KEY: why}})
+        self.assertEqual(self.submitted[0]["actAs"], [GATEWAY])
+        self.assertEqual([(line["rejected"], line["reason"]) for line in lines], [(view["contractId"], why)])
+        self.assertEqual(self.asked, [f"/scan-proxy/registry/transfer-instruction/v1/{view['contractId']}/choice-contexts/reject"] if registry else [])
+        return extra, lines
+
+    def test_below_the_live_minimum_is_rejected_with_the_registrys_reject_context(self):
+        extra, lines = self.rejected(instruction(1, CC, "0.2", {memo.REASON_KEY: self.route(2000000000)}), "the least amount for this route is now 0.3", registry=True)
+        self.assertEqual(extra["context"], {"values": {"round": {"tag": "AV_ContractId", "value": cid(9)}}})
+        self.assertEqual([d["contractId"] for d in self.submitted[0]["disclosedContracts"]], [cid(9)])
+        self.assertEqual((lines[0]["sender"], lines[0]["amount"], lines[0]["updateId"]), (ALICE, "0.2", "update-1"))
+
+    def test_a_token_with_no_registry_is_rejected_with_an_empty_context(self):
+        extra, _ = self.rejected(instruction(1, TKB, "0.2", {memo.REASON_KEY: self.route(2000000000)}), "the least amount for this route is now 0.3")
+        self.assertEqual(extra["context"], {"values": {}})
+        self.assertNotIn("disclosedContracts", self.submitted[0])
+
+    def test_the_minimum_is_read_live_each_time_and_the_boundary_is_exact(self):
+        route = self.route(2000000000)
+        self.views = [instruction(1, TKB, "0.2999999999", {memo.REASON_KEY: route}), instruction(2, TKB, "0.3", {memo.REASON_KEY: route.replace(":17", ":18")})]
+        accepted, lines = self.poll()
+        self.assertEqual([a["accepted"] for a in accepted], [cid(2)])
+        self.assertEqual([line["rejected"] for line in lines if "rejected" in line], [cid(1)])
+        self.book.minimum = 10**10   # the owner raises the minimum to 1: what was taken at 0.3 is below it now
+        self.views = [instruction(3, TKB, "0.9", {memo.REASON_KEY: route.replace(":17", ":19")}), instruction(4, TKB, "1.2", {memo.REASON_KEY: route.replace(":17", ":20")})]
+        accepted, lines = self.poll()
+        self.assertEqual([a["accepted"] for a in accepted], [cid(4)])
+        self.assertEqual([(line["rejected"], line["reason"]) for line in lines if "rejected" in line], [(cid(3), "the least amount for this route is now 1")])
+
+    def test_fees_raised_above_the_memos_cap_are_rejected(self):
+        self.book.fee_out = 10**9   # feeOut 0.1 and the claim fee 0.15: 0.25 against the memo's 0.2
+        self.rejected(instruction(1, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000)}), "the route's fee is now 0.25 and the memo allows 0.2")
+
+    def test_the_cut_off_leftover_counts_in_the_fee_the_memo_allows(self):
+        # 0.39 less the fee 0.2 is 0.19, cut to the unit 0.1: what is sent is 0.1 and the fee taken is 0.29
+        self.rejected(instruction(1, TKB, "0.39", {memo.REASON_KEY: self.route(2000000000)}), "the fee for this amount is 0.29 and the memo allows 0.2")
+
+    def test_a_route_that_is_not_open_or_has_no_room_is_rejected(self):
+        self.book.open = False
+        self.rejected(instruction(1, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000)}), "the route is not open now")
+        self.submitted.clear(), self.worker.told.clear()
+        self.book.open, self.book.room = True, 4 * 10**9
+        self.rejected(instruction(2, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000, 18)}), "the route has no room for this amount now")
+
+    def test_a_plain_deposit_that_leaves_nothing_is_rejected_and_any_other_is_taken(self):
+        self.views = [instruction(1, TKB, "0.0"), instruction(2, TKB, "0.0000000001")]
+        accepted, lines = self.poll()
+        self.assertEqual([a["accepted"] for a in accepted], [cid(2)])
+        self.assertEqual([(line["rejected"], line["reason"]) for line in lines if "rejected" in line], [(cid(1), "there is nothing to claim")])
+        self.assertEqual(self.book.calls, [])   # a plain memo asks the book nothing
+
+    def test_a_reject_that_the_participant_refuses_is_reported_once_and_tried_again(self):
+        self.refuse = "no"
+        self.views = [instruction(1, TKB, "0.2", {memo.REASON_KEY: self.route(2000000000)})]
+        accepted, lines = self.poll()
+        self.assertEqual((accepted, len(self.submitted), [list(line) for line in lines]), ([], 1, [["pending", "why"]]))
+        self.assertEqual(self.poll()[1], [])
+        self.assertEqual(len(self.submitted), 2)
+        self.refuse = None
+        self.assertEqual([line["rejected"] for line in self.poll()[1]], [cid(1)])
+
+    def test_a_book_that_cannot_be_read_leaves_the_transfer_pending_and_a_later_read_decides(self):
+        self.book.down = True
+        self.views = [instruction(1, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000)})]
+        accepted, lines = self.poll()
+        self.assertEqual((accepted, self.submitted, [(line["pending"], line["why"]) for line in lines]), ([], [], [(cid(1), "the router's book cannot be read on Ostia")]))
+        self.book.down = False
+        self.assertEqual([a["accepted"] for a in self.poll()[0]], [cid(1)])
+
+    def test_the_book_and_the_router_are_asked_for_the_tokens_address_and_the_memos_network(self):
+        self.views = [instruction(1, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000)})]
+        self.poll()
+        padded = bytes.fromhex("d1" * 20).rjust(32, b"\0")
+        self.assertEqual(self.book.calls, [("0x" + BOOK, claimable.CHECK_OUT, padded + (0).to_bytes(32, "big")), ("0x" + ROUTER[2:], claimable.LOCK_ROOM, padded)])
+
+    def test_a_route_with_no_book_set_is_never_accepted(self):
+        self.settings.ostia = None
+        self.views = [instruction(1, TKB, "5.0", {memo.REASON_KEY: self.route(2000000000)})]
+        accepted, lines = self.poll()
+        self.assertEqual((accepted, self.submitted, lines[0]["why"]), ([], [], "the router's book is not set: a route's fee and minimum are unknown"))
+
+
+class Preapproval(IntakeCase):
+    def warnings(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            intake.preapproval_warning(self.worker.ledger, GATEWAY)
+        return [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_no_preapproval_no_warning(self):
+        self.templates[intake.PREAPPROVAL] = [template(cid(60), receiver=ALICE)]   # someone else's
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_preapproval_of_the_gateway_is_warned_of(self):
+        self.templates[intake.PREAPPROVAL] = [template(cid(60), receiver=GATEWAY)]
+        got = self.warnings()
+        self.assertEqual([w["preapprovals"] for w in got], [[cid(60)]])
+        self.assertIn("preapproval", got[0]["warning"])
+
+    def test_a_check_that_cannot_be_made_is_a_warning_and_never_stops_the_worker(self):
+        self.ledger_server.stop()
+        got = self.warnings()
+        self.assertEqual(len(got), 1)
+        self.assertIn("could not be checked", got[0]["warning"])
 
 
 class LeavesPending(IntakeCase):
@@ -258,7 +400,7 @@ class LeavesPending(IntakeCase):
             self.poll()
 
     def test_a_token_of_another_chain_is_not_registered_for_this_intake(self):
-        self.templates[intake.GATEWAY_TOKEN] = [template(TOKEN_TKB, instrumentId=TKB, evmToken="tk", **{**FIELDS, "chainId": "1"})]
+        self.templates[intake.GATEWAY_TOKEN] = [template(TOKEN_TKB, instrumentId=TKB, evmToken="d1" * 20, **{**FIELDS, "chainId": "1"})]
         self.left([instruction(1)], "the instrument is not a registered token")
 
 
@@ -291,8 +433,17 @@ class Settings(unittest.TestCase):
             intake.settings_of(args)
 
     def test_a_router_given_on_the_command_line_reads_a_route_memo(self):
-        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER])
-        self.assertEqual(memo.read({memo.REASON_KEY: ROUTE}, cid(3), intake.settings_of(args).router), (ROUTE, "7a" * 20))
+        args = intake.parser().parse_args(["--gateway-party", GATEWAY, "--ledger-user", "operator", "--router", ROUTER, "--book", "0x" + BOOK, "--ostia-rpc", "http://127.0.0.1:1"])
+        settings = intake.settings_of(args)
+        self.assertEqual(memo.read({memo.REASON_KEY: ROUTE}, cid(3), settings.router), (ROUTE, "7a" * 20))
+        self.assertIsNotNone(settings.ostia)
+
+    def test_a_router_needs_its_book_and_the_rpc_that_reads_it(self):
+        base = ["--gateway-party", GATEWAY, "--ledger-user", "operator"]
+        for more, words in ((["--router", ROUTER], "go together"), (["--book", "0x" + BOOK], "go together"), (["--router", ROUTER, "--book", "0x" + BOOK], "needs --ostia-rpc"),
+                            (["--router", ROUTER, "--book", "0x12", "--ostia-rpc", "http://127.0.0.1:1"], "--book must be an EVM address")):
+            with self.subTest(more=more), self.assertRaisesRegex(SystemExit, words):
+                intake.settings_of(intake.parser().parse_args(base + more))
 
     def test_the_rpc_and_the_gateway_address_go_together_and_the_address_must_be_one(self):
         base = ["--gateway-party", GATEWAY, "--ledger-user", "operator"]
