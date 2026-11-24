@@ -16,7 +16,7 @@ import evm, limits, memo as memos, payout
 b = it.b
 
 JOURNAL, STATUS, LOCK = "buy.json", "buy-status.json", "buy.lock"
-COIN = "Amulet"   # the instrument id of Canton Coin; the admin is the one whose registry is given with --registry
+COIN = "Amulet"   # the instrument id of Canton Coin; the admin is the one whose registry is given with --registry (exactly one)
 WEI = 10**18
 ACCEPT = "TransferInstruction_Accept"
 KEEP_DONE_SECONDS = 30 * 86400   # a settled buy stays in the journal this long
@@ -96,6 +96,8 @@ def meta_bytes(values: dict) -> int:
 class Buy:
     def __init__(self, ledger: "b.Ledger", settings: it.Settings, reth, key: bytes, price: Fraction, min_buy: Fraction, work_dir: str, max_meta: int = 0, clock=time.time, contexts=it.Contexts):
         """`price` is the Canton Coin that one tROME costs, `min_buy` the least amount accepted (Canton Coin), `max_meta` the most bytes of a transfer's meta (0: no cap); `reth` is an `evm.Reth`."""
+        if len(settings.registries) != 1:
+            raise SystemExit("--buy takes exactly one --registry: Canton Coin's own admin")
         self.ledger, self.settings, self.reth, self.key, self.clock, self.contexts = ledger, settings, reth, key, clock, contexts
         self.price, self.min_buy, self.max_meta = price, min_buy, max_meta
         self.address = evm.address_of(key)
@@ -176,9 +178,13 @@ class Buy:
         max_fee = 2 * price
         return Chain(self.chain_id, self.reth.next_nonce(self.address), max_fee, min(self.reth.tip(), max_fee))
 
-    def owed(self, chain: Chain, waiting: dict) -> int:
-        """The wei, gas included, that the buys not yet settled still take from the buy key (a buy whose accept is still to be made is counted when it is taken)."""
-        return sum(int(e["wei"]) + chain.cost(int(e.get("gas", evm.TRANSFER_GAS))) for c, e in self.journal.entries.items() if e["state"] in ("accepted", "sent") or (e["state"] == "accepting" and c not in waiting))
+    def reserved(self, chain: Chain, entry: dict) -> int:
+        """The wei, gas included, that one journal entry takes from the buy key."""
+        return int(entry["wei"]) + chain.cost(int(entry.get("gas", evm.TRANSFER_GAS)))
+
+    def owed(self, chain: Chain) -> int:
+        """The wei, gas included, that the buys not yet settled still take from the buy key: an accept in doubt counts too, since its try may still commit."""
+        return sum(self.reserved(chain, e) for e in self.journal.entries.values() if e["state"] in ("accepting", "accepted", "sent"))
 
     def say_once(self, cid: str, why: str) -> None:
         why = b.bounded_text(why)
@@ -198,25 +204,28 @@ class Buy:
                 self.finish(cid, self.journal.entries[cid], waiting, chain)
             except Exception as e:   # one buy's failure never stops the others
                 self.say_once(cid, str(e) if isinstance(e, (RuntimeError, memos.Unreadable)) else f"{type(e).__name__}: {e}")
-        available = self.reth.balance(self.address) - self.owed(chain, waiting)
+        available = self.reth.balance(self.address) - self.owed(chain)
         contexts = self.contexts(self.settings.registries, self.settings.registry_tokens)
         for cid, transfer in sorted(waiting.items()):
             entry = self.journal.entries.get(cid)
             if entry is not None and entry["state"] != "accepting":
                 continue
+            room = available + (self.reserved(chain, entry) if entry is not None else 0)   # a try already on record is held in `available`: it is taken back for this transfer's own checks
             try:
                 recipient, wei = self.check(cid, transfer)
-                if available < wei + chain.cost():
+                if room < wei + chain.cost():
                     raise memos.Unreadable("the buy key holds too little tROME for this amount")
                 gas = self.estimate(recipient, wei)
-                if available < wei + chain.cost(gas):
+                if room < wei + chain.cost(gas):
                     raise memos.Unreadable("the buy key holds too little tROME for this amount")
                 line = self.accept(cid, transfer, recipient, wei, gas, contexts)
             except Exception as e:   # a bad memo, a registry that does not answer, an accept that did not complete: left pending, tried again at the next poll
+                held = self.journal.entries.get(cid)   # a try that was submitted may still commit: its stock stays held
+                available = room - (self.reserved(chain, held) if held is not None else 0)
                 self.say_once(cid, str(e) if isinstance(e, (memos.Unreadable, RuntimeError)) else f"{type(e).__name__}: {e}")
                 continue
             accepted.append(line)
-            available -= wei + chain.cost(gas)
+            available = room - self.reserved(chain, self.journal.entries[cid])
             try:
                 self.finish(cid, self.journal.entries[cid], waiting, chain)
             except Exception as e:   # the send is in the journal when it was signed: the next poll sends it again
@@ -355,4 +364,6 @@ def settings_of(args) -> it.Settings:
     registries = b.parse_registries(args.registry)
     if not registries:
         raise SystemExit("--buy needs --registry for Canton Coin's admin: the accept's choice context comes from it")
+    if len(registries) > 1:
+        raise SystemExit("--buy takes exactly one --registry: Canton Coin's own admin (another admin's Amulet is not Canton Coin)")
     return it.Settings(args.validator_party, registries, b.read_registry_tokens(args.registry_token_file, registries))

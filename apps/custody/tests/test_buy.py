@@ -426,6 +426,32 @@ class Takes(BuyCase):
         self.assertEqual((len(self.submitted), self.reth.sent), (2, [self.expected_send(0, 5 * WEI)]))
         self.assertEqual(self.journal()[cid(1)]["state"], "sent")
 
+    def test_an_accept_whose_answer_was_lost_still_holds_its_stock_against_a_second_buy(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE   # the stock of one buy of 100 coin, with the gas of its send
+        self.lose_answer = True
+        self.buy_of(1)
+        self.buy_of(2)
+        lines = self.poll()   # the first accept commits and its answer is lost; the second has no stock left
+        self.assertEqual(len(self.submitted), 1)
+        self.assertEqual([x["pending"] for x in lines if "pending" in x and "too little" in x["why"]], [cid(2)])
+        self.assertEqual(self.reth.sent, [])
+        self.lose_answer = False
+        self.completions = [self.completion(self.submitted[0]["commandId"], update="u-1")]
+        lines = self.poll()   # the first is settled as committed and sent; the second still has no stock
+        self.assertEqual(kinds(lines), ["accepted", "sent"])
+        self.assertEqual((len(self.submitted), self.reth.sent), (1, [self.expected_send(0, 5 * WEI)]))
+        self.assertEqual(self.status()["state"], "sold out")
+
+    def test_a_try_in_doubt_does_not_block_its_own_transfer_from_its_stock(self):
+        self.reth.balance = 5 * WEI + 21000 * 2 * GAS_PRICE
+        self.buy_of(1)
+        self.refuse = "INVALID"
+        self.poll()
+        self.refuse = None
+        self.completions = [self.completion(self.submitted[0]["commandId"], ok=False)]
+        self.poll()   # the first try failed: the same transfer is accepted again with the stock the first try held
+        self.assertEqual((len(self.submitted), len(self.reth.sent)), (2, 1))
+
     def test_a_try_that_failed_and_a_transfer_that_is_gone_is_dropped(self):
         self.buy_of(1)
         self.refuse = "UNAVAILABLE"
@@ -586,6 +612,14 @@ class Start(BuyCase):
         for flag in ("--intake", "--payout-offers"):
             self.assertIn("on its own", str(self.run_main([flag])[0]))
 
+    def test_more_than_one_registry_is_refused_so_another_admins_amulet_is_never_canton_coin(self):
+        code, out, _ = self.run_main(["--registry", f"{ISSUER}={self.registry_server.url}/issuer"])
+        self.assertIn("exactly one --registry", str(code))
+        self.assertEqual(out, "")
+        two = intake.Settings(VALIDATOR, {DSO: self.registry_server.url + "/scan-proxy", ISSUER: self.registry_server.url + "/issuer"})
+        with self.assertRaises(SystemExit):
+            buy.Buy(self.worker.ledger, two, evm.Reth(self.reth_server.url), KEY, Fraction(PRICE), Fraction(LEAST), self.work)
+
     def test_it_needs_the_registry_of_canton_coin(self):
         code, _, _ = self.run_main(["--registry", ""])
         self.assertTrue(isinstance(code, str))
@@ -698,7 +732,7 @@ class GasOfTheSend(BuyCase):
         self.buy_of(1, amount="100.0")
         self.poll()
         chain = self.worker.read_chain()
-        self.assertEqual(self.worker.owed(chain, {}), 5 * WEI + 60000 * chain.max_fee)
+        self.assertEqual(self.worker.owed(chain), 5 * WEI + 60000 * chain.max_fee)
 
 
 class OneWorker(BuyCase):
