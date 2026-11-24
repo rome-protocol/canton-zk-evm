@@ -15,6 +15,10 @@ export const FIELDS = {
   /** The answer of /api/bridge/minimums, and one minimum in it. */
   minimums: ["minimums"],
   minimum: ["instrumentAdmin", "floor", "readAt"],
+  /** The answer of /api/bridge/custody-limits, the limits in it, and one least amount in a list of them. */
+  custodyLimits: ["limits"],
+  custodyLimitsNow: ["updatedAt", "minDeposits", "minPayouts", "maxOffers"],
+  custodyLeast: ["instrumentAdmin", "instrumentId", "least"],
   /** The answer of /api/health, and one check in it. */
   health: ["status", "instance", "starting", "problems", "checks"],
   healthCheck: ["id", "role", "status", "written", "value", "threshold", "detail", "sinceSeconds", "changedAt", "refreshedAt", "refreshedAgoSeconds", "intervalSeconds", "stale", "elsewhere"],
