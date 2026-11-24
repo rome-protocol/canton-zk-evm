@@ -82,6 +82,8 @@ export interface Config {
     on: boolean;
     /** Calls per client address per minute. A batch counts each of its calls. */
     ratePerMinute: number;
+    /** The least priority fee (tip), in wei per gas, that a send on /rpc must pay (RPC_MIN_TIP_WEI). Zero is no floor. */
+    minTipWei: bigint;
     /** Transactions (eth_sendRawTransaction calls) per client address per hour on /rpc, once its burst is used. */
     sendsPerHour: number;
     /** The most transactions one client address may send at once on /rpc. */
@@ -166,6 +168,14 @@ function whole(env: Env, name: string, fallback: number, min: number): number {
   if (raw === undefined || raw === "") return fallback;
   if (!/^\d+$/.test(raw) || Number(raw) < min) throw new ConfigError(`${name} must be a whole number of at least ${min}, not "${raw}"`);
   return Number(raw);
+}
+
+/** An amount of wei as a whole number of any size; empty or unset is 0. */
+function wei(env: Env, name: string): bigint {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return 0n;
+  if (!/^\d+$/.test(raw)) throw new ConfigError(`${name} must be a whole number of wei, not "${raw}"`);
+  return BigInt(raw);
 }
 
 /** 1 turns a switch on; empty, unset or 0 leaves it off. */
@@ -355,6 +365,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     publicRpc: {
       on: flag(env, "PUBLIC_RPC"),
       ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
+      minTipWei: wei(env, "RPC_MIN_TIP_WEI"),
       sendsPerHour: whole(env, "RPC_SEND_PER_HOUR", 20, 1),
       sendBurst: whole(env, "RPC_SEND_BURST", 20, 1),
       heavyConcurrency,

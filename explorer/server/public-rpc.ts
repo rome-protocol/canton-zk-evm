@@ -50,6 +50,8 @@ export interface PublicRpcOptions {
   timeoutMs: number;
   chainId: number;
   ratePerMinute: number;
+  /** The least priority fee (tip), in wei per gas, a send must pay on this RPC. Zero (the default) is no floor. */
+  minTipWei?: bigint;
   /** The transactions (eth_sendRawTransaction calls, each call of a batch counted) one client may send an hour, once its burst is used. */
   sendsPerHour?: number;
   /** The transactions one client may send at once: its send bucket holds this many and refills at `sendsPerHour`. */
@@ -121,6 +123,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = MAX_IN_FLIGHT, heavyConcurrency = 8, heavyQueue = 16 } = o;
   const { maxNonceAhead = MAX_NONCE_AHEAD, maxQueued = MAX_QUEUED, maxQueuedBytes = MAX_QUEUED_BYTES, queueTtlMs = QUEUE_TTL_MS } = o;
   const { maxQueuedPerClient = MAX_QUEUED_PER_CLIENT, sweepSendersPerTick = SWEEP_SENDERS_PER_TICK } = o;
+  const { minTipWei: minTip = 0n } = o;
   const heavy = createHeavyLimiter(heavyConcurrency, heavyQueue);
   let inFlight = 0;
   const { sendsPerHour = SEND_PER_HOUR, sendBurst = SEND_BURST } = o;
@@ -366,6 +369,14 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     if (offered !== undefined) {
       const base = await baseFee();
       if (base !== null && offered < base) return err(-32000, `max fee per gas is below the current base fee: this transaction pays at most ${offered} wei per gas, and the base fee is ${base} wei. Sign it again with a higher max fee per gas.`);
+      // The floor is on the tip, which is what the builder is paid: the priority fee a fee-market transaction offers (never more than its max fee leaves above the base fee; a priority fee of 0 is
+      // left out of the encoding, so it reads as missing and counts as 0), or a legacy or access-list transaction's gas price above the base fee. The kind is chosen by the type, not by the field.
+      if (minTip > 0n) {
+        const room = offered - (base ?? 0n);
+        const offeredTip = tx.type === "legacy" || tx.type === "eip2930" ? room : (tx.maxPriorityFeePerGas ?? 0n);
+        const tip = offeredTip < room ? offeredTip : room;
+        if (tip < minTip) return err(-32000, `transaction underpriced: this transaction pays a tip of ${tip} wei per gas, and this RPC takes at least ${minTip} wei per gas. Sign it again with a max priority fee per gas of at least ${minTip} wei, and a max fee per gas of at least the base fee plus that (for a legacy transaction, a gas price of at least that).`);
+      }
     }
     // One sender's sends go through reth one after another, in the order they arrive: the nonce check below reads reth's pool, so the
     // second transaction of a batch (or of two overlapping requests) has to read it after the first is in the pool.
@@ -478,6 +489,9 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     return sent;
   }
 
+  /** A reward of the fee history raised to the floor. */
+  const raised = (v: unknown): unknown => (typeof v === "string" && QUANTITY.test(v) && BigInt(v) < minTip ? "0x" + minTip.toString(16) : v);
+
   async function handle(method: string, params: unknown[], fin: () => Promise<number>, client: string): Promise<Up> {
     if (!PUBLIC_METHODS.has(method)) return err(-32601, `The method ${method} does not exist or is not available.`);
     const bad = err(-32602, "Invalid params.");
@@ -498,7 +512,18 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       case "eth_feeHistory": {
         const f = await fin(), p = await pin(params[1], f, false);
         if (params.length < 2 || "bad" in p) return bad;
-        return up(method, [params[0], "above" in p ? hex(f) : p.value, ...params.slice(2)]);
+        const r = await up(method, [params[0], "above" in p ? hex(f) : p.value, ...params.slice(2)]);
+        // With a floor, no block's reward is shown under it: a wallet that prices its tip from the history pays the floor.
+        if (minTip === 0n || !("result" in r) || !isObject(r.result) || !Array.isArray(r.result.reward)) return r;
+        return { result: { ...r.result, reward: r.result.reward.map((row: unknown) => (Array.isArray(row) ? row.map(raised) : row)) } };
+      }
+      case "eth_gasPrice":
+      case "eth_maxPriorityFeePerGas": {
+        const r = await up(method, params);
+        if (minTip === 0n || !("result" in r) || typeof r.result !== "string" || !QUANTITY.test(r.result)) return r;
+        // A price that clears the floor: twice the base fee and the floor for a gas price (the headroom wallets put into a max fee, so a send priced from it stays above the floor when the base fee rises), the floor for a tip.
+        const floor = method === "eth_gasPrice" ? 2n * ((await baseFee()) ?? 0n) + minTip : minTip;
+        return { result: BigInt(r.result) >= floor ? r.result : "0x" + floor.toString(16) };
       }
       case "eth_getBlockByHash": {
         const f = await fin(); // the finalized number is read before the block, so the block cannot be newer than it

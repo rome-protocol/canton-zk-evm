@@ -60,10 +60,17 @@ describe("settings", () => {
   });
 
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
-    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, sendsPerHour: 20, sendBurst: 20, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
+    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, minTipWei: 0n, sendsPerHour: 20, sendBurst: 20, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: null, legCheckUrl: null });
     expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });
     for (const off of ["", "0"]) expect(load({ PUBLIC_RPC: off }).publicRpc.on).toBe(false);
     expect(load({ PUBLIC_RPC: "1" }).publicRpc.on).toBe(true);
+  });
+
+  it("takes the public RPC's tip floor from RPC_MIN_TIP_WEI as a whole number of wei of any size, off when empty or 0, and names a wrong one", () => {
+    expect(load({ RPC_MIN_TIP_WEI: "10000000000000" }).publicRpc.minTipWei).toBe(10n ** 13n);
+    expect(load({ RPC_MIN_TIP_WEI: "100000000000000000000000" }).publicRpc.minTipWei).toBe(10n ** 23n);
+    for (const off of ["", "0"]) expect(load({ RPC_MIN_TIP_WEI: off }).publicRpc.minTipWei).toBe(0n);
+    for (const bad of ["-1", "1.5", "10 gwei", "1e13"]) expect(() => load({ RPC_MIN_TIP_WEI: bad })).toThrow(/RPC_MIN_TIP_WEI/);
   });
 
   it("takes the address of the block builder's leg check from LEG_CHECK_URL, and names a wrong one", () => {
@@ -74,7 +81,7 @@ describe("settings", () => {
 
   it("takes the public RPC's settings and the tracker's from the environment, and names a wrong one", () => {
     const c = load({ PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "60", RPC_SEND_PER_HOUR: "15", RPC_SEND_BURST: "8", TRUSTED_IP_HEADER: "X-Real-IP", TRACKER_FILE: "/data/tracker.json", TRACKER_MAX: "50", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "3", TRACKER_MAX_PENDING_MINUTES: "15" });
-    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, sendsPerHour: 15, sendBurst: 8, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
+    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, minTipWei: 0n, sendsPerHour: 15, sendBurst: 8, heavyConcurrency: 8, heavyQueue: 16, trustedIpHeader: "x-real-ip", legCheckUrl: null });
     expect(c.tracker).toEqual({ file: "/data/tracker.json", max: 50, maxBytes: 4096, perSender: 3, maxPendingMinutes: 15 });
     expect(() => load({ PUBLIC_RPC: "yes" })).toThrow(/PUBLIC_RPC/);
     expect(() => load({ RPC_RATE_PER_MINUTE: "0" })).toThrow(/RPC_RATE_PER_MINUTE/);
