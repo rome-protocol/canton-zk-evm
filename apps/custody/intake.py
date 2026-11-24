@@ -10,6 +10,7 @@ transaction. A transfer that cannot be claimed is rejected, so the coin goes bac
 One JSON line on stdout for each accept, each reject and each transfer left pending.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -18,6 +19,7 @@ sys.path.insert(0, str(HERE))
 import builder as b
 import memo as memos
 import claimable
+import limits
 
 PKG = "#canton-zk-evm:Zk.Chain:"
 INTAKE, GATEWAY_TOKEN, RECEIPT, DEPOSIT_REQUEST = PKG + "Intake", PKG + "GatewayToken", PKG + "Receipt", PKG + "DepositRequest"
@@ -308,6 +310,21 @@ def preapproval_warning(ledger: "b.Ledger", gateway: str) -> None:
         say({"warning": "the gateway holds a Canton Coin transfer preapproval: coins reach it with no offer, so the intake cannot refuse what cannot be claimed; archive it", "preapprovals": [p["contractId"] for p in held]})
 
 
+def publish_limits(args, settings: Settings, payouts, state: dict) -> None:
+    """Writes the limits that this worker enforces (limits.py) for readers: once at the start of each poll round, so the file's `updatedAt` says how fresh they are. With no work folder nothing is written. A write that fails is said once and never stops the worker."""
+    if not args.work_dir:
+        return
+    doc = limits.document(datetime.now(timezone.utc), args.poll_seconds, settings.minimums if args.intake else None,
+                          payouts.min_payout if payouts is not None else None, payouts.max_offers if payouts is not None else None)
+    try:
+        limits.publish(args.work_dir, doc)
+        state["told"] = False
+    except OSError as e:
+        if not state["told"]:
+            state["told"] = True
+            say({"error": b.bounded_text(f"the limits file cannot be written ({type(e).__name__})")})
+
+
 def main(argv: list) -> int:
     args = parser().parse_args(argv)
     if not (args.intake or args.payout_offers):
@@ -325,7 +342,9 @@ def main(argv: list) -> int:
             say({"payouts": payouts.describe()})
     except b.BuilderError as e:
         raise SystemExit(str(e)) from None
+    published = {"told": False}
     while True:
+        publish_limits(args, settings, payouts if args.payout_offers else None, published)
         for worker in workers:
             try:
                 worker.poll()
