@@ -8,6 +8,8 @@ Every poll it reads the transfers to the gateway that wait for their receiver, a
 is at least that token's minimum and that can be claimed now (for a route memo, read live from the router's book on Ostia: the fee, the minimum and the memo's most fee), it makes the gateway accept the transfer (Intake_Accept, with the choice context of that token's registry), which makes a Receipt in the same
 transaction. A transfer that cannot be claimed is rejected, so the coin goes back to its sender at once. Everything else stays pending, for its sender to take back. It does nothing unless --intake is given.
 One JSON line on stdout for each accept, each reject and each transfer left pending.
+
+With --buy it is another worker, on its own (buy.py): it accepts the Canton Coin transfers to Rome's validator party that pass its checks and sends the chain's coin for them.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, uuid
 from datetime import datetime, timezone
@@ -247,6 +249,13 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--custody-alert-days", type=float, default=3, metavar="DAYS", help="as the builder's (default 3); only checked against the other two")
     ap.add_argument("--max-transfer-inputs", type=int, default=50, metavar="N", help="as the builder's (default 50)")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts that a token with no registry needs for its transfer factory, as the builder takes it")
+    ap.add_argument("--buy", action="store_true", default=env.get("CZE_BUY") == "1", help="the buy mode, on its own (also CZE_BUY=1): accept the Canton Coin transfers to --validator-party that pass its checks and send tROME for them (see README.md). Needs --validator-party, --price, --min-buy, --buy-key-file, --reth-rpc, --work-dir and --registry. Default: off")
+    ap.add_argument("--validator-party", default=env.get("CZE_VALIDATOR_PARTY", ""), metavar="PARTY", help="the buy mode's party: Rome's validator party, which the ledger user must act as (also CZE_VALIDATOR_PARTY)")
+    ap.add_argument("--price", default=env.get("CZE_BUY_PRICE", ""), metavar="CC", help="the buy mode's price: the Canton Coin that one tROME costs, plain decimal text (also CZE_BUY_PRICE)")
+    ap.add_argument("--min-buy", default=env.get("CZE_BUY_MIN", ""), metavar="CC", help="the buy mode's least buy: a smaller transfer stays pending, plain decimal text (also CZE_BUY_MIN)")
+    ap.add_argument("--buy-key-file", default=env.get("CZE_BUY_KEY_FILE", ""), metavar="FILE", help="a file with the private key the tROME is sent from, 64 hex digits, mode 0600 (also CZE_BUY_KEY_FILE). Never printed")
+    ap.add_argument("--max-meta-bytes", type=int, default=int(env.get("CZE_MAX_META_BYTES", 0)), metavar="N", help="the buy mode's cap on the bytes of a transfer's meta (the UTF-8 bytes of its keys and values); a larger transfer stays pending (also CZE_MAX_META_BYTES). Default 0: no cap")
+    ap.add_argument("--reth-rpc", default=env.get("CZE_RETH_RPC_URL", ""), metavar="URL", help="reth's JSON-RPC, where the buy mode sends from (also CZE_RETH_RPC_URL). Never printed")
     return ap
 
 
@@ -264,11 +273,11 @@ def gateway_used(url: str, address: str):
     return used
 
 
-def ledger_of(args) -> "b.Ledger":
-    """A builder ledger client that reads as the gateway, with the ledger user's token."""
+def ledger_of(args, party: str = None) -> "b.Ledger":
+    """A builder ledger client that reads as the gateway (as `party`, for the buy mode), with the ledger user's token."""
     bearer, bearer_file = os.environ.get("CZE_LEDGER_TOKEN", ""), args.bearer_file
     fields = {"ws_url": "", "engine_url": "", "jwt_secret": b"", "ledger_url": args.ledger_url, "ledger_user": args.ledger_user, "ledger_token": bearer,
-              "party": args.gateway_party, "fee_recipient": "", "genesis": "", "work_dir": args.work_dir, "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": bearer_file}
+              "party": party or args.gateway_party, "fee_recipient": "", "genesis": "", "work_dir": args.work_dir, "make_input_cmd": "", "prove_cmd": "", "ledger_token_file": bearer_file}
     return b.Ledger(b.Config(**fields))
 
 
@@ -299,15 +308,19 @@ def settings_of(args) -> Settings:
     return Settings(args.gateway_party, registries, b.read_registry_tokens(args.registry_token_file, registries), parse_minimums(args.min_deposit), router, used, ostia)
 
 
-def preapproval_warning(ledger: "b.Ledger", gateway: str) -> None:
-    """The gateway must hold no Canton Coin transfer preapproval: with one, a transfer completes at once and there is no offer for the intake to refuse. One `warning` line when it holds one, or when that cannot be read."""
+def preapproval_warning(ledger: "b.Ledger", gateway: str, who: str = "gateway") -> None:
+    """The gateway must hold no Canton Coin transfer preapproval: with one, a transfer completes at once and there is no offer for the intake to refuse. One `warning` line when it holds one, or when that cannot be read.
+    `who` names the party in the line: the buy mode asks the same of the validator party."""
     try:
         held = [p for p in ledger.active(PREAPPROVAL) if p.get("receiver") == gateway]
     except Exception as e:   # the check never stops the worker
-        say({"warning": b.bounded_text(f"the gateway's Canton Coin transfer preapproval could not be checked ({type(e).__name__})")})
+        say({"warning": b.bounded_text(f"the {who}'s Canton Coin transfer preapproval could not be checked ({type(e).__name__})")})
         return
     if held:
-        say({"warning": "the gateway holds a Canton Coin transfer preapproval: coins reach it with no offer, so the intake cannot refuse what cannot be claimed; archive it", "preapprovals": [p["contractId"] for p in held]})
+        if who == "gateway":
+            say({"warning": "the gateway holds a Canton Coin transfer preapproval: coins reach it with no offer, so the intake cannot refuse what cannot be claimed; archive it", "preapprovals": [p["contractId"] for p in held]})
+        else:
+            say({"warning": f"the {who} holds a Canton Coin transfer preapproval: coins reach it with no offer, so a transfer that fails a check cannot be left pending; archive it", "preapprovals": [p["contractId"] for p in held]})
 
 
 def publish_limits(args, settings: Settings, payouts, state: dict) -> None:
@@ -325,8 +338,32 @@ def publish_limits(args, settings: Settings, payouts, state: dict) -> None:
             say({"error": b.bounded_text(f"the limits file cannot be written ({type(e).__name__})")})
 
 
+def run_buy(args) -> int:
+    """The buy mode: its own process, acting as the validator party (buy.py)."""
+    import buy
+    buy.check_args(args)
+    try:
+        settings = buy.settings_of(args)
+        ledger = ledger_of(args, args.validator_party)
+        worker = buy.Buy.from_args(args, ledger, settings)
+        preapproval_warning(ledger, settings.gateway, "validator party")
+        say({"buy": worker.describe()})
+    except b.BuilderError as e:
+        raise SystemExit(str(e)) from None
+    while True:
+        try:
+            worker.poll()
+        except Exception as e:   # the ledger or reth cannot be read now: try again at the next poll
+            say({"error": b.bounded_text(f"{type(e).__name__}: {e}")})
+        if args.once:
+            return 0
+        time.sleep(args.poll_seconds)
+
+
 def main(argv: list) -> int:
     args = parser().parse_args(argv)
+    if args.buy:
+        return run_buy(args)
     if not (args.intake or args.payout_offers):
         print("the custody worker is off: pass --intake and/or --payout-offers (or CZE_INTAKE=1, CZE_PAYOUT_OFFERS=1) to switch it on", file=sys.stderr)
         return 0

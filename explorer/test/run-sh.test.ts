@@ -58,11 +58,13 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
   it("gives the explorer the producer's work folder read-only with its status file named (for the deposit minimum), and no journal, when the folder is there", () => {
     expect(start()).not.toContain("/run/explorer/producer");
     expect(start()).not.toContain("CUSTODY_LIMITS_FILE");
+    expect(start()).not.toContain("PAID_PATH_FILE");
     mkdirSync(join(state, "builder"));
     const cmd = start();
     expect(cmd).toContain(` -v ${join(state, "builder")}:/run/explorer/producer:ro`);
     expect(cmd).toContain(" -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json");
     expect(cmd).toContain(" -e CUSTODY_LIMITS_FILE=/run/explorer/producer/custody-limits.json");
+    expect(cmd).toContain(" -e PAID_PATH_FILE=/run/explorer/producer/buy-status.json");
     expect(cmd).not.toContain("JOURNAL_DIR");
   });
 

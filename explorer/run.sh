@@ -184,9 +184,9 @@ explorer_args() {
     PUBLIC_RPC RPC_RATE_PER_MINUTE RPC_MIN_TIP_WEI RPC_SEND_PER_HOUR RPC_SEND_BURST RPC_HEAVY_CONCURRENCY RPC_HEAVY_QUEUE LEG_CHECK_URL TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
-  # The builder's status file, for the least a deposit may be (GET /api/bridge/minimums), and the custody worker's limits file in the same folder (GET /api/bridge/custody-limits): the work folder read-only, as the indexer has it. Without the folder there is no minimum.
+  # The builder's status file, for the least a deposit may be (GET /api/bridge/minimums), the custody worker's limits file in the same folder (GET /api/bridge/custody-limits) and the buy worker's status file (the paid path of /api/status): the work folder read-only, as the indexer has it. Without the folder there is no minimum.
   local work; work=$(producer_dir)
-  [ ! -d "$work" ] || ARGS+=(-v "$work:/run/explorer/producer:ro" -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json -e CUSTODY_LIMITS_FILE=/run/explorer/producer/custody-limits.json)
+  [ ! -d "$work" ] || ARGS+=(-v "$work:/run/explorer/producer:ro" -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json -e CUSTODY_LIMITS_FILE=/run/explorer/producer/custody-limits.json -e PAID_PATH_FILE=/run/explorer/producer/buy-status.json)
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
 }

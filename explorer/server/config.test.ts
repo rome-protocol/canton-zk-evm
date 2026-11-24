@@ -374,3 +374,11 @@ describe("the custody worker's limits file", () => {
     expect(load({ CUSTODY_LIMITS_FILE: "/run/explorer/producer/custody-limits.json" }).custodyLimitsFile).toBe("/run/explorer/producer/custody-limits.json");
   });
 });
+
+describe("the buy worker's status file", () => {
+  it("is off until PAID_PATH_FILE names a file", () => {
+    expect(load().paidPathFile).toBeNull();
+    expect(load({ PAID_PATH_FILE: "  " }).paidPathFile).toBeNull();
+    expect(load({ PAID_PATH_FILE: "/run/explorer/buy/buy-status.json" }).paidPathFile).toBe("/run/explorer/buy/buy-status.json");
+  });
+});

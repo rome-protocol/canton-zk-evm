@@ -123,7 +123,7 @@ function checkLeg(l: Obj) {
 
 function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown) {
   const b = body as Obj;
-  same(b, FIELDS[kind]);
+  same(b, kind === "status" && !("paidPath" in b) ? FIELDS.status.filter((f) => f !== "paidPath") : FIELDS[kind]); // paidPath is there only while the buy worker is on
   if (kind === "status") {
     same(b.coin, FIELDS.coin); same(b.pins, FIELDS.pins); for (const k of (b.pins as { keys: Obj[] }).keys) same(k, FIELDS.pinsKey); same(b.faucet, FIELDS.faucet);
     expect(typeof b.publicRpc).toBe("boolean");

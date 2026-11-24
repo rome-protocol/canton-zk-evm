@@ -7,7 +7,9 @@ export const pick = <T extends object, K extends keyof T>(o: T, fields: readonly
 
 /** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
 export const FIELDS = {
-  status: ["chainId", "chainName", "networkName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "rpcMinTipWei", "ownTraffic", "swapUrl", "bridgeUrl", "notice", "notices", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
+  status: ["chainId", "chainName", "networkName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "rpcMinTipWei", "ownTraffic", "swapUrl", "bridgeUrl", "notice", "notices", "indexHead", "indexLag", "deriveCursor", "chainInstance", "paidPath"],
+  /** The paid path in /api/status, while the buy worker is on: the price and the least buy (Canton Coin, plain decimal text), the party to send to, and `open` or `sold out`. */
+  paidPath: ["price", "minBuy", "party", "state"],
   coin: ["symbol", "decimals"],
   /** A notice in /api/status while there is one: the text and the two times of the planned work, and the level ("major") and the link when it has them. */
   notice: ["text", "startsAt", "endsAt"],
