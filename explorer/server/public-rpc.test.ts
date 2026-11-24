@@ -655,7 +655,12 @@ describe("the send limit", () => {
     expect(errOf(await send(rpc, raw, "2001:db8:1:2::2"))?.code).toBe(-32005); // the same /64
     expect(errOf(await send(rpc, raw, "2001:db8:1:3::1"))).toBeUndefined(); // another /64
     const read = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId" });
-    for (let i = 0; i < 50; i++) expect((await rpc(read, "2001:db8:1:2::1")).status).toBe(200);
+    for (let i = 0; i < 50; i++) {
+      const a = await rpc(read, "2001:db8:1:2::1");
+      expect(a.status).toBe(200);
+      expect(errOf(a)).toBeUndefined();
+      expect((a.body as { result?: string }).result).toBe(hx(CHAIN));
+    }
   });
 });
 
