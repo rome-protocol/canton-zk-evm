@@ -49,7 +49,7 @@ export function softRow(m: SoftMeasures, limits: SoftLimits): HealthRow {
   };
 }
 
-const AT_STOP = "r.stop_state = 'stopped' and (a.outcome is null or a.resolved_outcome = 'restarted')";
+const AT_STOP = "coalesce(r.stop_state, '') = 'stopped' and (a.outcome is null or a.resolved_outcome = 'restarted')";
 const whole = (v: unknown): number | null => (v === null || v === undefined ? null : Math.round(Number(v)));
 
 /** Reads the four measures from the lifecycle tables, against the clock `nowMs`. */
