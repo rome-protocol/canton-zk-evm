@@ -33,7 +33,7 @@
 # FAUCET_CLIENT_KEY_FILE (the faucet's hash key) is made as <state>/faucet/client-key (mode 0600) when there is a faucet key and none is named.
 # `start` applies the migrations (node server/db/cli.ts migrate), then runs the indexer (node server/indexer/cli.ts) as its own container, EXPLORER_INDEXER_CONTAINER
 # (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), GENESIS_FILE (default <state>/genesis.json, the genesis reth runs), INDEX_DERIVE, INDEX_POLL_MS,
-# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads the producer's journal and status.json from the builder's work folder (CZE_WORK_DIR, default <state>/builder), mounted read-only when it exists. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
+# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS, and the limits of the soft_confirmation row (SOFT_UNDONE_BLOCKS_PER_DAY, SOFT_CONFIRM_P99_MS, SOFT_RERUN_FAILED_PER_DAY). It reads the producer's journal and status.json from the builder's work folder (CZE_WORK_DIR, default <state>/builder), mounted read-only when it exists. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
 # explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
 # a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
 # The default database lives and dies with its network. For a persistent network (<state>/persist.env, CZE_PERSIST=1) it is kept across `stop`, and
@@ -211,7 +211,7 @@ indexer_args() {
   local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
   [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
   [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
-  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS CUSTODY_MS CUSTODY_LIMIT; do
+  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS CUSTODY_MS CUSTODY_LIMIT SOFT_UNDONE_BLOCKS_PER_DAY SOFT_CONFIRM_P99_MS SOFT_RERUN_FAILED_PER_DAY; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The custody read (the registered tokens and what the gateway holds of each) is made as the gateway party, with a token of its own: the indexer's, never the explorer's.
