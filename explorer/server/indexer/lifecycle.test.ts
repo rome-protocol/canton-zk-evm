@@ -373,9 +373,43 @@ describe.skipIf(!TEST_URL)("the soft-confirmation row", () => {
       await attempt(pool, 107, { number: 57, txs: 3, cutAgoMs: 2 * 86_400_000, outcome: "refused" });                   // two days ago
       const row = await run(pool);
       expect(row.status).toBe("degraded");
-      expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, firstUndoneBlock: 50 });
-      expect(row.detail).toBe("2 blocks with transactions were undone in the last day (the first is block 50)");
+      expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 0, firstUndoneBlock: 50 });
+      expect(row.detail).toBe("2 blocks with transactions were undone in the last day, not at a planned stop (the first is block 50)");
       expect((await run(pool, { ...SOFT_DEFAULTS, undonePerDay: 2 })).status).toBe("ok");
+    });
+  });
+
+  it("shows a block dropped when the producer stopped cleanly, but does not degrade the row for it", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      await pool.query("update producer_runs set stop_state = 'stopped' where run_id = $1", [RUN1]);
+      await attempt(pool, 100, { number: 50, txs: 2, cutAgoMs: 3_600_000 });                                    // no answer: dropped at the stop
+      await attempt(pool, 101, { number: 51, txs: 1, cutAgoMs: 3_600_000, resolved: "restarted" });             // settled as restarted at the next start
+      const row = await run(pool);
+      expect(row.status).toBe("ok");
+      expect(row.detail).toBeNull();
+      expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 2, firstUndoneBlock: 50 });
+      // a block Canton refused in the same run is not a planned stop
+      await attempt(pool, 102, { number: 52, txs: 1, cutAgoMs: 3_600_000, outcome: "refused" });
+      const refused = await run(pool);
+      expect(refused.status).toBe("degraded");
+      expect(refused.value).toMatchObject({ undoneBlocksLastDay: 3, undoneAtPlannedStopLastDay: 2 });
+      expect(refused.detail).toBe("1 block with transactions was undone in the last day, not at a planned stop (the first is block 52)");
+    });
+  });
+
+  it("degrades the row for the same blocks when the producer run crashed or never wrote its stop", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      await attempt(pool, 100, { number: 50, txs: 2, cutAgoMs: 3_600_000 });
+      await attempt(pool, 101, { number: 51, txs: 1, cutAgoMs: 3_600_000, resolved: "restarted" });
+      for (const state of ["crashed", null]) {
+        await pool.query("update producer_runs set stop_state = $2 where run_id = $1", [RUN1, state]);
+        const row = await run(pool);
+        expect(row.status).toBe("degraded");
+        expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 0 });
+        expect(row.detail).toBe("2 blocks with transactions were undone in the last day, not at a planned stop (the first is block 50)");
+      }
     });
   });
 

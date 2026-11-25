@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SOFT_DEFAULTS, softRow, type SoftMeasures } from "./soft.ts";
 
 const calm: SoftMeasures = {
-  undone: { count: 0, first: null },
+  undone: { count: 0, first: null, atStop: 0, firstUnplanned: null },
   confirm: { count: 40, p50Ms: 9_700, p99Ms: 13_700 },
   sent: { p99Ms: 5_600 },
   rerunFailed: { count: 0, first: null },
@@ -13,7 +13,7 @@ describe("the row that watches soft confirmation", () => {
     const r = softRow(calm, SOFT_DEFAULTS);
     expect(r).toMatchObject({ id: "soft_confirmation", status: "ok", detail: null });
     expect(r.value).toEqual({
-      undoneBlocksLastDay: 0, firstUndoneBlock: null,
+      undoneBlocksLastDay: 0, undoneAtPlannedStopLastDay: 0, firstUndoneBlock: null,
       inBlockToConfirmedMs: { p50: 9_700, p99: 13_700, transactions: 40 }, sentToInBlockP99Ms: 5_600,
       rerunFailedLastDay: 0, firstRerunFailed: null,
     });
@@ -25,9 +25,18 @@ describe("the row that watches soft confirmation", () => {
   });
 
   it("is degraded when a block with transactions was undone, and names the first one", () => {
-    const r = softRow({ ...calm, undone: { count: 2, first: 9_001 } }, SOFT_DEFAULTS);
+    const r = softRow({ ...calm, undone: { count: 2, first: 9_001, atStop: 0, firstUnplanned: 9_001 } }, SOFT_DEFAULTS);
     expect(r.status).toBe("degraded");
-    expect(r.detail).toBe("2 blocks with transactions were undone in the last day (the first is block 9001)");
+    expect(r.detail).toBe("2 blocks with transactions were undone in the last day, not at a planned stop (the first is block 9001)");
+  });
+
+  it("keeps the blocks dropped at a planned stop in the value and does not degrade for them; only the rest count against the limit", () => {
+    const stopOnly = softRow({ ...calm, undone: { count: 3, first: 10, atStop: 3, firstUnplanned: null } }, SOFT_DEFAULTS);
+    expect(stopOnly.status).toBe("ok");
+    expect(stopOnly.value).toMatchObject({ undoneBlocksLastDay: 3, undoneAtPlannedStopLastDay: 3, firstUndoneBlock: 10 });
+    const mixed = softRow({ ...calm, undone: { count: 3, first: 10, atStop: 2, firstUnplanned: 12 } }, SOFT_DEFAULTS);
+    expect(mixed.status).toBe("degraded");
+    expect(mixed.detail).toBe("1 block with transactions was undone in the last day, not at a planned stop (the first is block 12)");
   });
 
   it("is degraded when the confirmation takes longer than the limit at the 99th percentile of the last hour", () => {
@@ -45,7 +54,7 @@ describe("the row that watches soft confirmation", () => {
   });
 
   it("the limits are settings: a count up to the limit is ok, and the row says the limits it was held to", () => {
-    const m = { ...calm, undone: { count: 3, first: 5 }, rerunFailed: { count: 2, first: "0x01" } };
+    const m = { ...calm, undone: { count: 3, first: 5, atStop: 0, firstUnplanned: 5 }, rerunFailed: { count: 2, first: "0x01" } };
     expect(softRow(m, { undonePerDay: 3, confirmP99Ms: 60_000, rerunFailedPerDay: 2 }).status).toBe("ok");
     const r = softRow(m, { undonePerDay: 2, confirmP99Ms: 10_000, rerunFailedPerDay: 1 });
     expect(r.status).toBe("degraded");
@@ -54,6 +63,6 @@ describe("the row that watches soft confirmation", () => {
   });
 
   it("never carries a path, a host or a URL", () => {
-    expect(JSON.stringify(softRow({ ...calm, undone: { count: 1, first: 1 } }, SOFT_DEFAULTS))).not.toMatch(/\/|:\/\//);
+    expect(JSON.stringify(softRow({ ...calm, undone: { count: 1, first: 1, atStop: 0, firstUnplanned: 1 } }, SOFT_DEFAULTS))).not.toMatch(/\/|:\/\//);
   });
 });
