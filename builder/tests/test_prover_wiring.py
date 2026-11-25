@@ -182,6 +182,14 @@ class Wiring(Loop):
             with mock.patch.object(sys, "argv", ["builder", "run", "--no-worker-retry-seconds", bad]), contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(b.main(), 1)
             self.assertIn("--no-worker-retry-seconds must be at least 1", out.getvalue())
+        self.assertEqual(d.prover_cooldown_max_seconds, pv.COOLDOWN_MAX)   # 300 unless it is set
+        self.assertEqual(ap.parse_args(["run", "--prover-cooldown-max-seconds", "60"]).prover_cooldown_max_seconds, 60)
+        for bad in ("0", "29", "-3", "nan", "inf"):
+            with mock.patch.object(sys, "argv", ["builder", "run", "--prover-cooldown-max-seconds", bad]), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(b.main(), 1)
+            self.assertIn("--prover-cooldown-max-seconds must be at least 30", out.getvalue())
+        self.assertEqual(b.new_pool(pv.parse_provers([f"a={A}", f"b={B_}"], "x"), 60).cooldown_max, pv.COOLDOWN_MAX)
+        self.assertEqual(b.new_pool(pv.parse_provers([f"a={A}", f"b={B_}"], "x"), 60, cooldown_max=60).cooldown_max, 60)
         with self.assertRaises(ValueError):
             pv.parse_provers(["a=nonsense"], "x")
         for bad in ("0", "0.5", "-3", "nan", "inf"):   # the prove command reads whole seconds, and 0 means no limit there

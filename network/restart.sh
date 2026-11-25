@@ -8,6 +8,8 @@
 # With CZE_CANTON=external (recorded in persist.env by up.sh) there is no database for Canton and no Canton to start: the participant is already
 # running, so this checks that it still has the package and the chain, starts the sidecar here if up.sh did, and moves reth to the chain's head.
 # It refuses to run without persistent state, or if any of the services is still running (network/down.sh stops them).
+# CZE_LOCAL_PROVER=0 (default 1): the proofs are made on other machines (the builder's --prover list), so no prover is started here and the local prover's pid files are
+# not looked at. The check that the ZisK client is installed stays.
 # State comes from $CZE_STATE_DIR (default ./state), as for up.sh.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,6 +20,8 @@ export CZE_PROVER_STATE=${CZE_PROVER_STATE:-$CZE_STATE_DIR/prover}
 export CZE_PERSIST=1 CZE_RESUME=1
 STATE=$CZE_STATE_DIR
 NET=$STATE/net
+LOCAL_PROVER=${CZE_LOCAL_PROVER:-1}
+case $LOCAL_PROVER in 0|1) ;; *) echo "FAIL: CZE_LOCAL_PROVER is 0 or 1, not '$LOCAL_PROVER'" >&2; exit 1 ;; esac
 fail() { echo "FAIL: $*" >&2; exit 1; }
 step() { echo "== $* ($(date -u +%T))"; }
 background() { local name=$1; shift; nohup "$@" > "$NET/logs/$name.log" 2>&1 < /dev/null & echo $! > "$NET/$name.pid"; }
@@ -59,7 +63,9 @@ umask 077
 mkdir -p "$NET/logs"
 # Nothing of this chain may be running: a pid file left by a reboot is stale, one that points at a live process is an error.
 shopt -s nullglob
-for f in "$NET"/canton.pid "$NET"/sidecar-*.pid "$CZE_PROVER_STATE"/worker.pid "$CZE_PROVER_STATE"/coordinator.pid; do
+pidfiles=("$NET"/canton.pid "$NET"/sidecar-*.pid)
+[ "$LOCAL_PROVER" = 0 ] || pidfiles+=("$CZE_PROVER_STATE"/worker.pid "$CZE_PROVER_STATE"/coordinator.pid)
+for f in "${pidfiles[@]}"; do
   [ -f "$f" ] || continue
   if kill -0 "$(cat "$f")" 2>/dev/null && ps -p "$(cat "$f")" -o args= 2>/dev/null | grep -qE 'canton|zk-sidecar|zisk-'; then
     fail "$f is a running process: network/down.sh first"
@@ -112,7 +118,7 @@ else
 fi
 
 step "the prover"
-"$ROOT/prover/start.sh"
+if [ "$LOCAL_PROVER" = 0 ]; then echo "CZE_LOCAL_PROVER=0: no prover is started here (the proofs come from the builder's --prover list)"; else "$ROOT/prover/start.sh"; fi
 
 if [ "$CANTON_MODE" = external ]; then
   step "the participant at $CZE_LEDGER_URL"

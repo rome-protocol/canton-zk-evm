@@ -5,7 +5,7 @@
 #      rules hash, must be the recorded ones (prover/fixtures/session.txt), or this stops before starting anything
 #   3. reth, only through network/reth/launch.sh, with peer discovery off and checked
 #   4. the two sidecars (operator's on 8085, confirmer's on 8086), pinned to programVK and rootC
-#   5. the ZisK prover (prover/start.sh)
+#   5. the ZisK prover (prover/start.sh); with CZE_LOCAL_PROVER=0 none is started here (the proofs are made on other machines)
 #   6. Canton: one synchronizer, three participants (network/canton/), the Daml package uploaded and vetted
 #   7. the chain: the operator and the gateway propose it with genesis = reth's block 0, which holds the gateway contract's
 #      code at GATEWAY_ADDRESS, and the confirmer accepts
@@ -29,6 +29,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export CZE_STATE_DIR=${CZE_STATE_DIR:-$ROOT/state}
 export CZE_PROVER_STATE=${CZE_PROVER_STATE:-$CZE_STATE_DIR/prover}
 NET=$CZE_STATE_DIR/net
+LOCAL_PROVER=${CZE_LOCAL_PROVER:-1}
+case $LOCAL_PROVER in 0|1) ;; *) echo "FAIL: CZE_LOCAL_PROVER is 0 or 1, not '$LOCAL_PROVER'" >&2; exit 1 ;; esac
 umask 077
 mkdir -p "$NET/logs"
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -124,7 +126,7 @@ else
 fi
 
 step "the prover"
-"$ROOT/prover/start.sh"
+if [ "$LOCAL_PROVER" = 0 ]; then echo "CZE_LOCAL_PROVER=0: no prover is started here (the proofs come from the builder's --prover list)"; else "$ROOT/prover/start.sh"; fi
 
 step "the builder's Python packages"
 [ -x "$CZE_STATE_DIR/venv/bin/python3" ] || python3 -m venv "$CZE_STATE_DIR/venv"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Stops what network/up.sh (or network/restart.sh) started: Canton, the sidecars, the prover and reth. Safe to run twice.
+# With CZE_LOCAL_PROVER=0 (default 1) no prover was started here, so none is stopped and the local prover's pid files are not looked at.
 #   down.sh          a network made without CZE_PERSIST also loses its data, as always. A persistent network keeps everything: its
 #                    databases, reth's data and the secrets, so network/restart.sh brings the same chain back. The explorer's database that
 #                    explorer/run.sh made for a network that is not persistent goes with the chain.
@@ -14,6 +15,8 @@ PROVER=${CZE_PROVER_STATE:-$STATE/prover}
 # The builder's in-doubt command and the transactions it kept belong to one chain. When that chain goes, they go with it (their exact paths, nothing else
 # in the builder's folder): a new chain must not meet them, and the builder refuses a record made on another chain.
 forget_builder_record() { rm -f "${CZE_WORK_DIR:-$STATE/builder}/unresolved.json" "${CZE_WORK_DIR:-$STATE/builder}/kept-transactions.json"; }
+LOCAL_PROVER=${CZE_LOCAL_PROVER:-1}
+case $LOCAL_PROVER in 0|1) ;; *) echo "FAIL: CZE_LOCAL_PROVER is 0 or 1, not '$LOCAL_PROVER'" >&2; exit 2 ;; esac
 WIPE=0
 case ${1:-} in
   "") ;;
@@ -48,8 +51,10 @@ EXTERNAL=0
 # Canton first, so that it closes its databases before they stop.
 stop "$NET/canton.pid" 'canton'
 for f in "$NET"/sidecar-*.pid; do stop "$f" 'zk-sidecar'; done
-stop "$PROVER/worker.pid" 'zisk-worker'
-stop "$PROVER/coordinator.pid" 'zisk-coordinator'
+if [ "$LOCAL_PROVER" = 1 ]; then
+  stop "$PROVER/worker.pid" 'zisk-worker'
+  stop "$PROVER/coordinator.pid" 'zisk-coordinator'
+fi
 if [ "$PERSISTENT" = 1 ]; then
   [ "$EXTERNAL" = 1 ] || CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" stop
   CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" stop
