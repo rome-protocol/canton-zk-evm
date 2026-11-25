@@ -66,6 +66,10 @@ export interface RpcDoor { handler: PublicRpc; ipHeader: string | null }
 const JSON_TYPE = { "content-type": "application/json" };
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
 
+/** One transaction's record, `GET /api/tx/<hash>`, is read from a browser page on another origin (an app that follows its own transaction), by any origin. */
+const TX_RECORD = /^\/api\/tx\/[^/]+$/;
+const TX_CORS = { "access-control-allow-origin": "*" };
+
 /** The Etherscan door is read from a browser too (ethers' EtherscanProvider), by any origin, as Etherscan's own API is. */
 const ETHERSCAN_CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
 
@@ -190,9 +194,10 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         if (wait !== null) return void res.writeHead(302, { location: backTo("busy", { wait }), "cache-control": "no-store", "referrer-policy": "no-referrer" }).end();
       }
       // The pages' REST routes share one rate per client, and `/healthz` is in it: it answers the same as `/api/status` (reth and Canton on every call), so it must not be a way round the limit. The rate is far above any proxy's probe. A faucet request (`POST /api/faucet`) has the faucet's own limits, and the live stream its own count; `GET /api/faucet` and the ticket route read from reth, so they take a token like the rest.
+      const cors = TX_RECORD.test(pathname) && (method === "GET" || method === "HEAD") ? TX_CORS : {};
       if ((pathname.startsWith("/api/") && !(method === "POST" && pathname === "/api/faucet")) || pathname === "/healthz") {
         const wait = limits.rest.take(clientIp(req, ipHeader));
-        if (wait !== null) return void res.writeHead(429, { ...JSON_TYPE, "cache-control": "no-store", ...retryAfter(wait) }).end(JSON.stringify({ error: REST_REFUSED(wait) }));
+        if (wait !== null) return void res.writeHead(429, { ...JSON_TYPE, ...cors, "cache-control": "no-store", ...retryAfter(wait) }).end(JSON.stringify({ error: REST_REFUSED(wait) }));
       }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req, pathname === "/api/verify" ? VERIFY_BODY_MAX : MAX_BODY) : undefined;
@@ -201,11 +206,11 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const text = textOf(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
         // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.
-        const out: Record<string, string> = { "cache-control": "no-store", "content-type": "application/json", ...headers };
+        const out: Record<string, string> = { "cache-control": "no-store", "content-type": "application/json", ...headers, ...cors };
         const zip = text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
         if (zip && out.etag) out.etag = out.etag.replace(/"$/, '-gz"');
         if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {
-          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] as string, vary: "accept-encoding" }).end();
+          return void res.writeHead(304, { ...cors, etag: out.etag, "cache-control": out["cache-control"] as string, vary: "accept-encoding" }).end();
         }
         if (zip) {
           const zipped = await gzipAsync(text);

@@ -126,7 +126,7 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
     const b = await boot();
     expect(await b.get({ action: "eth_gasPrice" })).toEqual(rpcOk("0x3b9aca00"));
     expect(await b.get({ action: "eth_estimateGas", to: ADDR, data: "0x", value: "0x1", gasPrice: "0x1", gas: "0x5208" })).toEqual(rpcOk("0x5208"));
-    expect(b.asked.eth_estimateGas?.[0]).toEqual([{ to: ADDR, data: "0x", value: "0x1", gasPrice: "0x1", gas: "0x5208" }, "0x5"]); // the public RPC reads it at the final block
+    expect(b.asked.eth_estimateGas?.[0]).toEqual([{ to: ADDR, data: "0x", value: "0x1", gasPrice: "0x1", gas: "0x5208" }, "latest"]); // an estimate with no block is priced at the newest block
   });
 
   it("eth_sendRawTransaction goes through the public RPC's send path: reth takes it and the tracker follows it", async () => {

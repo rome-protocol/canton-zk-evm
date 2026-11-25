@@ -13,8 +13,10 @@ beforeEach(async () => {
   writeFileSync(join(dir, "dist", "index.html"), "<html>home</html>");
   writeFileSync(join(dir, "dist", "assets", "app.js"), "export {}");
   writeFileSync(join(dir, "secret.txt"), "not for the web");
-  const api = async (method: string, target: string, body?: string) =>
+  const api = async (method: string, target: string, body?: string): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> =>
     target === "/healthz" ? { status: 503, body: { ok: false } }
+    : target === "/api/tx/missing" ? { status: 404, body: { error: "no such transaction" } }
+    : target === "/api/tx/cached" ? { status: 200, body: { ok: true }, headers: { etag: '"v1"', "cache-control": "max-age=3" } }
     : target === "/api/slow-down" ? { status: 429, body: { error: "wait" }, headers: { "Retry-After": "7" } }
     : { status: 200, body: { method, target, ...(body === undefined ? {} : { received: body }) } };
   server = createHttpServer(api, join(dir, "dist"));
@@ -38,6 +40,31 @@ describe("the http server", () => {
     expect(await res.json()).toEqual({ method: "GET", target: "/api/status?x=1" });
     expect((await get("/healthz")).status).toBe(503);
     expect(await (await get("/api/faucet", { method: "POST" })).json()).toEqual({ method: "POST", target: "/api/faucet", received: "" });
+  });
+
+  it("lets any page read one transaction's record (GET /api/tx/<hash>), and no other route of the api", async () => {
+    const hash = "0x" + "ab".repeat(32);
+    const one = await get(`/api/tx/${hash}`);
+    expect(one.status).toBe(200);
+    expect(one.headers.get("access-control-allow-origin")).toBe("*");
+    expect(one.headers.get("cache-control")).toBe("no-store");
+    expect((await get(`/api/tx/${hash}`, { method: "HEAD" })).headers.get("access-control-allow-origin")).toBe("*");
+    expect((await get(`/api/tx/${hash}?x=1`)).headers.get("access-control-allow-origin")).toBe("*");
+    for (const path of ["/api/status", "/api/tx", "/api/tx/", `/api/tx/${hash}/trace`, "/api/blocks/1", "/healthz"]) {
+      expect(`${path} ${(await get(path)).headers.get("access-control-allow-origin")}`).toBe(`${path} null`);
+    }
+    expect((await get(`/api/tx/${hash}`, { method: "POST", body: "{}" })).headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("gives a page the same header when the record is not there, and on an answer that has not changed", async () => {
+    const miss = await get("/api/tx/missing");
+    expect(miss.status).toBe(404);
+    expect(miss.headers.get("access-control-allow-origin")).toBe("*");
+    const fresh = await get("/api/tx/cached");
+    expect(fresh.headers.get("access-control-allow-origin")).toBe("*");
+    const same = await get("/api/tx/cached", { headers: { "if-none-match": '"v1"' } });
+    expect(same.status).toBe(304);
+    expect(same.headers.get("access-control-allow-origin")).toBe("*");
   });
 
   it("hands a POST's body to the api, and sets the headers the api asks for", async () => {
