@@ -35,6 +35,8 @@ export interface ApiStatus {
   /** The Ostia Swap site and the Ostia Bridge site, when this deployment names them (https addresses); null when it does not. Absent from a server older than this: read as null. */
   swapUrl?: string | null;
   bridgeUrl?: string | null;
+  /** The paid path, while the buy worker is on: what one coin costs in Canton Coin (`price`) and the least buy (`minBuy`), both plain decimal text, the party to send Canton Coin to, and whether the stock is `open` or `sold out`. Absent when the worker is off, and from a server older than this. */
+  paidPath?: { price: string; minBuy: string; party: string; state: "open" | "sold out" };
   /** A message about planned work, set by the operators: its plain text and the ISO times it starts and ends. Null when there is none (or it has ended); absent from a server older than this. */
   notice?: StatusNotice | null;
   /** Every notice that has not ended, major first; a server from before this field has only `notice`. */

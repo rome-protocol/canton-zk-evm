@@ -13,7 +13,7 @@ const answer = (code: number, body: unknown) => vi.stubGlobal("fetch", vi.fn(asy
 
 describe("the API client", () => {
   it("holds the status fixture to the fields the server serves, so the pages are tested on what they will get", () => {
-    expect(Object.keys(status()).sort()).toEqual([...FIELDS.status].sort());
+    expect(Object.keys(status()).sort()).toEqual(FIELDS.status.filter((f) => f !== "paidPath").sort()); // paidPath is there only while the buy worker is on
     expect(Object.keys(status().latest[0]!).sort()).toEqual([...FIELDS.latest].sort());
     expect(Object.keys(status().final!).sort()).toEqual([...FIELDS.final].sort());
     expect(Object.keys(status().proving!).sort()).toEqual([...FIELDS.proving].sort());

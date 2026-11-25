@@ -26,6 +26,7 @@ import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
 import { createCustodyLimits } from "./custody-limits.ts";
+import { createPaidPath } from "./paid-path.ts";
 import { createMinimums } from "./minimums.ts";
 import { createNotices, type Notice } from "./notice.ts";
 
@@ -119,6 +120,8 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return l && { ...pick(l, FIELDS.custodyLimitsNow), minDeposits: l.minDeposits && l.minDeposits.map((m) => pick(m, FIELDS.custodyLeast)), minPayouts: l.minPayouts && l.minPayouts.map((m) => pick(m, FIELDS.custodyLeast)) };
   };
 
+  const paidPath = createPaidPath({ file: config.paidPathFile, now });
+
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
@@ -138,6 +141,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const serving = s.started && !s.down && latest !== undefined && canton;
     const all = serving && s.problems.length === 0;
     const shown = noticesNow();
+    const paid = paidPath();
     return {
       status: serving ? 200 : 503,
       body: {
@@ -147,6 +151,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         latest: newest.map((b) => pick(b, FIELDS.latest)),
         signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on, rpcMinTipWei: config.publicRpc.minTipWei.toString(), ownTraffic: Object.keys(config.ownAddresses).length > 0, swapUrl: config.swapUrl, bridgeUrl: config.bridgeUrl, notices: shown, notice: shown[0] ?? null,
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
+        ...(paid ? { paidPath: pick(paid, FIELDS.paidPath) } : {}),
       },
     };
   }

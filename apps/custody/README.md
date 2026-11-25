@@ -5,6 +5,8 @@ One process, two parts, each off by default and each for any registered token (C
 - the intake (`--intake`) turns a plain token-standard transfer to the gateway into a `Receipt`, and rejects one that could not be claimed;
 - the payouts (`--payout-offers`) pay each open `Payout` as a token-standard transfer offer from the gateway.
 
+A third mode, the buy mode (`--buy`), runs on its own and sells the chain's coin for Canton Coin (see [The paid path](#the-paid-path-buy-mode)).
+
 ```
 apps/custody/intake.py [--intake] [--payout-offers] [--once] --gateway-party PARTY --ledger-user USER [--poll-seconds 10]
     [--min-deposit ADMIN/ID=AMOUNT]... [--router 0xADDRESS --book 0xADDRESS] [--ostia-rpc URL] [--gateway-address 0xADDRESS]
@@ -49,6 +51,40 @@ At the start the worker says one `payouts` line with its settings (`offerHours`,
 
 The journal, `payouts.json` in `--work-dir` (the builder's work folder; also `CZE_WORK_DIR`), keeps for each open payout the number of offers, the time of the last, its command id (the same payout and offer number always give the same one, so the participant never runs it twice), the ledger end before it and its state (and `why` while an offer is held back). A send whose answer was lost is found by its completion, and a transfer that completed is marked without another transfer. A send with no completion is sent again only when Canton's own time (from the completions stream, not this machine's clock) is past `resolve_seconds` after it and not more than 30 s ahead of this clock; a failed completion is sent again at once; a committed completion without an update id waits. A journal that cannot be read stops the worker. One line of JSON on stdout for each offer, withdrawal, failure and payment, and, once, for each payout that waits with its reason.
 
+## The paid path (buy mode)
+
+`--buy` (also `CZE_BUY=1`; off by default) makes the worker a seller of the chain's coin. It is its own process, with its own ledger user, which acts as Rome's validator party: it runs with neither `--intake` nor `--payout-offers`.
+
+```
+apps/custody/intake.py --buy --validator-party PARTY --ledger-user USER --registry ADMIN=URL [--registry-token-file ADMIN=FILE]...
+    --price CC --min-buy CC --buy-key-file FILE --reth-rpc URL --work-dir DIR [--max-meta-bytes N] [--poll-seconds 10]
+    [--send-gas-cap GAS] [--send-gas-headroom TIMES] [--send-stuck-seconds SECONDS] [--send-fee-bump-percent PERCENT] [--send-fee-cap TROME]
+```
+
+A buyer sends Canton Coin from any wallet that makes a two-step token-standard transfer, to the validator party, with their address on the chain as the memo. Every poll the worker reads the validator party's pending Canton Coin transfers (the instrument is Canton Coin: id `Amulet` of the admin of the one `--registry`). For each:
+
+1. **Checks.** The memo (`splice.lfdecentralizedtrust.org/reason`) is exactly one address on the chain (the intake's rule 3: lowercase or uppercase as written, mixed case only with the EIP-55 checksum); the transfer's meta is at most `--max-meta-bytes` (the UTF-8 bytes of its keys and values; 0, the default, is no cap); the transfer's `executeBefore` has not passed (only its sender can take it back after that: it is left pending without a try, and what an earlier try of it held is freed once that try has failed); the amount is at least `--min-buy`; reth's gas estimate for the send to that address succeeds, and the gas limit (the estimate plus a fifth, set by `--send-gas-headroom`; 21000 for a plain transfer) is at most `--send-gas-cap` (default 100000) (a recipient whose code does real work, or would refuse the coin, is left pending), and the gas limit times the fee is within `--send-fee-cap`; the buy key holds the coin for it and for the gas of that send, less what the buys not yet settled still take (an accept whose answer was lost included, until its try is settled). A transfer that fails a check is **left pending, never rejected**: it goes back to its sender at its own deadline, at no cost to Rome. A transfer with no address memo is left alone, as the intake leaves one. Each is said once as a `pending` line with its reason.
+2. **Accept**: `TransferInstruction_Accept` as the validator party, with the registry's accept context, as the intake gets it.
+3. **Send** floor(amount / `--price`) coin, rounded down to the coin's smallest unit (1 wei), from the buy key to the address, as an EIP-1559 transfer straight to reth (`--reth-rpc`, never printed). The fees are twice reth's gas price (never more than `--send-fee-cap` allows), and the tip is reth's.
+
+The worker refuses to accept anything while reth cannot be read: a buy it could not pay is not accepted.
+
+**The journal** (`buy.json` in `--work-dir`) keeps each buy: the accept first (`accepting`, with its command id and the ledger end), then `accepted`, then `sent` with the nonce, the signed bytes and every hash of the nonce, then `done` when reth has the receipt of any of them (kept 30 days). The bytes are written before the first send, and the signature is deterministic, so a send that reth does not hold (a restart of reth, a lost answer) is sent again as the same transaction with the same nonce, and lands once. A record reaches the worker's memory only once it is on disk, so nothing is sent from a state a restart would not see; a write that fails is said, and the buy is tried again at the next poll. Each try to accept has its own command id (the transfer and the try's number); a transfer that is still pending after a try is accepted again only once that try has failed (a failed completion, or no completion once Canton's own time is past the window), never while it may still commit. A restart takes the journal up where it stopped: a stop between the accept and its record is settled by the command's completion (a commit goes on to the send; a transfer that is gone and whose last try did not commit is dropped); an accept that was signed is not signed again. A journal that cannot be read stops the worker.
+
+**A send that is not mined** after `--send-stuck-seconds` (default 60) is replaced: the same transaction with the same nonce, and its max fee and tip each raised by `--send-fee-bump-percent` (default 12; at least 10, which reth's pool takes at least to replace a transaction) and no lower than reth's price at that time, never above `--send-fee-cap` (default 1 tROME, reth's per-transaction cap, applied to the gas limit times the max fee). A replacement that would have to break the cap is not made (said once as a `stuck` line, and the send keeps waiting). The replacement's bytes are written to the journal before they are sent, and the journal keeps every hash of the nonce (`hashes`): the buy is paid when any of them is mined, and an instruction never takes a second nonce. A restart resumes from the journal: it signs nothing new, sends again the latest bytes if reth does not hold them, and a buy that was mined under an earlier hash is settled by that hash. A send that reth has lost entirely is sent again as the same bytes and its time starts again.
+
+**One worker per work folder.** The worker takes an exclusive lock on `buy.lock` in `--work-dir` and stops at the start, with a message, if another worker holds it: two would each sign a send for one accepted transfer.
+
+**The buy key** is a file of 64 hex digits (`0x` allowed) that must be readable by its owner only (mode 0600), or the worker stops. The key is never printed or put in a log or in the environment. The worker says the address it sends from.
+
+**The validator party must hold no Canton Coin transfer preapproval.** With one, a transfer lands at once and a bad memo, a transfer under the least buy or a buy with the stock out could not be refused. The worker checks at the start and says a `warning` line if the party holds one (or if that cannot be checked).
+
+**The status file** (`buy-status.json` in `--work-dir`, replaced whole at the end of each poll): `{"version": 1, "updatedAt": "...", "price": "<--price>", "minBuy": "<--min-buy>", "party": "...", "state": "open"}`. `price` and `minBuy` are `--price` and `--min-buy` as plain decimal text; `state` is `open` while the buy key's stock, less what is owed, covers the least buy and the gas of its send, and `sold out` when it does not. Nothing is written while reth cannot be read. The explorer shows it in `/api/status`.
+
+Settings of the send, all optional: `--send-gas-cap` (the most gas one send may have, default 100000; from the environment `CZE_SEND_GAS_CAP`), `--send-gas-headroom` (the gas limit is reth's estimate times this, default 1.2, 1 or more; `CZE_SEND_GAS_HEADROOM`), `--send-stuck-seconds` (default 60; `CZE_SEND_STUCK_SECONDS`), `--send-fee-bump-percent` (default 12, 10 or more; `CZE_SEND_FEE_BUMP_PERCENT`), `--send-fee-cap` (tROME, plain decimal text, default 1; `CZE_SEND_FEE_CAP`). The worker says them in its `buy` line at the start, and `--help` shows them.
+
+Settings of the buy (none has a default): `--price` (Canton Coin per coin, more than 0), `--min-buy` (0 or more), `--buy-key-file`, `--reth-rpc`, `--validator-party`, `--work-dir` (its own folder: the journal and the status file), `--registry` (and `--registry-token-file`) for Canton Coin's admin: exactly one `--registry`, the worker refuses to start with more, so no other admin's `Amulet` is taken for Canton Coin. From the environment: `CZE_BUY=1`, `CZE_VALIDATOR_PARTY`, `CZE_BUY_PRICE`, `CZE_BUY_MIN`, `CZE_BUY_KEY_FILE`, `CZE_MAX_META_BYTES`, `CZE_RETH_RPC_URL`.
+
 ## The limits file
 
 With `--work-dir`, the worker writes `custody-limits.json` there at the start of every poll round (all or nothing: a reader never sees half of it), so that a reader sees the least amounts the running worker enforces and how old they are. Nothing is copied into a second setting.
@@ -72,4 +108,4 @@ Settings can also come from the environment: `CZE_INTAKE=1`, `CZE_PAYOUT_OFFERS=
 
 The worker uses the builder's ledger client and registry reader (`builder/builder.py`), so it needs the builder's one dependency (`pip install --require-hashes -r builder/requirements.txt`).
 
-Tests: `python3 -m unittest discover -s apps/custody/tests`, against a fake Ledger API and a fake registry, for Canton Coin and a token with no registry; `tests/canton_network.sh` runs the worker on the real Canton network (the intake of a Splice test token transfer, and the payout of it: the offer, U's accept, the payment).
+Tests: `python3 -m unittest discover -s apps/custody/tests`, against a fake Ledger API, a fake registry and a fake reth (the buy mode), for Canton Coin and a token with no registry; `tests/canton_network.sh` runs the worker on the real Canton network (the intake of a Splice test token transfer, and the payout of it: the offer, U's accept, the payment).
