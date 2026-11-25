@@ -85,6 +85,15 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(indexerCommand().cmd).not.toContain("GATEWAY_PARTY");
   });
 
+  it("passes the limits of the soft-confirmation row to the indexer, and only when they are set", () => {
+    const cmd = indexerCommand({ SOFT_UNDONE_BLOCKS_PER_DAY: "3", SOFT_CONFIRM_P99_MS: "45000", SOFT_RERUN_FAILED_PER_DAY: "1" }).cmd;
+    expect(cmd).toContain(" -e SOFT_UNDONE_BLOCKS_PER_DAY=3");
+    expect(cmd).toContain(" -e SOFT_CONFIRM_P99_MS=45000");
+    expect(cmd).toContain(" -e SOFT_RERUN_FAILED_PER_DAY=1");
+    expect(indexerCommand().cmd).not.toContain("SOFT_");
+    expect(start({ SOFT_CONFIRM_P99_MS: "45000" })).not.toContain("SOFT_");
+  });
+
   it("mounts the gateway's token under a name of its own, so a reader's token file of the same name cannot take its place", () => {
     const a = join(state, "reader"), b = join(state, "gateway");
     mkdirSync(a); mkdirSync(b);

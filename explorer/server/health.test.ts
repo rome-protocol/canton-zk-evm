@@ -28,7 +28,7 @@ describe("the health model (design 6.5)", () => {
   });
 
   it("is degraded for C4, C6, C8, C9 and C10, the producer's rows and the prover, and never down: they are not needed for final data", () => {
-    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal", "registered_legs", "custody"]) {
+    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal", "registered_legs", "custody", "soft_confirmation"]) {
       const e = evaluate([...fresh().filter((r) => r.id !== id), row(id, "degraded", 1, "failed")]);
       expect(e.status, id).toBe("degraded");
       expect(httpStatusOf(e.status), id).toBe(200);
@@ -46,6 +46,14 @@ describe("the health model (design 6.5)", () => {
       expect(stale.status, id).toBe("degraded");
       expect(httpStatusOf(stale.status), id).toBe(200);
     }
+  });
+
+  it("turns the soft_confirmation row degraded, never down, when the indexer stops refreshing it (it is written every minute)", () => {
+    expect(evaluate([...fresh(), row("soft_confirmation", "ok", 100)]).status).toBe("ok");
+    const stale = evaluate([...fresh(), row("soft_confirmation", "ok", 400)]);
+    expect(stale.status).toBe("degraded");
+    expect(httpStatusOf(stale.status)).toBe(200);
+    expect(specOf("soft_confirmation")).toMatchObject({ role: "indexer", worst: "degraded", intervalSeconds: 60 });
   });
 
   it("holds the custody rows to the interval the indexer wrote into the row, not to a setting of the API", () => {
