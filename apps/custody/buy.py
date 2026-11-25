@@ -346,13 +346,13 @@ class Buy:
             self.journal.keep(cid, sentAt=now)
         elif entry.get("sentAt") is None:
             self.journal.keep(cid, sentAt=now)
-        elif now - entry["sentAt"] >= self.sending.stuck_seconds:
-            self.replace(cid, entry, chain, now)
+        elif now - entry["sentAt"] >= self.sending.stuck_seconds and self.replace(cid, entry, chain, now):
+            return
         elif not held[-1]:   # a replacement that was journaled and not taken by reth
             self.send(cid, entry, "sentAgain")
 
-    def replace(self, cid: str, entry: dict, chain: Chain, now: float) -> None:
-        """The send as a new transaction of the same nonce, with the max fee and the tip each raised by the bump setting (and no lower than reth's price now), within the fee cap. Its bytes are on disk before they are sent; the hashes of the earlier ones stay."""
+    def replace(self, cid: str, entry: dict, chain: Chain, now: float) -> bool:
+        """True when it made a replacement, False when the fee cap leaves none. The send as a new transaction of the same nonce, with the max fee and the tip each raised by the bump setting (and no lower than reth's price now), within the fee cap. Its bytes are on disk before they are sent; the hashes of the earlier ones stay."""
         gas, pct = int(entry.get("gas", evm.TRANSFER_GAS)), self.sending.bump_percent
         old_fee, old_tip = int(entry.get("maxFee", chain.max_fee)), int(entry.get("tip", chain.tip))
         up = lambda value, percent: -(-value * (100 + percent) // 100)   # rounded up
@@ -362,12 +362,13 @@ class Buy:
             if cid not in self.capped:
                 self.capped.add(cid)
                 it.say({"stuck": cid, "hash": entry["hash"], "why": "the send is not mined and its fees cannot be raised within the fee cap: it keeps waiting"})
-            return
+            return False
         raw = evm.transfer(self.key, chain.chain_id, entry["nonce"], entry["to"], int(entry["wei"]), fee, tip, gas)
         replacement = "0x" + evm.keccak256(raw).hex()
         hashes = list(entry.get("hashes") or [entry["hash"]])
         entry = self.journal.keep(cid, raw=raw.hex(), hash=replacement, hashes=hashes + [replacement], maxFee=str(fee), tip=str(tip), sentAt=now)
         self.send(cid, entry, "replaced")
+        return True
 
     def send(self, cid: str, entry: dict, kind: str) -> None:
         """The journaled bytes to reth. The same bytes each time, so reth holds the send once whatever happens in between."""

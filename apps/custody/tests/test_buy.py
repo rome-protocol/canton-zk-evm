@@ -1097,6 +1097,37 @@ class StuckSends(BuyCase):
         self.assertEqual(self.poll(worker), [])
         self.assertEqual((len(self.reth.sent), len(self.hashes())), (1, 1))
 
+    def test_a_replacement_at_the_fee_cap_that_never_reached_reth_is_sent_again_once_the_stuck_time_has_passed(self):
+        base = 21000 * 2 * GAS_PRICE
+        cap = base * 6 // 5   # the first replacement lands exactly at the cap
+        worker = self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=cap, bump_percent=20))
+        self.buy_of(1)
+        self.poll(worker)
+        original, calls = evm.Reth.send, []
+
+        def broken(reth, raw):
+            calls.append(raw)
+            if len(calls) == 1:
+                raise RuntimeError("reth cannot be reached for eth_sendRawTransaction")
+            return original(reth, raw)
+        evm.Reth.send = broken
+        self.addCleanup(setattr, evm.Reth, "send", original)
+        self.now["t"] += self.STUCK
+        self.poll(worker)   # the replacement at the cap is journaled and on disk; reth does not get it
+        entry = self.journal()[cid(1)]
+        self.assertEqual((len(entry["hashes"]), int(entry["maxFee"]) * 21000), (2, cap))
+        self.assertEqual(len(self.reth.sent), 1)
+        self.now["t"] += self.STUCK   # no poll reached reth before the stuck time passed again
+        lines = self.poll(worker)
+        self.assertEqual(kinds(lines), ["stuck", "sentAgain"])   # the cap leaves no further raise (said once); the journaled bytes go to reth
+        self.assertEqual(calls[0], calls[1])   # the same bytes as the journaled replacement
+        self.assertEqual(list(self.reth.pool), [entry["hash"]])
+        self.assertEqual(len(self.hashes()), 2)   # no further replacement: the cap leaves none
+        self.assertEqual(self.poll(worker), [])
+        self.reth.mine()
+        self.assertEqual(kinds(self.poll(worker)), ["settled"])
+        self.assertEqual((len(self.reth.mined), len(self.submitted)), (1, 1))
+
     def test_a_buy_whose_send_would_be_over_the_fee_cap_is_left_pending_before_the_accept(self):
         worker = self.make_worker(clock=self.clock, sending=buy.Sending(fee_cap=21000 * 2 * GAS_PRICE - 1))
         self.buy_of(1)
