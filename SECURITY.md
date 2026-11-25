@@ -13,7 +13,7 @@ We will acknowledge a report within a few working days and tell you what we plan
 Ostia is early code. Please read the Status section of the [README](README.md) first:
 
 - the code, and ZisK 1.4.0-alpha that it builds on, have not been audited;
-- it runs on Canton Network DevNet, with a public RPC, explorer, API and faucet at `ostia.devnet.romeprotocol.xyz`, and tROME is a test coin with no value;
+- it runs on Canton Network TestNet, with a public RPC, explorer, API and faucet at `ostia.testnet.romeprotocol.xyz`, and tROME is a test coin with no value;
 - the gateway party, which holds the Canton tokens locked for their wrapped forms, is hosted on the operator's participant, so whoever runs that participant can move the locked tokens; on DevNet that one participant hosts every Ostia party, and its one sidecar is the only confirmer (threshold 1). A second participant is up with its own sidecar but hosts no party, and a 2-of-2 confirmation is not switched on, so the confirmer is still a single point of trust;
 - there is no bug bounty, and nothing here should be used for anything of value.
 
