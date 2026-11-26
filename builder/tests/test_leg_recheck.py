@@ -27,6 +27,11 @@ def deposit_block(case, **k):
 
 
 class Recheck(tb.LegCase):
+    def setUp(self):
+        patch = mock.patch.object(b, "RECHECK_AFTER", 0)   # the fakes prove in a blink: the second look is made at once
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def archive_after_proof(self, s, change):
         real = b.prove
 
@@ -64,6 +69,18 @@ class Recheck(tb.LegCase):
         with self.archive_after_proof(s, lambda s: s.ledger.list_failure.update({"DepositRequest": 500})):
             result = self.build(s)
         self.assertEqual(result["legs"], 1)
+
+    def test_a_block_matched_moments_ago_is_sent_as_it_is_without_a_second_read(self):
+        s, t = deposit_block(self)
+        with mock.patch.object(b, "RECHECK_AFTER", 5.0), self.archive_after_proof(s, lambda s: setattr(s.ledger, "requests", [])):
+            self.assertEqual(self.build(s)["legs"], 1)   # the proof took a blink: Canton is left to refuse it, as before
+
+    def test_the_second_look_is_on_by_default_and_CZE_RECHECK_LEGS_0_turns_it_off(self):
+        self.assertIs(b.Config.__dataclass_fields__["recheck_legs"].default, True)
+        s, t = deposit_block(self)
+        s.cfg.recheck_legs = False
+        with self.archive_after_proof(s, lambda s: setattr(s.ledger, "requests", [])):
+            self.assertEqual(self.build(s)["legs"], 1)   # sent as it was proven: Canton is left to refuse it
 
     def test_a_block_with_no_leg_reads_nothing_more(self):
         s = self.setup({tb.ALICE: [tb.tx(tb.ALICE, 0)]})

@@ -143,6 +143,7 @@ class Config:
     custody_alert_days: float = 3     # --custody-alert-days: ... and "alert" with less than this
     max_transfer_inputs: int = 50     # --max-transfer-inputs: the most inputs one transfer takes (the open round's maxNumInputs is the other limit)
     receipts: bool = False            # --receipts: a deposit may be settled by a Receipt (a transfer to the gateway that it accepted: package 0.6.0), and the status file counts the open receipts and payouts. Off: the builder never reads a Receipt
+    recheck_legs: bool = True         # CZE_RECHECK_LEGS=0 turns it off: the block's legs are matched against Canton again just before the Advance is sent (`recheck_legs`). The demo's run 4 turns it off to show Canton's own refusal
     payout_offers: bool = False       # --payout-offers: a withdrawal is a PayoutLeg (Rome pays it after the block, as a transfer offer): it needs no acceptance, no holdings and no choice context. Off: the WithdrawalLeg of 0.5.0
 
     @classmethod
@@ -170,7 +171,7 @@ class Config:
             ledger_url=e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"),
             traffic_url=e.get("CZE_TRAFFIC_URL", ""), twin_registry_url=e.get("CZE_TWIN_REGISTRY_URL", ""),
             ledger_user=need("CZE_LEDGER_USER"), ledger_token=e.get("CZE_LEDGER_TOKEN", ""), ledger_token_file=e.get("CZE_LEDGER_TOKEN_FILE", ""),
-            party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"),
+            party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"), recheck_legs=e.get("CZE_RECHECK_LEGS", "1") != "0",
             genesis=e.get("CZE_GENESIS", str(ROOT / "network" / "genesis.json")),
             work_dir=e.get("CZE_WORK_DIR", str(state / "builder")),
             make_input_cmd=e.get("CZE_MAKE_INPUT_CMD", str(ROOT / "prover" / "make-input.sh")),
@@ -3454,6 +3455,7 @@ class Built:
     deposit_deadline: datetime | None = None   # the earliest settle-before time among the allocations the block's deposit legs use; None when it has none
     leg_parties: dict = field(default_factory=dict)   # transaction hash -> the parties, other than the chain's own, whose participants must confirm the legs it recorded
     custody: list = field(default_factory=list)   # the custody check the block needs: [{"instrument", "withdrawn", "deposits"}] for each expiring instrument it withdraws
+    matched_at: float = 0.0   # time.monotonic() when the block's legs were matched: the second look (`recheck_legs`) is made only when that was RECHECK_AFTER seconds ago or more
     events: list = field(default_factory=list)   # the Leg events of the block, in the order of its legs: matched again just before the Advance is sent (`recheck_legs`); empty: nothing to match
     leg_contracts: dict = field(default_factory=dict)   # contract id a leg names -> the parties, other than the chain's own, of that leg: a refusal that names the contract is held against them
 
@@ -3602,6 +3604,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
             legs, missing = match_legs(canton, events, limits=not defer_legs) if events else ([], [])
+        matched_at = time.monotonic()
         if defer_legs and events:   # a leg with a Canton side waits; one with none is left out with its own reason
             bad = {event.tx for event, _ in missing}
             missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
@@ -3678,7 +3681,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         for text in leg_texts(leg.get("value")) if parties else ():
             leg_contracts.setdefault(text, set()).update(parties)
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=by_gateway.get("", []), leg_txs=leg_txs,
-                 events=events, leg_contracts={c: sorted(ps) for c, ps in leg_contracts.items()},
+                 events=events, matched_at=matched_at, leg_contracts={c: sorted(ps) for c, ps in leg_contracts.items()},
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
                  disclosed=venue_disclosed(legs, canton), extra_gateways=extra, leg_parties={tx: sorted(ps) for tx, ps in leg_parties.items()},
@@ -3814,11 +3817,14 @@ def named_leg_parties(built: Built, reason: str) -> list:
     return sorted(named)
 
 
+RECHECK_AFTER = 5.0   # seconds: a block matched less long ago than this is sent as it is (a second look is a second read of the lists, and the Advance goes out about that soon after it anyway)
+
+
 def recheck_legs(cfg: Config, reth: Reth, built: Built) -> None:
-    """The block's legs are matched against Canton again, with the code that built them, just before the Advance is sent: a contract that its signer archived (or an allocation they
+    """The block's legs are matched against Canton again (when RECHECK_AFTER seconds or more have passed since they were matched, which a proof takes), with the code that built them, just before the Advance is sent: a contract that its signer archived (or an allocation they
     withdrew) while the block was proven would make Canton refuse the whole Advance, and the refusal would be held against the block's transactions. A leg that has no Canton side
     now raises StaleLegs (the proof is dropped and the block is built again without it). What cannot be read says nothing: the Advance goes on as before, as the leg check does."""
-    if not built.events:
+    if not cfg.recheck_legs or not built.events or time.monotonic() - built.matched_at < RECHECK_AFTER:
         return
     chain, parent = built.chain, built.payload["parentHash"]
     try:

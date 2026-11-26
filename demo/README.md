@@ -30,7 +30,7 @@ The demo is limited to these runs on one local network with one operator, one bu
 | `prepare.sh` | Run once before `network/up.sh`: Python packages (by hash), the two keys, and the funded genesis. |
 | `run.sh` | The setup and the five runs. It checks every claim and stops at the first one that does not hold, then writes `results/`. |
 | `prove-tampered.sh` | The demo-only switch of run 5: a prover command that runs the real prover and then flips one hex digit of the proof. It exists only here; nothing in `network/` or `builder/` knows about it. |
-| `prove-then-withdraw.sh` | The demo-only switch of run 4: a prover command that runs the real prover and then makes U take an allocation back, so the allocation is gone between the proof and the commit. It exists only here, like `prove-tampered.sh`. |
+| `prove-then-withdraw.sh` | The demo-only switch of run 4: a prover command that runs the real prover and then makes U take an allocation back, so the allocation is gone between the proof and the commit. Run 4 switches the builder's second look at the legs off (`CZE_RECHECK_LEGS=0`), which would otherwise stop that block before it is sent. It exists only here, like `prove-tampered.sh`. |
 | `results/` | What the runs showed. |
 
 ## Running it
