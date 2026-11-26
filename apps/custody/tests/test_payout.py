@@ -663,11 +663,26 @@ class Limits(PayoutCase):
                 with self.subTest(more=more), self.assertRaises(SystemExit):
                     payout.Payouts.from_args(bad, intake.ledger_of(bad), intake.settings_of(bad))
 
-    def test_the_offer_cap_is_gone_the_flag_is_not_accepted_and_the_environment_is_not_read(self):
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            intake.parser().parse_args(["--max-offers", "3"])
-        with unittest.mock.patch.dict(os.environ, {"CZE_MAX_OFFERS": "5"}):
-            self.assertFalse(hasattr(intake.parser().parse_args([]), "max_offers"))
+    def test_the_offer_cap_is_gone_the_old_flag_and_variable_are_accepted_and_ignored_with_one_line(self):
+        args = intake.parser().parse_args(["--max-offers", "3"])   # an old start line still parses
+        self.assertEqual(args.max_offers, 3)
+        for argv, env in ((["--max-offers", "3"], {}), ([], {"CZE_MAX_OFFERS": "5"})):
+            out = io.StringIO()
+            with self.subTest(argv=argv, env=env), unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(intake, "ledger_of"), \
+                    unittest.mock.patch.object(intake, "settings_of"), unittest.mock.patch.object(intake, "publish_limits"), \
+                    unittest.mock.patch.object(payout.Payouts, "from_args") as made, contextlib.redirect_stdout(out):
+                made.return_value.describe.return_value = {}
+                code = intake.main(["--payout-offers", "--once", "--gateway-party", GATEWAY, "--ledger-user", "operator"] + argv)
+            ignored = [l for l in out.getvalue().splitlines() if "ignored" in l]
+            self.assertEqual((code, len(ignored)), (0, 1))
+            self.assertIn("--max-offers", ignored[0])
+        out = io.StringIO()   # without the flag and the variable nothing is said
+        with unittest.mock.patch.dict(os.environ, {}), unittest.mock.patch.object(intake, "ledger_of"), unittest.mock.patch.object(intake, "settings_of"), \
+                unittest.mock.patch.object(intake, "publish_limits"), unittest.mock.patch.object(payout.Payouts, "from_args") as made, contextlib.redirect_stdout(out):
+            os.environ.pop("CZE_MAX_OFFERS", None)
+            made.return_value.describe.return_value = {}
+            intake.main(["--payout-offers", "--once", "--gateway-party", GATEWAY, "--ledger-user", "operator"])
+        self.assertNotIn("ignored", out.getvalue())
 
 
 import unittest.mock

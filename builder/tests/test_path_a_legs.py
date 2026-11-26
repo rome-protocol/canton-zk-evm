@@ -224,7 +224,7 @@ class Payouts(tb.LegCase):
         s.ledger.tokens.extend([tb.TOKEN])
         self.assertEqual(b.leg_check(s.cfg, lc.CALL), {"ok": True})
 
-    # ---- the party must be known to Canton (O-01) and the payout at least the custody's least (O-02)
+    # ---- the party must be known to Canton and the payout at least the custody's least
 
     def publish_limits(self, s, least="5", admin="adm", name="TKB", **over):
         """The custody worker's custody-limits.json in the builder's work folder."""

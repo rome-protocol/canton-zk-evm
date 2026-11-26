@@ -241,6 +241,7 @@ def parser() -> argparse.ArgumentParser:
                     help="pay each open Payout as one transfer offer from the gateway (also CZE_PAYOUT_OFFERS=1); needs --work-dir. Default: off")
     ap.add_argument("--offer-hours", type=float, default=float(env.get("CZE_OFFER_HOURS", 24)), metavar="HOURS", help="how long a payout's offer stays open before it is withdrawn and offered again; a rejected offer is offered again after the same time (default 24; also CZE_OFFER_HOURS)")
     ap.add_argument("--min-payout", action="append", default=[], metavar="ADMIN/ID=AMOUNT", help="the least amount of an instrument that is offered as a payout (repeatable); a smaller payout gets no offer and no Canton transaction, and waits. Default: no minimum")
+    ap.add_argument("--max-offers", type=int, default=None, help=argparse.SUPPRESS)   # no longer used: accepted so an old start line still starts
     ap.add_argument("--work-dir", default=env.get("CZE_WORK_DIR", ""), metavar="DIR", help="the builder's work folder (also CZE_WORK_DIR): the worker keeps payouts.json there and reads custody-stop.json from it")
     ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN", help="as the builder's: an instrument whose holdings run out (Canton Coin), paid with the builder's input choice, floor and custody check; needs its --registry and --registry-token-file")
     ap.add_argument("--custody-floor-days", type=float, default=30, metavar="DAYS", help="as the builder's (default 30)")
@@ -371,6 +372,8 @@ def run_buy(args) -> int:
 
 def main(argv: list) -> int:
     args = parser().parse_args(argv)
+    if args.max_offers is not None or os.environ.get("CZE_MAX_OFFERS") is not None:
+        say({"ignored": "--max-offers / CZE_MAX_OFFERS: there is no cap on the offers of a payout any more, the setting is ignored"})
     if args.buy:
         return run_buy(args)
     if not (args.intake or args.payout_offers):
