@@ -34,7 +34,7 @@ class Journal:
     """{payout id: what was done for it}: n (the offers made), at (when the last was made), command, begin (the ledger end before it), factory, state, instruction, update, offset.
     state: "sending" (the command may or may not have committed), "offered" (the instruction is pending), "completed" (the transfer completed, the Payout is not marked yet),
     "ended" (the offer lapsed, was rejected or failed: offered again once its time has passed), "waiting" (no offer made yet: below the token's --min-payout). `why` is set while an
-    offer is held back: "below the least payout" or "offers used up" (--max-offers). One that cannot be read stops the worker: it does not guess."""
+    offer is held back: "below the least payout". A payout has no cap on its offers: a lapsed, rejected or refused one is offered again once an offer's time has passed. One that cannot be read stops the worker: it does not guess."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -61,10 +61,10 @@ class Journal:
 
 
 class Payouts:
-    def __init__(self, ledger: "b.Ledger", settings: it.Settings, work_dir: str, offer_hours: float = 24.0, clock=time.time, contexts=it.Contexts, min_payout: dict = None, max_offers: int = 0):
-        """`min_payout` is {(instrument admin, instrument id): the least amount, a Fraction}; `max_offers` the offers a payout gets (0: no limit)."""
+    def __init__(self, ledger: "b.Ledger", settings: it.Settings, work_dir: str, offer_hours: float = 24.0, clock=time.time, contexts=it.Contexts, min_payout: dict = None):
+        """`min_payout` is {(instrument admin, instrument id): the least amount, a Fraction}."""
         self.ledger, self.settings, self.contexts, self.clock = ledger, settings, contexts, clock
-        self.min_payout, self.max_offers = min_payout or {}, max_offers
+        self.min_payout = min_payout or {}
         self.lifetime = timedelta(hours=offer_hours)
         self.journal = Journal(Path(work_dir) / JOURNAL)
         self.told: set = set()   # (payout, why) of what was already reported
@@ -75,8 +75,6 @@ class Payouts:
             raise SystemExit("--payout-offers needs --work-dir (the builder's work folder)")
         if not args.offer_hours > 0:
             raise SystemExit("--offer-hours must be more than zero")
-        if args.max_offers < 0:
-            raise SystemExit("--max-offers must be zero (no limit) or more")
         minimums = it.parse_minimums(args.min_payout, "--min-payout")
         cfg = ledger.cfg
         for name in ("registries", "registry_tokens"):   # the builder's check_expiring reads them from its config
@@ -84,23 +82,21 @@ class Payouts:
         b.check_expiring(args, cfg)
         if args.disclosed:
             cfg.disclosed = b.read_disclosed(args.disclosed)
-        return cls(ledger, settings, args.work_dir, args.offer_hours, min_payout=minimums, max_offers=args.max_offers)
+        return cls(ledger, settings, args.work_dir, args.offer_hours, min_payout=minimums)
 
     def describe(self) -> dict:
         """The payout settings, as said once at the start."""
         least = {f"{admin}/{name}": str(amount.numerator) if amount.denominator == 1 else str(float(amount)) for (admin, name), amount in sorted(self.min_payout.items())}
-        return {"offerHours": self.lifetime.total_seconds() / 3600, "minPayout": least, "maxOffers": self.max_offers}
+        return {"offerHours": self.lifetime.total_seconds() / 3600, "minPayout": least}
 
     def held_back(self, p: dict, registered: dict, made: int):
-        """Why this payout gets no offer now: "below the least payout" (its token's --min-payout) or "offers used up" (--max-offers); None when it may be offered. Nothing is sent to Canton for it.
+        """Why this payout gets no offer now: "below the least payout" (its token's --min-payout); None when it may be offered. Nothing is sent to Canton for it.
         Said once as a `waiting` line, and kept in the journal."""
         units = b.base_units(p["amount"])
         instrument = registered["instrumentId"]
         least = self.min_payout.get((instrument["admin"], instrument["id"]))
         if least is not None and units is not None and Fraction(units, b.UNIT) < least:
             why = "below the least payout"
-        elif self.max_offers and made >= self.max_offers:
-            why = "offers used up"
         else:
             return None
         pid = p["payoutId"]
@@ -205,7 +201,9 @@ class Payouts:
                 return self.sent(p, registered, self.update(updateId=found["updateId"]), entry["factory"]) if found["updateId"] else None
             # a failed completion ends it; no completion ends it only when Canton's own time (not this clock) is past the last moment it could commit
             if found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= now + b.SKEW_SECONDS):
-                self.journal.keep(pid, state="ended", at=0)   # it did not commit: offered again now
+                # it did not commit. One that the participant refused is offered again once an offer's time has passed (there is no cap on offers, so a send that can never work is
+                # tried once in that time, not every round); one with no completion at all never reached Canton and is offered again now
+                self.journal.keep(pid, state="ended", at=now if found else 0)
             return None
         if entry["state"] == "offered":   # the instruction is gone: the choice that archived it says how it ended
             ended = self.outcome(entry["instruction"])

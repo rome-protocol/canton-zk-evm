@@ -382,7 +382,7 @@ class Recovery(PayoutCase):
         self.assertEqual(self.poll(), ([], []))
         self.assertEqual((self.entry()["state"], len(self.net.transfers)), ("sending", 1))
 
-    def test_a_failed_completion_ends_the_send_and_it_is_offered_again(self):
+    def test_a_failed_completion_ends_the_send_and_it_is_offered_again_once_the_offer_time_has_passed(self):
         self.payout()
         self.poll_with_lost_answer()
         self.net.completions.clear()
@@ -391,6 +391,8 @@ class Recovery(PayoutCase):
         self.net.completions.append({"completionResponse": {"Completion": {"value": {"commandId": self.entry()["command"], "offset": 9, "status": {"code": 3, "message": "refused"}}}}})
         self.poll()
         self.assertEqual(self.entry()["state"], "ended")
+        self.assertEqual(self.poll(), ([], []))   # the participant refused it: not again at once
+        self.now += HOURS * 3600
         said, _ = self.poll()
         self.assertEqual([list(line)[0] for line in said], ["offered"])
 
@@ -610,72 +612,62 @@ class Limits(PayoutCase):
         self.assertEqual([list(line)[0] for line in said], ["offered"])
         self.assertEqual((self.entry()["state"], self.entry()["n"], self.entry()["why"]), ("offered", 1, None))
 
-    def test_the_offers_are_capped_and_the_last_is_said_once(self):
-        self.worker = self.make(max_offers=2)
+    def test_there_is_no_cap_a_lapsed_offer_is_made_again_every_time_its_time_has_passed(self):
         self.payout()
         self.poll()
-        self.now += HOURS * 3600
-        self.poll()   # the lapsed offer is withdrawn
-        self.poll()   # and the second is made
-        self.assertEqual((len(self.net.transfers), self.entry()["n"]), (2, 2))
-        self.now += HOURS * 3600
-        self.poll()   # withdrawn
-        said, lines = self.poll()
-        self.assertEqual((said, self.net.submitted[-1]["commands"][0]["ExerciseCommand"]["choice"]), ([], "TransferInstruction_Withdraw"))
-        self.assertEqual(lines, [{"waiting": PID, "why": "offers used up", "offers": 2}])
-        self.assertEqual((len(self.net.transfers), self.entry()["why"]), (2, "offers used up"))
-        self.now += 10 * HOURS * 3600
-        self.assertEqual(self.poll(), ([], []))
-        self.assertEqual(len(self.net.transfers), 2)
+        for made in range(2, 7):
+            self.now += HOURS * 3600
+            self.poll()   # the lapsed offer is withdrawn
+            said, _ = self.poll()   # and the next is made
+            self.assertEqual(([list(line)[0] for line in said], len(self.net.transfers), self.entry()["n"]), (["offered"], made, made))
+        self.assertIsNone(self.entry().get("why"))
 
-    def test_a_rejected_offer_counts_and_is_not_offered_again_when_used_up(self):
-        self.worker = self.make(max_offers=1)
+    def test_a_rejected_offer_is_offered_again_once_its_time_has_passed(self):
         self.payout()
         self.poll()
         self.net.archive(cid(0x61), "TransferInstruction_Reject", FAILED)
+        said, _ = self.poll()
+        self.assertEqual((said, len(self.net.transfers)), ([], 1))   # not at once: the offer's time has not passed
         self.now += HOURS * 3600
-        _, lines = self.poll()
-        self.assertEqual(lines, [{"waiting": PID, "why": "offers used up", "offers": 1}])
-        self.assertEqual(len(self.net.transfers), 1)
+        said, _ = self.poll()
+        self.assertEqual(([list(line)[0] for line in said], len(self.net.transfers), self.entry()["n"]), (["offered"], 2, 2))
 
-    def test_failed_submits_count_as_offers_and_the_retries_stop(self):
-        self.worker = self.make(max_offers=3)
+    def test_a_submit_that_canton_refuses_is_tried_again_once_the_offer_time_has_passed_and_not_every_round(self):
         self.net.refuse_transfer = True
         self.payout()
         for _ in range(12):
             self.poll()
             self.now += 1
-        self.assertEqual((len(self.net.transfers), self.entry()["n"], self.entry()["why"]), (3, 3, "offers used up"))
-        self.now += 10 * HOURS * 3600
+        self.assertEqual((len(self.net.transfers), self.entry()["n"]), (1, 1))
+        self.now += HOURS * 3600
         self.poll()
-        self.assertEqual(len(self.net.transfers), 3)
-
-    def test_the_defaults_change_nothing(self):
-        self.assertEqual((self.worker.min_payout, self.worker.max_offers), ({}, 0))
-        self.net.refuse_transfer = True
-        self.payout(amount="0.0000000001")
+        self.assertEqual((len(self.net.transfers), self.entry()["n"]), (2, 2))
         for _ in range(12):
             self.poll()
             self.now += 1
-        self.assertGreater(len(self.net.transfers), 3)   # no cap: it is tried again and again
+        self.assertEqual(len(self.net.transfers), 2)
+
+    def test_no_setting_means_no_least_amount(self):
+        self.assertEqual(self.worker.min_payout, {})
 
     def test_the_settings_are_read_from_the_arguments_and_said_at_the_start(self):
         with tempfile.TemporaryDirectory() as work:
             base = ["--gateway-party", GATEWAY, "--ledger-user", "operator", "--payout-offers", "--work-dir", work]
-            args = intake.parser().parse_args(base + ["--min-payout", f"{ISSUER}/TKB=10", "--min-payout", f"{DSO}/Amulet=0.5", "--max-offers", "4"])
+            args = intake.parser().parse_args(base + ["--min-payout", f"{ISSUER}/TKB=10", "--min-payout", f"{DSO}/Amulet=0.5"])
             worker = payout.Payouts.from_args(args, intake.ledger_of(args), intake.settings_of(args))
-            self.assertEqual(worker.describe(), {"offerHours": 24.0, "minPayout": {f"{DSO}/Amulet": "0.5", f"{ISSUER}/TKB": "10"}, "maxOffers": 4})
+            self.assertEqual(worker.describe(), {"offerHours": 24.0, "minPayout": {f"{DSO}/Amulet": "0.5", f"{ISSUER}/TKB": "10"}})
             default = intake.parser().parse_args(base)
-            self.assertEqual(payout.Payouts.from_args(default, intake.ledger_of(default), intake.settings_of(default)).describe(), {"offerHours": 24.0, "minPayout": {}, "maxOffers": 0})
-            for more in (["--max-offers", "-1"], ["--min-payout", f"{ISSUER}/TKB"], ["--min-payout", f"{ISSUER}/TKB=1", "--min-payout", f"{ISSUER}/TKB=2"]):
+            self.assertEqual(payout.Payouts.from_args(default, intake.ledger_of(default), intake.settings_of(default)).describe(), {"offerHours": 24.0, "minPayout": {}})
+            for more in (["--min-payout", f"{ISSUER}/TKB"], ["--min-payout", f"{ISSUER}/TKB=1", "--min-payout", f"{ISSUER}/TKB=2"]):
                 bad = intake.parser().parse_args(base + more)
                 with self.subTest(more=more), self.assertRaises(SystemExit):
                     payout.Payouts.from_args(bad, intake.ledger_of(bad), intake.settings_of(bad))
 
-    def test_the_cap_can_come_from_the_environment(self):
+    def test_the_offer_cap_is_gone_the_flag_is_not_accepted_and_the_environment_is_not_read(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            intake.parser().parse_args(["--max-offers", "3"])
         with unittest.mock.patch.dict(os.environ, {"CZE_MAX_OFFERS": "5"}):
-            self.assertEqual(intake.parser().parse_args([]).max_offers, 5)
-        self.assertEqual(intake.parser().parse_args([]).max_offers, 0)
+            self.assertFalse(hasattr(intake.parser().parse_args([]), "max_offers"))
 
 
 import unittest.mock

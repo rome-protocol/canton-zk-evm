@@ -1,6 +1,6 @@
 """The legs of a transfer the gateway accepted (package 0.6.0): a deposit settled by a Receipt, a withdrawal that is a Payout behind --payout-offers, the
 custody check leaving both out, and the status file's open receipts and payouts. Against the same fakes as test_builder.py."""
-import sys, threading, unittest
+import json, sys, threading, unittest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -223,6 +223,87 @@ class Payouts(tb.LegCase):
         s.reth.trace_legs[lc.TO] = [PAY_OUT]
         s.ledger.tokens.extend([tb.TOKEN])
         self.assertEqual(b.leg_check(s.cfg, lc.CALL), {"ok": True})
+
+    # ---- the party must be known to Canton (O-01) and the payout at least the custody's least (O-02)
+
+    def publish_limits(self, s, least="5", admin="adm", name="TKB", **over):
+        """The custody worker's custody-limits.json in the builder's work folder."""
+        Path(s.cfg.work_dir).mkdir(parents=True, exist_ok=True)
+        doc = {"version": 1, "updatedAt": "2026-11-26T10:00:00Z", "pollSeconds": 10, "minDeposits": None,
+               "minPayouts": [{"instrumentAdmin": admin, "instrumentId": name, "least": least}], **over}
+        (Path(s.cfg.work_dir) / "custody-limits.json").write_text(json.dumps(doc))
+
+    def test_a_party_that_canton_does_not_know_is_left_out_with_nothing_proven(self):
+        s, t = self.setup_payout(PAY_OUT)
+        s.ledger.unknown_parties.add(PARTY)
+        self.assert_left_out(s, t, "not known on the network")
+        self.assertEqual(s.ledger.party_reads[0], {"packageVettingRequirements": [{"parties": [PARTY], "packageName": "splice-amulet"}]})
+        self.assertEqual(s.log.read_text().count("prove"), 1)   # only the second, leg-free block was proven
+
+    def test_a_party_that_canton_knows_is_asked_once_for_all_its_payouts_of_a_block(self):
+        s, t = self.setup_payout()
+        canton = b.Canton(b.Ledger(s.cfg), s.ledger.chain_args(), b.utcnow())
+        events = [b.LegEvent(WITHDRAWAL, id, WTKB, PAYEE, 1 * UNIT, PARTY, tx) for id, tx in (("ab" * 32, "aa"), ("cd" * 32, "bb"))]
+        legs, missing = b.match_legs(canton, events)
+        self.assertEqual(([x["tag"] for x in legs], missing), (["PayoutLeg", "PayoutLeg"], []))
+        self.assertEqual(len(s.ledger.party_reads), 1)
+
+    def test_a_read_that_fails_leaves_the_leg_out_as_unread_and_never_as_known(self):
+        s, t = self.setup_payout(PAY_OUT)
+        s.ledger.party_failure = 503
+        self.assert_left_out(s, t, "cannot be looked up now")
+
+    def test_the_leg_check_refuses_an_unknown_party_before_any_burn_and_says_nothing_of_a_failed_read(self):
+        s = self.setup({})
+        s.cfg.payout_offers = True
+        s.reth.trace_legs[lc.TO] = [PAY_OUT]
+        s.ledger.tokens.extend([tb.TOKEN])
+        s.ledger.unknown_parties.add(PARTY)
+        result = b.leg_check(s.cfg, lc.CALL)
+        self.assertIs(result["ok"], False)
+        self.assertIn("not known on the network", result["reason"])
+        s.ledger.unknown_parties.clear()
+        s.ledger.party_failure = 500
+        result = b.leg_check(s.cfg, lc.CALL)
+        self.assertIs(result["ok"], True)
+        self.assertIn("cannot be looked up now", result["unknown"])
+
+    def test_a_payout_below_the_custodys_least_is_left_out_and_canton_is_not_asked(self):
+        s, t = self.setup_payout(PAY_OUT)   # 4 units
+        self.publish_limits(s, least="5")
+        self.assert_left_out(s, t, "below the least payout", "5")
+        self.assertEqual(s.ledger.party_reads, [])
+
+    def test_a_payout_at_the_least_goes_and_so_does_one_of_a_token_with_no_least(self):
+        s, t = self.setup_payout(PAY_OUT)
+        self.publish_limits(s, least="4")
+        self.assertEqual(self.build(s)["legs"], 1)
+        s, t = self.setup_payout(PAY_OUT)
+        self.publish_limits(s, least="50", name="OTHER")
+        self.assertEqual(self.build(s)["legs"], 1)
+
+    def test_no_limits_file_or_payouts_off_in_it_means_no_least(self):
+        s, t = self.setup_payout(PAY_OUT)
+        self.assertEqual(self.build(s)["legs"], 1)
+        s, t = self.setup_payout(PAY_OUT)
+        self.publish_limits(s, minPayouts=None)
+        self.assertEqual(self.build(s)["legs"], 1)
+
+    def test_a_limits_file_that_cannot_be_read_leaves_the_payout_out_as_unread(self):
+        s, t = self.setup_payout(PAY_OUT)
+        Path(s.cfg.work_dir).mkdir(parents=True, exist_ok=True)
+        (Path(s.cfg.work_dir) / "custody-limits.json").write_text("{not json")
+        self.assert_left_out(s, t, "custody's limits cannot be read")
+
+    def test_the_leg_check_refuses_a_payout_below_the_least(self):
+        s = self.setup({})
+        s.cfg.payout_offers = True
+        s.reth.trace_legs[lc.TO] = [PAY_OUT]
+        s.ledger.tokens.extend([tb.TOKEN])
+        self.publish_limits(s, least="5")
+        result = b.leg_check(s.cfg, lc.CALL)
+        self.assertIs(result["ok"], False)
+        self.assertIn("below the least payout", result["reason"])
 
 
 class CustodyPlan(unittest.TestCase):

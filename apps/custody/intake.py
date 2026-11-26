@@ -241,7 +241,6 @@ def parser() -> argparse.ArgumentParser:
                     help="pay each open Payout as one transfer offer from the gateway (also CZE_PAYOUT_OFFERS=1); needs --work-dir. Default: off")
     ap.add_argument("--offer-hours", type=float, default=float(env.get("CZE_OFFER_HOURS", 24)), metavar="HOURS", help="how long a payout's offer stays open before it is withdrawn and offered again; a rejected offer is offered again after the same time (default 24; also CZE_OFFER_HOURS)")
     ap.add_argument("--min-payout", action="append", default=[], metavar="ADMIN/ID=AMOUNT", help="the least amount of an instrument that is offered as a payout (repeatable); a smaller payout gets no offer and no Canton transaction, and waits. Default: no minimum")
-    ap.add_argument("--max-offers", type=int, default=int(env.get("CZE_MAX_OFFERS", 0)), metavar="N", help="how many offers a payout gets: one that was offered (or refused) N times and not accepted is not offered again (also CZE_MAX_OFFERS). Default 0: no limit")
     ap.add_argument("--work-dir", default=env.get("CZE_WORK_DIR", ""), metavar="DIR", help="the builder's work folder (also CZE_WORK_DIR): the worker keeps payouts.json there and reads custody-stop.json from it")
     ap.add_argument("--expiring-instrument", action="append", default=[], metavar="ADMIN", help="as the builder's: an instrument whose holdings run out (Canton Coin), paid with the builder's input choice, floor and custody check; needs its --registry and --registry-token-file")
     ap.add_argument("--custody-floor-days", type=float, default=30, metavar="DAYS", help="as the builder's (default 30)")
@@ -333,7 +332,7 @@ def publish_limits(args, settings: Settings, payouts, state: dict) -> None:
     if not args.work_dir:
         return
     doc = limits.document(datetime.now(timezone.utc), args.poll_seconds, settings.minimums if args.intake else None,
-                          payouts.min_payout if payouts is not None else None, payouts.max_offers if payouts is not None else None)
+                          payouts.min_payout if payouts is not None else None)
     try:
         limits.publish(args.work_dir, doc)
         state["told"] = False
