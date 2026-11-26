@@ -412,7 +412,7 @@ table faucet_refusals
   column n integer not null
   constraint faucet_refusals_n_check CHECK ((n > 0))
   constraint faucet_refusals_pkey PRIMARY KEY (minute, reason)
-  constraint faucet_refusals_reason_check CHECK ((reason = ANY (ARRAY['address'::text, 'ip'::text, 'hour'::text, 'captcha'::text])))
+  constraint faucet_refusals_reason_check CHECK ((reason = ANY (ARRAY['address'::text, 'ip'::text, 'hour'::text, 'captcha'::text, 'once'::text])))
   CREATE UNIQUE INDEX faucet_refusals_pkey ON public.faucet_refusals USING btree (minute, reason)
 
 table faucet_refusals_since

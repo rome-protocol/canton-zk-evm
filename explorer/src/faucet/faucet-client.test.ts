@@ -57,6 +57,12 @@ describe("request", () => {
     expect(await client(() => json(429, { error: "x" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", which: "hour" });
     expect(await client(() => json(429, { error: "x", reason: "net" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", which: "ip" });
   });
+  it("reads a once refusal as its own kind, with the Swap link and no wait, even when a Retry-After comes with it", async () => {
+    const words = "This address already got its tROME from the faucet. Get more on the Swap.";
+    expect(await client(() => json(429, { error: words, reason: "once", swapUrl: "https://swap.example/" })).faucet.request(ADDRESS)).toEqual({ kind: "once", message: words, swapUrl: "https://swap.example/" });
+    expect(await client(() => json(429, { error: words, reason: "once" })).faucet.request(ADDRESS)).toEqual({ kind: "once", message: words, swapUrl: null });
+    expect(await client(() => json(429, { error: words, reason: "once", swapUrl: "javascript:alert(1)" }, { "Retry-After": "5" })).faucet.request(ADDRESS)).toEqual({ kind: "once", message: words, swapUrl: null });
+  });
   it("tells a full line from other 503s, and a failed human check from other 403s", async () => {
     expect(await client(() => json(503, { error: "full", reason: "queue" }, { "Retry-After": "30" })).faucet.request(ADDRESS)).toEqual({ kind: "full", waitSeconds: 30, message: "full" });
     expect(await client(() => json(403, { error: "check", reason: "captcha" })).faucet.request(ADDRESS)).toEqual({ kind: "captcha", message: "check" });

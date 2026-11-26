@@ -20,6 +20,10 @@ export interface FaucetOptions {
   chainId: number;
   amountWei: bigint;
   perAddressSeconds: number;
+  /** One drip per address, ever, for a plain request: `perAddressSeconds` then does not apply to it. With a database, an address also counts as used when the transactions the indexer wrote show a successful transfer of coin to it from the faucet's wallet. Default off. */
+  oncePerAddress?: boolean;
+  /** The Swap's address, sent with the refusal of an address that already got its coins. Null or absent for none. */
+  swapUrl?: string | null;
   /** One request per client address in this many seconds. */
   perIpSeconds: number;
   /** At most this many requests from one IPv6 /48 in the same `perIpSeconds`, on top of the one per /64 (a /48 holds 65,536 /64s). Counted in memory by each instance, so a restart empties it. Default 10. */
@@ -41,7 +45,13 @@ export interface FaucetOptions {
   /** The builder grant (a GitHub account gets a larger amount), or null/absent for none. */
   builder?: BuilderOptions | null;
   /** The human check, or null for none. */
-  captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
+  captcha: {
+    secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string;
+    /** The host names the check may say the token was solved on. Empty or absent: not checked. */
+    hostnames?: string[];
+    /** The action the widget carries, which the check must say. Empty or absent: not checked. */
+    action?: string;
+  } | null;
   reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc" | "balanceAt">>;
   /** Takes each sent transfer, and says where it is. Without one, a ticket never gets past "sent". */
   tracker?: Pick<Tracker, "track" | "state"> & Partial<Pick<Tracker, "admit">>;
@@ -63,6 +73,10 @@ export interface FaucetInfo {
   /** The final head the balance was read at; null when reth cannot name one, and then the balance is the newest block's, which may not be final. */
   balanceBlock: number | null;
   amount: string; perAddressSeconds: number; perIpSeconds: number; maxPerHour: number;
+  /** True when an address gets the faucet's coins once, ever; `perAddressSeconds` then says nothing. */
+  oncePerAddress: boolean;
+  /** Where the page sends an address that already got its coins; null when none is set. */
+  swapUrl: string | null;
   /** How many requests are waiting for a batch. */
   queue: number;
   /** The most payouts that go in one block (the faucet's batch size). */
@@ -73,7 +87,7 @@ export interface FaucetInfo {
   finalToday: number | null;
   /** Payouts sent and now in a block being proven, whatever day they went out: not the ones still waiting in reth's pool, and not tickets the faucet gave up on (null as for `sentToday`). */
   beingProven: number | null;
-  captcha: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
+  captcha: { siteKey: string; scriptUrl: string; widgetClass: string; action: string | null } | null;
   /** The builder grant: on or off, and its amount (wei), period and limits. No secret is in it. */
   builder: BuilderInfo;
 }
@@ -192,10 +206,11 @@ const NO_SENDER = "0x0000000000000000000000000000000000000000";
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 
 /** A refusal also says which limit was hit, so a page can word it without reading the message. */
-type Reason = "address" | "ip" | "net" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
+type Reason = "address" | "once" | "ip" | "net" | "hour" | "queue" | "captcha" | "checks" | "empty" | "account" | "builder-address" | "day";
 const answer = (status: number, error: string, headers?: Record<string, string>, reason?: Reason): FaucetAnswer => ({
   status, body: { error, ...(reason ? { reason } : {}) }, ...(headers ? { headers } : {}),
 });
+const ONCE_WORDS = "This address already got its tROME from the faucet. Get more on the Swap.";
 const seconds = (ms: number) => String(Math.max(1, Math.ceil(ms / 1000)));
 const days = (s: number) => (s % 86400 === 0 ? `${s / 86400} day${s === 86400 ? "" : "s"}` : period(s));
 const period = (s: number) => (s % 3600 === 0 ? `${s / 3600} hour${s === 3600 ? "" : "s"}` : s % 60 === 0 ? `${s / 60} minutes` : `${s} seconds`);
@@ -241,6 +256,9 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const address = account ? account.address.toLowerCase() : null;
   const doFetch = o.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const addressMs = o.perAddressSeconds * 1000, ipMs = o.perIpSeconds * 1000;
+  const once = o.oncePerAddress === true, swapUrl = o.swapUrl ?? null;
+  /** How long a plain request holds its address in memory: for good with once-per-address, else the window. */
+  const addressKeepMs = once ? Infinity : addressMs;
   // Each map is in the order of time: a key is set only when it is not there, so the oldest is always the first.
   const addresses = new Map<string, number>(), ips = new Map<string, number>();
   /** The times of the requests of each IPv6 /48 inside the window of the per-client limit, oldest first. In memory only (see `perNetMax`). */
@@ -429,7 +447,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
   // --- the limits
   function forget(t: number): void {
-    for (const [m, ms] of [[addresses, addressMs], [ips, ipMs], [builderAccounts, builderMs], [builderAddresses, builderMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
+    for (const [m, ms] of [[addresses, addressKeepMs], [ips, ipMs], [builderAccounts, builderMs], [builderAddresses, builderMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
     for (const [k, times] of nets) {
       let n = 0;
       while (n < times.length && times[n]! + ipMs <= t) n++;
@@ -450,6 +468,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (limit === "account") return answer(429, `This GitHub account was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "account");
     if (limit === "builder-address") return answer(429, `This address was given a builder grant in the last ${days(o.builder?.perAccountSeconds ?? 0)}. Try again later.`, header, "builder-address");
     if (limit === "day") return answer(429, `The builder grants for today are all given out (${o.builder?.maxPerDay ?? 0}). Try again tomorrow.`, header, "day");
+    if (limit === "once") return { status: 429, body: { error: ONCE_WORDS, reason: "once", ...(swapUrl ? { swapUrl } : {}) } };
     if (limit === "address") return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "address");
     if (limit === "ip") return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "ip");
     if (limit === "net") return answer(429, `This network has used the faucet ${netMax} times in the last ${period(o.perIpSeconds)}. Try again later, or from another network.`, { "Retry-After": seconds(waitMs) }, "net");
@@ -466,7 +485,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (b !== undefined) return turnedAway("builder-address", b + builderMs - t);
     } else {
       const a = addresses.get(to);
-      if (a !== undefined) return turnedAway("address", a + addressMs - t);
+      if (a !== undefined) return once ? turnedAway("once", 0) : turnedAway("address", a + addressMs - t);
     }
     const i = ip === undefined ? undefined : ips.get(ip);
     if (i !== undefined) return turnedAway("ip", i + ipMs - t);
@@ -744,13 +763,21 @@ export function createFaucet(o: FaucetOptions): Faucet {
     else { checksFailed.delete(key); checksFailed.set(key, { n: 1, since: t }); }
   }
 
-  async function human(token: unknown, ip: string | undefined): Promise<FaucetAnswer | null> {
-    const c = o.captcha;
-    if (!c) return null;
+  /** The cheap part of the human check, made before the limits so that a request with no token is counted as a failed check and not as a limit: the hour count then shows real people. */
+  function hasToken(given: unknown, ip: string | undefined): FaucetAnswer | null {
+    if (!o.captcha) return null;
     const key = clientKey(ip);
     const cooling = tooManyFailures(key, now());
     if (cooling) return cooling;
-    if (typeof token !== "string" || !token || token.length > 4096) { checkFailed(key, now()); return answer(403, "Complete the human check first.", undefined, "captcha"); }
+    if (typeof given !== "string" || !given || given.length > 4096) { checkFailed(key, now()); return answer(403, "Complete the human check first.", undefined, "captcha"); }
+    return null;
+  }
+
+  /** The check itself, a call to the verifier. It is made after the limits, so a request they turn away uses up no token. */
+  async function human(token: string, ip: string | undefined): Promise<FaucetAnswer | null> {
+    const c = o.captcha;
+    if (!c) return null;
+    const key = clientKey(ip);
     if (key !== undefined && checking.has(key)) return answer(429, "Your last human check is still being looked at. Wait a moment.", { "Retry-After": "2" }, "checks");
     if (verifying >= 50) return answer(503, "Too many people are being checked at this moment. Try again in a moment.", { "Retry-After": "2" });
     verifying++;
@@ -758,8 +785,10 @@ export function createFaucet(o: FaucetOptions): Faucet {
     try {
       const form = new URLSearchParams({ secret: c.secret, response: token, ...(ip ? { remoteip: ip } : {}) });
       const res = await doFetch(c.verifyUrl, { method: "POST", body: form, headers: { "content-type": "application/x-www-form-urlencoded" }, signal: AbortSignal.timeout(5000) });
-      const said = (await res.json()) as { success?: unknown } | null;
-      if (said?.success === true) return null;
+      const said = (await res.json()) as { success?: unknown; hostname?: unknown; action?: unknown } | null;
+      const host = c.hostnames?.length ? typeof said?.hostname === "string" && c.hostnames.includes(said.hostname.toLowerCase()) : true;
+      const named = c.action ? said?.action === c.action : true;
+      if (said?.success === true && host && named) return null;
       checkFailed(key, now());
       return answer(403, "The human check did not pass. Reload the page and try again.", undefined, "captcha");
     } catch {
@@ -776,7 +805,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
   function counted(a: FaucetAnswer): FaucetAnswer {
     const said = (a.body as { reason?: string }).reason;
     const reason = said === "net" ? "ip" : said;   // a network's limit is counted with the per-client one: the counts have no column of their own
-    if ((reason === "address" || reason === "ip" || reason === "hour" || reason === "captcha") && store?.refused && store.flushRefusals) {
+    if ((reason === "address" || reason === "once" || reason === "ip" || reason === "hour" || reason === "captcha") && store?.refused && store.flushRefusals) {
       store.refused(reason satisfies Refused, now());
       refusalTimer ??= setTimeout(() => { refusalTimer = undefined; void store.flushRefusals!(); }, o.refusalFlushMs ?? 5000).unref();
     }
@@ -816,10 +845,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const to = typeof raw === "string" ? raw.toLowerCase() : "";
     if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
     const ip = hashed(clientKey(caller.ip)), net = hashed(clientNet(caller.ip));
+    if (grantee === undefined) {
+      const missing = hasToken(caller.captcha, caller.ip);
+      if (missing) return counted(missing);
+    }
     const early = limited(to, ip, now(), grantee, net);
     if (early) return counted(early);
     if (grantee === undefined) {
-      const refused = await human(caller.captcha, caller.ip);
+      const refused = await human(caller.captcha as string, caller.ip);
       if (refused) return counted(refused);
     }
     const seen = await chain();
@@ -842,7 +875,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       ticket.claiming = true;
       let turned: ClaimRefusal | null = null;
       try {
-        turned = await store.claim(ticket, { addressMs, ipMs, maxPerHour: o.maxPerHour, ...(grantee !== undefined ? { builder: { accountMs: builderMs, maxPerDay: builder!.maxPerDay } } : {}) });
+        turned = await store.claim(ticket, { addressMs, ipMs, maxPerHour: o.maxPerHour, ...(grantee !== undefined ? { builder: { accountMs: builderMs, maxPerDay: builder!.maxPerDay } } : once ? { once: address } : {}) });
       } catch (e) {
         console.error(`faucet: cannot write the request: ${(e as Error).message}`);
         unqueue(ticket);
@@ -851,7 +884,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       ticket.claiming = false;
       if (turned) {
         unqueue(ticket);
-        const wait = turned === "address" ? addressMs : turned === "ip" ? ipMs : turned === "account" || turned === "builder-address" ? builderMs : turned === "day" ? DAY : HOUR;
+        const wait = turned === "address" || turned === "once" ? addressMs : turned === "ip" ? ipMs : turned === "account" || turned === "builder-address" ? builderMs : turned === "day" ? DAY : HOUR;
         return counted(turnedAway(turned, wait));
       }
     }
@@ -923,8 +956,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
       const p = await payouts;
       return {
         on: account !== null, address, balance, balanceBlock, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
-        maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
-        captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
+        maxPerHour: o.maxPerHour, oncePerAddress: once, swapUrl, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
+        captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass, action: o.captcha.action || null },
         builder: builder
           ? { on: account !== null, amount: builder.amountWei.toString(), perAccountSeconds: builder.perAccountSeconds, minAccountAgeDays: builder.minAccountAgeDays, maxPerDay: builder.maxPerDay }
           : { on: false, amount: null, perAccountSeconds: null, minAccountAgeDays: null, maxPerDay: null },

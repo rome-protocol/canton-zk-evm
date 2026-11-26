@@ -69,7 +69,7 @@ describe("settings", () => {
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", ledgerTokenFile: null, pollMs: 2000,
     });
     expect(c.database).toBeNull();
-    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, perNetMax: 10, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
+    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, oncePerAddress: false, swapUrl: null, perIpSeconds: 600, perNetMax: 10, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null, github: null });
     expect(c.captcha).toBeNull();
   });
 
@@ -144,11 +144,29 @@ describe("settings", () => {
 
   it("turns the human check on only with all five settings, and names the one that is missing", () => {
     const all = { CAPTCHA_SECRET: "s", CAPTCHA_VERIFY_URL: "https://check.example/verify", CAPTCHA_SCRIPT_URL: "https://check.example/api.js", CAPTCHA_SITE_KEY: "key", CAPTCHA_WIDGET_CLASS: "human-check" };
-    expect(load(all).captcha).toEqual({ secret: "s", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "key", widgetClass: "human-check" });
+    expect(load(all).captcha).toEqual({ secret: "s", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "key", widgetClass: "human-check", hostnames: [], action: "faucet" });
     for (const name of Object.keys(all).filter((n) => n !== "CAPTCHA_SECRET")) expect(() => load({ ...all, [name]: "" })).toThrow(name);
     expect(() => load({ ...all, CAPTCHA_VERIFY_URL: "check.example" })).toThrow(/CAPTCHA_VERIFY_URL/);
     expect(() => load({ ...all, CAPTCHA_WIDGET_CLASS: "two classes" })).toThrow(/CAPTCHA_WIDGET_CLASS/);
     expect(load({ ...all, CAPTCHA_SECRET: "" }).captcha).toBeNull();
+  });
+
+  it("takes the host and the action the human check must name, and defaults the action to faucet", () => {
+    const all = { CAPTCHA_SECRET: "s", CAPTCHA_VERIFY_URL: "https://check.example/verify", CAPTCHA_SCRIPT_URL: "https://check.example/api.js", CAPTCHA_SITE_KEY: "key", CAPTCHA_WIDGET_CLASS: "human-check" };
+    expect(load({ ...all, CAPTCHA_HOSTNAMES: " Ostia.Example , app.ostia.example ,", CAPTCHA_ACTION: "drip" }).captcha).toMatchObject({ hostnames: ["ostia.example", "app.ostia.example"], action: "drip" });
+    expect(load({ ...all, CAPTCHA_ACTION: "" }).captcha).toMatchObject({ action: "" });
+    expect(() => load({ ...all, CAPTCHA_ACTION: "two words" })).toThrow(/CAPTCHA_ACTION/);
+    expect(() => load({ ...all, CAPTCHA_HOSTNAMES: "https://ostia.example/" })).toThrow(/CAPTCHA_HOSTNAMES/);
+  });
+
+  it("takes once-per-address and the Swap address for the faucet, off and none by default", () => {
+    expect(load().faucet).toMatchObject({ oncePerAddress: false, swapUrl: null });
+    expect(load({ FAUCET_ONCE_PER_ADDRESS: "1", FAUCET_SWAP_URL: "https://swap.example/" }).faucet).toMatchObject({ oncePerAddress: true, swapUrl: "https://swap.example/" });
+    for (const off of ["", "0"]) expect(load({ FAUCET_ONCE_PER_ADDRESS: off }).faucet.oncePerAddress).toBe(false);
+    expect(() => load({ FAUCET_ONCE_PER_ADDRESS: "yes" })).toThrow(/FAUCET_ONCE_PER_ADDRESS/);
+    // the Swap address of the header is the fallback, and an address that is not https is ignored, as for SWAP_URL
+    expect(load({ SWAP_URL: "https://swap.example/" }).faucet.swapUrl).toBe("https://swap.example/");
+    expect(load({ FAUCET_SWAP_URL: "http://swap.example/", SWAP_URL: "https://other.example/" }).faucet.swapUrl).toBe("https://other.example/");
   });
 
   it("takes the Ledger API token file from LEDGER_TOKEN_FILE, and none when it is not set", () => {
