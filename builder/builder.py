@@ -2272,7 +2272,7 @@ CUSTODY_LIMITS_FILE = "custody-limits.json"   # in the work folder: what the cus
 
 def party_known(ledger: "Ledger", party: str) -> bool:
     """Whether the party is known on a synchronizer the participant is connected to, wherever it is hosted. The Ledger API's preferred-packages question for one package name, the
-    read the Bridge page and the in-relayer use: an answer means known, UNKNOWN_INFORMEES (HTTP 404) means no connected synchronizer knows it, the answer that stops a payout offer at
+    read the Bridge page uses: an answer means known, UNKNOWN_INFORMEES (HTTP 404) means no connected synchronizer knows it, the answer that stops a payout offer at
     submission. Anything else (a refusal, a timeout, an answer that is not JSON) is raised, never read as known."""
     body = {"packageVettingRequirements": [{"parties": [party], "packageName": PARTY_PACKAGE}]}
     try:
