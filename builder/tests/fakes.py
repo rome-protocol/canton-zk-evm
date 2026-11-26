@@ -474,6 +474,9 @@ class FakeLedger:
         self.timeout_code = "MEDIATOR_SAYS_TX_TIMED_OUT"   # the code of the completion that confirm_timeout "completion" lands
         self.confirm_timeout = None   # "completion": Advance is answered 408 and its completion says the mediator did not get the confirmations in time; "none": 408 and no completion at all
         self.hosting_asked: list = []   # (party, participant id) of each lookup
+        self.unknown_parties: set = set()   # parties that the preferred-packages question answers UNKNOWN_INFORMEES (HTTP 404) for: no connected synchronizer knows them
+        self.party_failure = None   # an HTTP status that every preferred-packages question answers (a participant that cannot be asked)
+        self.party_reads: list = []   # the body of each preferred-packages question
         self.completion_queries: list = []   # (query string, body) of each completions read
         self.completions_delay = 0.0   # seconds the completions read takes to answer
         self.hold: "threading.Event | None" = None   # an Advance waits for this to be set before it is decided
@@ -711,6 +714,13 @@ class FakeLedger:
                         return self._reply(200, out)
                     except OSError:   # the builder gave up on a slow answer
                         return
+                if self.path == "/v2/interactive-submission/preferred-packages":
+                    ledger.party_reads.append(body)
+                    if ledger.party_failure:
+                        return self._reply(ledger.party_failure, {"code": "FAILURE"})
+                    if any(p in ledger.unknown_parties for r in body["packageVettingRequirements"] for p in r["parties"]):
+                        return self._reply(404, {"code": "UNKNOWN_INFORMEES", "cause": "UNKNOWN_INFORMEES(11,0): the party is not known"})
+                    return self._reply(200, {"packageReferences": [], "synchronizerId": "sync::1"})
                 if self.path == "/v2/events/events-by-contract-id":
                     ledger.event_queries.append(body)
                     if ledger.acceptance_failure == "timeout":

@@ -233,9 +233,9 @@ class TwinParties(tb.LegCase):
         self.assertNotIn("legParties", result)
 
     def test_the_parties_of_a_pass_are_forgotten_before_the_next(self):
-        canton = types.SimpleNamespace(leg_context_bytes={}, leg_disclosed={}, leg_parties={12345: ("old::1",)})
+        canton = types.SimpleNamespace(leg_context_bytes={}, leg_disclosed={}, leg_parties={12345: ("old::1",)}, leg_owned={12345: ("old-request",)})
         self.assertEqual(b.match_legs(canton, []), ([], []))
-        self.assertEqual(canton.leg_parties, {})
+        self.assertEqual((canton.leg_parties, canton.leg_owned), ({}, {}))
 
 
 class Timeout(tp.Loop):

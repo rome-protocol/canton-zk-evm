@@ -22,7 +22,7 @@ def run_once(*extra, work=None):
     out = io.StringIO()
     with mock.patch.object(intake, "preapproval_warning"), mock.patch.object(intake.Intake, "poll", return_value=[]), mock.patch.object(payout.Payouts, "poll", return_value=[]), \
          mock.patch.dict(os.environ, {}, clear=False), contextlib.redirect_stdout(out):
-        for name in ("CZE_INTAKE", "CZE_PAYOUT_OFFERS", "CZE_WORK_DIR", "CZE_MAX_OFFERS"):
+        for name in ("CZE_INTAKE", "CZE_PAYOUT_OFFERS", "CZE_WORK_DIR"):
             os.environ.pop(name, None)
         intake.main(args + (["--work-dir", work] if work else []))
     path = Path(work or "/nonexistent") / limits.FILE
@@ -38,17 +38,17 @@ class AmountText(unittest.TestCase):
 
 class Document(unittest.TestCase):
     def test_each_part_lists_its_instruments_and_a_part_that_is_off_is_null(self):
-        doc = limits.document(NOW, 10.0, {(ISSUER, "TKB"): Fraction(1), (DSO, "Amulet"): Fraction(10)}, {(DSO, "Amulet"): Fraction(10)}, 3)
+        doc = limits.document(NOW, 10.0, {(ISSUER, "TKB"): Fraction(1), (DSO, "Amulet"): Fraction(10)}, {(DSO, "Amulet"): Fraction(10)})
         self.assertEqual(doc, {
             "version": 1, "updatedAt": "2026-11-24T10:30:05Z", "pollSeconds": 10.0,
             "minDeposits": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}, {"instrumentAdmin": ISSUER, "instrumentId": "TKB", "least": "1"}],
-            "minPayouts": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}], "maxOffers": 3})
+            "minPayouts": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}]})
         off = limits.document(NOW, 10.0)
-        self.assertEqual((off["minDeposits"], off["minPayouts"], off["maxOffers"]), (None, None, None))
+        self.assertEqual((off["minDeposits"], off["minPayouts"], "maxOffers" in off), (None, None, False))
 
     def test_a_part_that_is_on_with_no_least_amount_has_an_empty_list(self):
-        doc = limits.document(NOW, 10.0, {}, {}, 0)
-        self.assertEqual((doc["minDeposits"], doc["minPayouts"], doc["maxOffers"]), ([], [], 0))
+        doc = limits.document(NOW, 10.0, {}, {})
+        self.assertEqual((doc["minDeposits"], doc["minPayouts"]), ([], []))
 
     def test_the_time_is_utc_whatever_the_clock_zone(self):
         from datetime import timedelta
@@ -69,24 +69,24 @@ class Worker(unittest.TestCase):
     def test_the_intake_and_the_payouts_publish_what_they_enforce(self):
         with tempfile.TemporaryDirectory() as work:
             _, doc = run_once("--intake", "--gateway-address", "0x" + "ab" * 20, "--ostia-rpc", "http://127.0.0.1:1", "--min-deposit", f"{DSO}/Amulet=10", "--min-deposit", f"{ISSUER}/TKB=1",
-                              "--payout-offers", "--min-payout", f"{DSO}/Amulet=10", "--min-payout", f"{ISSUER}/TKB=1", "--max-offers", "3", "--poll-seconds", "7", work=work)
+                              "--payout-offers", "--min-payout", f"{DSO}/Amulet=10", "--min-payout", f"{ISSUER}/TKB=1", "--poll-seconds", "7", work=work)
         self.assertEqual(doc["minDeposits"], [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}, {"instrumentAdmin": ISSUER, "instrumentId": "TKB", "least": "1"}])
         self.assertEqual(doc["minPayouts"], doc["minDeposits"])
-        self.assertEqual((doc["maxOffers"], doc["pollSeconds"], doc["version"]), (3, 7.0, 1))
+        self.assertEqual((doc.get("maxOffers"), doc["pollSeconds"], doc["version"]), (None, 7.0, 1))
         self.assertRegex(doc["updatedAt"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_the_intake_alone_has_no_payout_limits_and_the_payouts_alone_have_no_deposit_limits(self):
         with tempfile.TemporaryDirectory() as work:
             _, doc = run_once("--intake", "--gateway-address", "0x" + "ab" * 20, "--ostia-rpc", "http://127.0.0.1:1", "--min-deposit", f"{DSO}/Amulet=10", "--min-payout", f"{DSO}/Amulet=99", work=work)
-        self.assertEqual((len(doc["minDeposits"]), doc["minPayouts"], doc["maxOffers"]), (1, None, None))
+        self.assertEqual((len(doc["minDeposits"]), doc["minPayouts"]), (1, None))
         with tempfile.TemporaryDirectory() as work:
             _, doc = run_once("--payout-offers", "--min-deposit", f"{DSO}/Amulet=99", "--min-payout", f"{DSO}/Amulet=10", work=work)
-        self.assertEqual((doc["minDeposits"], len(doc["minPayouts"]), doc["maxOffers"]), (None, 1, 0))
+        self.assertEqual((doc["minDeposits"], len(doc["minPayouts"])), (None, 1))
 
     def test_no_setting_is_an_empty_list_not_a_missing_part(self):
         with tempfile.TemporaryDirectory() as work:
             _, doc = run_once("--payout-offers", work=work)
-        self.assertEqual((doc["minPayouts"], doc["maxOffers"]), ([], 0))
+        self.assertEqual(doc["minPayouts"], [])
 
     def test_every_round_writes_the_time_again(self):
         with tempfile.TemporaryDirectory() as work:

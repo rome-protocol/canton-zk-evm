@@ -18,6 +18,7 @@ back too, where it had moved). One JSON line on stdout says which, whatever the 
 """
 import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, http.server, ipaddress, itertools, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -80,6 +81,10 @@ class StaleProof(BuilderError):
     """A deposit of the block can no longer be settled by the time the Advance would reach Canton (its allocation's settle-before time is within PROOF_MARGIN): the proof is dropped and the block is built again, without that deposit."""
 
 
+class StaleLegs(StaleProof):
+    """A leg of the block has no Canton side any more (a contract it uses was archived while the block was proven), checked again just before the Advance would be sent: the proof is dropped and the block is built again, which leaves that leg out."""
+
+
 class ReaderMissing(BuilderError):
     """--twin-registry-url is set but --read-as does not give the chain's gateway: no acceptance can be read, so a producer stops."""
 
@@ -139,6 +144,7 @@ class Config:
     custody_alert_days: float = 3     # --custody-alert-days: ... and "alert" with less than this
     max_transfer_inputs: int = 50     # --max-transfer-inputs: the most inputs one transfer takes (the open round's maxNumInputs is the other limit)
     receipts: bool = False            # --receipts: a deposit may be settled by a Receipt (a transfer to the gateway that it accepted: package 0.6.0), and the status file counts the open receipts and payouts. Off: the builder never reads a Receipt
+    recheck_legs: bool = True         # CZE_RECHECK_LEGS=0 turns it off: the block's legs are matched against Canton again just before the Advance is sent (`recheck_legs`). The demo's run 4 turns it off to show Canton's own refusal
     payout_offers: bool = False       # --payout-offers: a withdrawal is a PayoutLeg (Rome pays it after the block, as a transfer offer): it needs no acceptance, no holdings and no choice context. Off: the WithdrawalLeg of 0.5.0
 
     @classmethod
@@ -166,7 +172,7 @@ class Config:
             ledger_url=e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"),
             traffic_url=e.get("CZE_TRAFFIC_URL", ""), twin_registry_url=e.get("CZE_TWIN_REGISTRY_URL", ""),
             ledger_user=need("CZE_LEDGER_USER"), ledger_token=e.get("CZE_LEDGER_TOKEN", ""), ledger_token_file=e.get("CZE_LEDGER_TOKEN_FILE", ""),
-            party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"),
+            party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"), recheck_legs=e.get("CZE_RECHECK_LEGS", "1") != "0",
             genesis=e.get("CZE_GENESIS", str(ROOT / "network" / "genesis.json")),
             work_dir=e.get("CZE_WORK_DIR", str(state / "builder")),
             make_input_cmd=e.get("CZE_MAKE_INPUT_CMD", str(ROOT / "prover" / "make-input.sh")),
@@ -1873,6 +1879,16 @@ class PartyBlame:
         return []
 
     @_locked
+    def hold(self, parties) -> list:
+        """Canton refused a block because a contract of these parties' legs was gone (archived by its signers, who are these parties): they are held back, as after a convicted
+        timeout, and the transactions of the block are not blamed. Returns the parties newly held."""
+        self.expire(self.clock())
+        gone = sorted(p for p in parties if p not in self.until)
+        for party in gone:
+            self.convict(party, self.clock())
+        return gone
+
+    @_locked
     def answered(self, carried: set) -> None:
         """A block that carried these parties' legs was answered by Canton (committed, or refused for another reason: the confirmations came): the parties of
         it that were on trial are cleared, and the rest are narrowed again."""
@@ -2249,6 +2265,52 @@ def open_rows(ledger: Ledger, chain: dict, now: float) -> dict:
     return {"readAt": iso(now), "tokens": {n: {**r, "receiptAmount": canton_amount(r["receiptAmount"]), "payoutAmount": canton_amount(r["payoutAmount"])} for n, r in rows.items()}}
 
 
+PREFERRED_PACKAGES, UNKNOWN_INFORMEES, PARTY_PACKAGE = "/v2/interactive-submission/preferred-packages", "UNKNOWN_INFORMEES", "splice-amulet"
+PARTY_TIMEOUT = 10   # seconds one question about a party may take
+NOT_KNOWN, NOT_LOOKED_UP = "the Canton account is not known on the network", "the Canton account cannot be looked up now"
+CUSTODY_LIMITS_FILE = "custody-limits.json"   # in the work folder: what the custody worker enforces, written by it (apps/custody/limits.py)
+
+
+def party_known(ledger: "Ledger", party: str) -> bool:
+    """Whether the party is known on a synchronizer the participant is connected to, wherever it is hosted. The Ledger API's preferred-packages question for one package name, the
+    read the Bridge page uses: an answer means known, UNKNOWN_INFORMEES (HTTP 404) means no connected synchronizer knows it, the answer that stops a payout offer at
+    submission. Anything else (a refusal, a timeout, an answer that is not JSON) is raised, never read as known."""
+    body = {"packageVettingRequirements": [{"parties": [party], "packageName": PARTY_PACKAGE}]}
+    try:
+        post_json(ledger.cfg.ledger_url + PREFERRED_PACKAGES, body, ledger.auth, timeout=PARTY_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        try:
+            code = json.loads(e.read(2000)).get("code")
+        except (OSError, ValueError, AttributeError):
+            code = None
+        finally:
+            e.close()
+        if e.code == 404 and code == UNKNOWN_INFORMEES:
+            return False
+        raise
+    return True
+
+
+def payout_least(cfg: "Config", instrument: dict) -> str | None:
+    """The least payout of the instrument that the custody worker publishes (`minPayouts` of custody-limits.json in the work folder), as the decimal text it wrote, or None when there is
+    none: no file, payouts not switched on in it, or no least for this instrument. A file that is there and cannot be read is Unreadable: nothing is burnt on a guess."""
+    try:
+        text = (Path(cfg.work_dir) / CUSTODY_LIMITS_FILE).read_text()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as e:
+        raise Unreadable(f"the custody's limits cannot be read: {bounded_text(e)}") from None
+    try:
+        listed = json.loads(text).get("minPayouts")
+        for row in listed or []:
+            if row["instrumentAdmin"] == instrument["admin"] and row["instrumentId"] == instrument["id"]:
+                Fraction(row["least"])   # a text that is not an amount is caught here, not at the comparison
+                return row["least"]
+    except (ValueError, ArithmeticError, AttributeError, KeyError, TypeError) as e:
+        raise Unreadable(f"the custody's limits cannot be read: {bounded_text(e)}") from None
+    return None
+
+
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
@@ -2258,6 +2320,8 @@ class Canton:
         self.expiry = expiry   # the rules of the instruments whose holdings run out (--expiring-instrument), or None: no instrument has them
         self.hosting, self.blame = hosting, blame   # who may confirm (`Hosting`, None: nobody is asked) and who is held back after a confirmation timeout (`PartyBlame`, None: nobody)
         self.leg_parties: dict = {}   # id of a leg (the dict) -> the parties, other than the chain's own, whose participants must confirm it
+        self.leg_owned: dict = {}   # id of a leg (the dict) -> the contracts that its own parties sign or control and that it uses up (request, terms, trade, release request, acceptance, allocation)
+        self.known: dict = {}   # party -> whether Canton knows it (a bool), or the Unreadable that the question ended in: asked once for this block
         self.settle_margin = settle_margin   # how long before its settle-before time a deposit's allocation is no longer used
         self.lock_parts = lock_parts   # lock id (hex) -> {"receiver", "ref"} the twin registry service has announced, or None; None here: no registry is configured
         self.contexts = contexts   # the token registries' choice contexts (ChoiceContexts), or None: no leg is given one
@@ -2283,10 +2347,25 @@ class Canton:
                 return found
         return None
 
-    def note_parties(self, leg: dict, *parties) -> None:
-        """The parties whose participants must confirm this leg, for a block that fails on a confirmation timeout to be told apart."""
+    def require_known(self, party: str) -> None:
+        """A NoCantonSide when Canton does not know the party, an Unreadable when it could not be asked (never read as known)."""
+        if party not in self.known:
+            try:
+                self.known[party] = party_known(self.ledger, party)
+            except (OSError, ValueError, http.client.HTTPException) as e:   # a refusal, a timeout, a dropped connection, an answer that is not JSON
+                self.known[party] = Unreadable(f"{NOT_LOOKED_UP}: {bounded_text(e)}")
+        got = self.known[party]
+        if isinstance(got, Unreadable):
+            raise Unreadable(str(got))
+        if not got:
+            raise NoCantonSide(NOT_KNOWN)
+
+    def note_parties(self, leg: dict, *parties, owned=()) -> None:
+        """The parties whose participants must confirm this leg, for a block that fails on a confirmation timeout to be told apart, and `owned`: the contracts of the leg that
+        those parties can archive or withdraw (and only those: not the token, the gateway's inputs or the registry's contracts), for a refusal that names one to be told apart."""
         own = {self.chain.get("operator"), self.chain.get("confirmer"), self.chain.get("gateway"), self.chain.get("builder"), self.ledger.cfg.party}
         self.leg_parties[id(leg)] = tuple(dict.fromkeys(p for p in parties if isinstance(p, str) and p not in own))
+        self.leg_owned[id(leg)] = tuple(dict.fromkeys(c for c in owned if isinstance(c, str) and c))
 
     def listed(self, name: str, read):
         """What `read()` gives, asked for once in this block. A read that fails (an HTTP error of any status such as 413 or 500, a timeout, a dropped
@@ -2522,7 +2601,7 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
     request = first_fit(requests, problem, "")
     canton.deadlines[request["contractId"]] = datetime.fromisoformat(canton.allocations[request["allocation"]]["settlement"]["settleBefore"])
     leg_out = {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
-    canton.note_parties(leg_out, request["depositor"])
+    canton.note_parties(leg_out, request["depositor"], owned=(request["contractId"], request["allocation"]))
     with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, request["allocation"]))
     if claimed is not None:
         claimed["allocations"].add(request["allocation"])
@@ -2587,11 +2666,17 @@ def largest_first_inputs(usable: list, needed: int) -> list:
 def payout_leg(leg: LegEvent, canton: Canton, claimed: dict | None = None) -> dict:
     """With --payout-offers a withdrawal is a payout to the party the holder named: no acceptance, no holdings, no choice context. The party must be a Canton party
     (Canton refuses the whole Advance that names another text); it is not a stakeholder of the payout, so no hosting or blame check applies to it. Several payouts of one token go in a block.
+    The party must be one that Canton knows (an unknown party can never be paid: the offer is refused and Daml has no way back), and the amount at least the least payout that the
+    custody publishes for the token (below it the worker never offers): a leg that fails either is left out, so that nothing is burnt that cannot be paid.
     For an expiring instrument (Canton Coin) custody less the open payouts less this amount must be zero or at least the floor, so that nothing is burnt that cannot be paid."""
     registered = canton.token(leg)
     if not canton_party_text(leg.party):
         raise NoCantonSide("the receiver is not a Canton party")
     instrument, rules = registered["instrumentId"], canton.expiry
+    least = payout_least(canton.ledger.cfg, instrument)
+    if least is not None and Fraction(leg.amount, UNIT) < Fraction(least):
+        raise NoCantonSide(f"the payout is below the least payout of {least} that the custody offers for the token")
+    canton.require_known(leg.party)
     if rules is not None and rules.covers(instrument["admin"]):
         key = (instrument["admin"], instrument["id"])
         promised = claimed["payouts"] if claimed is not None else {}
@@ -2634,7 +2719,7 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
                                                  "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
     transfer = {"sender": chain["gateway"], "receiver": leg.party, "amount": canton_amount(leg.amount), "instrumentId": token["instrumentId"],
                 "requestedAt": stamp(canton.now), "executeBefore": stamp(canton.now + timedelta(days=1)), "inputHoldingCids": inputs, "meta": {"values": {}}}
-    canton.note_parties(leg_out, leg.party)
+    canton.note_parties(leg_out, leg.party, owned=(acceptances[0]["contractId"],))
     with_context(canton, leg_out, instrument[0], lambda c, admin: c.transfer(admin, token["factory"], transfer))
     if claimed is not None:
         claimed["instruments"].add(instrument)
@@ -2680,7 +2765,7 @@ def terms_leg(leg: LegEvent, canton: Canton, claimed: dict | None, named: list) 
 
     terms = first_fit(named, problem, "")
     leg_out = {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
-    canton.note_parties(leg_out, terms["u"], terms["v"])
+    canton.note_parties(leg_out, terms["u"], terms["v"], owned=(terms["contractId"], terms["allocation"]))
     admin = canton.allocations[terms["allocation"]]["transferLeg"]["instrumentId"]["admin"]
     with_context(canton, leg_out, admin, lambda c, a: c.allocation(a, terms["allocation"]))
     if claimed is not None:
@@ -2734,7 +2819,7 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
 
     trade = first_fit(trades, problem, "")
     leg_out = {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
-    canton.note_parties(leg_out, trade["venue"], trade["sender"])
+    canton.note_parties(leg_out, trade["venue"], trade["sender"], owned=(trade["contractId"], trade["allocation"]))
     token = next(g for g in canton.tokens if g["contractId"] == trade["gatewayToken"])
     with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, trade["allocation"]))
     shown = disclosed_allocation(trade)
@@ -2909,7 +2994,7 @@ def lock_leg(leg: LegEvent, canton: Canton) -> dict:
     if found is not None:
         raise NoCantonSide(found)
     leg_out = {"tag": "LockLeg", "value": {"lockRules": rules, "lockReceiver": receiver, "lockRef": ref, "lockVault": leg.account, "lockAmount": f"{leg.amount:064x}"}}
-    canton.note_parties(leg_out, receiver)
+    canton.note_parties(leg_out, receiver, owned=(parts.get("acceptance"),))
     return leg_out
 
 
@@ -2971,7 +3056,7 @@ def release_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
         name = f"{canton.chain['gateway']}/erc20:{leg.token}"
         claimed["quota"][name] = claimed["quota"].get(name, 0) + base_units(request["amount"])
     leg_out = {"tag": "ReleaseLeg", "value": {"releaseRequest": request["contractId"], "releaseRules": rules, "releaseVault": vault}}
-    canton.note_parties(leg_out, request["holder"])
+    canton.note_parties(leg_out, request["holder"], owned=(request["contractId"],))
     return leg_out
 
 
@@ -2989,6 +3074,7 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
         canton.leg_context_bytes.clear()   # each pass counts the legs it keeps, and only those
         canton.leg_disclosed.clear()
         canton.leg_parties.clear()   # keyed by the id of a leg's dict, which a later leg can reuse once the first is freed
+        canton.leg_owned.clear()
         for event in events:
             before = set(canton.leg_context_bytes)
             try:
@@ -3375,6 +3461,10 @@ class Built:
     deposit_deadline: datetime | None = None   # the earliest settle-before time among the allocations the block's deposit legs use; None when it has none
     leg_parties: dict = field(default_factory=dict)   # transaction hash -> the parties, other than the chain's own, whose participants must confirm the legs it recorded
     custody: list = field(default_factory=list)   # the custody check the block needs: [{"instrument", "withdrawn", "deposits"}] for each expiring instrument it withdraws
+    matched_at: float = 0.0   # time.monotonic() when the block's legs were matched: the second look (`recheck_legs`) is made only when that was RECHECK_AFTER seconds ago or more
+    events: list = field(default_factory=list)   # the Leg events of the block, in the order of its legs: matched again just before the Advance is sent (`recheck_legs`); empty: nothing to match
+    leg_contracts: dict = field(default_factory=dict)   # contract id a leg uses up and its own parties control (`Canton.leg_owned`) -> the parties, other than the chain's own, of that leg: a refusal that names the contract is held against them
+    seen: list = field(default_factory=list)   # a LegSeen for each leg, in the order of `events`: what the second look (`recheck_legs`) compares the legs it finds then with
 
 
 @dataclass
@@ -3521,6 +3611,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
             legs, missing = match_legs(canton, events, limits=not defer_legs) if events else ([], [])
+        matched_at = time.monotonic()
         if defer_legs and events:   # a leg with a Canton side waits; one with none is left out with its own reason
             bad = {event.tx for event, _ in missing}
             missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
@@ -3591,7 +3682,13 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     for event, leg in zip(events, legs):
         for party in canton.leg_parties.get(id(leg), ()):
             leg_parties.setdefault(event.tx, set()).add(party)
+    leg_contracts: dict = {}   # contract id -> parties: the contracts a leg's own parties control and the leg uses up, for the refusal that names one
+    for leg in legs:
+        parties = canton.leg_parties.get(id(leg), ())
+        for cid in canton.leg_owned.get(id(leg), ()) if parties else ():
+            leg_contracts.setdefault(cid, set()).update(parties)
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=by_gateway.get("", []), leg_txs=leg_txs,
+                 events=events, matched_at=matched_at, seen=[leg_seen(canton, leg) for leg in legs], leg_contracts={c: sorted(ps) for c, ps in leg_contracts.items()},
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
                  disclosed=venue_disclosed(legs, canton), extra_gateways=extra, leg_parties={tx: sorted(ps) for tx, ps in leg_parties.items()},
@@ -3709,12 +3806,78 @@ class Reply:
     traffic_after: dict | None = None
 
 
+class LegSeen(NamedTuple):
+    """What a matched leg stands on: its kind, its value without the registry's choice context and the gateway's inputs (what Canton is told to settle), the contracts its own
+    parties control that it uses up, the inputs, and its parties."""
+    tag: str
+    value: str
+    owned: tuple
+    inputs: tuple
+    parties: tuple
+
+
+def leg_seen(canton: Canton, leg: dict) -> LegSeen:
+    value = leg.get("value") or {}
+    return LegSeen(leg["tag"], json.dumps({k: v for k, v in value.items() if k not in ("choiceContext", "inputs")}, sort_keys=True), canton.leg_owned.get(id(leg), ()),
+                   tuple(value.get("inputs") or ()), canton.leg_parties.get(id(leg), ()))
+
+
+def named_leg_parties(built: Built, reason: str) -> list:
+    """The parties of the legs that Canton's refusal names a contract of (as a whole word of its text), sorted."""
+    named = set()
+    for contract, parties in built.leg_contracts.items():
+        if re.search(r"(?<![0-9A-Za-z_-])" + re.escape(contract) + r"(?![0-9A-Za-z_-])", reason):
+            named.update(parties)
+    return sorted(named)
+
+
+RECHECK_AFTER = 5.0   # seconds: a block matched less long ago than this is sent as it is (a second look is a second read of the lists, and the Advance goes out about that soon after it anyway)
+
+
+def recheck_legs(cfg: Config, reth: Reth, built: Built) -> None:
+    """The block's legs are matched against Canton again (when RECHECK_AFTER seconds or more have passed since they were matched, which a proof takes), with the code that built them, just before the Advance is sent: a contract that its signer archived (or an allocation they
+    withdrew) while the block was proven would make Canton refuse the whole Advance, and the refusal would be held against the block's transactions. A leg that has no Canton side
+    now raises StaleLegs, and so does a leg that is found now on other contracts than the ones it was proven with (another request, terms or trade, another allocation, inputs that are
+    no longer held): the proof is dropped and the block is built again. The parties of a leg whose own contracts changed are held back first, so that the rebuilt block leaves the
+    leg out. What cannot be read says nothing: the Advance goes on as before, as the leg check does."""
+    if not cfg.recheck_legs or not built.events or time.monotonic() - built.matched_at < RECHECK_AFTER:
+        return
+    chain, parent = built.chain, built.payload["parentHash"]
+    try:
+        canton = Canton(Ledger(cfg), chain, utcnow(), cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
+                        lock_parts=twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None, derived_ids=not cfg.unlabelled_deposits,
+                        contexts=ChoiceContexts(cfg.registries, cfg.registry_tokens) if cfg.registries else None, settle_margin=PROOF_MARGIN,   # as the check of the deposit's own deadline: a deposit that still outlives the Advance by that much goes
+                        hosting=cfg.hosting, blame=cfg.blame,
+                        expiry=ExpiryRules(cfg, ChoiceContexts(cfg.registries, cfg.registry_tokens)) if cfg.expiring else None)
+        legs, missing = match_legs(canton, built.events, limits=False)
+        skipped = {id(event) for event, _ in missing}   # the legs that were found again, with what the block was proven with
+        later = [leg_seen(canton, leg) for leg in legs]
+        earlier = [seen for event, seen in zip(built.events, built.seen) if id(event) not in skipped]
+        held = {c["contractId"] for c in canton.holdings if c["owner"] == chain["gateway"] and not c.get("lock")} if any(seen.inputs for seen in earlier) else set()
+    except (BuilderError, OSError, ValueError, http.client.HTTPException):
+        return
+    changed = [(was, now) for was, now in zip(earlier, later) if was[:3] != now[:3] or any(i not in held for i in was.inputs)]
+    # A leg that is found again on other contracts is not the leg that was proven: the Advance would name contracts that are gone. The parties whose own contracts it was found on
+    # are held back, so that the block built again does not prove the next spare of theirs (an id is no more than one contract's name; Daml allows a second request or terms for it).
+    parties = sorted({p for was, now in changed if was.owned != now.owned for p in (*was.parties, *now.parties)})
+    if parties and cfg.blame is not None:
+        cfg.blame.hold(parties)
+    if changed:
+        was, now = changed[0]
+        raise StaleLegs(f"a leg of block {built.n} is not the one that was proven: it used {', '.join(was.owned) or was.tag} and would now use {', '.join(now.owned) or now.tag}: the proof is dropped and the block is built again")
+    gone = [(event, reason) for event, reason in missing if not isinstance(reason, Unread)]
+    if gone:
+        event, reason = gone[0]
+        raise StaleLegs(f"a leg of block {built.n} has no Canton side now: {reason}: the proof is dropped and the block is built again")
+
+
 def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attempt: "Attempt") -> Submission:
     """The first half of the third stage, for the thread that owns reth, the journal and the files: writes the argument and the command to disk and
     the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet. A block whose earliest deposit expires within PROOF_MARGIN
     is refused first (StaleProof): a proof that came late must never carry an expired deposit to Canton."""
     if built.deposit_deadline is not None and utcnow() + PROOF_MARGIN >= built.deposit_deadline:
         raise StaleProof(f"a deposit of block {built.n} can be settled until {built.deposit_deadline.isoformat()}, less than {PROOF_MARGIN.total_seconds():g} s from now: the proof is dropped and the block is built again")
+    recheck_legs(cfg, reth, built)
     n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
                 "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}
@@ -3836,7 +3999,8 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
                 **({"timedOut": True, "timeoutCode": timeout_code(reason), **({"unresponsive": unresponsive} if unresponsive else {}), **({"reportedByParticipant": True} if reported else {})} if timed_out else {}),
                 **(gateway_evidence(cfg, sub) if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried and the registry as Canton holds it now, to tell a race from a forged sentence
-                **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {})}   # which contract is gone: the Advance's own chain contract, or another
+                **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {}),   # which contract is gone: the Advance's own chain contract, or another
+                **({"contractParties": parties} if "CONTRACT_NOT_FOUND" in reason and (parties := named_leg_parties(sub.built, reason)) else {})}   # another: the parties of the legs whose contract it is
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
     # No traffic state is configured to measure from (a participant on the Canton Network has none): what the completion says it paid. With a state
@@ -4857,6 +5021,14 @@ class Producer:
             # The next block is cut on the chain contract as Canton shows it now, and leaves the legs out if it says so.
             self.previous_kept = set()
             self.limit_kept, self.limit_legs = (kept, legs) if why == "limit" else (set(), set())
+            return
+        blamed = result.get("contractParties") if why is None else None
+        if blamed:
+            # Canton names a contract of a leg of the block as gone: the legs' signers can archive it at will, so those parties are held back and the transactions are not suspects.
+            self.previous_kept, self.limit_kept, self.limit_legs = set(), set(), set()
+            for party in self.blame.hold(blamed):
+                self.journal.event("party_held", party=party, until=iso(self.blame.until[party]), strikes=self.blame.strikes[party],
+                                   reason="Canton refused a block because a contract of its leg is gone")
             return
         self.limit_kept, self.limit_legs = set(), set()
         if self.probe is not None:   # the block held this suspect and no other: it is the one
