@@ -5,6 +5,10 @@ import { usualProof } from "../stats.ts";
 export interface FaucetInfo {
   on: boolean; address: string | null; balance: string | null; amount: string; perAddressSeconds: number;
   perIpSeconds?: number; maxPerHour?: number;
+  /** True when the faucet gives each address its coins once, ever; `perAddressSeconds` then says nothing. Absent from a server that does not say it. */
+  oncePerAddress?: boolean;
+  /** Where an address that already got its coins is sent (the Swap), or null. Absent from a server that does not say it. */
+  swapUrl?: string | null;
   /** How many requests are waiting for a batch. */
   queue?: number;
   /** The final head the balance was read at; null when none could be named (the balance is then the newest block's, which may not be final). Absent from a server that does not say it. */
@@ -18,7 +22,7 @@ export interface FaucetInfo {
   /** The builder grant (sign in with GitHub for a larger amount): on or off, and its amount (smallest unit), period, minimum account age and daily cap. Absent from a server that does not say it. */
   builder?: { on: boolean; amount: string | null; perAccountSeconds: number | null; minAccountAgeDays: number | null; maxPerDay: number | null };
   /** The human check, when the faucet asks for one: the script to load and the key to give it. */
-  captcha?: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
+  captcha?: { siteKey: string; scriptUrl: string; widgetClass: string; action?: string | null } | null;
 }
 
 /** Where a ticket is: waiting for a batch, sent and not final, final on Canton, or failed. */
@@ -39,6 +43,7 @@ export interface Ticket {
 export type CoinResult =
   | { kind: "queued"; ticket: string; position: number; to: string; amount: string }
   | { kind: "limit"; which: "address" | "ip" | "hour" | "checks"; waitSeconds: number | null; message: string }
+  | { kind: "once"; message: string; swapUrl: string | null }
   | { kind: "full"; waitSeconds: number | null; message: string }
   | { kind: "captcha"; message: string }
   | { kind: "problem"; message: string };
@@ -111,6 +116,10 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
         return typeof body.ticket === "string" && typeof body.position === "number" && typeof body.to === "string" && typeof body.amount === "string"
           ? { kind: "queued", ticket: body.ticket, position: body.position, to: body.to, amount: body.amount }
           : { kind: "problem", message: UNREADABLE };
+      }
+      if (status === 429 && body.reason === "once") {
+        // The answer to an address that already got its coins has no wait. A link is kept only if it is an https address.
+        return { kind: "once", message: message(body, "This address already got its coins from the faucet."), swapUrl: typeof body.swapUrl === "string" && /^https:\/\//.test(body.swapUrl) ? body.swapUrl : null };
       }
       if (status === 429) {
         const which = body.reason === "net" ? "ip" : body.reason === "address" || body.reason === "ip" || body.reason === "checks" ? body.reason : "hour";   // a network's limit is a per-client one, as the page words it

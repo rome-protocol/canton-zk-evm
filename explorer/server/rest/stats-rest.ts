@@ -174,7 +174,8 @@ export function createStatsRest(pool: Pool): StatsRest {
     const since = num(began?.at);
     const byReason = { address: 0, ip: 0, hour: 0, captcha: 0 };
     if (since !== null && from >= since) {
-      for (const r of await query("select reason, sum(n)::float8 as n from faucet_refusals where minute >= $1 and minute < $2 group by reason", [new Date(from), new Date(to)])) byReason[r.reason as keyof typeof byReason] = Number(r.n);
+      // An address that already got its coins ('once') is counted with the address limit: the stats keep one count for the same address.
+      for (const r of await query("select case when reason = 'once' then 'address' else reason end as reason, sum(n)::float8 as n from faucet_refusals where minute >= $1 and minute < $2 group by 1", [new Date(from), new Date(to)])) byReason[r.reason as keyof typeof byReason] = Number(r.n);
     }
     return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist, turnedAway: { since, byReason } };
   }

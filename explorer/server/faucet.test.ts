@@ -557,7 +557,7 @@ describe("the human check", () => {
   it("shows the page what it needs, and never the secret", async () => {
     const f = await faucet({ captcha });
     const info = await f.info();
-    expect(info.captcha).toEqual({ siteKey: "site-key", scriptUrl: captcha.scriptUrl, widgetClass: "human-check" });
+    expect(info.captcha).toEqual({ siteKey: "site-key", scriptUrl: captcha.scriptUrl, widgetClass: "human-check", action: null });
     expect(JSON.stringify(info)).not.toContain(CAPTCHA_SECRET);
   });
 });
@@ -1056,5 +1056,135 @@ describe("a flood across a restart", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/** The human check's settings for the tests below, with the secret given. */
+const checkOf = (secret: string, extra: { hostnames?: string[]; action?: string } = {}) => ({ secret, verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check", ...extra });
+
+describe("one drip per address, ever", () => {
+  const SWAP = "https://swap.example/";
+  const WORDS = "This address already got its tROME from the faucet. Get more on the Swap.";
+
+  it("refuses a repeat with 429, the reason once, the plain words and the Swap link, and no Retry-After", async () => {
+    const f = await faucet({ oncePerAddress: true, swapUrl: SWAP });
+    expect((await f.request(ALICE, { ip: "1.1.1.1" })).status).toBe(202);
+    const again = await f.request(ALICE, { ip: "2.2.2.2" });
+    expect(again).toMatchObject({ status: 429, body: { reason: "once", error: WORDS, swapUrl: SWAP } });
+    expect(again.headers).toBeUndefined();
+    expect(f.queued()).toBe(1);
+  });
+
+  it("refuses an address that got its tROME 8 days ago, past the per-address window", async () => {
+    const f = await faucet({ oncePerAddress: true, swapUrl: SWAP, perAddressSeconds: 7 * DAY });
+    const first = await f.request(ALICE, { ip: "1.1.1.1" });
+    await drain(f);
+    expect(f.ticket(ticketOf(first))?.status).toBe("final");
+    clock.now += 8 * DAY * 1000;
+    const again = await f.request(ALICE, { ip: "2.2.2.2" });
+    expect(again).toMatchObject({ status: 429, body: { reason: "once", error: WORDS } });
+    expect(again.headers).toBeUndefined();
+  });
+
+  it("gives the address its turn back when its request came to nothing", async () => {
+    const f = await faucet({ oncePerAddress: true });
+    await f.request(ALICE, { ip: "1.1.1.1" });
+    state.balance = COIN / 2n;
+    await f.process();
+    expect((await f.request(ALICE, { ip: "2.2.2.2" })).status).toBe(503);
+    state.balance = 1_000_000n * COIN;
+    clock.now += 6000; // the faucet's balance is read at most once in 5 seconds
+    expect((await f.request(ALICE, { ip: "2.2.2.2" })).status).toBe(202);
+  });
+
+  it("leaves the Swap link out when no address is set, and the words stay", async () => {
+    const f = await faucet({ oncePerAddress: true });
+    await f.request(ALICE, { ip: "1.1.1.1" });
+    const again = await f.request(ALICE, { ip: "2.2.2.2" });
+    expect(again.body).toEqual({ error: WORDS, reason: "once" });
+  });
+
+  it("is off by default: the window decides, as before, and the answer is the old one with its Retry-After", async () => {
+    const f = await faucet({ perAddressSeconds: 7 * DAY });
+    await f.request(ALICE, { ip: "1.1.1.1" });
+    clock.now += 6 * DAY * 1000;
+    expect(await f.request(ALICE, { ip: "2.2.2.2" })).toMatchObject({ status: 429, body: { reason: "address" }, headers: { "Retry-After": String(DAY) } });
+    clock.now += 2 * DAY * 1000;
+    expect((await f.request(ALICE, { ip: "3.3.3.3" })).status).toBe(202);
+  });
+
+  it("tells the page about it, and the Swap address", async () => {
+    expect(await (await faucet({ oncePerAddress: true, swapUrl: SWAP })).info()).toMatchObject({ oncePerAddress: true, swapUrl: SWAP });
+    expect(await (await faucet()).info()).toMatchObject({ oncePerAddress: false, swapUrl: null });
+  });
+});
+
+describe("the human check names its host and its action", () => {
+  const captcha = checkOf(CAPTCHA_SECRET, { hostnames: ["ostia.example"], action: "faucet" });
+  const says = (say: unknown) => ({ calls: 0, fn: (async () => new Response(JSON.stringify(say))) as unknown as typeof fetch });
+
+  it("lets a token through that names the faucet's host and action", async () => {
+    const f = await faucet({ captcha, fetch: says({ success: true, hostname: "ostia.example", action: "faucet" }).fn });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(202);
+  });
+
+  it("turns away a token that was solved on another host, with 403 and the reason captcha", async () => {
+    const f = await faucet({ captcha, fetch: says({ success: true, hostname: "evil.example", action: "faucet" }).fn });
+    expect(await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).toMatchObject({ status: 403, body: { reason: "captcha" } });
+    expect(f.queued()).toBe(0);
+    expect(f.served()).toBe(0);
+  });
+
+  it("turns away a token with no host in the answer", async () => {
+    const f = await faucet({ captcha, fetch: says({ success: true, action: "faucet" }).fn });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(403);
+  });
+
+  it("reads the host without regard to case", async () => {
+    const f = await faucet({ captcha, fetch: says({ success: true, hostname: "Ostia.Example", action: "faucet" }).fn });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(202);
+  });
+
+  it("turns away a token made for another action, or for none", async () => {
+    for (const action of ["login", undefined]) {
+      const f = await faucet({ captcha, fetch: says({ success: true, hostname: "ostia.example", ...(action ? { action } : {}) }).fn });
+      expect(await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).toMatchObject({ status: 403, body: { reason: "captcha" } });
+    }
+  });
+
+  it("checks no host when none is set, and no action when it is empty", async () => {
+    const f = await faucet({ captcha: { ...captcha, hostnames: [], action: "" }, fetch: says({ success: true, hostname: "anything.example" }).fn });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(202);
+  });
+
+  it("gives the page the action to put on the widget", async () => {
+    expect((await (await faucet({ captcha })).info()).captcha).toEqual({ siteKey: "site-key", scriptUrl: captcha.scriptUrl, widgetClass: "human-check", action: "faucet" });
+  });
+});
+
+describe("a request with no token", () => {
+  const captcha = checkOf(CAPTCHA_SECRET);
+  const yes = () => { const seen = { calls: 0 }; return { seen, fn: (async () => { seen.calls++; return new Response(JSON.stringify({ success: true })); }) as unknown as typeof fetch }; };
+
+  it("is refused as captcha before the hourly limit, so the hour count is real people", async () => {
+    const v = yes();
+    const f = await faucet({ captcha, fetch: v.fn, maxPerHour: 1 });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(202);
+    expect(await f.request(BOB, { ip: "2.2.2.2" })).toMatchObject({ status: 403, body: { reason: "captcha" } });
+    expect(await f.request(BOB, { ip: "2.2.2.2", captcha: "tok" })).toMatchObject({ status: 429, body: { reason: "hour" } });
+  });
+
+  it("is refused as captcha before the address and the client limits, and before the once check", async () => {
+    const f = await faucet({ captcha, fetch: yes().fn, oncePerAddress: true });
+    expect((await f.request(ALICE, { ip: "1.1.1.1", captcha: "tok" })).status).toBe(202);
+    expect(await f.request(ALICE, { ip: "1.1.1.1" })).toMatchObject({ status: 403, body: { reason: "captcha" } });
+  });
+
+  it("still leaves the check itself for after the limits, so no token is used up by a refused request", async () => {
+    const v = yes();
+    const f = await faucet({ captcha, fetch: v.fn, maxPerHour: 1 });
+    await f.request(ALICE, { ip: "1.1.1.1", captcha: "a" });
+    expect(await f.request(BOB, { ip: "2.2.2.2", captcha: "b" })).toMatchObject({ status: 429, body: { reason: "hour" } });
+    expect(v.seen.calls).toBe(1);
   });
 });

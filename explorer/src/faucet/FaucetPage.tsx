@@ -254,7 +254,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     return (
       <>
         <p className="lead">
-          The faucet sends <b>{amount}</b> to an address, {info.perAddressSeconds === 86400 ? "once a day" : `once every ${window}`}.
+          The faucet sends <b>{amount}</b> to an address, {info.oncePerAddress ? "once" : info.perAddressSeconds === 86400 ? "once a day" : `once every ${window}`}.
           {fee !== null && <> At today's fees a plain transfer costs about {formatTiny((BigInt(fee) * 21000n).toString(), coin.decimals)} {coin.symbol}.</>}
         </p>
         {info.on ? (
@@ -266,10 +266,10 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
               aria-invalid={invalid} aria-describedby={result && result.kind !== "queued" ? notice : undefined}
               onChange={(e) => { setAddress(e.target.value); if (invalid) setResult(null); }}
             />
-            {info.captcha && <div key={widgetRun} className={info.captcha.widgetClass} data-sitekey={info.captcha.siteKey} />}
+            {info.captcha && <div key={widgetRun} className={info.captcha.widgetClass} data-sitekey={info.captcha.siteKey} {...(info.captcha.action ? { "data-action": info.captcha.action } : {})} />}
             <div className="ff-row">
               <button type="submit" className="btn primary" disabled={disabled}><Icon name="drop" size={14} /> {sending ? "Sending…" : `Request ${amount}`}</button>
-              {again && <span className="small muted">Taken. You can ask again for this address after {formatMoment(askedAt! + info.perAddressSeconds * 1000)}.</span>}
+              {again && <span className="small muted">{info.oncePerAddress ? "Taken. Each address gets its coins once." : <>Taken. You can ask again for this address after {formatMoment(askedAt! + info.perAddressSeconds * 1000)}.</>}</span>}
             </div>
           </form>
         ) : (
@@ -290,7 +290,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
         <header className="chead"><h2>The limits, in plain words</h2></header>
         <ul className="cbody lim">
           <li><Icon name="drop" /><span>Each request sends <b>{amount}</b>.</span></li>
-          <li><Icon name="clock" /><span>One request per <b>address</b> every {formatPeriod(info.perAddressSeconds)}.</span></li>
+          <li><Icon name="clock" /><span>One request per <b>address</b>{info.oncePerAddress ? ", ever" : <> every {formatPeriod(info.perAddressSeconds)}</>}.</span></li>
           {info.perIpSeconds ? <li><Icon name="globe" /><span>One request per <b>network address</b> every {formatPeriod(info.perIpSeconds)}.</span></li> : null}
           {info.maxPerHour ? <li><Icon name="people" /><span>At most <b>{formatCount(info.maxPerHour)} requests an hour</b> for everyone together. When that is reached, the page says when to try again.</span></li> : null}
           <li><Icon name="cube" /><span>Requests are sent in order{info.batch ? <>, up to {formatCount(info.batch)} in one block</> : ""}. A burst waits for the blocks after. The coins count only when the block holding them is final on Canton, and this page says when.</span></li>
@@ -470,6 +470,8 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       case "limit":
       case "full":
         return <Alert tone="wait" icon="note" role="alert" id={id}><b>{r.message}</b> {retry(r.waitSeconds)}</Alert>;
+      case "once":
+        return <Alert tone="wait" icon="note" role="alert" id={id}><b>{r.message}</b>{r.swapUrl && <> <OutLink href={r.swapUrl}>Open the Swap</OutLink></>}</Alert>;
       case "captcha":
       case "problem":
         return <><Alert tone="bad" icon="bad" role="alert" id={id}>{r.message}</Alert><StillStuck error={r.message} /></>;

@@ -57,6 +57,16 @@ describe("the form", () => {
     expect(limits).toHaveTextContent("The coins count only when the block holding them is final on Canton");
   });
 
+  it("says once, with no day, when the faucet gives each address its coins once", async () => {
+    await open(fake({ info: info({ oncePerAddress: true, swapUrl: "https://swap.example/" }) }));
+    await screen.findByRole("heading", { level: 1, name: "Faucet" });
+    expect(document.querySelector(".lead")).toHaveTextContent("The faucet sends 1 tROME to an address, once.");
+    expect(document.querySelector(".lead")).not.toHaveTextContent("once a day");
+    const limits = screen.getByRole("heading", { name: "The limits, in plain words" }).closest("section")!;
+    expect(limits).toHaveTextContent("One request per address, ever.");
+    expect(limits).not.toHaveTextContent("every 24 hours");
+  });
+
   it("names the chain under the title when it is given", async () => {
     render(<MemoryRouter><FaucetPage client={fake()} coin={{ symbol: "tROME", decimals: 18 }} chain={{ name: "Ostia DevNet", id: 770101 }} pollMs={FAST} /></MemoryRouter>);
     expect(await screen.findByText("Ostia DevNet · chain 770101")).toBeInTheDocument();
@@ -256,7 +266,7 @@ describe("a request on its way", () => {
 });
 
 describe("the human check", () => {
-  const captcha = { siteKey: "site-key-1", scriptUrl: "https://check.example/api.js", widgetClass: "human-check" };
+  const captcha = { siteKey: "site-key-1", scriptUrl: "https://check.example/api.js", widgetClass: "human-check", action: "faucet" };
 
   it("is not on the page when the faucet does not ask for it", async () => {
     await open(fake());
@@ -272,6 +282,7 @@ describe("the human check", () => {
     await waitFor(() => expect(document.querySelectorAll(`script[src="${captcha.scriptUrl}"]`)).toHaveLength(1));
     const widget = document.querySelector(".human-check")!;
     expect(widget).toHaveAttribute("data-sitekey", "site-key-1");
+    expect(widget).toHaveAttribute("data-action", "faucet");
     const field = Object.assign(document.createElement("input"), { name: "some-response", value: "token-9" });
     widget.appendChild(field);
     await ask(user);
@@ -316,6 +327,26 @@ describe("the faucet turns a request away", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(`${message} Try again in 23 h 41 min.`);
     expect(screen.getByRole("button", { name: /Request/ })).toBeEnabled();
+  });
+
+  it("shows a once refusal with the Swap link and no try-again time, and lets the button back at once", async () => {
+    const message = "This address already got its tROME from the faucet. Get more on the Swap.";
+    const user = await open(fake({ request: { kind: "once", message, swapUrl: "https://swap.example/" } }));
+    await ask(user);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(message);
+    expect(alert).not.toHaveTextContent(/try again/i);
+    expect(within(alert).getByRole("link", { name: /Swap/ })).toHaveAttribute("href", "https://swap.example/");
+    expect(screen.getByRole("button", { name: /Request/ })).toBeEnabled();
+  });
+
+  it("shows a once refusal without a link when no Swap address is given", async () => {
+    const message = "This address already got its tROME from the faucet. Get more on the Swap.";
+    const user = await open(fake({ request: { kind: "once", message, swapUrl: null } }));
+    await ask(user);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(message);
+    expect(within(alert).queryByRole("link")).toBeNull();
   });
 
   it("does not make up a wait the answer did not give", async () => {
