@@ -62,6 +62,8 @@ const SPECS: Record<string, CheckSpec> = {
   // the loop stops refreshing (the read hangs, or the loop is gone) turns degraded after three of the loop's own intervals, so a freeze is never silent.
   custody: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
   registered_legs: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
+  // The soft-confirmation row is worked out by the indexer once a minute, from the lifecycle tables.
+  soft_confirmation: { role: "indexer", worst: "degraded", intervalSeconds: 60, stale: "degraded" },
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
   faucet: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },

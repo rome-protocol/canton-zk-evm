@@ -18,6 +18,7 @@ import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
 import { clearDegraded, clearStops, setHealth, type HealthRow } from "./health.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
+import type { SoftLimits } from "./soft.ts";
 import { checkIds } from "./db-ids.ts";
 import { legsSlot } from "./legs.ts";
 import { notify } from "./notify.ts";
@@ -60,6 +61,8 @@ export interface IndexerOptions {
   journalDir?: string | null;
   producerStatusFile?: string | null;
   journalMs?: number;
+  /** The limits the soft-confirmation row is held to. Default: any undone block or failed re-run, and a 99th percentile of 60 s. */
+  soft?: SoftLimits;
   /** How often `start` runs C6's sample audit (20 random blocks against reth), in milliseconds. Default 10 minutes. The nightly audit of the previous day follows the first sample after 03:00 UTC. */
   auditMs?: number;
   /** How often `start` runs the stats rollups (design section 8), in milliseconds. Default 10 seconds. */
@@ -136,7 +139,7 @@ export function createIndexer(o: IndexerOptions) {
   /** The producer's journal and the checks that need it. Absent when the options leave the lifecycle out. */
   const lifecycleOn = o.journalDir !== undefined;
   const journal = createJournal({ pool: o.pool, folder: o.journalDir ?? null, now, log });
-  const producer = createLifecycleChecks({ pool: o.pool, statusFile: o.producerStatusFile ?? null, now });
+  const producer = createLifecycleChecks({ pool: o.pool, statusFile: o.producerStatusFile ?? null, now, ...(o.soft ? { soft: o.soft } : {}) });
   let journalAvailable = false;
 
   /** Reads what is new in the producer's journal into the lifecycle tables (a no-op when the lifecycle is left out). */

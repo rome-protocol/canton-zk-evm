@@ -7,7 +7,10 @@
 import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import { setHealth, type HealthRow } from "./health.ts";
+import { SOFT_DEFAULTS, measureSoft, softRow, type SoftLimits } from "./soft.ts";
 
+/** How often the soft-confirmation row is worked out: it reads a day of attempts. */
+export const SOFT_EVERY_MS = 60_000;
 export const C8_EVERY_MS = 10_000, C8_WITHIN_S = 10, C9_TOLERANCE_MS = 100, ALIVE_WITHIN_MS = 15_000, UNKNOWN_FOR_MS = 60_000, FAILURES_DEGRADED = 3;
 
 export interface ProducerStatus {
@@ -39,11 +42,13 @@ export function failureReason(e: ProducerStatus["lastError"]): string {
 /** The outcome of a proof as the journal says it: one lowercase word (`failed`, `wrong_block`, `timeout`). Anything else is just `failed`. */
 const outcomeWord = (o: unknown): string => (typeof o === "string" && /^[a-z_]{1,24}$/.test(o) ? o : "failed");
 
-export interface LifecycleChecksOptions { pool: Pool; statusFile: string | null; now?: () => number }
+export interface LifecycleChecksOptions { pool: Pool; statusFile: string | null; now?: () => number; soft?: SoftLimits }
 
 export function createLifecycleChecks(o: LifecycleChecksOptions) {
   const now = o.now ?? Date.now;
+  const soft = o.soft ?? SOFT_DEFAULTS;
   let lastC8 = -Infinity;
+  let lastSoft = -Infinity;
   let unknownSince: number | null = null;
 
   async function readStatus(): Promise<{ status: ProducerStatus } | { error: string }> {
@@ -127,12 +132,21 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
       detail: bad ? `block ${worst!.number}: the producer's answer is ${-worst!.ms} ms before Canton's record time, so one of the two clocks is wrong` : null };
   }
 
-  /** Runs the checks and writes their rows. C8 runs every 10 s (or at once with `force`), the others every call. */
+  /** Runs the checks and writes their rows. C8 runs every 10 s and the soft-confirmation row every minute (or at once with `force`), the others every call. */
   async function run(journalAvailable: boolean, force = false): Promise<void> {
     const rows = [...(await producerRows()), await c9()];
     if (force || now() - lastC8 >= C8_EVERY_MS) {
       lastC8 = now();
       rows.push(await c8(journalAvailable));
+    }
+    if (force || now() - lastSoft >= SOFT_EVERY_MS) {
+      lastSoft = now();
+      // A read that fails is left out of this turn: the row is then not refreshed, and it turns stale (degraded) after three of its own intervals.
+      try {
+        rows.push(softRow(await measureSoft(o.pool, now()), soft));
+      } catch (e) {
+        console.error(`soft confirmation: cannot read the lifecycle: ${(e as Error).message}`);
+      }
     }
     await setHealth(o.pool, rows);
   }

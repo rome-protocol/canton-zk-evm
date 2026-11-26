@@ -34,8 +34,8 @@ export const FIELDS = {
   signers: ["operator", "confirmer"],
   faucet: ["on"],
   /** What the faucet shows about itself, and what it answers a request with. */
-  faucetInfo: ["on", "address", "balance", "balanceBlock", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "batch", "sentToday", "finalToday", "beingProven", "captcha", "builder"],
-  faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass"],
+  faucetInfo: ["on", "address", "balance", "balanceBlock", "amount", "perAddressSeconds", "oncePerAddress", "swapUrl", "perIpSeconds", "maxPerHour", "queue", "batch", "sentToday", "finalToday", "beingProven", "captcha", "builder"],
+  faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass", "action"],
   /** What a request is answered with: a ticket, and its place in line. */
   faucetQueued: ["ticket", "position", "to", "amount"],
   /** Where a ticket is. */

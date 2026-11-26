@@ -212,7 +212,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // Refusals (counted by minute and reason). The faucet began to count at 08:00. 11:30 is outside the 1 h window, which starts at 11:31.
     await pool.query("update faucet_refusals_since set since = $1", [at(t(8, 0))]);
     const refused = (minute: number, reason: string, n: number) => ins(pool, "faucet_refusals", { minute: at(minute), reason, n });
-    await refused(t(11, 30), "hour", 100); await refused(t(11, 31), "hour", 1); await refused(t(12, 10), "address", 3); await refused(t(12, 10), "ip", 2);
+    await refused(t(11, 30), "hour", 100); await refused(t(11, 31), "hour", 1); await refused(t(12, 10), "address", 3); await refused(t(12, 10), "once", 5); await refused(t(12, 10), "ip", 2);
     await refused(t(12, 25), "captcha", 4); await refused(t(9, 0), "address", 10); await refused(t(7, 59), "ip", 1000);
   });
   afterAll(async () => { await db?.drop(); });
@@ -327,8 +327,8 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     const s = body(await get("/api/stats/summary?window=1h"));
     same(s.faucet.turnedAway, F.statsTurnedAway);
     same(s.faucet.turnedAway.byReason, F.statsTurnedAwayReasons);
-    // 11:31 to 12:30: the minute 11:30 is out, so hour is 1; 12:10 address 3 and ip 2; 12:25 captcha 4.
-    expect(s.faucet.turnedAway).toEqual({ total: 10, byReason: { address: 3, ip: 2, hour: 1, captcha: 4 } });
+    // 11:31 to 12:30: the minute 11:30 is out, so hour is 1; 12:10 address 3, once 5 (counted with address) and ip 2; 12:25 captcha 4.
+    expect(s.faucet.turnedAway).toEqual({ total: 15, byReason: { address: 8, ip: 2, hour: 1, captcha: 4 } });
     expect(s.faucet.turnedAwaySince).toBe(new Date(t(8, 0)).toISOString());
     // 6 h: 06:31 to 12:30 starts before 08:00, so the window is not fully recorded: no count at all, not a partial one
     const six = body(await get("/api/stats/summary?window=6h"));
@@ -342,7 +342,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     await pool.query("update faucet_refusals_since set since = $1", [at(t(6, 31))]);
     try {
       const six = body(await get("/api/stats/summary?window=6h"));
-      expect(six.faucet.turnedAway).toEqual({ total: 1120, byReason: { address: 13, ip: 1002, hour: 101, captcha: 4 } });
+      expect(six.faucet.turnedAway).toEqual({ total: 1125, byReason: { address: 18, ip: 1002, hour: 101, captcha: 4 } });
     } finally { await pool.query("update faucet_refusals_since set since = $1", [at(t(8, 0))]); }
   });
 

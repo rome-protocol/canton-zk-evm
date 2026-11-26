@@ -20,7 +20,7 @@
 #   PINS_FILE         the pins to expect, from <state>/net/guest.txt (else the recorded session's, which the image carries)
 #   FAUCET_KEY_FILE   the faucet's key, from <state>/faucet/key (else the faucet is off)
 # And these are passed on when they are set: EXPLORER_HOST, EXPLORER_PORT, RETH_RPC_URL, LEDGER_URL, CHAIN_NAME, NETWORK_NAME, TWIN_REGISTRY_URL, SWAP_URL, BRIDGE_URL, OWN_ADDRESSES, COIN_SYMBOL, RPC_TIMEOUT_MS,
-# POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_PER_IP_SECONDS, FAUCET_PER_NET_MAX, FAUCET_MAX_PER_HOUR, FAUCET_BATCH, FAUCET_QUEUE_MAX, the builder grant's FAUCET_GITHUB_CLIENT_ID, FAUCET_GITHUB_REDIRECT_URL and FAUCET_BUILDER_* (its client secret is a file, FAUCET_GITHUB_CLIENT_SECRET_FILE, mounted read-only like the keys), the human check's CAPTCHA_VERIFY_URL, CAPTCHA_SCRIPT_URL, CAPTCHA_SITE_KEY and CAPTCHA_WIDGET_CLASS (and CAPTCHA_SECRET, which is taken from the environment and never put on the command), and the public RPC's settings: PUBLIC_RPC (1 turns on POST /rpc),
+# POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_PER_IP_SECONDS, FAUCET_ONCE_PER_ADDRESS, FAUCET_SWAP_URL, FAUCET_PER_NET_MAX, FAUCET_MAX_PER_HOUR, FAUCET_BATCH, FAUCET_QUEUE_MAX, the builder grant's FAUCET_GITHUB_CLIENT_ID, FAUCET_GITHUB_REDIRECT_URL and FAUCET_BUILDER_* (its client secret is a file, FAUCET_GITHUB_CLIENT_SECRET_FILE, mounted read-only like the keys), the human check's CAPTCHA_VERIFY_URL, CAPTCHA_SCRIPT_URL, CAPTCHA_SITE_KEY, CAPTCHA_WIDGET_CLASS, CAPTCHA_HOSTNAMES and CAPTCHA_ACTION (and CAPTCHA_SECRET, which is taken from the environment and never put on the command), and the public RPC's settings: PUBLIC_RPC (1 turns on POST /rpc),
 # RPC_RATE_PER_MINUTE, RPC_MIN_TIP_WEI, RPC_SEND_PER_HOUR, RPC_SEND_BURST, RPC_HEAVY_CONCURRENCY, RPC_HEAVY_QUEUE, LEG_CHECK_URL, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
@@ -33,7 +33,7 @@
 # FAUCET_CLIENT_KEY_FILE (the faucet's hash key) is made as <state>/faucet/client-key (mode 0600) when there is a faucet key and none is named.
 # `start` applies the migrations (node server/db/cli.ts migrate), then runs the indexer (node server/indexer/cli.ts) as its own container, EXPLORER_INDEXER_CONTAINER
 # (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), GENESIS_FILE (default <state>/genesis.json, the genesis reth runs), INDEX_DERIVE, INDEX_POLL_MS,
-# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads the producer's journal and status.json from the builder's work folder (CZE_WORK_DIR, default <state>/builder), mounted read-only when it exists. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
+# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS, and the limits of the soft_confirmation row (SOFT_UNDONE_BLOCKS_PER_DAY, SOFT_CONFIRM_P99_MS, SOFT_RERUN_FAILED_PER_DAY). It reads the producer's journal and status.json from the builder's work folder (CZE_WORK_DIR, default <state>/builder), mounted read-only when it exists. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
 # explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
 # a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
 # The default database lives and dies with its network. For a persistent network (<state>/persist.env, CZE_PERSIST=1) it is kept across `stop`, and
@@ -178,9 +178,9 @@ explorer_args() {
   [ -z "$ckey" ] || mount_file FAUCET_CLIENT_KEY_FILE "$ckey"
   # The builder grant's client secret: a file mounted read-only, like the keys. The explorer refuses it unless only its owner can read it.
   [ -z "${FAUCET_GITHUB_CLIENT_SECRET_FILE:-}" ] || mount_file FAUCET_GITHUB_CLIENT_SECRET_FILE "$FAUCET_GITHUB_CLIENT_SECRET_FILE"
-  for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME NETWORK_NAME TWIN_REGISTRY_URL SWAP_URL BRIDGE_URL OWN_ADDRESSES COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_PER_IP_SECONDS FAUCET_PER_NET_MAX FAUCET_MAX_PER_HOUR FAUCET_BATCH FAUCET_QUEUE_MAX \
+  for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME NETWORK_NAME TWIN_REGISTRY_URL SWAP_URL BRIDGE_URL OWN_ADDRESSES COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_PER_IP_SECONDS FAUCET_ONCE_PER_ADDRESS FAUCET_SWAP_URL FAUCET_PER_NET_MAX FAUCET_MAX_PER_HOUR FAUCET_BATCH FAUCET_QUEUE_MAX \
     FAUCET_GITHUB_CLIENT_ID FAUCET_GITHUB_REDIRECT_URL FAUCET_BUILDER_AMOUNT FAUCET_BUILDER_PER_ACCOUNT_SECONDS FAUCET_BUILDER_MIN_ACCOUNT_AGE_DAYS FAUCET_BUILDER_MAX_PER_DAY \
-    CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS \
+    CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS CAPTCHA_HOSTNAMES CAPTCHA_ACTION \
     PUBLIC_RPC RPC_RATE_PER_MINUTE RPC_MIN_TIP_WEI RPC_SEND_PER_HOUR RPC_SEND_BURST RPC_HEAVY_CONCURRENCY RPC_HEAVY_QUEUE LEG_CHECK_URL TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
@@ -211,7 +211,7 @@ indexer_args() {
   local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
   [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
   [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
-  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS CUSTODY_MS CUSTODY_LIMIT; do
+  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS CUSTODY_MS CUSTODY_LIMIT SOFT_UNDONE_BLOCKS_PER_DAY SOFT_CONFIRM_P99_MS SOFT_RERUN_FAILED_PER_DAY; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The custody read (the registered tokens and what the gateway holds of each) is made as the gateway party, with a token of its own: the indexer's, never the explorer's.

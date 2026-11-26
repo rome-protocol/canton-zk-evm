@@ -8,6 +8,7 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../t
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
+import { SOFT_DEFAULTS, type SoftLimits } from "./soft.ts";
 import { RUN1, Run, iso, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
 
 afterAll(removeFolders);
@@ -319,6 +320,142 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
       await createJournal({ pool, folder: dir }).load();
       await checks(pool, statusFile()).run(true, true);
       expect(await health(pool, "prover")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/block 1\) ended failed/) });
+    });
+  });
+});
+
+describe.skipIf(!TEST_URL)("the soft-confirmation row", () => {
+  /** Two blocks of five transactions each (the fifth of each fails), confirmed 10 s and 12 s after they were built; every transaction final 10 minutes before NOW, and accepted 1.5 s before it was built. */
+  async function soft(pool: Pool) {
+    const chain = makeChain([{ txs: 5 }, { txs: 5 }]);
+    const dir = makeFolder();
+    const r = new Run(RUN1);
+    r.start(T0 - 60_000);
+    r.committed(1, 1, chain, { answerMs: 3000 });
+    r.committed(2, 2, chain, { answerMs: 5000 });
+    putFile(dir, "2026-10-21.jsonl", r.lines);
+    const ix = await start(pool, chain, { journalDir: dir, producerStatusFile: null });
+    await ix.runOnce();
+    await ix.loadJournal();
+    await pool.query("update tx_lifecycle set final_at = $1, accepted_at = first_included_at - interval '1500 milliseconds'", [new Date(NOW - 600_000)]);
+    return { chain, pool };
+  }
+  const run = async (pool: Pool, limits: SoftLimits = SOFT_DEFAULTS, now = NOW) => {
+    await createLifecycleChecks({ pool, statusFile: null, now: () => now, soft: limits }).run(true, true);
+    return health(pool, "soft_confirmation");
+  };
+  const attempt = (pool: Pool, seq: number, o: { number: number; txs: number; cutAgoMs: number; outcome?: string | null; resolved?: string | null; hash?: boolean; finalSeen?: boolean }) =>
+    pool.query(
+      `insert into block_attempts (run_id, attempt_seq, number, block_hash, strategy, cut_reason, cut_at, tx_count, outcome, resolved_outcome, final_seen_at)
+       values ($1, $2, $3, $4, 'on_demand', 'pool', $5, $6, $7, $8, $9)`,
+      [RUN1, seq, o.number, o.hash === false ? null : Buffer.alloc(32, seq), new Date(NOW - o.cutAgoMs), o.txs, o.outcome ?? null, o.resolved ?? null, o.finalSeen ? new Date(NOW - o.cutAgoMs + 11_000) : null],
+    );
+
+  it("is ok for a chain whose blocks were all confirmed as built, and says how long the confirmation took", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      const row = await run(pool);
+      expect(row.status).toBe("ok");
+      expect(row.value).toMatchObject({ undoneBlocksLastDay: 0, inBlockToConfirmedMs: { p50: 11_000, p99: 12_000, transactions: 10 }, sentToInBlockP99Ms: 1500 });
+    });
+  });
+
+  it("counts the blocks with transactions that were built and not confirmed as built, and only those of the last day", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      await attempt(pool, 100, { number: 50, txs: 2, cutAgoMs: 7_200_000, outcome: "refused" });                       // undone: refused
+      await attempt(pool, 101, { number: 51, txs: 1, cutAgoMs: 3_600_000 });                                            // undone: the producer stopped, no answer ever
+      await attempt(pool, 102, { number: 52, txs: 1, cutAgoMs: 3_600_000, outcome: "unknown", resolved: "committed" }); // settled as committed
+      await attempt(pool, 103, { number: 53, txs: 1, cutAgoMs: 3_600_000, outcome: "committed", finalSeen: true });     // confirmed
+      await attempt(pool, 104, { number: 54, txs: 1, cutAgoMs: 5_000 });                                                // still in flight
+      await attempt(pool, 105, { number: 55, txs: 0, cutAgoMs: 3_600_000, outcome: "skipped" });                        // no transactions
+      await attempt(pool, 106, { number: 56, txs: 1, cutAgoMs: 3_600_000, hash: false, outcome: "failed" });            // never built
+      await attempt(pool, 107, { number: 57, txs: 3, cutAgoMs: 2 * 86_400_000, outcome: "refused" });                   // two days ago
+      const row = await run(pool);
+      expect(row.status).toBe("degraded");
+      expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 0, firstUndoneBlock: 50 });
+      expect(row.detail).toBe("2 blocks with transactions were undone in the last day, not at a planned stop (the first is block 50)");
+      expect((await run(pool, { ...SOFT_DEFAULTS, undonePerDay: 2 })).status).toBe("ok");
+    });
+  });
+
+  it("shows a block dropped when the producer stopped cleanly, but does not degrade the row for it", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      await pool.query("update producer_runs set stop_state = 'stopped' where run_id = $1", [RUN1]);
+      await attempt(pool, 100, { number: 50, txs: 2, cutAgoMs: 3_600_000 });                                    // no answer: dropped at the stop
+      await attempt(pool, 101, { number: 51, txs: 1, cutAgoMs: 3_600_000, resolved: "restarted" });             // settled as restarted at the next start
+      const row = await run(pool);
+      expect(row.status).toBe("ok");
+      expect(row.detail).toBeNull();
+      expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 2, firstUndoneBlock: 50 });
+      // a block Canton refused in the same run is not a planned stop
+      await attempt(pool, 102, { number: 52, txs: 1, cutAgoMs: 3_600_000, outcome: "refused" });
+      const refused = await run(pool);
+      expect(refused.status).toBe("degraded");
+      expect(refused.value).toMatchObject({ undoneBlocksLastDay: 3, undoneAtPlannedStopLastDay: 2 });
+      expect(refused.detail).toBe("1 block with transactions was undone in the last day, not at a planned stop (the first is block 52)");
+    });
+  });
+
+  it("degrades the row for the same blocks when the producer run crashed or never wrote its stop", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      await attempt(pool, 100, { number: 50, txs: 2, cutAgoMs: 3_600_000 });
+      await attempt(pool, 101, { number: 51, txs: 1, cutAgoMs: 3_600_000, resolved: "restarted" });
+      for (const state of ["crashed", null]) {
+        await pool.query("update producer_runs set stop_state = $2 where run_id = $1", [RUN1, state]);
+        const row = await run(pool);
+        expect(row.status).toBe("degraded");
+        expect(row.value).toMatchObject({ undoneBlocksLastDay: 2, undoneAtPlannedStopLastDay: 0 });
+        expect(row.detail).toBe("2 blocks with transactions were undone in the last day, not at a planned stop (the first is block 50)");
+      }
+    });
+  });
+
+  it("counts a transaction that ran more than once and ended failed, not one that failed on its first run, nor one that ran twice and succeeded", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await soft(pool);
+      const failed = [chain.blocks[0]!.block.transactions[4]!, chain.blocks[1]!.block.transactions[4]!];
+      const ok = chain.blocks[0]!.block.transactions[0]!;
+      expect(Number((await one(pool, "select status from transactions where hash = $1", [hb(failed[0]!.hash)])).status)).toBe(0);
+      await pool.query("update tx_lifecycle set attempts = 2 where tx_hash = any($1::bytea[])", [[hb(failed[0]!.hash), hb(ok.hash)]]);   // the first failed transaction and a successful one ran twice
+      const row = await run(pool);
+      expect(row.status).toBe("degraded");
+      expect(row.value).toMatchObject({ rerunFailedLastDay: 1, firstRerunFailed: failed[0]!.hash });
+      expect(row.detail).toBe(`1 transaction that ran more than once ended failed in the last day (the first is ${failed[0]!.hash})`);
+      // one that is older than a day is not counted
+      await pool.query("update tx_lifecycle set final_at = $2 where tx_hash = $1", [hb(failed[0]!.hash), new Date(NOW - 2 * 86_400_000)]);
+      expect((await run(pool)).value).toMatchObject({ rerunFailedLastDay: 0 });
+    });
+  });
+
+  it("is degraded when the confirmation of the last hour is slower than the limit at the 99th percentile, and reads only the last hour", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      expect((await run(pool, { ...SOFT_DEFAULTS, confirmP99Ms: 11_999 })).detail).toBe("a block takes 12 s to be confirmed at the 99th percentile of the last hour, over the limit of 12 s");
+      // everything final more than an hour ago is left out: nothing to measure is ok
+      const quiet = await run(pool, SOFT_DEFAULTS, NOW + 2 * 3_600_000);
+      expect(quiet.status).toBe("ok");
+      expect(quiet.value).toMatchObject({ inBlockToConfirmedMs: { p50: null, p99: null, transactions: 0 }, sentToInBlockP99Ms: null });
+    });
+  });
+
+  it("is written once a minute by a started run, and at once when forced", async () => {
+    await inDb(async (pool) => {
+      await soft(pool);
+      let t = NOW;
+      const c = createLifecycleChecks({ pool, statusFile: null, now: () => t });
+      await c.run(true);
+      const first = (await health(pool, "soft_confirmation")).value;
+      expect(first).toBeTruthy();
+      await pool.query("delete from health_checks where check_id = 'soft_confirmation'");
+      t += 30_000;
+      await c.run(true);
+      expect(await health(pool, "soft_confirmation")).toBeUndefined();
+      t += 31_000;
+      await c.run(true);
+      expect(await health(pool, "soft_confirmation")).toBeTruthy();
     });
   });
 });

@@ -125,6 +125,10 @@ export interface Config {
     clientKeyFile: string | null;
     amountWei: bigint;
     perAddressSeconds: number;
+    /** One drip per address, ever (FAUCET_ONCE_PER_ADDRESS=1). The window above then does not apply to plain requests. Off by default. */
+    oncePerAddress: boolean;
+    /** Where a request refused as "once" is sent to get more: FAUCET_SWAP_URL, or SWAP_URL when that is not set. Null when neither is an https address. */
+    swapUrl: string | null;
     /** One request per client address in this many seconds. */
     perIpSeconds: number;
     /** At most this many requests from one IPv6 /48 in `perIpSeconds`, on top of one per /64. */
@@ -161,6 +165,10 @@ export interface Config {
     siteKey: string;
     /** The class name the check's script looks for, to put its widget in. */
     widgetClass: string;
+    /** The host names the check may say the token was solved on (CAPTCHA_HOSTNAMES), lower case. Empty checks none. */
+    hostnames: string[];
+    /** The action the widget carries and the check must say (CAPTCHA_ACTION, "faucet" when not set). Empty checks none. */
+    action: string;
   } | null;
 }
 
@@ -224,6 +232,20 @@ export function relatedAppUrl(env: Env, name: string): string | null {
   }
 }
 
+/** CAPTCHA_HOSTNAMES: host names separated by commas, as lower case. */
+function hostnames(env: Env): string[] {
+  const names = (env.CAPTCHA_HOSTNAMES ?? "").split(",").map((n) => n.trim().toLowerCase()).filter(Boolean);
+  for (const n of names) if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(n)) throw new ConfigError(`CAPTCHA_HOSTNAMES must be host names such as ostia.example, separated by commas, not "${n}"`);
+  return names;
+}
+
+/** CAPTCHA_ACTION: one word of letters, digits, _ and -, up to 32 (the widget's data-action). Not set is "faucet"; set to nothing it is none. */
+function action(env: Env): string {
+  const raw = env.CAPTCHA_ACTION?.trim() ?? "faucet";
+  if (!/^[A-Za-z0-9_-]{0,32}$/.test(raw)) throw new ConfigError(`CAPTCHA_ACTION must be one word of letters, digits, _ and -, not "${raw}"`);
+  return raw;
+}
+
 /** The human check is on when CAPTCHA_SECRET is set, and then its other four settings must be too. */
 function captcha(env: Env): Config["captcha"] {
   if (!env.CAPTCHA_SECRET) return null;
@@ -233,7 +255,7 @@ function captcha(env: Env): Config["captcha"] {
   if (!/^[A-Za-z0-9_-]+$/.test(env.CAPTCHA_WIDGET_CLASS!)) throw new ConfigError(`CAPTCHA_WIDGET_CLASS must be one class name, not "${env.CAPTCHA_WIDGET_CLASS}"`);
   return {
     secret: env.CAPTCHA_SECRET, verifyUrl: url(env, "CAPTCHA_VERIFY_URL", ""), scriptUrl: url(env, "CAPTCHA_SCRIPT_URL", ""),
-    siteKey: env.CAPTCHA_SITE_KEY!, widgetClass: env.CAPTCHA_WIDGET_CLASS!,
+    siteKey: env.CAPTCHA_SITE_KEY!, widgetClass: env.CAPTCHA_WIDGET_CLASS!, hostnames: hostnames(env), action: action(env),
   };
 }
 
@@ -410,6 +432,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       clientKeyFile: env.FAUCET_CLIENT_KEY_FILE || null,
       amountWei,
       perAddressSeconds: whole(env, "FAUCET_PER_ADDRESS_SECONDS", 86400, 1),
+      oncePerAddress: flag(env, "FAUCET_ONCE_PER_ADDRESS"),
+      swapUrl: relatedAppUrl(env, "FAUCET_SWAP_URL") ?? relatedAppUrl(env, "SWAP_URL"),
       perIpSeconds: whole(env, "FAUCET_PER_IP_SECONDS", 600, 1),
       perNetMax: whole(env, "FAUCET_PER_NET_MAX", 10, 1),
       maxPerHour: whole(env, "FAUCET_MAX_PER_HOUR", 5000, 1),

@@ -18,8 +18,12 @@ export interface FaucetState {
 /** How much of the past the faucet needs in memory: the windows of its limits. */
 export interface LoadWindow { now: number; addressMs: number; ipMs: number; max: number }
 /** `builder` is present for a builder grant: the ticket's `account` is then limited once per `accountMs` (so is its address, among builder grants), and `maxPerDay` grants are given in a day. */
-export interface ClaimRules { addressMs: number; ipMs: number; maxPerHour: number; builder?: { accountMs: number; maxPerDay: number } }
-export type ClaimRefusal = "address" | "ip" | "hour" | "account" | "builder-address" | "day";
+export interface ClaimRules {
+  addressMs: number; ipMs: number; maxPerHour: number; builder?: { accountMs: number; maxPerDay: number };
+  /** One drip per address, ever, for a plain request: the faucet's address. Then `addressMs` does not apply, and an address is used when any counted request holds it (a builder grant too), or the indexed transactions show a successful transfer of coin to it from this address. */
+  once?: string;
+}
+export type ClaimRefusal = "address" | "once" | "ip" | "hour" | "account" | "builder-address" | "day";
 /** Why a request was turned away and counted: a limit, or a human check that failed. */
 export type Refused = ClaimRefusal | "captcha";
 
@@ -247,19 +251,28 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async claim(t, r) {
       const copy = { ...t };
       let wrote: [string, string, boolean] | null = null;
+      // A transfer from the faucet's wallet is a fact of the chain that no other request can change, so it is read before the lock that serialises the claims.
+      if (r.once !== undefined && !r.builder) {
+        const { rows } = await pool.query<{ paid: boolean }>(
+          "select exists (select 1 from transactions where to_address = $1 and from_address = $2 and value > 0 and status = 1) as paid",
+          [bytes(t.to), bytes(r.once)],
+        );
+        if (rows[0]!.paid) return "once";
+      }
+      const once = r.once !== undefined && !r.builder;
       const refused = await inTransaction(async (c) => {
         await c.query("select pg_advisory_xact_lock($1, $2)", [LOCK_CLASS, CLAIM_LOCK]);
         const { rows } = await c.query<{ address: boolean; account: boolean; ip: boolean; hour: string; day: string }>(
-          `select exists (select 1 from faucet_requests where address = $1 and counts and (builder_account is not null) = $6::boolean and requested_at > $2) as address,
+          `select exists (select 1 from faucet_requests where address = $1 and counts and ($9::boolean or ((builder_account is not null) = $6::boolean and requested_at > $2))) as address,
                   ($7::bytea is not null and exists (select 1 from faucet_requests where builder_account = $7 and counts and requested_at > $2)) as account,
                   ($3::bytea <> ''::bytea and exists (select 1 from faucet_requests where client_key = $3 and counts and requested_at > $4)) as ip,
                   (select count(*) from faucet_requests where counts and builder_account is null and requested_at > $5) as hour,
                   (select count(*) from faucet_requests where $6::boolean and counts and builder_account is not null and requested_at > $8) as day`,
-          [bytes(t.to), new Date(t.at - (r.builder?.accountMs ?? r.addressMs)), bytes(t.ip) ?? Buffer.alloc(0), new Date(t.at - r.ipMs), new Date(t.at - 3600_000), r.builder !== undefined, r.builder ? bytes(t.account) : null, new Date(t.at - 86400_000)],
+          [bytes(t.to), new Date(t.at - (r.builder?.accountMs ?? r.addressMs)), bytes(t.ip) ?? Buffer.alloc(0), new Date(t.at - r.ipMs), new Date(t.at - 3600_000), r.builder !== undefined, r.builder ? bytes(t.account) : null, new Date(t.at - 86400_000), once],
         );
         const s = rows[0]!;
         if (s.account) return "account";
-        if (s.address) return r.builder ? "builder-address" : "address";
+        if (s.address) return r.builder ? "builder-address" : once ? "once" : "address";
         if (s.ip) return "ip";
         if (!r.builder && Number(s.hour) >= r.maxPerHour) return "hour";
         if (r.builder && Number(s.day) >= r.builder.maxPerDay) return "day";

@@ -8,7 +8,8 @@ import type { LegCheck } from "./leg-check.ts";
  * The public RPC: what a wallet or a script sees of the chain. It forwards to reth, but it shows only what is final on Canton.
  * reth makes a new block its head while the block is still being proven, and goes back if Canton refuses it. So the public
  * "latest" is reth's finalized block, which is Canton's head, and nothing above it is ever answered. A receipt from here means
- * the block is proven and final on Canton.
+ * the block is proven and final on Canton. Two calls that change nothing may see the newest block: an `eth_call` at "pending", and an `eth_estimateGas`
+ * with no block, "latest" or "pending".
  */
 
 /** The methods the public RPC answers. Any other gets -32601. */
@@ -565,6 +566,11 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     if (at === undefined) return up(method, params);
     // The pool's count is what a wallet needs to pick its next nonce.
     if (method === "eth_getTransactionCount" && params[1] === "pending") return up(method, params);
+    // The newest block (reth's "latest", which may not be final yet) is shown to two calls that change nothing: an eth_call that asks for "pending", and an
+    // estimate with no block, "latest" or "pending". A wallet prices a step that rests on the sender's own step in a block, and a page reads the allowance and the pool's prices.
+    // Every other read, "pending" of a balance, code or storage included, stays at the finalized block.
+    const newest = method === "eth_call" ? params[1] === "pending" : method === "eth_estimateGas" && [undefined, null, "latest", "pending"].includes(params[1] as never);
+    if (newest && params.length >= 1) return up(method, [params[0], "latest", ...params.slice(2)]);
     if (params.length < at) return up(method, params); // reth names the missing argument
     const p = await pin(params[at], await fin());
     if ("bad" in p) return bad;

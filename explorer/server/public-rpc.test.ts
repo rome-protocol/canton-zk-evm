@@ -113,7 +113,55 @@ describe("the final-only view", () => {
     expect(seen.eth_getCode![0]![1]).toBe(hx(FINAL));
     expect(seen.eth_getStorageAt![0]![2]).toBe(hx(FINAL));
     expect(seen.eth_call![0]![1]).toBe(hx(FINAL));
-    expect(seen.eth_estimateGas![0]![1]).toBe(hx(FINAL));
+    expect(seen.eth_estimateGas![0]![1]).toBe("latest");
+  });
+
+  it("runs eth_call at reth's newest block for pending only, and keeps latest, safe and finalized at the finalized block", async () => {
+    const { call, seen } = await boot();
+    const tx = { to: "0x" + "11".repeat(20) };
+    for (const tag of ["pending", "latest", "safe", "finalized"]) await call("eth_call", tx, tag);
+    await call("eth_call", tx);
+    expect(seen.eth_call!.map((p) => p[1])).toEqual(["latest", hx(FINAL), hx(FINAL), hx(FINAL), hx(FINAL)]);
+  });
+
+  it("keeps pending the finalized block for every other state read, and the pool for the count", async () => {
+    const { call, seen } = await boot();
+    const who = "0x" + "11".repeat(20);
+    await call("eth_getBalance", who, "pending");
+    await call("eth_getCode", who, "pending");
+    await call("eth_getStorageAt", who, "0x0", "pending");
+    await call("eth_getTransactionCount", who, "pending");
+    expect(seen.eth_getBalance![0]![1]).toBe(hx(FINAL));
+    expect(seen.eth_getCode![0]![1]).toBe(hx(FINAL));
+    expect(seen.eth_getStorageAt![0]![2]).toBe(hx(FINAL));
+    expect(seen.eth_getTransactionCount![0]![1]).toBe("pending");
+  });
+
+  it("prices eth_estimateGas at reth's newest block when no block, latest or pending is asked, and keeps the other blocks as they were", async () => {
+    const { call, seen } = await boot();
+    const tx = { to: "0x" + "11".repeat(20) };
+    await call("eth_estimateGas", tx);
+    await call("eth_estimateGas", tx, "latest");
+    await call("eth_estimateGas", tx, "pending");
+    await call("eth_estimateGas", tx, "safe");
+    await call("eth_estimateGas", tx, "finalized");
+    await call("eth_estimateGas", tx, "0x3");
+    expect(seen.eth_estimateGas!.map((p) => p[1])).toEqual(["latest", "latest", "latest", hx(FINAL), hx(FINAL), "0x3"]);
+    expect((await call("eth_estimateGas", tx, hx(HEAD))).error?.message).toMatch(/not final/);
+  });
+
+  it("passes the state overrides of an estimate on, and the transaction as it was sent", async () => {
+    const { call, seen } = await boot();
+    const tx = { to: "0x" + "11".repeat(20), data: "0x1234" }, over = { ["0x" + "22".repeat(20)]: { balance: "0x1" } };
+    await call("eth_estimateGas", tx, "pending", over);
+    expect(seen.eth_estimateGas![0]).toEqual([tx, "latest", over]);
+  });
+
+  it("answers an estimate that reth refuses at the newest block with reth's error", async () => {
+    const { rpc } = await boot({ eth_estimateGas: () => { throw Object.assign(new Error("execution reverted"), { code: 3 }); } });
+    const answer = await rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_estimateGas", params: [{ to: "0x" + "11".repeat(20) }] }), "1.2.3.4");
+    expect(answer.status).toBe(200);
+    expect((answer.body as { error?: unknown }).error).toBeDefined();
   });
 
   it("keeps a number at or below the finalized one, and the earliest block", async () => {
