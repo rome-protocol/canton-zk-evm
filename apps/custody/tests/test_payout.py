@@ -382,7 +382,7 @@ class Recovery(PayoutCase):
         self.assertEqual(self.poll(), ([], []))
         self.assertEqual((self.entry()["state"], len(self.net.transfers)), ("sending", 1))
 
-    def test_a_failed_completion_ends_the_send_and_it_is_offered_again_once_the_offer_time_has_passed(self):
+    def test_a_failed_completion_ends_the_send_and_it_is_offered_again_after_a_short_wait(self):
         self.payout()
         self.poll_with_lost_answer()
         self.net.completions.clear()
@@ -392,7 +392,7 @@ class Recovery(PayoutCase):
         self.poll()
         self.assertEqual(self.entry()["state"], "ended")
         self.assertEqual(self.poll(), ([], []))   # the participant refused it: not again at once
-        self.now += HOURS * 3600
+        self.now += self.worker.ledger.cfg.resolve_seconds + 1   # but after a short wait, not after the offer's day: a mediator timeout or a contract another command had locked is soon over
         said, _ = self.poll()
         self.assertEqual([list(line)[0] for line in said], ["offered"])
 
@@ -632,14 +632,14 @@ class Limits(PayoutCase):
         said, _ = self.poll()
         self.assertEqual(([list(line)[0] for line in said], len(self.net.transfers), self.entry()["n"]), (["offered"], 2, 2))
 
-    def test_a_submit_that_canton_refuses_is_tried_again_once_the_offer_time_has_passed_and_not_every_round(self):
+    def test_a_submit_that_canton_refuses_is_tried_again_after_a_short_wait_and_not_every_round(self):
         self.net.refuse_transfer = True
         self.payout()
         for _ in range(12):
             self.poll()
             self.now += 1
         self.assertEqual((len(self.net.transfers), self.entry()["n"]), (1, 1))
-        self.now += HOURS * 3600
+        self.now += self.worker.ledger.cfg.resolve_seconds
         self.poll()
         self.assertEqual((len(self.net.transfers), self.entry()["n"]), (2, 2))
         for _ in range(12):

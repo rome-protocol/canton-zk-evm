@@ -34,7 +34,7 @@ class Journal:
     """{payout id: what was done for it}: n (the offers made), at (when the last was made), command, begin (the ledger end before it), factory, state, instruction, update, offset.
     state: "sending" (the command may or may not have committed), "offered" (the instruction is pending), "completed" (the transfer completed, the Payout is not marked yet),
     "ended" (the offer lapsed, was rejected or failed: offered again once its time has passed), "waiting" (no offer made yet: below the token's --min-payout). `why` is set while an
-    offer is held back: "below the least payout". A payout has no cap on its offers: a lapsed, rejected or refused one is offered again once an offer's time has passed. One that cannot be read stops the worker: it does not guess."""
+    offer is held back: "below the least payout". A payout has no cap on its offers: a lapsed or rejected one is offered again once an offer's time has passed, a refused send after a short wait. One that cannot be read stops the worker: it does not guess."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -201,9 +201,10 @@ class Payouts:
                 return self.sent(p, registered, self.update(updateId=found["updateId"]), entry["factory"]) if found["updateId"] else None
             # a failed completion ends it; no completion ends it only when Canton's own time (not this clock) is past the last moment it could commit
             if found or (reached is not None and entry["at"] + self.ledger.cfg.resolve_seconds <= reached <= now + b.SKEW_SECONDS):
-                # it did not commit. One that the participant refused is offered again once an offer's time has passed (there is no cap on offers, so a send that can never work is
-                # tried once in that time, not every round); one with no completion at all never reached Canton and is offered again now
-                self.journal.keep(pid, state="ended", at=now if found else 0)
+                # it did not commit. One that the participant refused is offered again after resolve_seconds (a short failure is soon over, and a send that can never work is tried
+                # once in that time, not every round); one with no completion at all never reached Canton and is offered again now
+                wait = self.ledger.cfg.resolve_seconds
+                self.journal.keep(pid, state="ended", at=now - self.lifetime.total_seconds() + wait if found else 0)
             return None
         if entry["state"] == "offered":   # the instruction is gone: the choice that archived it says how it ended
             ended = self.outcome(entry["instruction"])
