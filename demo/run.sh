@@ -11,8 +11,9 @@
 #          settles nothing and is no obstacle.
 #   Run 3, a withdrawal. U's address withdraws 4 wTKB to U's party. The block and U's new 4 TKB are made by one Canton update.
 #   Run 4, the gap is closed. V pays U 10 TKA for a second payment. U also asks to withdraw 1 wTKB to a party that has no acceptance:
-#          the builder leaves that out before proving. After the proof is made, U takes its allocation for the payment back. Canton
-#          refuses the block, nothing moves, and reth goes back to the last block. The same proven block, sent again without its
+#          the builder leaves that out before proving. After the proof is made, U takes its allocation for the payment back. The builder's
+#          second look at the legs just before it sends (which would stop the block itself) is switched off for this run, to show what Canton
+#          does with a leg that slips through: it refuses the block, nothing moves, and reth goes back to the last block. The same proven block, sent again without its
 #          leg, is refused too. The next builder run leaves the payment out and commits.
 #   Run 5, a tampered proof. U allocates again for the payment that is still waiting, and one byte of the proof is flipped.
 #          The sidecar refuses the proof; nothing moves.
@@ -390,7 +391,7 @@ before4=$(canton status)
 is "$(totals "$before4")" '{"u":74,"v":10,"gateway":6}' "TKB after U's allocation for dvp-2"
 is "$(jq -c '[.allocations, .terms]' <<<"$before4")" '[["dvp-2"],1]' "the allocations and terms before run 4"
 t0=$(now)
-set +e; out4=$(CZE_WITHDRAW_REAL_PROVE_CMD=$GOOD_PROVE CZE_WITHDRAW_LABEL=dvp-2 build "$ROOT/demo/prove-then-withdraw.sh"); status4=$?; set -e
+set +e; out4=$(CZE_RECHECK_LEGS=0 CZE_WITHDRAW_REAL_PROVE_CMD=$GOOD_PROVE CZE_WITHDRAW_LABEL=dvp-2 build "$ROOT/demo/prove-then-withdraw.sh"); status4=$?; set -e
 t1=$(now)
 echo "$out4" | jq -c .
 is "$status4" 2 "the builder's exit status for the block U took its allocation back from ($out4)"
