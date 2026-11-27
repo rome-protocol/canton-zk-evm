@@ -496,6 +496,8 @@ table gateway_payouts
   column amount numeric not null
   column created_at timestamp with time zone not null
   column paid_at timestamp with time zone
+  column created_offset bigint not null
+  column paid_offset bigint
   constraint gateway_payouts_pkey PRIMARY KEY (contract_hash)
   CREATE INDEX gateway_payouts_payout_idx ON public.gateway_payouts USING btree (payout_id)
   CREATE UNIQUE INDEX gateway_payouts_pkey ON public.gateway_payouts USING btree (contract_hash)
@@ -507,6 +509,8 @@ table gateway_receipts
   column recipient bytea not null
   column amount numeric not null
   column created_at timestamp with time zone not null
+  column created_offset bigint not null
+  column archived_offset bigint
   constraint gateway_receipts_pkey PRIMARY KEY (contract_hash)
   CREATE INDEX gateway_receipts_recipient_idx ON public.gateway_receipts USING btree (recipient, created_at DESC)
   CREATE UNIQUE INDEX gateway_receipts_pkey ON public.gateway_receipts USING btree (contract_hash)

@@ -7,7 +7,7 @@ import { createLedger, CUSTODY_ENDPOINTS, type HoldingChange, type Ledger } from
 import { createReceiptsRest } from "../receipts.ts";
 import { custodyMatched } from "../rest/twins-rest.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
-import { FAKE_GATEWAY, FAKE_REGISTRY, archivedEvent, gatewayToken, holding, holdingEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
+import { FAKE_GATEWAY, FAKE_REGISTRY, archivedEvent, gatewayToken, holding, holdingEvent, payoutEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce as custodyAt } from "./custody.ts";
 
@@ -16,7 +16,7 @@ const SUPPLY = "0x18160ddd";
 const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
 const SOMEONE = "alice::1220" + "ab".repeat(32);
 /** The custody read as the indexer makes it, by default as the participant the synthetic chain reports. */
-const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
+const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT, ledgerEnd: (() => Promise<number>) | null = null) => custodyAt(pool, ledger, reads, limit, participant, null, ledgerEnd);
 const fakes: FakeLedger[] = [];
 const opened: Indexer[] = [];
 afterEach(async () => {
@@ -55,7 +55,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       const first = await gatewayLedger([holding(1, FAKE_GATEWAY, "100"), holding(3, SOMEONE, "7")]);
       expect(await custodyOnce(pool, first.ledger, chain.reads, 500)).toMatchObject({ tokens: 0, offset: 30, block: 3 });
       expect(first.fake.requests.filter((r) => r.path.endsWith("active-contracts")).map((r) => (r.body as { activeAtOffset: number }).activeAtOffset)).toEqual([30]);
-      expect(first.fake.requests.filter((r) => r.path === "/v2/updates").map((r) => (r.body as { endInclusive: number }).endInclusive)).toEqual([30, 30]);
+      expect(first.fake.requests.filter((r) => r.path === "/v2/updates").map((r) => (r.body as { endInclusive: number }).endInclusive)).toEqual([30, 30, 30, 30]);   // the holdings' walk and the statuses' walk, each up to B's offset (no ledger end given), each ended by an empty answer
       expect(await rows(pool)).toEqual([]);
       const { ledger } = await gatewayLedger([gatewayToken(TKB), gatewayToken(TKC, FAKE_REGISTRY, "TKC")]);
       // The holdings were walked by the first read, up to offset 30: a registered token that comes later is set against them.
@@ -149,7 +149,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       head = 3;
       await custodyOnce(pool, canton, reth, 500);
       expect(await diff()).toEqual({ custody: 20_000_000n, supply: 20_000_000n, block: 2, offset: 20 });
-      expect(asked).toEqual([20, 20]);
+      expect(asked).toEqual([20, 20, 20, 20]);   // two reads, each the holdings' walk and the statuses' walk, both at B
       // Once the explorer has indexed block 3, the read is at block 3 and both numbers have the deposit.
       chain.reads.rethHead = 3;
       chain.ledger.ledgerHead = 3;
@@ -354,6 +354,162 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
         await custodyOnce(pool, ledgerOf([[10, [stray, strayPayout]]]), chain.reads, 500);
         expect(Number((await pool.query("select count(*) from gateway_receipts")).rows[0].count)).toBe(0);
         expect(Number((await pool.query("select count(*) from gateway_payouts")).rows[0].count)).toBe(0);
+      });
+    });
+  });
+  describe("a payout's status follows the ledger end, and the backing check stays at the newest block", () => {
+    const UNITS = 10n ** 10n, RECIPIENT = "e1".repeat(20), RECIPIENT2 = "e2".repeat(20), DEPOSIT = "ab".repeat(32), DEPOSIT2 = "ac".repeat(32), PAYOUT = "cd".repeat(32), PAYOUT2 = "ce".repeat(32), AT = "2026-11-23T10:00:00Z", PAID = "2026-11-27T04:33:37Z";
+    const tokens = [
+      { contractId: "tokB", evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB" },
+      { contractId: "tokC", evmToken: TKC, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKC" },
+    ];
+    const hold = (contractId: string, instrumentId: string, units: bigint): HoldingChange => ({ kind: "created", contractId, instrumentAdmin: FAKE_REGISTRY, instrumentId, amount: units * UNITS });
+    const standing = async (pool: Pool) => (await pool.query("select encode(evm_token, 'hex') as evm, custody::text, supply::text, supply_block::int as block, ledger_offset::int as ledger_offset, open_receipts::text, open_payouts::text from gateway_tokens order by evm_token")).rows;
+    const stands = (r: { custody: string; supply: string; open_receipts: string; open_payouts: string }) => custodyMatched(r.custody, r.supply, 6, (BigInt(r.open_receipts) + BigInt(r.open_payouts)).toString());
+    const meta = async (pool: Pool, key: string) => (await pool.query("select value from meta where key = $1", [key])).rows[0]?.value as string | undefined;
+    /** A Canton whose updates are `walk` (a page at an offset, and the changes of its update); `calls` lists each walk asked for, and `stop.at` makes a walk fail when it reaches that offset. */
+    const cantonOf = (walk: [number, HoldingChange[]][], calls: [number, number][] = [], stop: { at: number | null } = { at: null }) => ({
+      gatewayTokens: async () => tokens,
+      holdingPages: async function* (after: number, upTo: number) {
+        calls.push([after, upTo]);
+        for (const [offset, changes] of walk) if (offset > after && offset <= upTo) {
+          if (offset === stop.at) throw new Error("Canton went away");
+          yield { offset, changes };
+        }
+      },
+    }) as unknown as Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">;
+    const opening: HoldingChange[] = [
+      hold("h1", "TKB", 10n), hold("h2", "TKC", 3n),
+      { kind: "receipt", contractId: "r1", gatewayToken: "tokB", depositId: DEPOSIT, recipient: RECIPIENT, amount: 2n * UNITS, createdAt: AT },
+      { kind: "payout", contractId: "p1", gatewayToken: "tokC", payoutId: PAYOUT, amount: 3n * UNITS, createdAt: AT },
+      { kind: "offer", contractId: "o1", payoutId: PAYOUT, executeBefore: "2026-11-28T10:00:00Z" },
+    ];
+
+    it("sets a payout paid in the next custody pass, with no new block, while the custody, the supply and the backing check stay at the block", async () => {
+      await inDb(async (pool) => {
+        const { chain, indexer } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const walk: [number, HoldingChange[]][] = [[10, opening]];
+        const canton = cantonOf(walk);
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 20);
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "offered", paidAt: null });
+        // Canton pays it, takes the receipt's claim and the holding away at offset 25, after the newest block's offset 20. No block is made.
+        walk.push([25, [{ kind: "archived", contractId: "o1", at: PAID }, { kind: "archived", contractId: "p1", at: PAID }, { kind: "archived", contractId: "r1", at: PAID }, { kind: "archived", contractId: "h2", at: PAID }]]);
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 25);
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", until: null, paidAt: "2026-11-27T04:33:37.000Z" });
+        expect(await rest.deposits("0x" + RECIPIENT)).toEqual([]);
+        expect(Number((await pool.query("select count(*) from gateway_offers")).rows[0].count)).toBe(0);
+        // The backing check is as it was at the block (offset 20): the payout and the receipt are open there and the holdings are whole.
+        const at = await standing(pool);
+        expect(at).toMatchObject([{ custody: "100000000000", open_receipts: "20000000000", open_payouts: "0", block: 2, ledger_offset: 20 }, { custody: "30000000000", open_receipts: "0", open_payouts: "30000000000", block: 2, ledger_offset: 20 }]);
+        expect(at.map(stands)).toEqual([true, true]);
+        // The next block (offset 30) brings the custody, the supply and the open amounts to the new state together.
+        walk.push([30, []]);
+        chain.reads.callResults[`${TKB}:${SUPPLY}`] = word(10_000_000n);
+        chain.reads.rethHead = 3; chain.ledger.ledgerHead = 3;
+        await indexer.runOnce();
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 30);
+        const later = await standing(pool);
+        expect(later).toMatchObject([{ custody: "100000000000", open_receipts: "0", open_payouts: "0", block: 3 }, { custody: "0", open_receipts: "0", open_payouts: "0", block: 3 }]);
+        expect(later.map(stands)).toEqual([true, true]);
+        expect(Number((await pool.query("select count(*) from gateway_receipts")).rows[0].count)).toBe(0);
+      });
+    });
+
+    it("lists a deposit and a payout made after the block at once, and counts neither in the backing check at the block", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const walk: [number, HoldingChange[]][] = [[10, opening], [25, [
+          hold("h3", "TKB", 1n), hold("h4", "TKC", 1n),
+          { kind: "receipt", contractId: "r2", gatewayToken: "tokB", depositId: DEPOSIT2, recipient: RECIPIENT2, amount: UNITS, createdAt: PAID },
+          { kind: "payout", contractId: "p2", gatewayToken: "tokC", payoutId: PAYOUT2, amount: UNITS, createdAt: PAID },
+        ]]];
+        await custodyOnce(pool, cantonOf(walk), chain.reads, 500, PARTICIPANT, async () => 25);
+        expect(await rest.deposits("0x" + RECIPIENT2)).toMatchObject([{ depositId: "0x" + DEPOSIT2, amount: "10000000000" }]);
+        expect(await rest.payout("0x" + PAYOUT2)).toMatchObject({ status: "waiting", amount: "10000000000" });
+        const at = await standing(pool);
+        expect(at).toMatchObject([{ custody: "100000000000", open_receipts: "20000000000", open_payouts: "0" }, { custody: "30000000000", open_receipts: "0", open_payouts: "30000000000" }]);
+        expect(at.map(stands)).toEqual([true, true]);
+      });
+    });
+
+    it("goes on from the page it reached after a walk that failed, and asks for the holdings only up to the block", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const calls: [number, number][] = [], stop: { at: number | null } = { at: 22 };
+        const canton = cantonOf([[12, opening], [22, [{ kind: "archived", contractId: "p1", at: PAID }]]], calls, stop);
+        await expect(custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 25)).rejects.toThrow(/Canton went away/);
+        expect(await meta(pool, "status_offset")).toBe("12");
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "offered" });
+        stop.at = null;
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 25);
+        expect(await meta(pool, "status_offset")).toBe("25");
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid" });
+        // The holdings are asked for up to the block's offset (20) only, and the statuses up to the ledger end, the second time from page 12.
+        expect(calls.filter(([, upTo]) => upTo === 20).length).toBeGreaterThan(0);
+        expect(calls.filter(([, upTo]) => upTo === 25)).toEqual([[0, 25], [12, 25]]);
+        expect(await meta(pool, "holdings_offset")).toBe("20");
+      });
+    });
+
+    it("keeps to the block when the ledger end cannot be read or is behind it", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const walk: [number, HoldingChange[]][] = [[10, opening], [25, [{ kind: "archived", contractId: "p1", at: PAID }]]];
+        const canton = cantonOf(walk);
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => { throw new Error("no ledger end"); });
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 5);
+        expect(await meta(pool, "status_offset")).toBe("20");
+        expect((await standing(pool)).length).toBe(2);
+        expect((await pool.query("select paid_at from gateway_payouts")).rows).toEqual([{ paid_at: null }]);
+      });
+    });
+    it("never takes the statuses back when the ledger end then cannot be read or is behind the cursor: no walk from 0, the payout stays paid", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const calls: [number, number][] = [];
+        const canton = cantonOf([[10, opening], [25, [{ kind: "archived", contractId: "p1", at: PAID }]]], calls);
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 25);
+        expect(await meta(pool, "status_offset")).toBe("25");
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", paidAt: "2026-11-27T04:33:37.000Z" });
+        for (const end of [async () => { throw new Error("no ledger end"); }, async () => 22, null]) {
+          calls.length = 0;
+          await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, end ?? undefined);
+          expect(calls.filter(([after]) => after === 0)).toEqual([]);
+          expect(calls.filter(([, upTo]) => upTo > 20)).toEqual([]);
+          expect(await meta(pool, "status_offset")).toBe("25");
+          expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", paidAt: "2026-11-27T04:33:37.000Z" });
+          expect((await pool.query("select count(*)::int as n from gateway_payouts")).rows).toEqual([{ n: 1 }]);
+        }
+      });
+    });
+    it("is wired into the running indexer: the reader's ledger end carries the statuses past the newest block", async () => {
+      await inDb(async (pool) => {
+        await migrate(pool);
+        const chain = makeChain([{ txs: 0 }]);
+        const fake = await startFakeLedger([
+          transaction(5, "u5", [payoutEvent(5, "p1", { gatewayToken: "00" + TKB.slice(-8), payoutId: PAYOUT, amount: "3" })]),
+          transaction(25, "u25", [archivedEvent("p1")], PAID),
+        ], { ledgerEnd: 25, active: [gatewayToken(TKB)] });
+        fakes.push(fake);
+        const ledger = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
+        chain.ledger.ledgerEnd = async () => 25;   // Canton is at 25; the one block's record is at 10
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const ix = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", pollMs: 20, checkMs: 50, custody: { ledger, ms: 50 } });
+        opened.push(ix);
+        await ix.open();
+        const halt = ix.start();
+        try {
+          let got: Awaited<ReturnType<typeof rest.payout>> = null;
+          for (let i = 0; i < 100 && got?.status !== "paid"; i++) { await new Promise((ok) => setTimeout(ok, 50)); got = await rest.payout("0x" + PAYOUT); }
+          expect(got).toMatchObject({ status: "paid", paidAt: "2026-11-27T04:33:37.000Z" });
+          expect(Number((await pool.query("select count(*) from blocks")).rows[0].count)).toBe(1);
+        } finally {
+          await halt();
+        }
       });
     });
   });

@@ -21,7 +21,7 @@ export function createReceiptsRest(query: Query) {
   /** The open receipts for one EVM address (lowercase, 0x and 40 hex digits), newest first. */
   async function deposits(recipient: string): Promise<DepositItem[]> {
     const rows = await query(
-      `select r.deposit_id, r.erc20, r.amount::text as amount, r.created_at, g.instrument_id, tk.symbol from gateway_receipts r ${named} where r.recipient = $1 order by r.created_at desc, r.deposit_id limit $2`,
+      `select r.deposit_id, r.erc20, r.amount::text as amount, r.created_at, g.instrument_id, tk.symbol from gateway_receipts r ${named} where r.recipient = $1 and r.archived_offset is null order by r.created_at desc, r.deposit_id limit $2`,
       [Buffer.from(recipient.slice(2), "hex"), DEPOSITS_MAX],
     );
     return rows.map((r): DepositItem => ({ depositId: hex(r.deposit_id), token: hex(r.erc20), symbol: r.symbol ?? null, instrumentId: r.instrument_id ?? null, amount: r.amount, amountDecimals: CUSTODY_DECIMALS, createdAt: iso(r.created_at)! }));
