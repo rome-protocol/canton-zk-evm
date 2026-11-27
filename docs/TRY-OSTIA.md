@@ -1,30 +1,30 @@
 # Try Ostia
 
-Ostia is an EVM chain on Canton DevNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. Before you start, have Foundry or Hardhat installed, a contract (and, for Hardhat, a deploy script), and a key to sign with. The guide shows how to fund that key from the faucet, deploy, verify, and see where your transaction becomes final on Canton.
+Ostia is an EVM chain on Canton TestNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. Before you start, have Foundry or Hardhat installed, a contract (and, for Hardhat, a deploy script), and a key to sign with. The guide shows how to fund that key from the faucet, deploy, verify, and see where your transaction becomes final on Canton.
 
-Ostia is a DevNet. Its coin, tROME, has no value, and the chain can be reset.
+Ostia is a TestNet. Its coin, tROME, has no value, and the chain can be reset. It ran on Canton DevNet from 22 October to 21 November 2026; the sections below that name DevNet describe that period.
 
-Today Rome runs the prover and the only confirming participant; Rome's participant holds the Canton Coin custody and the twin admin; the code and the ZisK prover (alpha) are unaudited; DevNet only. What the proof covers, and what it does not: [the trust model](https://docs.rome.builders/canton-zk-evm/trust-model).
+Today Rome runs the prover and the only confirming participant; Rome's participant holds the Canton Coin custody and the twin admin; the code and the ZisK prover (alpha) are unaudited; test networks only. What the proof covers, and what it does not: [the trust model](https://docs.rome.builders/canton-zk-evm/trust-model).
 
 ## The network
 
 | Setting | Value |
 |---|---|
-| Network name | Ostia DevNet |
+| Network name | Ostia TestNet |
 | Chain ID | `770101` |
 | Currency | tROME (18 decimals) |
-| RPC URL | `https://ostia.devnet.romeprotocol.xyz/rpc` |
-| Explorer | `https://ostia.devnet.romeprotocol.xyz` |
-| Explorer API (Etherscan-compatible) | `https://ostia.devnet.romeprotocol.xyz/api` |
+| RPC URL | `https://ostia.testnet.romeprotocol.xyz/rpc` |
+| Explorer | `https://ostia.testnet.romeprotocol.xyz` |
+| Explorer API (Etherscan-compatible) | `https://ostia.testnet.romeprotocol.xyz/api` |
 
 In MetaMask or another wallet, add a custom network with these values. The gas price is about 1 gwei, and a block holds up to 60,000,000 gas (30,000,000 until 27 October 2026).
 
 ## Get tROME
 
-Open `https://ostia.devnet.romeprotocol.xyz/faucet`, paste your address and ask. The faucet gives 1 tROME to an address once a day and answers one request every 10 minutes from the same internet address. You can also ask from a terminal:
+Open `https://ostia.testnet.romeprotocol.xyz/faucet`, paste your address and ask. The faucet gives 1 tROME to an address once a day; its limits are in [the faucet section of the explorer README](../explorer/README.md#the-faucet). You can also ask from a terminal:
 
 ```sh
-curl -X POST https://ostia.devnet.romeprotocol.xyz/api/faucet \
+curl -X POST https://ostia.testnet.romeprotocol.xyz/api/faucet \
   -H 'content-type: application/json' \
   -d '{"address":"0xYourAddress"}'
 ```
@@ -34,7 +34,7 @@ The payout is sent in the next block, so it arrives when that block is final (se
 ## Deploy with Foundry
 
 ```sh
-export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
+export RPC=https://ostia.testnet.romeprotocol.xyz/rpc
 forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
@@ -47,7 +47,7 @@ forge verify-contract <address> src/Counter.sol:Counter \
   --chain-id 770101 \
   --evm-version london \
   --verifier etherscan \
-  --verifier-url https://ostia.devnet.romeprotocol.xyz/api \
+  --verifier-url https://ostia.testnet.romeprotocol.xyz/api \
   --etherscan-api-key any \
   --watch
 ```
@@ -64,7 +64,7 @@ module.exports = {
   solidity: { version: "0.8.17", settings: { evmVersion: "london" } },
   networks: {
     ostia: {
-      url: "https://ostia.devnet.romeprotocol.xyz/rpc",
+      url: "https://ostia.testnet.romeprotocol.xyz/rpc",
       chainId: 770101,
       accounts: [process.env.PRIVATE_KEY],
       timeout: 120000,
@@ -102,7 +102,7 @@ The worker accepts the transfer for a registered token whose amount is at least 
 
 ## Canton tokens on DevNet
 
-The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14d10a8b1b3af`, is the wrapped form of TKB, a Canton test token, and it is an ordinary ERC-20 with 10 decimals: read `balanceOf` and `totalSupply` like any other. The first deposits, payments and withdrawals (25 October 2026, blocks 780, 783 and 784, and again 1465, 1471 and 1473) were made by Rome with test parties it runs. Canton Coin and the Ostia tokens now move on the [Bridge page](#move-tokens-with-the-bridge). Open `https://ostia.devnet.romeprotocol.xyz/legs` to see every leg, or `GET /api/legs`. Rome cycles a deposit, a payment and a withdrawal every 10 minutes with its own test parties, so the block numbers above are only the first runs, and almost every leg on the page is that test loop, not outside use. On 27 October 2026 (15:55 UTC) an OTC app (`apps/otc`) swapped TKB for an ERC-20, TKA at `0xf4b69022b3e6501101600743f17fbe0659dd1af8`. The buyer's payment and the seller's TKB settled together in block 16816, in one Canton update, and the buyer claimed the wrapped TKB in block 16823.
+The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14d10a8b1b3af`, is the wrapped form of TKB, a Canton test token, and it is an ordinary ERC-20 with 10 decimals: read `balanceOf` and `totalSupply` like any other. The first deposits, payments and withdrawals (25 October 2026, blocks 780, 783 and 784, and again 1465, 1471 and 1473) were made by Rome with test parties it runs. Canton Coin and the Ostia tokens now move on the [Bridge page](#move-tokens-with-the-bridge). Open `https://ostia.testnet.romeprotocol.xyz/legs` to see every leg, or `GET /api/legs`. Rome cycles a deposit, a payment and a withdrawal every 10 minutes with its own test parties, so the block numbers above are only the first runs, and almost every leg on the page is that test loop, not outside use. On 27 October 2026 (15:55 UTC) an OTC app (`apps/otc`) swapped TKB for an ERC-20, TKA at `0xf4b69022b3e6501101600743f17fbe0659dd1af8`. The buyer's payment and the seller's TKB settled together in block 16816, in one Canton update, and the buyer claimed the wrapped TKB in block 16823.
 
 ## Canton twins and Canton Coin on DevNet
 
@@ -123,10 +123,10 @@ The addresses:
 | WtROME, wrapped tROME, the second twin | `0xc221fc4af51caa9d198e70e3cb3b8f3d9d2adc64` (18 decimals) |
 | CC (wCC), wrapped Canton Coin | `0x4db3dea7c13116961fd3e438542ccfcca61a7547` (10 decimals) |
 
-The twin registry service answers at `https://ostia.devnet.romeprotocol.xyz/twin-registry/`. It holds no key and writes nothing to Canton. These paths are public:
+The twin registry service answers at `https://ostia.testnet.romeprotocol.xyz/twin-registry/`. It holds no key and writes nothing to Canton. These paths are public:
 
 ```sh
-R=https://ostia.devnet.romeprotocol.xyz/twin-registry
+R=https://ostia.testnet.romeprotocol.xyz/twin-registry
 curl $R/healthz                                  # ok, the twins, the vaults
 curl $R/registry/metadata/v1/instruments         # the twins, each with its total supply
 curl $R/registry/metadata/v1/instruments/erc20:f4b69022b3e6501101600743f17fbe0659dd1af8
