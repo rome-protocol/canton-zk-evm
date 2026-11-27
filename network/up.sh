@@ -5,7 +5,8 @@
 #      rules hash, must be the recorded ones (prover/fixtures/session.txt), or this stops before starting anything
 #   3. reth, only through network/reth/launch.sh, with peer discovery off and checked
 #   4. the two sidecars (operator's on 8085, confirmer's on 8086), pinned to programVK and rootC
-#   5. the ZisK prover (prover/start.sh); with CZE_LOCAL_PROVER=0 none is started here (the proofs are made on other machines)
+#   5. the ZisK prover (prover/start.sh); with CZE_LOCAL_PROVER=0 none is started here (the proofs are made on other machines), and
+#      with CZE_PERSIST=1 CZE_PROVERS must name the remote coordinator, because block 1 (step 8) is proven on it: refused up front if empty
 #   6. Canton: one synchronizer, three participants (network/canton/), the Daml package uploaded and vetted
 #   7. the chain: the operator and the gateway propose it with genesis = reth's block 0, which holds the gateway contract's
 #      code at GATEWAY_ADDRESS, and the confirmer accepts
@@ -20,7 +21,7 @@
 # DevNet) through network/external/setup.py, and step 4 starts one sidecar, or none (see "Running on an existing participant" in
 # network/README.md). Needs CZE_LEDGER_URL (https, or on this machine) and a token file per role: CZE_TOKEN_FILE_ADMIN, _OPERATOR, _CONFIRMER, _BUILDER
 # (CZE_LEDGER_NO_AUTH=1 instead, for a Ledger API without login). CZE_SIDECAR_LISTEN=<address:port> starts the sidecar here. Local mode is unchanged.
-# Needs ZisK installed (prover/install.sh), Docker, a GPU, Rust, Python 3 and jq. State, logs and pid files go to
+# Needs ZisK installed (prover/install.sh), Docker, a GPU (not with CZE_LOCAL_PROVER=0), Rust, Python 3 and jq. State, logs and pid files go to
 # $CZE_STATE_DIR (default ./state, ignored by git); the Engine secret and the party ids are created there per run.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -31,6 +32,11 @@ export CZE_PROVER_STATE=${CZE_PROVER_STATE:-$CZE_STATE_DIR/prover}
 NET=$CZE_STATE_DIR/net
 LOCAL_PROVER=${CZE_LOCAL_PROVER:-1}
 case $LOCAL_PROVER in 0|1) ;; *) echo "FAIL: CZE_LOCAL_PROVER is 0 or 1, not '$LOCAL_PROVER'" >&2; exit 1 ;; esac
+# Block 1 of a persistent chain is proven by the builder's `once`, with no --prover: on CZE_PROVERS, or else on ZISK_COORDINATOR_URL, which
+# prover/common.sh sets to a coordinator on this machine, and with CZE_LOCAL_PROVER=0 none runs here. Refused now, before anything starts.
+if [ "$LOCAL_PROVER" = 0 ] && [ "${CZE_PERSIST:-0}" = 1 ] && [ -z "$(printf %s "${CZE_PROVERS:-}" | tr -d ' ,')" ]; then
+  echo "FAIL: CZE_PERSIST=1 with CZE_LOCAL_PROVER=0 needs CZE_PROVERS (name=URL of the remote coordinator): block 1 is proven on it" >&2; exit 1
+fi
 umask 077
 mkdir -p "$NET/logs"
 fail() { echo "FAIL: $*" >&2; exit 1; }

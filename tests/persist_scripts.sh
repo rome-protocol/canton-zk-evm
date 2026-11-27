@@ -258,4 +258,12 @@ kill -0 "$FAKE_PID" 2> /dev/null || fail "down.sh with CZE_LOCAL_PROVER=0 stoppe
 [ -e "$WORK/state/prover/worker.pid" ] || fail "down.sh with CZE_LOCAL_PROVER=0 removed the local prover's pid file"
 kill "$FAKE_PID" 2> /dev/null || true
 echo "ok: down.sh stops the local prover by default and leaves it alone with CZE_LOCAL_PROVER=0"
+# 9g. up.sh with CZE_PERSIST=1 and CZE_LOCAL_PROVER=0 needs CZE_PROVERS (block 1 is proven on it): refused before anything starts when it is empty, and not refused when it is set.
+fresh
+if out=$(run CZE_PERSIST=1 CZE_LOCAL_PROVER=0 CZE_PROVERS= "$WORK/repo/network/up.sh" 2>&1); then fail "up.sh went on with CZE_PERSIST=1, CZE_LOCAL_PROVER=0 and no CZE_PROVERS"; fi
+grep -q "needs CZE_PROVERS" <<<"$out" || fail "up.sh refusal does not name CZE_PROVERS: $out"
+[ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called after up.sh refused a missing CZE_PROVERS"
+out=$(run CZE_PERSIST=1 CZE_LOCAL_PROVER=0 CZE_PROVERS=a=http://127.0.0.1:1 "$WORK/repo/network/up.sh" 2>&1) || true
+! grep -q "needs CZE_PROVERS" <<<"$out" || fail "up.sh refused CZE_PROVERS that was set: $out"
+echo "ok: up.sh with CZE_PERSIST=1 and CZE_LOCAL_PROVER=0 needs CZE_PROVERS"
 echo "persist scripts tests passed"
