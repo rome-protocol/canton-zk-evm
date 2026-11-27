@@ -42,14 +42,9 @@ class Document(unittest.TestCase):
         self.assertEqual(doc, {
             "version": 1, "updatedAt": "2026-11-24T10:30:05Z", "pollSeconds": 10.0,
             "minDeposits": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}, {"instrumentAdmin": ISSUER, "instrumentId": "TKB", "least": "1"}],
-            "minPayouts": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}], "offerHours": None})
+            "minPayouts": [{"instrumentAdmin": DSO, "instrumentId": "Amulet", "least": "10"}]})
         off = limits.document(NOW, 10.0)
         self.assertEqual((off["minDeposits"], off["minPayouts"], "maxOffers" in off), (None, None, False))
-
-    def test_the_offer_time_is_the_workers_own_setting_in_hours_and_null_while_payouts_are_off(self):
-        self.assertEqual(limits.document(NOW, 10.0, None, {}, 12.0)["offerHours"], 12.0)
-        self.assertEqual(limits.document(NOW, 10.0, None, {}, 0.25)["offerHours"], 0.25)
-        self.assertIsNone(limits.document(NOW, 10.0, {}, None)["offerHours"])
 
     def test_a_part_that_is_on_with_no_least_amount_has_an_empty_list(self):
         doc = limits.document(NOW, 10.0, {}, {})
@@ -79,17 +74,6 @@ class Worker(unittest.TestCase):
         self.assertEqual(doc["minPayouts"], doc["minDeposits"])
         self.assertEqual((doc.get("maxOffers"), doc["pollSeconds"], doc["version"]), (None, 7.0, 1))
         self.assertRegex(doc["updatedAt"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-
-    def test_the_payouts_publish_the_offer_time_they_run_with_and_the_intake_alone_has_none(self):
-        with tempfile.TemporaryDirectory() as work:
-            _, doc = run_once("--payout-offers", work=work)
-            self.assertEqual(doc["offerHours"], 24.0)
-        with tempfile.TemporaryDirectory() as work:
-            _, doc = run_once("--payout-offers", "--offer-hours", "12", work=work)
-            self.assertEqual(doc["offerHours"], 12.0)
-        with tempfile.TemporaryDirectory() as work:
-            _, doc = run_once("--intake", "--gateway-address", "0x" + "ab" * 20, "--ostia-rpc", "http://127.0.0.1:1", "--offer-hours", "12", work=work)
-            self.assertIsNone(doc["offerHours"])
 
     def test_the_intake_alone_has_no_payout_limits_and_the_payouts_alone_have_no_deposit_limits(self):
         with tempfile.TemporaryDirectory() as work:

@@ -1,7 +1,7 @@
 """The custody worker's limits, published for readers (the explorer, and through it the Bridge page). Part of intake.py; see README.md.
 
 The worker writes `custody-limits.json` in its work folder at the start of every poll round, so a reader sees what the running worker enforces and how old that is: nothing is
-copied into a second setting. A part that is not switched on has no limits in the file (null): the intake has `minDeposits`, the payouts have `minPayouts` and `offerHours`.
+copied into a second setting. A part that is not switched on has no limits in the file (null): the intake has `minDeposits`, the payouts have `minPayouts`.
 """
 import json, os
 from datetime import datetime, timezone
@@ -29,16 +29,14 @@ def least_list(minimums: dict):
     return [{"instrumentAdmin": admin, "instrumentId": name, "least": amount_text(amount)} for (admin, name), amount in sorted(minimums.items())]
 
 
-def document(now: datetime, poll_seconds: float, min_deposits=None, min_payouts=None, offer_hours=None) -> dict:
-    """What the file holds. `min_deposits` and `min_payouts` are {(admin, id): amount} (empty: the part is on with no least amount), None when that part is off.
-    `offer_hours` is how long a payout's offer stays open (`--offer-hours`), None while the payouts are off."""
+def document(now: datetime, poll_seconds: float, min_deposits=None, min_payouts=None) -> dict:
+    """What the file holds. `min_deposits` and `min_payouts` are {(admin, id): amount} (empty: the part is on with no least amount), None when that part is off."""
     return {
         "version": 1,
         "updatedAt": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pollSeconds": poll_seconds,
         "minDeposits": least_list(min_deposits),
         "minPayouts": least_list(min_payouts),
-        "offerHours": offer_hours,
     }
 
 

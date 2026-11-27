@@ -52,9 +52,12 @@ export async function custodyOnce(pool: Pick<Pool, "connect" | "query">, ledger:
   }
   const tokens = await ledger.gatewayTokens(limit, offset);
   await syncHoldings(pool, ledger, participantId, offset);
-  // The statuses go on to the ledger end. A ledger end that cannot be read, or is behind B, leaves them at B, as they were before the ledger end was read.
+  // The statuses go on to the ledger end, and never go back: on the same participant their cursor only moves forward. A ledger end that cannot be read, or is behind B, leaves them at B; when their cursor is already past
+  // that (an earlier pass read the ledger end), the walk is skipped, as a walk to a point below the cursor would start the statuses again from offset 0 and show a paid payout as waiting.
   const end = ledgerEnd ? Math.max(offset, await ledgerEnd().catch(() => offset)) : offset;
-  await syncStatus(pool, ledger, participantId, end, end > offset ? await ledger.gatewayTokens(limit, end) : tokens);
+  const cursor = (await pool.query("select key, value from meta where key = any($1::text[])", [["status_participant", "status_offset"]])).rows.reduce((m, r) => m.set(r.key, r.value as string), new Map<string, string>());
+  const done = cursor.get("status_participant") === participantId ? Number(cursor.get("status_offset") ?? 0) : 0;
+  if (done <= end) await syncStatus(pool, ledger, participantId, end, end > offset ? await ledger.gatewayTokens(limit, end) : tokens);
   const held = new Map<string, { custody: bigint; holdings: number }>();
   for (const r of (await pool.query("select instrument_admin, instrument_id, sum(amount)::text as custody, count(*)::int as holdings from gateway_holdings group by 1, 2")).rows) {
     held.set(JSON.stringify([r.instrument_admin, r.instrument_id]), { custody: BigInt(r.custody), holdings: r.holdings });

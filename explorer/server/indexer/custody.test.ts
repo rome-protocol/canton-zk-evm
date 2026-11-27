@@ -466,6 +466,26 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
         expect((await pool.query("select paid_at from gateway_payouts")).rows).toEqual([{ paid_at: null }]);
       });
     });
+    it("never takes the statuses back when the ledger end then cannot be read or is behind the cursor: no walk from 0, the payout stays paid", async () => {
+      await inDb(async (pool) => {
+        const { chain } = await indexed(pool, 2, { [TKB]: 8_000_000n, [TKC]: 0n }, 3);
+        const rest = createReceiptsRest(async (sql, values) => (await pool.query(sql, values as unknown[])).rows);
+        const calls: [number, number][] = [];
+        const canton = cantonOf([[10, opening], [25, [{ kind: "archived", contractId: "p1", at: PAID }]]], calls);
+        await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, async () => 25);
+        expect(await meta(pool, "status_offset")).toBe("25");
+        expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", paidAt: "2026-11-27T04:33:37.000Z" });
+        for (const end of [async () => { throw new Error("no ledger end"); }, async () => 22, null]) {
+          calls.length = 0;
+          await custodyOnce(pool, canton, chain.reads, 500, PARTICIPANT, end ?? undefined);
+          expect(calls.filter(([after]) => after === 0)).toEqual([]);
+          expect(calls.filter(([, upTo]) => upTo > 20)).toEqual([]);
+          expect(await meta(pool, "status_offset")).toBe("25");
+          expect(await rest.payout("0x" + PAYOUT)).toMatchObject({ status: "paid", paidAt: "2026-11-27T04:33:37.000Z" });
+          expect((await pool.query("select count(*)::int as n from gateway_payouts")).rows).toEqual([{ n: 1 }]);
+        }
+      });
+    });
     it("is wired into the running indexer: the reader's ledger end carries the statuses past the newest block", async () => {
       await inDb(async (pool) => {
         await migrate(pool);

@@ -94,12 +94,11 @@ With `--work-dir`, the worker writes `custody-limits.json` there at the start of
   "updatedAt": "2026-11-24T10:30:05Z",
   "pollSeconds": 10,
   "minDeposits": [{ "instrumentAdmin": "ADMIN", "instrumentId": "ID", "least": "10" }],
-  "minPayouts": [{ "instrumentAdmin": "ADMIN", "instrumentId": "ID", "least": "10" }],
-  "offerHours": 24
+  "minPayouts": [{ "instrumentAdmin": "ADMIN", "instrumentId": "ID", "least": "10" }]
 }
 ```
 
-`minDeposits` is the intake's `--min-deposit` (a transfer below it is not accepted and stays as the sender made it); `minPayouts` is `--min-payout`; `offerHours` is `--offer-hours`, how long a payout's offer stays open (`null` while the payouts are off). The builder reads `minPayouts` from this file (in the same work folder) and leaves out a payout leg below it, so that nothing is burnt that would only be held. A part that is not switched on has `null` for its fields, and a part that is on with no setting has an empty list. `least` is plain decimal text in the instrument's own units. `updatedAt` is UTC. A write that fails is said once on stdout and never stops the worker.
+`minDeposits` is the intake's `--min-deposit` (a transfer below it is not accepted and stays as the sender made it); `minPayouts` is `--min-payout`. The builder reads `minPayouts` from this file (in the same work folder) and leaves out a payout leg below it, so that nothing is burnt that would only be held. A part that is not switched on has `null` for its fields, and a part that is on with no setting has an empty list. `least` is plain decimal text in the instrument's own units. `updatedAt` is UTC. A write that fails is said once on stdout and never stops the worker.
 
 The protections of the intake and of Canton Coin payouts take effect only with their settings: the used-id check needs `--ostia-rpc` and `--gateway-address` (else only open ids are checked), and the floor, stop file and fee check need `--expiring-instrument` with `--registry` and `--registry-token-file` (else Canton Coin is paid largest first).
 

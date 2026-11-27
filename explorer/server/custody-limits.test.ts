@@ -10,17 +10,14 @@ const ADMIN = "admin::1220" + "00".repeat(32);
 const WROTE = "2026-11-24T10:30:05Z";
 const T0 = Date.parse(WROTE) + 4000;
 const least = (id: string, v: unknown, admin = ADMIN) => ({ instrumentAdmin: admin, instrumentId: id, least: v });
-const file = (over: Record<string, unknown> = {}) => JSON.stringify({ version: 1, updatedAt: WROTE, pollSeconds: 10, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3, offerHours: 24, ...over });
+const file = (over: Record<string, unknown> = {}) => JSON.stringify({ version: 1, updatedAt: WROTE, pollSeconds: 10, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3, ...over });
 
 describe("parseCustodyLimits", () => {
   it("takes the worker's limits as they are, with only the fields of the answer", () => {
-    expect(parseCustodyLimits(file(), T0)).toEqual({ updatedAt: WROTE, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3, offerHours: 24 });
+    expect(parseCustodyLimits(file(), T0)).toEqual({ updatedAt: WROTE, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3 });
   });
   it("keeps a part that is off as null and a part that is on with no least amount as an empty list", () => {
-    expect(parseCustodyLimits(file({ minDeposits: null, minPayouts: [], maxOffers: null }), T0)).toEqual({ updatedAt: WROTE, minDeposits: null, minPayouts: [], maxOffers: null, offerHours: 24 });
-  });
-  it.each([["15 minutes", 0.25, 0.25], ["a day", 24, 24], ["absent", undefined, null], ["zero", 0, null], ["negative", -1, null], ["text", "24", null], ["null", null, null], ["too large", 1e9, null]])("reads the offer time as %s", (_n, v, out) => {
-    expect(parseCustodyLimits(file({ offerHours: v }), T0)?.offerHours).toBe(out);
+    expect(parseCustodyLimits(file({ minDeposits: null, minPayouts: [], maxOffers: null }), T0)).toEqual({ updatedAt: WROTE, minDeposits: null, minPayouts: [], maxOffers: null });
   });
   it("accepts a cap of 0 (no limit) and decimal amounts", () => {
     expect(parseCustodyLimits(file({ maxOffers: 0, minPayouts: [least("Amulet", "0.25")] }), T0)).toMatchObject({ maxOffers: 0, minPayouts: [least("Amulet", "0.25")] });
@@ -105,7 +102,7 @@ describe("GET /api/bridge/custody-limits", () => {
   it("serves the worker's limits, with only the fields of the answer", async () => {
     const a = await boot(fileIn(JSON.stringify({ ...JSON.parse(file()), extra: "never sent" })))("GET", "/api/bridge/custody-limits");
     expect(a.status).toBe(200);
-    expect(a.body).toEqual({ limits: { updatedAt: WROTE, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3, offerHours: 24 } });
+    expect(a.body).toEqual({ limits: { updatedAt: WROTE, minDeposits: [least("Amulet", "10"), least("TKB", "1")], minPayouts: [least("Amulet", "10")], maxOffers: 3 } });
   });
   it("answers null with no setting, with no file, with a file that is not the worker's and with a stale one, so the page makes no check", async () => {
     const later = () => Date.parse(WROTE) + CUSTODY_LIMITS_STALE_MS + 1;
