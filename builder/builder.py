@@ -26,7 +26,7 @@ from pathlib import Path
 from websockets.sync.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from provers import DEFAULT_TIMEOUT, NO_WORKER_RETRY_MAX, Job, JobError, Pool, Prover, parse_provers, run_command
+from provers import COOLDOWN_MAX, COOLDOWN_START, DEFAULT_TIMEOUT, NO_WORKER_RETRY_MAX, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
 import precheck as pc
@@ -1221,8 +1221,9 @@ def run_prover(cmd: str, args: list, env: dict | None = None, timeout: float | N
     run_command(cmd, args, env, timeout)
 
 
-def new_pool(provers: list, timeout: float = DEFAULT_TIMEOUT, stop: "threading.Event | None" = None, no_worker_retry_max: float = NO_WORKER_RETRY_MAX) -> Pool:
-    return Pool(provers, timeout, run=lambda *a, **k: run_prover(*a, **k), stop=stop, no_worker_retry_max=no_worker_retry_max)
+def new_pool(provers: list, timeout: float = DEFAULT_TIMEOUT, stop: "threading.Event | None" = None, no_worker_retry_max: float = NO_WORKER_RETRY_MAX,
+             cooldown_max: float = COOLDOWN_MAX) -> Pool:
+    return Pool(provers, timeout, run=lambda *a, **k: run_prover(*a, **k), stop=stop, no_worker_retry_max=no_worker_retry_max, cooldown_max=cooldown_max)
 
 
 def utcnow() -> datetime:
@@ -5830,6 +5831,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
     ap.add_argument("--prover", action="append", default=[], metavar="NAME=URL", help="a prover: the URL of one ZisK coordinator (repeatable; also CZE_PROVERS, comma-separated). Each takes one block at a time. With two or more, a block that fails goes once to another prover and a prover that cannot be reached is left alone for a while. None, or one: the prove command alone, as ever")
     ap.add_argument("--prove-timeout", type=float, default=float(os.environ.get("CZE_PROVE_TIMEOUT", DEFAULT_TIMEOUT)), metavar="SECONDS", help=f"how long one proof may take before it is given up (default {DEFAULT_TIMEOUT:g}; also CZE_PROVE_TIMEOUT)")
+    ap.add_argument("--prover-cooldown-max-seconds", type=float, default=float(os.environ.get("CZE_PROVER_COOLDOWN_MAX_SECONDS", COOLDOWN_MAX)), metavar="SECONDS", help=f"with two or more provers: the longest a prover that went down is left alone (default {COOLDOWN_MAX:g}; also CZE_PROVER_COOLDOWN_MAX_SECONDS; the cool-down starts at {COOLDOWN_START:g} and doubles after each new fault up to this; at least {COOLDOWN_START:g})")
     ap.add_argument("--no-worker-retry-seconds", type=float, default=float(os.environ.get("CZE_NO_WORKER_RETRY_SECONDS", NO_WORKER_RETRY_MAX)), metavar="SECONDS", help=f"with one prover: the longest wait before it is asked again after its coordinator said it has no ready worker (default {NO_WORKER_RETRY_MAX:g}; also CZE_NO_WORKER_RETRY_SECONDS; the waits start at 30 and double up to this)")
     ap.add_argument("--prover-input-dir", metavar="DIR", help="a folder the provers' machines also see: the input is copied there for each proof and its path is given to the prover (default: the input's own path is given)")
     ap.add_argument("--max-in-flight", type=int, default=int(os.environ.get("CZE_MAX_IN_FLIGHT", 1)), metavar="K", help="run: the most blocks made and not yet final at once (default 1; also CZE_MAX_IN_FLIGHT). At most one more than the number of provers")
@@ -5962,10 +5964,13 @@ def main() -> int:
             raise BuilderError("bad arguments: --prove-timeout must be at least 1")
         if not math.isfinite(args.no_worker_retry_seconds) or args.no_worker_retry_seconds < 1:
             raise BuilderError("bad arguments: --no-worker-retry-seconds must be at least 1")
+        if not math.isfinite(args.prover_cooldown_max_seconds) or args.prover_cooldown_max_seconds < COOLDOWN_START:
+            raise BuilderError(f"bad arguments: --prover-cooldown-max-seconds must be at least {COOLDOWN_START:g}")
         cfg = Config.from_env()
         try:
             specs = args.prover or [x for x in os.environ.get("CZE_PROVERS", "").split(",") if x.strip()]
-            cfg.pool = new_pool(parse_provers(specs, Path(cfg.prove_cmd).name), args.prove_timeout, no_worker_retry_max=args.no_worker_retry_seconds)
+            cfg.pool = new_pool(parse_provers(specs, Path(cfg.prove_cmd).name), args.prove_timeout, no_worker_retry_max=args.no_worker_retry_seconds,
+                                 cooldown_max=args.prover_cooldown_max_seconds)
         except ValueError as e:
             raise BuilderError(f"bad arguments: {e}") from e
         if args.prover_input_dir:

@@ -196,4 +196,74 @@ fresh; rm -f "$WORK/state/persist.env"
 run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh failed with no explorer database"
 ! grep -q "cze-explorer-db" "$FAKE_DOCKER_LOG" || fail "down.sh touched an explorer database that was never made"
 echo "ok: a network that is not persistent removes the explorer's database with it"
+# 9. CZE_LOCAL_PROVER=0: the proofs are made on other machines, so restart.sh and up.sh start no prover, and restart.sh and down.sh leave the local prover's pid files alone.
+# The ZisK client check stays. 1 (the default) is the old behaviour. Anything else is refused.
+prep_restart() {   # a persistent chain whose restart goes as far as reth (launch.sh is a stub that says it ran and fails), with a stub prover/start.sh
+  fresh
+  sed -i.bak "s/^CHAIN_ID=.*/CHAIN_ID=$(sed -n 's/^CHAIN_ID=//p' "$ROOT/PINS")/; s/^CANTON_VERSION=.*/CANTON_VERSION=$(sed -n 's/^CANTON_VERSION=//p' "$ROOT/PINS")/; s/^CANTON_PROTOCOL_VERSION=.*/CANTON_PROTOCOL_VERSION=$(sed -n 's/^export CANTON_PROTOCOL_VERSION=//p' "$ROOT/PINS")/" "$WORK/state/persist.env"
+  for f in postgres.env jwt.hex genesis.json; do echo x > "$WORK/state/$f"; done
+  mkdir -p "$WORK/state/canton" "$WORK/state/net" "$WORK/state/reth-data" "$WORK/state/prover" "$WORK/repo/prover"
+  echo x > "$WORK/state/canton/parties.env"; echo x > "$WORK/state/net/chain.json"; echo x > "$WORK/state/net/guest.txt"; echo x > "$WORK/state/net/dar.txt"; echo x > "$WORK/state/reth-data/f"
+  : > "$WORK/repo/prover/common.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/cargo-zisk"; chmod +x "$WORK/bin/cargo-zisk"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/repo/network/explorer-db.sh"; chmod +x "$WORK/repo/network/explorer-db.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/repo/network/postgres.sh"; chmod +x "$WORK/repo/network/postgres.sh"
+  printf '#!/usr/bin/env bash\ntouch "%s/reth-launched"; exit 1\n' "$WORK" > "$WORK/repo/network/reth/launch.sh"; chmod +x "$WORK/repo/network/reth/launch.sh"
+  printf '#!/usr/bin/env bash\ntouch "%s/prover-started"; exit 0\n' "$WORK" > "$WORK/repo/prover/start.sh"; chmod +x "$WORK/repo/prover/start.sh"
+  rm -f "$WORK/reth-launched" "$WORK/prover-started"
+}
+fake_prover_process() {   # a process whose command line names zisk-worker, with its pid file in the prover's state folder
+  printf '#!/usr/bin/env bash\nsleep 60\n' > "$WORK/zisk-worker"; chmod +x "$WORK/zisk-worker"
+  "$WORK/zisk-worker" & FAKE_PID=$!; echo "$FAKE_PID" > "$WORK/state/prover/worker.pid"
+  sleep 0.3
+}
+# 9a. restart.sh, default: a running local prover is refused (the old behaviour).
+prep_restart; fake_prover_process
+if run "$WORK/repo/network/restart.sh" > "$WORK/restart.out" 2>&1; then fail "restart.sh went on with a prover running"; fi
+grep -q "is a running process" "$WORK/restart.out" || fail "restart.sh did not refuse a running local prover: $(tail -5 "$WORK/restart.out")"
+kill "$FAKE_PID" 2> /dev/null || true
+echo "ok: restart.sh refuses a running local prover by default"
+# 9b. restart.sh with CZE_LOCAL_PROVER=0 ignores its pid file and goes on to reth.
+prep_restart; fake_prover_process
+run CZE_LOCAL_PROVER=0 "$WORK/repo/network/restart.sh" > "$WORK/restart.out" 2>&1 || true
+kill "$FAKE_PID" 2> /dev/null || true
+[ -e "$WORK/reth-launched" ] || fail "restart.sh with CZE_LOCAL_PROVER=0 stopped on the local prover's pid file: $(tail -5 "$WORK/restart.out")"
+[ -e "$WORK/state/prover/worker.pid" ] || fail "restart.sh with CZE_LOCAL_PROVER=0 removed the local prover's pid file"
+echo "ok: restart.sh with CZE_LOCAL_PROVER=0 ignores the local prover's pid files"
+# 9c. Every call of prover/start.sh in up.sh and restart.sh is behind CZE_LOCAL_PROVER, and the line says so when it is skipped.
+grep -q 'CZE_LOCAL_PROVER=0: no prover is started here' "$ROOT/network/restart.sh" || fail "restart.sh does not say that it starts no prover"
+grep -q 'CZE_LOCAL_PROVER=0: no prover is started here' "$ROOT/network/up.sh" || fail "up.sh does not say that it starts no prover"
+awk '/prover\/start\.sh/ && !/^ *#/ && !/LOCAL_PROVER/ {bad=1} END {exit bad}' "$ROOT/network/up.sh" "$ROOT/network/restart.sh" || fail "a call of prover/start.sh in up.sh or restart.sh is not behind CZE_LOCAL_PROVER"
+# 9d. The ZisK client check stays with CZE_LOCAL_PROVER=0.
+prep_restart; rm -f "$WORK/bin/cargo-zisk"
+if out=$(run CZE_LOCAL_PROVER=0 "$WORK/repo/network/restart.sh" 2>&1); then fail "restart.sh with CZE_LOCAL_PROVER=0 went on without the ZisK client"; fi
+grep -q "ZisK is not installed" <<<"$out" || fail "restart.sh with CZE_LOCAL_PROVER=0 did not check the ZisK client: $out"
+[ ! -e "$WORK/reth-launched" ] || fail "reth was started without the ZisK client"
+echo "ok: the ZisK client check stays with CZE_LOCAL_PROVER=0"
+# 9e. A value other than 0 or 1 is refused by all three scripts, before anything is called.
+for sc in up restart down; do
+  fresh
+  if out=$(run CZE_LOCAL_PROVER=2 "$WORK/repo/network/$sc.sh" 2>&1); then fail "$sc.sh accepted CZE_LOCAL_PROVER=2"; fi
+  grep -q "CZE_LOCAL_PROVER is 0 or 1, not '2'" <<<"$out" || fail "$sc.sh refusal does not say why: $out"
+  [ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called after $sc.sh refused CZE_LOCAL_PROVER=2"
+done
+echo "ok: another value of CZE_LOCAL_PROVER is refused"
+# 9f. down.sh: by default it stops the local prover, with CZE_LOCAL_PROVER=0 it does not touch it.
+fresh; record; mkdir -p "$WORK/state/prover"; fake_prover_process
+run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh failed"
+if kill -0 "$FAKE_PID" 2> /dev/null; then kill "$FAKE_PID"; fail "down.sh did not stop the local prover by default"; fi
+fresh; record; mkdir -p "$WORK/state/prover"; fake_prover_process
+run CZE_LOCAL_PROVER=0 "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh with CZE_LOCAL_PROVER=0 failed"
+kill -0 "$FAKE_PID" 2> /dev/null || fail "down.sh with CZE_LOCAL_PROVER=0 stopped a local prover"
+[ -e "$WORK/state/prover/worker.pid" ] || fail "down.sh with CZE_LOCAL_PROVER=0 removed the local prover's pid file"
+kill "$FAKE_PID" 2> /dev/null || true
+echo "ok: down.sh stops the local prover by default and leaves it alone with CZE_LOCAL_PROVER=0"
+# 9g. up.sh with CZE_PERSIST=1 and CZE_LOCAL_PROVER=0 needs CZE_PROVERS (block 1 is proven on it): refused before anything starts when it is empty, and not refused when it is set.
+fresh
+if out=$(run CZE_PERSIST=1 CZE_LOCAL_PROVER=0 CZE_PROVERS= "$WORK/repo/network/up.sh" 2>&1); then fail "up.sh went on with CZE_PERSIST=1, CZE_LOCAL_PROVER=0 and no CZE_PROVERS"; fi
+grep -q "needs CZE_PROVERS" <<<"$out" || fail "up.sh refusal does not name CZE_PROVERS: $out"
+[ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called after up.sh refused a missing CZE_PROVERS"
+out=$(run CZE_PERSIST=1 CZE_LOCAL_PROVER=0 CZE_PROVERS=a=http://127.0.0.1:1 "$WORK/repo/network/up.sh" 2>&1) || true
+! grep -q "needs CZE_PROVERS" <<<"$out" || fail "up.sh refused CZE_PROVERS that was set: $out"
+echo "ok: up.sh with CZE_PERSIST=1 and CZE_LOCAL_PROVER=0 needs CZE_PROVERS"
 echo "persist scripts tests passed"
