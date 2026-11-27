@@ -176,7 +176,7 @@ describe("the gateway's custody, read as the gateway", () => {
       return out;
     };
 
-    it("reads a receipt, a payout and an offer of the payout, with the time of each, and keeps no sender and no paid party", async () => {
+    it("reads a receipt, a payout and an offer of the payout, with the time and the update offset of each, and keeps no sender and no paid party", async () => {
       const got = await walk([
         transaction(3, "u3", [receiptEvent(3, "r1", { gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: "12.5" })]),
         transaction(4, "u4", [payoutEvent(4, "p1", { gatewayToken: TOKEN_CID, payoutId: ID2, amount: "3" })]),
@@ -184,11 +184,11 @@ describe("the gateway's custody, read as the gateway", () => {
         transaction(6, "u6", [archivedEvent("o1"), archivedEvent("p1")], "2026-11-24T09:00:00Z"),
       ]);
       expect(got).toEqual([
-        { kind: "receipt", contractId: "r1", gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: 125000000000n, createdAt: "2026-10-04T01:37:15.412Z" },
-        { kind: "payout", contractId: "p1", gatewayToken: TOKEN_CID, payoutId: ID2, amount: 30000000000n, createdAt: "2026-10-04T01:37:15.412Z" },
-        { kind: "offer", contractId: "o1", payoutId: ID2, executeBefore: "2026-11-24T10:00:00Z" },
-        { kind: "archived", contractId: "o1", at: "2026-11-24T09:00:00Z" },
-        { kind: "archived", contractId: "p1", at: "2026-11-24T09:00:00Z" },
+        { kind: "receipt", contractId: "r1", gatewayToken: TOKEN_CID, depositId: ID, recipient: RECIPIENT, amount: 125000000000n, createdAt: "2026-10-04T01:37:15.412Z", offset: 3 },
+        { kind: "payout", contractId: "p1", gatewayToken: TOKEN_CID, payoutId: ID2, amount: 30000000000n, createdAt: "2026-10-04T01:37:15.412Z", offset: 4 },
+        { kind: "offer", contractId: "o1", payoutId: ID2, executeBefore: "2026-11-24T10:00:00Z", offset: 5 },
+        { kind: "archived", contractId: "o1", at: "2026-11-24T09:00:00Z", offset: 6 },
+        { kind: "archived", contractId: "p1", at: "2026-11-24T09:00:00Z", offset: 6 },
       ]);
       const text = JSON.stringify(got, (_, v) => (typeof v === "bigint" ? v.toString() : v));
       for (const secret of [FAKE_SELLER, "memo-1"]) expect(text).not.toContain(secret);

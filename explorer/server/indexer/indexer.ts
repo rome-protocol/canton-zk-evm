@@ -602,7 +602,7 @@ export function createIndexer(o: IndexerOptions) {
       let failing = "", venueFailing = "", registeredFailing = "";
       while (running && o.custody) {
         try {
-          const read = await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
+          const read = await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId, () => o.ledger.ledgerEnd());
           // The row says a fixed sentence; the registry's own message goes to the log only.
           const problem = read.registryError !== null ? "the chain record's registry cannot be read" : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
           const said = read.registryError !== null ? `${problem}: ${read.registryError}` : problem;

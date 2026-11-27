@@ -333,7 +333,8 @@ def publish_limits(args, settings: Settings, payouts, state: dict) -> None:
     if not args.work_dir:
         return
     doc = limits.document(datetime.now(timezone.utc), args.poll_seconds, settings.minimums if args.intake else None,
-                          payouts.min_payout if payouts is not None else None)
+                          payouts.min_payout if payouts is not None else None,
+                          payouts.lifetime.total_seconds() / 3600 if payouts is not None else None)
     try:
         limits.publish(args.work_dir, doc)
         state["told"] = False

@@ -210,14 +210,14 @@ export function registeredFrom(items: unknown[]): RegisteredToken[] {
 /**
  * A change to what the gateway keeps on Canton that one update made: a holding it owns (and the instrument's admin signed) was created; a `Receipt` (a deposit it accepted) or a `Payout` (a withdrawal it owes) was created, each naming its
  * registered token's contract and with no party; an offer of a payout (a transfer instruction of the gateway's that names the payout) was created; or a contract was archived, at the record time `at` (any archived contract of the filtered
- * stream: one that was never kept is a no-op).
+ * stream: one that was never kept is a no-op). `offset` is the ledger offset of the update that made the change; the walk always sets it (a page's own offset stands in where it is absent).
  */
-export type HoldingChange =
+export type HoldingChange = { offset?: number } & (
   | { kind: "created"; contractId: string; instrumentAdmin: string; instrumentId: string; amount: bigint }
   | { kind: "receipt"; contractId: string; gatewayToken: string; depositId: string; recipient: string; amount: bigint; createdAt: string }
   | { kind: "payout"; contractId: string; gatewayToken: string; payoutId: string; amount: bigint; createdAt: string }
   | { kind: "offer"; contractId: string; payoutId: string; executeBefore: string }
-  | { kind: "archived"; contractId: string; at: string };
+  | { kind: "archived"; contractId: string; at: string });
 
 const need = (v: unknown, what: string): string => (typeof v === "string" && v !== "" ? v : custodyFail(`${what} is missing`));
 const hexOf = (v: unknown, digits: number, what: string): string => (typeof v === "string" && new RegExp(`^[0-9a-f]{${digits}}$`).test(v) ? v : custodyFail(`${what} is not ${digits} hex digits`));
@@ -267,7 +267,7 @@ export function holdingsIn(item: unknown, party: string): { offset: number; chan
       changes.push({ kind: "created", contractId, instrumentAdmin: instrument.admin, instrumentId: instrument.id, amount: baseUnits(view.amount) });
     }
   }
-  return { offset: offset as number, changes };
+  return { offset: offset as number, changes: changes.map((c) => ({ ...c, offset: offset as number })) };
 }
 
 /**

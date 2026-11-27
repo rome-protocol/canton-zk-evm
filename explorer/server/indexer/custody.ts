@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import type { ChainRegistry, Ledger, RegisteredToken } from "../ledger.ts";
+import type { ChainRegistry, HoldingChange, Ledger, RegisteredToken } from "../ledger.ts";
 import type { FinalReads } from "./reads.ts";
 import { SELECTORS, tryCall } from "./tokens.ts";
 
@@ -17,10 +17,11 @@ const uint = (output: string | null): bigint | null => (output !== null && /^0x[
  * to B, the same legs the supply at B counts: a deposit that lands later is in neither number. The rows are written as the whole of the table in one transaction, so a reader sees one read or the one
  * before. A read that fails writes nothing and the last rows stay, with the time they were read at. A token that is no longer registered is dropped; with no token registered the table is empty. With no
  * block indexed yet, or the newest block's record not on the participant now read (offsets are local to a participant, so after a reader move the older participant's offset means nothing here, and it stays
- * so until the new participant has indexed a block), there is nothing to read at, and nothing is written. The registry (the chain record) is read and kept apart from this: a registry that cannot be read does not stop
+ * so until the new participant has indexed a block), there is nothing to read at, and nothing is written. The statuses of the payouts, receipts and offers are not pinned to B: they are walked to the participant's current ledger end
+ * (`ledgerEnd`, when given and readable: otherwise to B), each with the offset of its update, so that a payout paid after B shows as paid within one pass, and the open receipts and payouts counted into the row are those open as of B's offset. The registry (the chain record) is read and kept apart from this: a registry that cannot be read does not stop
  * the custody, and the custody that cannot be read does not stop the registry; the registry's failure is returned as `registryError` for the caller to say.
  */
-export async function custodyOnce(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">, reads: Pick<FinalReads, "call">, limit: number, participantId: string, chainId: number | null = null): Promise<{ tokens: number; holdings: number; offset: number; block: number | null; registryError: string | null }> {
+export async function custodyOnce(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">, reads: Pick<FinalReads, "call">, limit: number, participantId: string, chainId: number | null = null, ledgerEnd: (() => Promise<number>) | null = null): Promise<{ tokens: number; holdings: number; offset: number; block: number | null; registryError: string | null }> {
   const [at] = (await pool.query(
     "select b.number, u.reader_offset, (p.participant_id = $1 and p.moved_out_at is null) as current from blocks b join canton_updates u on u.update_id = b.update_id join canton_participants p on p.id = u.participant order by b.number desc limit 1",
     [participantId],
@@ -50,22 +51,28 @@ export async function custodyOnce(pool: Pick<Pool, "connect" | "query">, ledger:
     }
   }
   const tokens = await ledger.gatewayTokens(limit, offset);
-  await syncHoldings(pool, ledger, participantId, offset, tokens);
+  await syncHoldings(pool, ledger, participantId, offset);
+  // The statuses go on to the ledger end. A ledger end that cannot be read, or is behind B, leaves them at B, as they were before the ledger end was read.
+  const end = ledgerEnd ? Math.max(offset, await ledgerEnd().catch(() => offset)) : offset;
+  await syncStatus(pool, ledger, participantId, end, end > offset ? await ledger.gatewayTokens(limit, end) : tokens);
   const held = new Map<string, { custody: bigint; holdings: number }>();
   for (const r of (await pool.query("select instrument_admin, instrument_id, sum(amount)::text as custody, count(*)::int as holdings from gateway_holdings group by 1, 2")).rows) {
     held.set(JSON.stringify([r.instrument_admin, r.instrument_id]), { custody: BigInt(r.custody), holdings: r.holdings });
   }
-  // What is open for each wrapped ERC-20: its receipts (accepted, not yet claimed) and its payouts not yet paid.
+  // What is open for each wrapped ERC-20 as of B's offset: its receipts (accepted, not yet claimed) and its payouts not yet paid.
   const open = new Map<string, { receipts: string; payouts: string }>();
   for (const r of (await pool.query(
     `select encode(erc20, 'hex') as t, coalesce(sum(amount) filter (where k = 'r'), 0)::text as receipts, coalesce(sum(amount) filter (where k = 'p'), 0)::text as payouts from
-       (select erc20, amount, 'r' as k from gateway_receipts union all select erc20, amount, 'p' from gateway_payouts where paid_at is null) o group by 1`)).rows) open.set("0x" + r.t, r);
+       (select erc20, amount, 'r' as k from gateway_receipts where created_offset <= $1 and (archived_offset is null or archived_offset > $1)
+        union all select erc20, amount, 'p' from gateway_payouts where created_offset <= $1 and (paid_offset is null or paid_offset > $1)) o group by 1`, [offset])).rows) open.set("0x" + r.t, r);
   const rows = tokens.map((t) => ({ ...t, ...(held.get(JSON.stringify([t.instrumentAdmin, t.instrumentId])) ?? { custody: 0n, holdings: 0 }), ...(open.get(t.evmToken) ?? { receipts: "0", payouts: "0" }) }));
   const supplies = await Promise.all(rows.map(async (t) => uint(await tryCall(reads, t.evmToken, SELECTORS.totalSupply, block))));
   const c = await pool.connect();
   try {
     await c.query("begin");
     await c.query("delete from gateway_tokens where evm_token <> all($1::bytea[])", [rows.map((t) => bytea(t.evmToken))]);
+    // A receipt archived at or before B is closed at every block from now on.
+    await c.query("delete from gateway_receipts where archived_offset <= $1", [offset]);
     if (rows.length > 0) {
       await c.query(
         `insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at, open_receipts, open_payouts)
@@ -89,23 +96,22 @@ export async function custodyOnce(pool: Pick<Pool, "connect" | "query">, ledger:
 }
 
 /**
- * Brings `gateway_holdings` (the holdings the gateway owns, a contract kept by the hash of its id) up to ledger offset `offset`, by the walk of the Canton updates after the offset the last walk reached, a page and
- * its cursor to a transaction, so that a walk that stops anywhere goes on from the cursor. The walk is of pages of any count, so that no number of holdings the gateway party can see (twin holdings of every user
- * among them) cuts or fails the read. Offsets are local to a participant: a table that was walked on another participant, or to an offset past this one, is forgotten and walked again from the start.
+ * The walk of the Canton updates behind the custody tables, from the cursor in `meta` (kept per participant, so a table walked on another participant or past `upTo` starts again) up to `upTo`, a page and its cursor
+ * to a transaction, so that a walk that stops anywhere goes on from the cursor, whatever the number of contracts the gateway party sees.
  */
-export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "holdingPages">, participantId: string, offset: number, tokens: Pick<RegisteredToken, "contractId" | "evmToken">[] = []): Promise<void> {
-  const evm = new Map(tokens.map((t) => [t.contractId, bytea(t.evmToken)]));
-  const meta = new Map<string, string>((await pool.query("select key, value from meta where key in ('holdings_participant', 'holdings_offset')")).rows.map((r) => [r.key, r.value]));
-  let from = meta.get("holdings_participant") === participantId ? Number(meta.get("holdings_offset") ?? 0) : 0;
-  if (from > offset) from = 0;
+async function walk(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "holdingPages">, participantId: string, upTo: number, cursor: { participant: string; offset: string; tables: string[] },
+  apply: (c: Pick<PoolClient, "query">, ch: HoldingChange, at: number) => Promise<void>): Promise<void> {
+  const meta = new Map<string, string>((await pool.query("select key, value from meta where key = any($1::text[])", [[cursor.participant, cursor.offset]])).rows.map((r) => [r.key, r.value]));
+  let from = meta.get(cursor.participant) === participantId ? Number(meta.get(cursor.offset) ?? 0) : 0;
+  if (from > upTo) from = 0;
   const setCursor = (c: Pick<PoolClient, "query">, at: number) => c.query(
-    "insert into meta (key, value) select * from unnest($1::text[], $2::text[]) on conflict (key) do update set value = excluded.value", [["holdings_participant", "holdings_offset"], [participantId, String(at)]]);
+    "insert into meta (key, value) select * from unnest($1::text[], $2::text[]) on conflict (key) do update set value = excluded.value", [[cursor.participant, cursor.offset], [participantId, String(at)]]);
   if (from === 0 && meta.size > 0) {
     // A fresh start: nothing of an older walk stays.
     const r = await pool.connect();
     try {
       await r.query("begin");
-      for (const t of ["gateway_holdings", "gateway_receipts", "gateway_payouts", "gateway_offers"]) await r.query(`delete from ${t}`);
+      for (const t of cursor.tables) await r.query(`delete from ${t}`);
       await setCursor(r, 0);
       await r.query("commit");
     } catch (e) {
@@ -115,26 +121,11 @@ export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger
       r.release();
     }
   }
-  for await (const page of ledger.holdingPages(from, offset)) {
+  for await (const page of ledger.holdingPages(from, upTo)) {
     const c = await pool.connect();
     try {
       await c.query("begin");
-      for (const ch of page.changes) {
-        if (ch.kind === "archived") {
-          // One statement for every table a contract may be in: a payout stays, with the time it was paid.
-          await c.query(
-            `with h as (delete from gateway_holdings where contract_hash = $1), r as (delete from gateway_receipts where contract_hash = $1), o as (delete from gateway_offers where contract_hash = $1)
-             update gateway_payouts set paid_at = $2 where contract_hash = $1`, [contractHash(ch.contractId), ch.at]);
-        } else if (ch.kind === "receipt" || ch.kind === "payout") {
-          const erc20 = evm.get(ch.gatewayToken);
-          if (!erc20) continue; // a token no longer registered has no custody row, so no total depends on it
-          if (ch.kind === "receipt") await c.query("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at) values ($1, $2, $3, $4, $5, $6) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.depositId), bytea(ch.recipient), ch.amount.toString(), ch.createdAt]);
-          else await c.query("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at) values ($1, $2, $3, $4, $5) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.payoutId), ch.amount.toString(), ch.createdAt]);
-        } else if (ch.kind === "offer") await c.query("insert into gateway_offers (contract_hash, payout_id, execute_before) values ($1, $2, $3) on conflict do nothing", [contractHash(ch.contractId), bytea(ch.payoutId), ch.executeBefore]);
-        else await c.query(
-          "insert into gateway_holdings (contract_hash, instrument_admin, instrument_id, amount) values ($1, $2, $3, $4) on conflict (contract_hash) do update set instrument_admin = excluded.instrument_admin, instrument_id = excluded.instrument_id, amount = excluded.amount",
-          [contractHash(ch.contractId), ch.instrumentAdmin, ch.instrumentId, ch.amount.toString()]);
-      }
+      for (const ch of page.changes) await apply(c, ch, ch.offset ?? page.offset);
       await setCursor(c, page.offset);
       await c.query("commit");
     } catch (e) {
@@ -144,8 +135,41 @@ export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger
       c.release();
     }
   }
-  // The walk ended on an empty answer: nothing more is there up to `offset`.
-  await setCursor(pool, offset);
+  // The walk ended on an empty answer: nothing more is there up to `upTo`.
+  await setCursor(pool, upTo);
+}
+
+/** Brings `gateway_holdings` (the holdings the gateway owns, a contract kept by the hash of its id) up to ledger offset `offset`, the offset of the newest indexed block: the custody is the sum of these. */
+export async function syncHoldings(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "holdingPages">, participantId: string, offset: number): Promise<void> {
+  await walk(pool, ledger, participantId, offset, { participant: "holdings_participant", offset: "holdings_offset", tables: ["gateway_holdings"] }, async (c, ch) => {
+    if (ch.kind === "archived") await c.query("delete from gateway_holdings where contract_hash = $1", [contractHash(ch.contractId)]);
+    else if (ch.kind === "created") {
+      await c.query(
+        "insert into gateway_holdings (contract_hash, instrument_admin, instrument_id, amount) values ($1, $2, $3, $4) on conflict (contract_hash) do update set instrument_admin = excluded.instrument_admin, instrument_id = excluded.instrument_id, amount = excluded.amount",
+        [contractHash(ch.contractId), ch.instrumentAdmin, ch.instrumentId, ch.amount.toString()]);
+    }
+  });
+}
+
+/**
+ * Brings the receipts, payouts and offers the gateway keeps up to ledger offset `offset` (the participant's ledger end, not the block's), each with the offset of its update: a receipt is archived and a payout is paid at an
+ * offset that may be after the newest block's, and the custody read counts what is open as of the block's offset. A payout stays, with the time and offset it was paid; an offer is deleted when archived.
+ */
+export async function syncStatus(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "holdingPages">, participantId: string, offset: number, tokens: Pick<RegisteredToken, "contractId" | "evmToken">[] = []): Promise<void> {
+  const evm = new Map(tokens.map((t) => [t.contractId, bytea(t.evmToken)]));
+  await walk(pool, ledger, participantId, offset, { participant: "status_participant", offset: "status_offset", tables: ["gateway_receipts", "gateway_payouts", "gateway_offers"] }, async (c, ch, at) => {
+    if (ch.kind === "archived") {
+      // One statement for every table a contract may be in: a payout stays, with the time and offset it was paid.
+      await c.query(
+        `with r as (update gateway_receipts set archived_offset = $3 where contract_hash = $1 and archived_offset is null), o as (delete from gateway_offers where contract_hash = $1)
+         update gateway_payouts set paid_at = $2, paid_offset = $3 where contract_hash = $1 and paid_at is null`, [contractHash(ch.contractId), ch.at, at]);
+    } else if (ch.kind === "receipt" || ch.kind === "payout") {
+      const erc20 = evm.get(ch.gatewayToken);
+      if (!erc20) return; // a token no longer registered has no custody row, so no total depends on it
+      if (ch.kind === "receipt") await c.query("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at, created_offset) values ($1, $2, $3, $4, $5, $6, $7) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.depositId), bytea(ch.recipient), ch.amount.toString(), ch.createdAt, at]);
+      else await c.query("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at, created_offset) values ($1, $2, $3, $4, $5, $6) on conflict do nothing", [contractHash(ch.contractId), erc20, bytea(ch.payoutId), ch.amount.toString(), ch.createdAt, at]);
+    } else if (ch.kind === "offer") await c.query("insert into gateway_offers (contract_hash, payout_id, execute_before) values ($1, $2, $3) on conflict do nothing", [contractHash(ch.contractId), bytea(ch.payoutId), ch.executeBefore]);
+  });
 }
 
 /**

@@ -4,9 +4,9 @@ import { readFileSync } from "node:fs";
 export interface Least { instrumentAdmin: string; instrumentId: string; least: string }
 /**
  * What the custody worker publishes about the limits it runs with (its `custody-limits.json`), as the explorer serves it. `updatedAt` is when the worker wrote it (UTC). A part that is not
- * switched on, or that cannot be read, is null: `minDeposits` (the intake's least deposit per instrument), `minPayouts` (the payouts' least) and `maxOffers` (0: no limit).
+ * switched on, or that cannot be read, is null: `minDeposits` (the intake's least deposit per instrument), `minPayouts` (the payouts' least), `maxOffers` (0: no limit) and `offerHours` (how long a payout's offer stays open).
  */
-export interface CustodyLimits { updatedAt: string; minDeposits: Least[] | null; minPayouts: Least[] | null; maxOffers: number | null }
+export interface CustodyLimits { updatedAt: string; minDeposits: Least[] | null; minPayouts: Least[] | null; maxOffers: number | null; offerHours: number | null }
 
 /** The file is read again when what the server holds of it is this old (ms). */
 export const CUSTODY_LIMITS_REREAD_MS = 3000;
@@ -14,6 +14,8 @@ export const CUSTODY_LIMITS_REREAD_MS = 3000;
 export const CUSTODY_LIMITS_STALE_MS = 300_000;
 /** The largest file the server reads, in characters. A larger one gives nothing. */
 export const CUSTODY_LIMITS_FILE_MAX = 200_000;
+/** The longest offer time read, in hours (about 114 years): a larger number is not an offer time. */
+const OFFER_HOURS_MAX = 1_000_000;
 /** The most instruments one list holds. */
 const LISTED_MAX = 100;
 
@@ -39,11 +41,12 @@ export function parseCustodyLimits(raw: string, nowMs: number): CustodyLimits | 
   let json: unknown;
   try { json = JSON.parse(raw); } catch { return null; }
   if (typeof json !== "object" || json === null || Array.isArray(json)) return null;
-  const f = json as { version?: unknown; updatedAt?: unknown; minDeposits?: unknown; minPayouts?: unknown; maxOffers?: unknown };
+  const f = json as { version?: unknown; updatedAt?: unknown; minDeposits?: unknown; minPayouts?: unknown; maxOffers?: unknown; offerHours?: unknown };
   if (f.version !== 1 || typeof f.updatedAt !== "string" || !TIME.test(f.updatedAt)) return null;
   const age = nowMs - Date.parse(f.updatedAt);
   if (!(age <= CUSTODY_LIMITS_STALE_MS) || age < -60_000) return null;
-  return { updatedAt: f.updatedAt, minDeposits: leastList(f.minDeposits), minPayouts: leastList(f.minPayouts), maxOffers: typeof f.maxOffers === "number" && Number.isSafeInteger(f.maxOffers) && f.maxOffers >= 0 ? f.maxOffers : null };
+  return { updatedAt: f.updatedAt, minDeposits: leastList(f.minDeposits), minPayouts: leastList(f.minPayouts), maxOffers: typeof f.maxOffers === "number" && Number.isSafeInteger(f.maxOffers) && f.maxOffers >= 0 ? f.maxOffers : null,
+    offerHours: typeof f.offerHours === "number" && f.offerHours > 0 && f.offerHours <= OFFER_HOURS_MAX ? f.offerHours : null };
 }
 
 export interface CustodyLimitsOptions {

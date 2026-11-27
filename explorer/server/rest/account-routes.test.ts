@@ -466,8 +466,8 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
   it("serves the open deposits of an address and a payout by its id from the kept rows, each naming its token and with no party", async () => {
     const hash = (n: number) => Buffer.alloc(32, n), at = "2026-11-23T10:00:00Z";
     await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 0, 0, 0, 7, 77, $2)", [who(0xb2), at]);
-    await sql("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at) values ($1, $2, $3, $4, 125000000000, $5)", [hash(1), who(0xb2), hash(2), who(0xe1), at]);
-    await sql("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at) values ($1, $2, $3, 30000000000, $4)", [hash(3), who(0xb2), hash(4), at]);
+    await sql("insert into gateway_receipts (contract_hash, erc20, deposit_id, recipient, amount, created_at, created_offset) values ($1, $2, $3, $4, 125000000000, $5, 10)", [hash(1), who(0xb2), hash(2), who(0xe1), at]);
+    await sql("insert into gateway_payouts (contract_hash, erc20, payout_id, amount, created_at, created_offset) values ($1, $2, $3, 30000000000, $4, 10)", [hash(3), who(0xb2), hash(4), at]);
     await sql("insert into gateway_offers (contract_hash, payout_id, execute_before) values ($1, $2, '2026-11-24T10:00:00Z')", [hash(5), hash(4)]);
     try {
       const d = body(await get(`/api/canton/deposits?recipient=${h(0xe1)}`));
